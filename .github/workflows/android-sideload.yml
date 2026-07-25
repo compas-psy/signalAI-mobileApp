@@ -1,0 +1,77 @@
+name: Android sideload APK
+
+# Быстрая сборка APK «поставить себе на телефон» — без keystore и без секретов.
+#
+# Зачем отдельно от android-release.yml: тот намеренно падает без ключа подписи,
+# потому что релизный артефакт обязан быть подписан своим ключом. Здесь задача
+# другая — получить рабочий APK сразу, ничего предварительно не настраивая.
+#
+# Подпись отладочная (см. fallback в android/app/build.gradle.kts). Отсюда два
+# последствия, о которых надо знать заранее:
+#   * при установке Android покажет предупреждение Play Protect — его можно
+#     пропустить («Всё равно установить»);
+#   * applicationId тот же (ru.signalai.app), поэтому поставить сверху нормально
+#     подписанный релиз не выйдет — сначала удалить эту сборку.
+#
+# Для Play Console и для раздачи кому-то ещё — только android-release.yml.
+
+on:
+  push:
+    branches:
+      - '**'
+  workflow_dispatch:
+
+# Пуш поверх незавершённого прогона отменяет предыдущий: артефакт нужен от
+# последнего коммита, а не от всех подряд.
+concurrency:
+  group: sideload-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - run: flutter --version
+
+      - run: flutter pub get
+
+      - run: flutter analyze
+
+      - run: flutter test
+
+      # key.properties в .gitignore и в CI не восстанавливается — Gradle сам
+      # уходит на отладочную подпись. Проверка на случай, если файл когда-нибудь
+      # окажется в репозитории по ошибке: тогда приватный ключ утёк в git.
+      - name: Проверка, что ключа подписи в репозитории нет
+        run: |
+          if [ -f android/key.properties ]; then
+            echo "::error::android/key.properties в репозитории — приватный ключ подписи утёк в git"
+            exit 1
+          fi
+
+      - name: Сборка APK
+        run: flutter build apk --release
+
+      - name: Кто подписал APK
+        run: |
+          APKSIGNER=$(find "${ANDROID_HOME}/build-tools" -name apksigner | sort -r | head -1)
+          "$APKSIGNER" verify --print-certs build/app/outputs/flutter-apk/app-release.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: signalai-sideload-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
+          retention-days: 14
