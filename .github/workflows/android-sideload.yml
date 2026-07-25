@@ -19,6 +19,11 @@ on:
   push:
     branches:
       - '**'
+    # Правка текста не меняет APK — не занимать раннер и место под артефакты.
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'design/**'
   workflow_dispatch:
 
 # Пуш поверх незавершённого прогона отменяет предыдущий: артефакт нужен от
@@ -74,4 +79,6 @@ jobs:
         with:
           name: signalai-sideload-apk
           path: build/app/outputs/flutter-apk/app-release.apk
-          retention-days: 14
+          # Короткий срок: это сборка «поставить и посмотреть», а место под
+          # артефакты на аккаунте общее и кончается быстро.
+          retention-days: 3
