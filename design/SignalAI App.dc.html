@@ -1,0 +1,654 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Jost:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  html,body{margin:0;padding:0;background:#0E0E10;}
+  a{color:#FFD400;text-decoration:none;} a:hover{color:#FFE45C;}
+  *{box-sizing:border-box;}
+  ::-webkit-scrollbar{width:0;height:0;}
+  @keyframes sheetUp{from{transform:translateY(40px);opacity:0;}to{transform:translateY(0);opacity:1;}}
+  @keyframes fadeIn{from{opacity:0;transform:translateY(-6px);}to{opacity:1;transform:translateY(0);}}
+  @keyframes pulseDot{0%,100%{opacity:1;}50%{opacity:.35;}}
+</style>
+</helmet>
+<div style="min-height:100vh;background:radial-gradient(1100px 700px at 50% -12%, #191506 0%, #0E0E10 58%);display:flex;flex-direction:column;align-items:center;gap:22px;padding:44px 24px 72px;font-family:Manrope,system-ui,sans-serif;color:#F2F2EF;">
+  <div style="display:flex;align-items:center;gap:14px;">
+    <img src="uploads/logo-1784996122341.jpg" alt="SignalAI" style="width:44px;height:44px;border-radius:12px;display:block;">
+    <div>
+      <div style="font-family:Jost,sans-serif;font-size:24px;font-weight:600;letter-spacing:.01em;">Signal<span style="color:#FFD400;">AI</span></div>
+      <div style="font-size:13px;color:#8E8E98;">Личный терминал торговых идей · Android · интерактивный прототип</div>
+    </div>
+  </div>
+  <x-import component-from-global-scope="AndroidDevice" from="./android-frame.jsx" dark="{{ true }}" hint-size="412px,892px">
+    <div style="height:100%;position:relative;overflow:hidden;display:flex;flex-direction:column;background:#0B0B0D;color:#F2F2EF;font-family:Manrope,system-ui,sans-serif;">
+      <div style="flex:1;overflow:auto;">
+
+        <sc-if value="{{ vIdeas }}" hint-placeholder-val="{{ true }}">
+          <div data-screen-label="Идеи">
+            <div style="position:sticky;top:0;z-index:5;background:rgba(11,11,13,.92);backdrop-filter:blur(8px);padding:12px 16px 10px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #1B1B20;">
+              <div style="display:flex;align-items:center;gap:10px;">
+                <img src="uploads/logo-1784996122341.jpg" alt="" style="width:28px;height:28px;border-radius:8px;">
+                <span style="font-family:Jost,sans-serif;font-size:20px;font-weight:600;">Signal<span style="color:#FFD400;">AI</span></span>
+              </div>
+              <div style="position:relative;width:36px;height:36px;display:flex;align-items:center;justify-content:center;border-radius:50%;background:#16161A;border:1px solid #26262C;">
+                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#C9C9D1" stroke-width="1.8"><path d="M6 9a6 6 0 1 1 12 0c0 5 2 6 2 6H4s2-1 2-6"></path><path d="M10 19a2 2 0 0 0 4 0"></path></svg>
+                <span style="position:absolute;top:7px;right:8px;width:7px;height:7px;border-radius:50%;background:#FFD400;"></span>
+              </div>
+            </div>
+            <div style="padding:14px 16px 8px;display:flex;align-items:center;justify-content:space-between;">
+              <div>
+                <div style="font-family:Jost,sans-serif;font-size:22px;font-weight:600;">Утренний дайджест</div>
+                <div style="font-size:12px;color:#8E8E98;margin-top:2px;">Сб, 25 июля · 10:10 МСК</div>
+              </div>
+              <div style="display:flex;gap:6px;">
+                <span style="font-size:10px;font-weight:700;color:#2FD575;background:rgba(47,213,117,.1);border:1px solid rgba(47,213,117,.25);border-radius:99px;padding:4px 8px;">TG ✓</span>
+                <span style="font-size:10px;font-weight:700;color:#2FD575;background:rgba(47,213,117,.1);border:1px solid rgba(47,213,117,.25);border-radius:99px;padding:4px 8px;">MAX ✓</span>
+              </div>
+            </div>
+            <div style="margin:6px 16px 0;background:#16161A;border:1px solid #26262C;border-radius:16px;padding:12px 14px;">
+              <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                <sc-for list="{{ regime }}" as="r" hint-placeholder-count="4">
+                  <span style="display:flex;gap:5px;align-items:baseline;background:#1C1C22;border-radius:8px;padding:5px 8px;font-size:11px;">
+                    <span style="color:#8E8E98;font-weight:600;">{{ r.n }}</span>
+                    <span style="font-family:'JetBrains Mono',monospace;font-weight:600;color:{{ r.c }};">{{ r.v }}</span>
+                  </span>
+                </sc-for>
+              </div>
+              <div style="font-size:12px;line-height:1.5;color:#C9C9D1;margin-top:10px;">Режим смешанный: рубль слабеет, нефть под давлением. Приоритет — лонги Si и BTC, шорты BR и индекса. Не берём лонги акций против падающего MX.</div>
+            </div>
+            <div style="margin:10px 16px 0;background:#16161A;border:1px solid #26262C;border-radius:16px;padding:12px 14px;display:flex;flex-direction:column;gap:9px;">
+              <div style="font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:#8E8E98;font-weight:700;">События по активным идеям</div>
+              <sc-for list="{{ events }}" as="ev" hint-placeholder-count="2">
+                <div style="display:flex;align-items:center;gap:10px;">
+                  <span style="width:7px;height:7px;border-radius:50%;background:{{ ev.c }};flex:none;"></span>
+                  <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#8E8E98;width:40px;flex:none;">{{ ev.t }}</span>
+                  <span style="font-size:12px;flex:1;color:#E5E5EA;">{{ ev.x }}</span>
+                  <span style="font-size:10px;color:#8E8E98;">{{ ev.on }}</span>
+                </div>
+              </sc-for>
+            </div>
+            <div style="padding:18px 16px 8px;display:flex;align-items:baseline;justify-content:space-between;">
+              <span style="font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:#8E8E98;font-weight:700;">Идеи на сегодня</span>
+              <span style="font-size:12px;color:#FFD400;font-weight:700;">5 из 5</span>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:10px;padding:0 16px 90px;">
+              <sc-for list="{{ ideas }}" as="i" hint-placeholder-count="5">
+                <div onClick="{{ i.open }}" style="background:#16161A;border:1px solid #26262C;border-radius:16px;padding:13px 14px;cursor:pointer;" style-hover="border-color:#3A3A42;background:#18181D;" style-active="transform:scale(.99);">
+                  <div style="display:flex;align-items:center;gap:11px;">
+                    <div style="width:44px;height:44px;border-radius:50%;background:{{ i.ringBg }};display:flex;align-items:center;justify-content:center;flex:none;">
+                      <div style="width:35px;height:35px;border-radius:50%;background:#16161A;display:flex;align-items:center;justify-content:center;font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:600;color:#FFD400;">{{ i.score }}</div>
+                    </div>
+                    <div style="flex:1;min-width:0;">
+                      <div style="display:flex;align-items:center;gap:7px;">
+                        <span style="font-family:Jost,sans-serif;font-size:16px;font-weight:600;">{{ i.sec }}</span>
+                        <span style="font-size:10px;font-weight:800;letter-spacing:.06em;color:{{ i.dirC }};background:{{ i.dirBg }};border-radius:6px;padding:2px 7px;">{{ i.dirLabel }}</span>
+                        <span style="font-size:10px;color:{{ i.stC }};border:1px solid {{ i.stB }};border-radius:6px;padding:2px 7px;">{{ i.stLabel }}</span>
+                      </div>
+                      <div style="font-size:11px;color:#8E8E98;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{{ i.name }} · {{ i.mkt }} · {{ i.hor }}</div>
+                    </div>
+                    <div style="text-align:right;flex:none;">
+                      <div style="font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:600;">{{ i.last }}</div>
+                      <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:{{ i.chgC }};">{{ i.chg }}</div>
+                    </div>
+                  </div>
+                  <div style="display:flex;gap:12px;margin-top:11px;background:#101014;border-radius:10px;padding:8px 11px;font-family:'JetBrains Mono',monospace;font-size:11px;">
+                    <span><span style="color:#8E8E98;">Вход </span><span style="color:#FFD400;font-weight:600;">{{ i.entryS }}</span></span>
+                    <span><span style="color:#8E8E98;">SL </span><span style="color:#FF5C5C;font-weight:600;">{{ i.slS }}</span></span>
+                    <span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"><span style="color:#8E8E98;">TP </span><span style="color:#2FD575;font-weight:600;">{{ i.tpS }}</span></span>
+                  </div>
+                  <div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:9px;align-items:center;">
+                    <sc-for list="{{ i.chips }}" as="ch" hint-placeholder-count="3">
+                      <span style="font-size:10px;color:#C9C9D1;background:#1C1C22;border-radius:6px;padding:3px 7px;">{{ ch }}</span>
+                    </sc-for>
+                    <span style="margin-left:auto;font-size:10px;font-weight:700;color:#FFD400;background:rgba(255,212,0,.08);border:1px solid rgba(255,212,0,.25);border-radius:6px;padding:3px 7px;">R:R {{ i.rr }}</span>
+                  </div>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ vDetail }}" hint-placeholder-val="{{ false }}">
+          <div data-screen-label="Карточка идеи">
+            <div style="position:sticky;top:0;z-index:5;background:rgba(11,11,13,.92);backdrop-filter:blur(8px);padding:10px 12px;display:flex;align-items:center;gap:10px;border-bottom:1px solid #1B1B20;">
+              <div onClick="{{ back }}" style="width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;cursor:pointer;background:#16161A;border:1px solid #26262C;" style-hover="background:#1C1C22;">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#F2F2EF" stroke-width="2"><path d="M15 18l-6-6 6-6"></path></svg>
+              </div>
+              <div style="flex:1;">
+                <div style="display:flex;align-items:center;gap:8px;">
+                  <span style="font-family:Jost,sans-serif;font-size:18px;font-weight:600;">{{ cur.sec }}</span>
+                  <span style="font-size:10px;font-weight:800;letter-spacing:.06em;color:{{ cur.dirC }};background:{{ cur.dirBg }};border-radius:6px;padding:2px 7px;">{{ cur.dirLabel }}</span>
+                </div>
+                <div style="font-size:11px;color:#8E8E98;">{{ cur.name }}</div>
+              </div>
+              <div style="text-align:right;">
+                <div style="font-family:'JetBrains Mono',monospace;font-size:15px;font-weight:600;">{{ cur.last }}</div>
+                <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:{{ cur.chgC }};">{{ cur.chg }}</div>
+              </div>
+            </div>
+            <div style="padding:12px 16px 96px;display:flex;flex-direction:column;gap:12px;">
+              <div style="border-radius:12px;overflow:hidden;border:1px solid #1D1D24;">{{ chartEl }}</div>
+              <div style="display:flex;gap:8px;">
+                <div style="flex:1;background:#16161A;border:1px solid #26262C;border-radius:12px;padding:9px 11px;">
+                  <div style="font-size:10px;color:#8E8E98;">Вход · лимит</div>
+                  <div style="font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:600;color:#FFD400;margin-top:2px;">{{ cur.entryS }}</div>
+                </div>
+                <div style="flex:1;background:#16161A;border:1px solid #26262C;border-radius:12px;padding:9px 11px;">
+                  <div style="font-size:10px;color:#8E8E98;">Стоп-лосс</div>
+                  <div style="font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:600;color:#FF5C5C;margin-top:2px;">{{ cur.slS }}</div>
+                </div>
+                <div style="flex:1;background:#16161A;border:1px solid #26262C;border-radius:12px;padding:9px 11px;">
+                  <div style="font-size:10px;color:#8E8E98;">R:R до TP2</div>
+                  <div style="font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:600;margin-top:2px;">{{ cur.rr }}</div>
+                </div>
+              </div>
+              <div style="background:#16161A;border:1px solid #26262C;border-radius:16px;padding:12px 14px;display:flex;flex-direction:column;gap:8px;">
+                <div style="font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:#8E8E98;font-weight:700;">Тейк-профиты</div>
+                <sc-for list="{{ cur.tps }}" as="tp" hint-placeholder-count="3">
+                  <div style="display:flex;align-items:center;gap:10px;">
+                    <span style="font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:600;color:#2FD575;width:32px;">{{ tp.n }}</span>
+                    <span style="font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:600;flex:1;">{{ tp.p }}</span>
+                    <span style="font-size:11px;color:#8E8E98;">{{ tp.share }} объёма</span>
+                    <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#2FD575;">{{ tp.r }}</span>
+                  </div>
+                </sc-for>
+              </div>
+              <div style="background:#16161A;border:1px solid #26262C;border-radius:16px;padding:12px 14px;">
+                <div style="display:flex;align-items:center;justify-content:space-between;">
+                  <span style="font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:#8E8E98;font-weight:700;">Почему это сделка</span>
+                  <span style="font-size:11px;font-weight:700;color:#FFD400;">конфлюэнс {{ cur.score }}/100</span>
+                </div>
+                <div style="font-size:12px;line-height:1.55;color:#C9C9D1;margin:8px 0 10px;">{{ cur.note }}</div>
+                <div style="display:flex;flex-direction:column;gap:9px;">
+                  <sc-for list="{{ cur.factors }}" as="f" hint-placeholder-count="6">
+                    <div>
+                      <div style="display:flex;align-items:baseline;justify-content:space-between;gap:8px;">
+                        <span style="font-size:12px;font-weight:700;">{{ f.n }}</span>
+                        <div style="width:52px;height:4px;border-radius:2px;background:#26262C;overflow:hidden;flex:none;"><div style="height:100%;border-radius:2px;background:{{ f.c }};width:{{ f.pct }}%;"></div></div>
+                      </div>
+                      <div style="font-size:11px;color:#8E8E98;line-height:1.45;margin-top:2px;">{{ f.t }}</div>
+                    </div>
+                  </sc-for>
+                </div>
+              </div>
+              <div style="background:#16161A;border:1px solid #26262C;border-radius:16px;padding:12px 14px;">
+                <div style="display:flex;align-items:center;gap:8px;">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#FFD400" stroke-width="2"><path d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6l8-4z"></path></svg>
+                  <span style="font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:#8E8E98;font-weight:700;">Смарт-риск</span>
+                </div>
+                <div style="display:flex;gap:8px;margin-top:10px;">
+                  <div style="flex:1;background:#101014;border-radius:10px;padding:8px 10px;">
+                    <div style="font-size:10px;color:#8E8E98;">Риск на сделку</div>
+                    <div style="font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:600;margin-top:2px;">{{ riskRubS }}</div>
+                    <div style="font-size:10px;color:#8E8E98;margin-top:1px;">{{ riskPctS }} от {{ depoS }}</div>
+                  </div>
+                  <div style="flex:1;background:#101014;border-radius:10px;padding:8px 10px;">
+                    <div style="font-size:10px;color:#8E8E98;">Объём позиции</div>
+                    <div style="font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:600;color:#FFD400;margin-top:2px;">{{ cur.qtyStr }}</div>
+                    <div style="font-size:10px;color:#8E8E98;margin-top:1px;">{{ cur.unitRiskStr }}</div>
+                  </div>
+                </div>
+              </div>
+              <div style="background:#16161A;border:1px solid #26262C;border-radius:16px;padding:12px 14px;display:flex;flex-direction:column;gap:9px;">
+                <div style="font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:#8E8E98;font-weight:700;">События по идее</div>
+                <sc-for list="{{ cur.news }}" as="nv" hint-placeholder-count="2">
+                  <div style="display:flex;align-items:center;gap:10px;">
+                    <span style="width:7px;height:7px;border-radius:50%;background:{{ nv.c }};flex:none;"></span>
+                    <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#8E8E98;width:44px;flex:none;">{{ nv.t }}</span>
+                    <span style="font-size:12px;color:#E5E5EA;">{{ nv.x }}</span>
+                  </div>
+                </sc-for>
+              </div>
+              <sc-if value="{{ vCtaNew }}" hint-placeholder-val="{{ true }}">
+                <div style="display:flex;gap:9px;">
+                  <div onClick="{{ openSheet }}" style="flex:1;background:#FFD400;color:#111111;border-radius:14px;padding:14px;text-align:center;font-weight:800;font-size:14px;cursor:pointer;" style-hover="background:#FFE045;" style-active="transform:scale(.98);">Подтвердить и исполнить</div>
+                  <div onClick="{{ back }}" style="background:#16161A;border:1px solid #26262C;color:#8E8E98;border-radius:14px;padding:14px 16px;font-weight:700;font-size:14px;cursor:pointer;" style-hover="color:#F2F2EF;">Пропустить</div>
+                </div>
+              </sc-if>
+              <sc-if value="{{ vCtaDone }}" hint-placeholder-val="{{ false }}">
+                <div style="background:rgba(47,213,117,.08);border:1px solid rgba(47,213,117,.3);border-radius:14px;padding:13px;text-align:center;font-weight:700;font-size:13px;color:#2FD575;">В работе · лимитный ордер и OCO (SL + 3 TP) выставлены</div>
+              </sc-if>
+            </div>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ vTrades }}" hint-placeholder-val="{{ false }}">
+          <div data-screen-label="Сделки">
+            <div style="position:sticky;top:0;z-index:5;background:rgba(11,11,13,.92);backdrop-filter:blur(8px);padding:14px 16px 10px;border-bottom:1px solid #1B1B20;">
+              <div style="font-family:Jost,sans-serif;font-size:22px;font-weight:600;">Сделки</div>
+            </div>
+            <div style="padding:12px 16px 90px;display:flex;flex-direction:column;gap:12px;">
+              <div style="background:#16161A;border:1px solid #26262C;border-radius:16px;padding:13px 14px;">
+                <div style="display:flex;align-items:baseline;justify-content:space-between;">
+                  <span style="font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:#8E8E98;font-weight:700;">Эквити · 30 дней</span>
+                  <span style="font-family:'JetBrains Mono',monospace;font-size:15px;font-weight:600;color:#2FD575;">+8,4%</span>
+                </div>
+                <div style="margin:10px 0 4px;">{{ equityEl }}</div>
+                <div style="display:flex;gap:8px;margin-top:8px;">
+                  <sc-for list="{{ stats }}" as="st" hint-placeholder-count="3">
+                    <div style="flex:1;background:#101014;border-radius:10px;padding:8px 10px;">
+                      <div style="font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:600;color:{{ st.c }};">{{ st.v }}</div>
+                      <div style="font-size:10px;color:#8E8E98;margin-top:2px;">{{ st.n }}</div>
+                    </div>
+                  </sc-for>
+                </div>
+              </div>
+              <div style="font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:#8E8E98;font-weight:700;padding:4px 2px 0;">Активные · 2</div>
+              <sc-for list="{{ active }}" as="a" hint-placeholder-count="2">
+                <div style="background:#16161A;border:1px solid #26262C;border-radius:16px;padding:13px 14px;">
+                  <div style="display:flex;align-items:center;gap:8px;">
+                    <span style="font-family:Jost,sans-serif;font-size:15px;font-weight:600;">{{ a.sec }}</span>
+                    <span style="font-size:10px;font-weight:800;color:{{ a.dirC }};background:{{ a.dirBg }};border-radius:6px;padding:2px 7px;">{{ a.dir }}</span>
+                    <span style="margin-left:auto;font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:600;color:#2FD575;">{{ a.pnl }}</span>
+                  </div>
+                  <div style="display:flex;justify-content:space-between;font-family:'JetBrains Mono',monospace;font-size:11px;color:#8E8E98;margin-top:8px;">
+                    <span>вход {{ a.entry }}</span><span style="color:#F2F2EF;">сейчас {{ a.now }}</span>
+                  </div>
+                  <div style="height:5px;border-radius:3px;background:#26262C;overflow:hidden;margin-top:7px;"><div style="height:100%;border-radius:3px;background:linear-gradient(90deg,#FFD400,#2FD575);width:{{ a.prog }}%;"></div></div>
+                  <div style="font-size:10px;color:#8E8E98;margin-top:5px;">{{ a.stage }}</div>
+                </div>
+              </sc-for>
+              <div style="font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:#8E8E98;font-weight:700;padding:4px 2px 0;">Журнал · 7 дней</div>
+              <div style="background:#16161A;border:1px solid #26262C;border-radius:16px;overflow:hidden;">
+                <sc-for list="{{ journal }}" as="j" hint-placeholder-count="7">
+                  <div style="display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid #1D1D24;">
+                    <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#8E8E98;width:42px;">{{ j.d }}</span>
+                    <span style="font-size:12px;font-weight:700;flex:1;">{{ j.s }}</span>
+                    <span style="font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:700;color:{{ j.dc }};width:14px;">{{ j.dir }}</span>
+                    <span style="font-size:10px;color:#8E8E98;width:36px;text-align:right;">{{ j.st }}</span>
+                    <span style="font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:600;color:{{ j.rc }};width:48px;text-align:right;">{{ j.r }}</span>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ vStrats }}" hint-placeholder-val="{{ false }}">
+          <div data-screen-label="Стратегии">
+            <div style="position:sticky;top:0;z-index:5;background:rgba(11,11,13,.92);backdrop-filter:blur(8px);padding:14px 16px 10px;border-bottom:1px solid #1B1B20;">
+              <div style="font-family:Jost,sans-serif;font-size:22px;font-weight:600;">Стратегии</div>
+            </div>
+            <div style="padding:12px 16px 90px;display:flex;flex-direction:column;gap:12px;">
+              <sc-for list="{{ packs }}" as="p" hint-placeholder-count="3">
+                <div style="background:#16161A;border:1px solid #26262C;border-radius:16px;padding:13px 14px;">
+                  <div style="display:flex;align-items:center;gap:10px;">
+                    <div style="flex:1;">
+                      <div style="font-size:14px;font-weight:700;">{{ p.name }}</div>
+                      <div style="font-size:11px;color:#8E8E98;margin-top:3px;line-height:1.4;">{{ p.desc }}</div>
+                    </div>
+                    <div onClick="{{ p.cb }}" style="width:44px;height:24px;border-radius:99px;background:{{ p.bg }};position:relative;cursor:pointer;flex:none;transition:background .2s;">
+                      <div style="position:absolute;top:2px;left:2px;width:20px;height:20px;border-radius:50%;background:#0B0B0D;transform:translateX({{ p.tx }}px);transition:transform .2s;"></div>
+                    </div>
+                  </div>
+                  <div style="font-family:'JetBrains Mono',monospace;font-size:10.5px;color:#8E8E98;margin-top:9px;">{{ p.stats }}</div>
+                </div>
+              </sc-for>
+              <div style="background:#16161A;border:1px solid #26262C;border-radius:16px;padding:12px 14px;">
+                <div style="font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:#8E8E98;font-weight:700;margin-bottom:6px;">Параметры · Интеграционная</div>
+                <sc-for list="{{ params }}" as="pr" hint-placeholder-count="6">
+                  <div style="display:flex;justify-content:space-between;gap:12px;padding:7px 0;border-bottom:1px solid #1D1D24;">
+                    <span style="font-size:12px;color:#8E8E98;">{{ pr.n }}</span>
+                    <span style="font-size:12px;font-weight:600;text-align:right;">{{ pr.v }}</span>
+                  </div>
+                </sc-for>
+              </div>
+              <div style="background:#16161A;border:1px solid #26262C;border-radius:16px;padding:13px 14px;">
+                <div style="display:flex;align-items:baseline;justify-content:space-between;">
+                  <span style="font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:#8E8E98;font-weight:700;">Бэктест</span>
+                  <span style="font-size:11px;color:#8E8E98;">{{ btInfo }}</span>
+                </div>
+                <div style="margin:10px 0 6px;">{{ btEl }}</div>
+                <div style="display:flex;gap:8px;">
+                  <sc-for list="{{ btStats }}" as="b" hint-placeholder-count="4">
+                    <div style="flex:1;background:#101014;border-radius:10px;padding:8px 9px;">
+                      <div style="font-family:'JetBrains Mono',monospace;font-size:12.5px;font-weight:600;color:{{ b.c }};">{{ b.v }}</div>
+                      <div style="font-size:9.5px;color:#8E8E98;margin-top:2px;">{{ b.n }}</div>
+                    </div>
+                  </sc-for>
+                </div>
+                <div onClick="{{ runBt }}" style="margin-top:11px;background:{{ btBtnBg }};color:{{ btBtnC }};border:1px solid #3A3A42;border-radius:12px;padding:11px;text-align:center;font-weight:800;font-size:13px;cursor:pointer;" style-hover="border-color:#FFD400;">{{ btLabel }}</div>
+              </div>
+            </div>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ vSettings }}" hint-placeholder-val="{{ false }}">
+          <div data-screen-label="Настройки">
+            <div style="position:sticky;top:0;z-index:5;background:rgba(11,11,13,.92);backdrop-filter:blur(8px);padding:14px 16px 10px;border-bottom:1px solid #1B1B20;">
+              <div style="font-family:Jost,sans-serif;font-size:22px;font-weight:600;">Настройки</div>
+            </div>
+            <div style="padding:12px 16px 90px;display:flex;flex-direction:column;gap:12px;">
+              <div style="background:#16161A;border:1px solid #26262C;border-radius:16px;padding:6px 14px;">
+                <div style="font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:#8E8E98;font-weight:700;padding:9px 0 3px;">Биржи · API</div>
+                <sc-for list="{{ exchanges }}" as="x" hint-placeholder-count="3">
+                  <div style="display:flex;align-items:center;gap:11px;padding:10px 0;border-bottom:1px solid #1D1D24;">
+                    <div style="width:34px;height:34px;border-radius:10px;background:#1C1C22;display:flex;align-items:center;justify-content:center;font-family:Jost,sans-serif;font-weight:700;font-size:13px;color:{{ x.ic }};flex:none;">{{ x.ab }}</div>
+                    <div style="flex:1;">
+                      <div style="font-size:13px;font-weight:700;">{{ x.name }}</div>
+                      <div style="font-size:11px;color:#8E8E98;margin-top:1px;">{{ x.sub }}</div>
+                    </div>
+                    <span onClick="{{ x.cb }}" style="font-size:11px;font-weight:700;color:{{ x.stC }};border:1px solid {{ x.stB }};border-radius:8px;padding:5px 10px;cursor:pointer;">{{ x.st }}</span>
+                  </div>
+                </sc-for>
+              </div>
+              <div style="background:#16161A;border:1px solid #26262C;border-radius:16px;padding:6px 14px;">
+                <div style="font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:#8E8E98;font-weight:700;padding:9px 0 3px;">Доставка сигналов</div>
+                <sc-for list="{{ channels }}" as="c" hint-placeholder-count="3">
+                  <div style="display:flex;align-items:center;gap:11px;padding:10px 0;border-bottom:1px solid #1D1D24;">
+                    <div style="flex:1;">
+                      <div style="font-size:13px;font-weight:700;">{{ c.name }}</div>
+                      <div style="font-size:11px;color:#8E8E98;margin-top:1px;">{{ c.sub }}</div>
+                    </div>
+                    <div onClick="{{ c.cb }}" style="width:44px;height:24px;border-radius:99px;background:{{ c.bg }};position:relative;cursor:pointer;flex:none;transition:background .2s;">
+                      <div style="position:absolute;top:2px;left:2px;width:20px;height:20px;border-radius:50%;background:#0B0B0D;transform:translateX({{ c.tx }}px);transition:transform .2s;"></div>
+                    </div>
+                  </div>
+                </sc-for>
+              </div>
+              <div style="background:#16161A;border:1px solid #26262C;border-radius:16px;padding:6px 14px;">
+                <div style="font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:#8E8E98;font-weight:700;padding:9px 0 3px;">Уведомления</div>
+                <sc-for list="{{ notifs }}" as="c" hint-placeholder-count="3">
+                  <div style="display:flex;align-items:center;gap:11px;padding:10px 0;border-bottom:1px solid #1D1D24;">
+                    <div style="flex:1;">
+                      <div style="font-size:13px;font-weight:700;">{{ c.name }}</div>
+                      <div style="font-size:11px;color:#8E8E98;margin-top:1px;">{{ c.sub }}</div>
+                    </div>
+                    <div onClick="{{ c.cb }}" style="width:44px;height:24px;border-radius:99px;background:{{ c.bg }};position:relative;cursor:pointer;flex:none;transition:background .2s;">
+                      <div style="position:absolute;top:2px;left:2px;width:20px;height:20px;border-radius:50%;background:#0B0B0D;transform:translateX({{ c.tx }}px);transition:transform .2s;"></div>
+                    </div>
+                  </div>
+                </sc-for>
+              </div>
+              <div style="background:#16161A;border:1px solid #26262C;border-radius:16px;padding:12px 14px;">
+                <div style="font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:#8E8E98;font-weight:700;margin-bottom:4px;">Риск-профиль</div>
+                <sc-for list="{{ riskRows }}" as="rr" hint-placeholder-count="5">
+                  <div style="display:flex;justify-content:space-between;gap:12px;padding:7px 0;border-bottom:1px solid #1D1D24;">
+                    <span style="font-size:12px;color:#8E8E98;">{{ rr.n }}</span>
+                    <span style="font-size:12px;font-weight:600;font-family:'JetBrains Mono',monospace;">{{ rr.v }}</span>
+                  </div>
+                </sc-for>
+                <div style="font-size:10.5px;color:#8E8E98;margin-top:8px;line-height:1.5;">Все сделки — только после подтверждения. После подтверждения ордер и OCO выставляются автоматически.</div>
+              </div>
+            </div>
+          </div>
+        </sc-if>
+
+      </div>
+
+      <sc-if value="{{ vNav }}" hint-placeholder-val="{{ true }}">
+        <div style="display:flex;background:rgba(13,13,16,.97);border-top:1px solid #1B1B20;padding:6px 8px 4px;">
+          <div onClick="{{ goIdeas }}" style="flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;padding:6px 0;cursor:pointer;min-height:44px;">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="{{ cIdeas }}" stroke-width="2"><path d="M13 2L4 14h6l-1 8 9-12h-6l1-8z"></path></svg>
+            <span style="font-size:10px;font-weight:700;color:{{ cIdeas }};">Идеи</span>
+          </div>
+          <div onClick="{{ goTrades }}" style="flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;padding:6px 0;cursor:pointer;min-height:44px;">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="{{ cTrades }}" stroke-width="2"><path d="M3 17l5-6 4 3 6-8"></path><path d="M21 3v18H3"></path></svg>
+            <span style="font-size:10px;font-weight:700;color:{{ cTrades }};">Сделки</span>
+          </div>
+          <div onClick="{{ goStrats }}" style="flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;padding:6px 0;cursor:pointer;min-height:44px;">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="{{ cStrats }}" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"></path><circle cx="9" cy="6" r="2" fill="#0B0B0D"></circle><circle cx="15" cy="12" r="2" fill="#0B0B0D"></circle><circle cx="7" cy="18" r="2" fill="#0B0B0D"></circle></svg>
+            <span style="font-size:10px;font-weight:700;color:{{ cStrats }};">Стратегии</span>
+          </div>
+          <div onClick="{{ goSettings }}" style="flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;padding:6px 0;cursor:pointer;min-height:44px;">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="{{ cSettings }}" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+            <span style="font-size:10px;font-weight:700;color:{{ cSettings }};">Настройки</span>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ vSheet }}" hint-placeholder-val="{{ false }}">
+        <div onClick="{{ closeSheet }}" style="position:absolute;inset:0;background:rgba(0,0,0,.6);z-index:20;display:flex;flex-direction:column;justify-content:flex-end;">
+          <div onClick="{{ stop }}" style="background:#17171C;border-top:1px solid #2C2C34;border-radius:22px 22px 0 0;padding:16px 18px 22px;animation:sheetUp .25s ease;">
+            <div style="width:36px;height:4px;border-radius:2px;background:#33333B;margin:0 auto 14px;"></div>
+            <div style="display:flex;align-items:center;gap:9px;">
+              <span style="font-family:Jost,sans-serif;font-size:18px;font-weight:600;">{{ cur.sec }}</span>
+              <span style="font-size:10px;font-weight:800;color:{{ cur.dirC }};background:{{ cur.dirBg }};border-radius:6px;padding:2px 7px;">{{ cur.dirLabel }}</span>
+              <span style="margin-left:auto;font-size:11px;color:#8E8E98;">лимитный ордер</span>
+            </div>
+            <div style="margin-top:13px;background:#101014;border-radius:12px;padding:4px 13px;">
+              <sc-for list="{{ sheetRows }}" as="s" hint-placeholder-count="5">
+                <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid #1D1D24;">
+                  <span style="font-size:12px;color:#8E8E98;">{{ s.n }}</span>
+                  <span style="font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:600;color:{{ s.c }};">{{ s.v }}</span>
+                </div>
+              </sc-for>
+            </div>
+            <div style="display:flex;gap:8px;align-items:center;margin-top:12px;background:rgba(255,212,0,.06);border:1px solid rgba(255,212,0,.2);border-radius:10px;padding:9px 11px;">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#FFD400" stroke-width="2" style="flex:none;"><path d="M12 9v4M12 17h.01"></path><circle cx="12" cy="12" r="10"></circle></svg>
+              <span style="font-size:11px;color:#C9C9D1;line-height:1.45;">После подтверждения лимитка и OCO-связка (SL + 3 TP по 50/30/20%) выставятся на бирже автоматически.</span>
+            </div>
+            <div style="display:flex;gap:9px;margin-top:14px;">
+              <div onClick="{{ execute }}" style="flex:1;background:#FFD400;color:#111111;border-radius:14px;padding:14px;text-align:center;font-weight:800;font-size:14px;cursor:pointer;" style-hover="background:#FFE045;" style-active="transform:scale(.98);">Исполнить на бирже</div>
+              <div onClick="{{ closeSheet }}" style="background:#101014;border:1px solid #26262C;color:#8E8E98;border-radius:14px;padding:14px 18px;font-weight:700;font-size:14px;cursor:pointer;">Отмена</div>
+            </div>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ vToast }}" hint-placeholder-val="{{ false }}">
+        <div style="position:absolute;top:10px;left:14px;right:14px;z-index:30;background:#123322;border:1px solid rgba(47,213,117,.45);color:#7BE6A8;border-radius:12px;padding:11px 14px;font-size:12px;font-weight:700;display:flex;gap:9px;align-items:center;animation:fadeIn .25s ease;">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#2FD575" stroke-width="2.4" style="flex:none;"><path d="M20 6L9 17l-5-5"></path></svg>
+          {{ toastMsg }}
+        </div>
+      </sc-if>
+    </div>
+  </x-import>
+  <div style="font-size:12px;color:#5A5A64;">Кликайте: карточка идеи → график и подтверждение · вкладки внизу · бэктест на «Стратегиях»</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;deposit&quot;:{&quot;editor&quot;:&quot;int&quot;,&quot;default&quot;:2400000,&quot;min&quot;:100000,&quot;max&quot;:100000000,&quot;unit&quot;:&quot;₽&quot;,&quot;tsType&quot;:&quot;number&quot;,&quot;section&quot;:&quot;Риск-менеджмент&quot;},&quot;riskPercent&quot;:{&quot;editor&quot;:&quot;range&quot;,&quot;default&quot;:0.75,&quot;min&quot;:0.25,&quot;max&quot;:2,&quot;step&quot;:0.25,&quot;unit&quot;:&quot;%&quot;,&quot;tsType&quot;:&quot;number&quot;,&quot;section&quot;:&quot;Риск-менеджмент&quot;}}">
+class Component extends DCLogic {
+  state = { tab:'ideas', ideaId:null, sheet:false, executed:{}, toast:null, btRunning:false, btDone:false,
+    strat:{s1:true,s2:true,s3:false}, ch:{tg:true,max:true,push:true}, nt:{digest:true,alerts:true,events:true}, bin:false };
+  _charts = {};
+
+  fmt(n,d){ const s=Math.abs(n).toFixed(d); const p=s.split('.'); const i=p[0].replace(/\B(?=(\d{3})+(?!\d))/g,'\u202F'); return (n<0?'−':'')+i+(p[1]?','+p[1]:''); }
+
+  data(){
+    return [
+      {id:'si',sec:'SiU6',name:'Доллар/Рубль · сент 2026',mkt:'FORTS',dir:'long',score:87,entry:87450,sl:86900,tp:[88200,88700,89400],dec:0,rr:'2,3',hor:'1–3 дня',unitRisk:550,unitRiskStr:'550 ₽ / контракт',unitMult:1,unitDec:0,unit:'конт.',last:'87 480',chg:'+0,31%',chgUp:true,
+       chips:['Spring','OB 1H','RSI-див','OI +4,2%'],
+       note:'Спринг из фазы C накопления по Вайкоффу, слом структуры (BOS) на 1H и ретест ордер-блока. Вход на пин-баре от OB, инвалидация — закрепление ниже 87 300.',
+       factors:[['Wyckoff','Фаза C накопления, spring 87 050 с тестом на падающем объёме',3],['Smart Money','BOS 1H на 87 750, ретест OB 87 300–87 500, FVG закрыт',3],['Price Action','Пин-бар 1H от верхней границы OB, ложный пробой 87 300',2],['RSI(14)','1H: бычья дивергенция на спринге · 1D: 44, нейтрально',2],['Эллиотт','Старшая волна 3 вверх, локальная коррекция (ii) завершена',1],['Объём / OI','OI +4,2% д/д на росте — набор лонга; кульминация продаж на спринге',3]],
+       news:[['14:00','Дневной клиринг FORTS — пересчёт ГО','low'],['16:30','Аукцион Минфина по ОФЗ — волатильность рубля','mid']]},
+      {id:'br',sec:'BR-9.26',name:'Нефть Brent · сент 2026',mkt:'FORTS',dir:'short',score:79,entry:82.14,sl:83.05,tp:[80.90,80.10,79.20],dec:2,rr:'2,2',hor:'1–2 дня',unitRisk:710,unitRiskStr:'710 ₽ / контракт',unitMult:1,unitDec:0,unit:'конт.',last:'82,08',chg:'−1,12%',chgUp:false,
+       chips:['UTAD','CHoCH 1H','FVG','OI↑ на падении'],
+       note:'Распределение по Вайкоффу с UTAD на 83.60, CHoCH на 1H и незакрытый FVG снизу. Шорт от ретеста зоны 82.10–82.40.',
+       factors:[['Wyckoff','Распределение, UTAD 83,60 без продолжения',3],['Smart Money','CHoCH 1H, ордер-блок 82,10–82,40, FVG до 80,90',3],['Price Action','Медвежье поглощение D1 от сопротивления',2],['RSI(14)','1D: 68 → разворот вниз · 1H: медвежья дивергенция',2],['Эллиотт','Волна C нисходящей коррекции',1],['Объём / OI','OI растёт на падении — набор шорта',2]],
+       news:[['чт','Запасы нефти EIA — перенос отчёта','mid'],['19:05','Вечерний клиринг FORTS','low']]},
+      {id:'btc',sec:'BTCUSDT',name:'Bybit · перпетуал',mkt:'CRYPTO',dir:'long',score:82,entry:118250,sl:115800,tp:[121400,124800,129000],dec:0,rr:'2,7',hor:'2–5 дней',unitRisk:1910,unitRiskStr:'1 910 ₽ / 0,01 BTC',unitMult:0.01,unitDec:2,unit:'BTC',last:'118 640',chg:'+1,84%',chgUp:true,
+       chips:['OB 4H','Свип лоу','Funding −','Vol↑'],
+       note:'Свип недельного лоу со сбором ликвидности, реакция от ордер-блока 4H. Отрицательный фандинг при росте — топливо для шорт-сквиза.',
+       factors:[['Wyckoff','Ре-аккумуляция над 114 000, спринг-свип лоу',2],['Smart Money','OB 4H 115 800–117 200, свип equal lows, BOS на 1H',3],['Price Action','Бычье поглощение 4H после свипа',2],['RSI(14)','4H: 41 → 55, бычья дивергенция на свипе',2],['Эллиотт','Начало волны 3 после плоской коррекции',1],['Объём / OI','Объём растёт на росте, funding −0,008% — шорты платят',3]],
+       news:[['15:30','Розничные продажи США — волатильность USD','mid'],['пн','Экспирация опционов Deribit $4,1 млрд','mid']]},
+      {id:'sber',sec:'SBER',name:'Сбербанк · акции MOEX',mkt:'MOEX',dir:'long',score:74,entry:342.6,sl:336.8,tp:[351.0,358.0,366.0],dec:1,rr:'2,6',hor:'3–5 дней',unitRisk:58,unitRiskStr:'58 ₽ / лот (10 акций)',unitMult:1,unitDec:0,unit:'лот.',last:'342,15',chg:'+0,42%',chgUp:true,
+       chips:['Ретест BOS','Пин-бар D1','Объём'],
+       note:'Ретест сломанного уровня 341 после BOS на D1. Пин-бар на дневке с ростом объёма. Идея против слабого индекса — сниженный размер позиции.',
+       factors:[['Wyckoff','Выход из ре-аккумуляции 328–341',2],['Smart Money','BOS D1, ретест зоны спроса 340–342',2],['Price Action','Пин-бар D1 от уровня, ложный пробой 340',3],['RSI(14)','1D: 58 — тренд без перекупленности',2],['Эллиотт','Волна 3 среднесрочного импульса',1],['Объём / OI','Объём выше среднего на отскоке',2]],
+       news:[['28.07','Набсовет: дивиденды за 1П2026','high'],['16:30','Решение ЦБ по ключевой ставке','high']]},
+      {id:'mx',sec:'MXU6',name:'Индекс МосБиржи · сент 2026',mkt:'FORTS',dir:'short',score:71,entry:4215,sl:4262,tp:[4140,4095,4030],dec:0,rr:'2,6',hor:'1–2 дня',unitRisk:470,unitRiskStr:'470 ₽ / контракт',unitMult:1,unitDec:0,unit:'конт.',last:'4 209',chg:'−0,42%',chgUp:false,
+       chips:['Распределение','RSI 1D 72','CHoCH'],
+       note:'Распределение у годового максимума, RSI 1D в перекупленности, CHoCH на 1H. Шорт от ретеста 4 215 с целями к нижней границе диапазона.',
+       factors:[['Wyckoff','Распределение 4 190–4 260, признаки SOW',3],['Smart Money','CHoCH 1H, ордер-блок 4 215–4 240',2],['Price Action','Серия ложных пробоев 4 250',2],['RSI(14)','1D: 72 — перекупленность, медвежья дивергенция',3],['Эллиотт','Завершение волны 5 старшего импульса',1],['Объём / OI','OI падает на росте — лонги фиксируются',2]],
+       news:[['16:30','Решение ЦБ по ключевой ставке','high'],['14:00','Дневной клиринг FORTS','low']]}
+    ];
+  }
+
+  chart(idea){
+    if(this._charts[idea.id]) return this._charts[idea.id];
+    const e=React.createElement, W=380,H=292,padT=12,padB=16,plotR=302,axX=308;
+    const risk=Math.abs(idea.entry-idea.sl), dir=idea.dir==='long'?1:-1;
+    const P=u=>idea.entry+dir*u*risk;
+    const rr=idea.tp.map(t=>Math.abs(t-idea.entry)/risk);
+    const A=[[0,1.95],[9,.5],[12,.12],[16,.58],[20,.08],[24,.5],[25,-.5],[26,.12],[30,.6],[33,1.12],[36,.55],[40,.02],[43,.14]];
+    const N=44, closes=[];
+    for(let i=0;i<N;i++){let j=0;while(j<A.length-2&&A[j+1][0]<i)j++;const x0=A[j][0],y0=A[j][1],x1=A[j+1][0],y1=A[j+1][1];const t=Math.min(1,Math.max(0,(i-x0)/Math.max(1,x1-x0)));closes.push(y0+(y1-y0)*t+Math.sin(i*3.7)*.05);}
+    const cds=closes.map((c,i)=>{const o=i?closes[i-1]:c+.12;const w=.05+Math.abs(Math.sin(i*2.3))*.09;let hi=Math.max(o,c)+w,lo=Math.min(o,c)-w;if(i===25)lo=-.78;if(i===33)hi=1.22;return{o,c,hi,lo};});
+    let uMin=-1.35,uMax=rr[2]+.4;cds.forEach(k=>{uMin=Math.min(uMin,k.lo-.12);uMax=Math.max(uMax,k.hi+.12);});
+    const Y=u=>padT+(uMax-u)/(uMax-uMin)*(H-padT-padB);
+    const cw=(216-8)/N, X=i=>8+i*cw+cw/2;
+    const F=u=>this.fmt(P(u),idea.dec);
+    const els=[e('rect',{key:'bg',width:W,height:H,fill:'#101014'})];
+    for(let g=0;g<5;g++){const u=uMin+(uMax-uMin)*(g+.5)/5,y=Y(u);
+      els.push(e('line',{key:'g'+g,x1:6,x2:plotR,y1:y,y2:y,stroke:'#1B1B22'}));
+      els.push(e('text',{key:'gt'+g,x:axX,y:y+3,fill:'#4E4E58',fontSize:8.5,fontFamily:'JetBrains Mono'},F(u)));}
+    // Wyckoff range
+    els.push(e('rect',{key:'wr',x:X(10)-cw,y:Y(.72),width:X(30)-X(10)+cw,height:Y(-.08)-Y(.72),fill:'rgba(142,142,152,.05)',stroke:'#5A5A64',strokeDasharray:'4 3',rx:2}));
+    els.push(e('text',{key:'wrt',x:X(10)-cw,y:Y(.72)-5,fill:'#8E8E98',fontSize:8.5,fontFamily:'Manrope',fontWeight:600},idea.dir==='long'?'Диапазон Вайкоффа · фаза C':'Диапазон Вайкоффа · распределение'));
+    // Order block
+    els.push(e('rect',{key:'ob',x:X(30),y:Y(.12),width:plotR-X(30),height:Y(-.35)-Y(.12),fill:'rgba(255,212,0,.09)',stroke:'rgba(255,212,0,.45)',strokeDasharray:'3 3',rx:2}));
+    els.push(e('text',{key:'obt',x:X(30)+4,y:Y(-.35)-4,fill:'#FFD400',fontSize:8.5,fontFamily:'Manrope',fontWeight:700},'OB 1H'));
+    // BOS
+    els.push(e('line',{key:'bos',x1:X(13),x2:X(34),y1:Y(.72),y2:Y(.72),stroke:'#8E8E98',strokeDasharray:'2 3'}));
+    els.push(e('text',{key:'bost',x:X(34)+2,y:Y(.72)+11,fill:'#C9C9D1',fontSize:8.5,fontFamily:'Manrope',fontWeight:700},idea.dir==='long'?'BOS ↑':'CHoCH ↓'));
+    // spring
+    els.push(e('text',{key:'spr',x:X(25)-12,y:Y(-.78)+13,fill:'#FFD400',fontSize:8.5,fontFamily:'Manrope',fontWeight:700},idea.dir==='long'?'Spring':'UTAD'));
+    // position tool
+    const xs=X(43)+8;
+    els.push(e('rect',{key:'pr',x:xs,y:Y(0),width:plotR-xs,height:Y(-1)-Y(0),fill:'rgba(255,92,92,.10)'}));
+    els.push(e('rect',{key:'pg',x:xs,y:Y(rr[2]),width:plotR-xs,height:Y(0)-Y(rr[2]),fill:'rgba(47,213,117,.08)'}));
+    els.push(e('line',{key:'el',x1:X(28),x2:plotR,y1:Y(0),y2:Y(0),stroke:'#FFD400',strokeDasharray:'5 3',strokeWidth:1.2}));
+    els.push(e('line',{key:'sll',x1:xs-30,x2:plotR,y1:Y(-1),y2:Y(-1),stroke:'#FF5C5C',strokeDasharray:'4 3'}));
+    rr.forEach((r,k)=>{els.push(e('line',{key:'tp'+k,x1:xs-4,x2:plotR,y1:Y(r),y2:Y(r),stroke:'#2FD575',strokeDasharray:'3 3',opacity:.85}));
+      els.push(e('text',{key:'tpt'+k,x:xs,y:Y(r)-3,fill:'#2FD575',fontSize:8,fontFamily:'JetBrains Mono'},'TP'+(k+1)));});
+    // candles
+    cds.forEach((k,i)=>{const up=k.c>=k.o,col=up?'#2FD575':'#FF5C5C',x=X(i);
+      els.push(e('line',{key:'w'+i,x1:x,x2:x,y1:Y(k.hi),y2:Y(k.lo),stroke:col,strokeWidth:1}));
+      els.push(e('rect',{key:'b'+i,x:x-1.7,y:Y(Math.max(k.o,k.c)),width:3.4,height:Math.max(1,Y(Math.min(k.o,k.c))-Y(Math.max(k.o,k.c))),fill:col}));});
+    // entry marker
+    els.push(e('circle',{key:'lp',cx:X(43),cy:Y(cds[43].c),r:3.4,fill:'#FFD400',style:{animation:'pulseDot 1.6s infinite'}}));
+    // axis chips
+    const chip=(u,bg,fg,key)=>{els.push(e('rect',{key:'c'+key,x:axX-6,y:Y(u)-7.5,width:80,height:15,rx:3,fill:bg}));
+      els.push(e('text',{key:'ct'+key,x:axX,y:Y(u)+3.5,fill:fg,fontSize:9,fontWeight:600,fontFamily:'JetBrains Mono'},F(u)));};
+    chip(-1,'#E5484D','#fff','sl'); rr.forEach((r,k)=>chip(r,'#1E7A46','#D7FFE8','t'+k)); chip(0,'#FFD400','#111','en');
+    this._charts[idea.id]=e('svg',{viewBox:'0 0 380 292',width:'100%',style:{display:'block',background:'#101014'}},els);
+    return this._charts[idea.id];
+  }
+
+  spark(vals,h,color){
+    const e=React.createElement,w=320;
+    const mn=Math.min.apply(null,vals),mx=Math.max.apply(null,vals);
+    const pts=vals.map((v,i)=>((i/(vals.length-1))*w).toFixed(1)+','+(h-3-((v-mn)/((mx-mn)||1))*(h-8)).toFixed(1)).join(' ');
+    return e('svg',{viewBox:'0 0 '+w+' '+h,width:'100%',height:h,style:{display:'block'},preserveAspectRatio:'none'},
+      e('polygon',{points:'0,'+h+' '+pts+' '+w+','+h,fill:color,opacity:.09}),
+      e('polyline',{points:pts,fill:'none',stroke:color,strokeWidth:1.8,strokeLinejoin:'round'}));
+  }
+
+  toastNow(msg){ this.setState({toast:msg}); clearTimeout(this._tt); this._tt=setTimeout(()=>this.setState({toast:null}),2600); }
+  sw(on,cb){ return {bg:on?'#FFD400':'#2A2A31',tx:on?20:0,cb}; }
+
+  renderVals(){
+    const S=this.state, grn='#2FD575', red='#FF5C5C', mut='#8E8E98';
+    const deposit=this.props.deposit??2400000, riskPct=this.props.riskPercent??0.75;
+    const riskRub=Math.round(deposit*riskPct/100);
+    const impC={high:red,mid:'#FFD400',low:'#5A5A64'};
+    const qty=d=>{const raw=Math.floor(riskRub/d.unitRisk);return d.unitMult!==1?(raw*d.unitMult).toFixed(d.unitDec)+' '+d.unit:raw+' '+d.unit;};
+    const ideas=this.data().map(d=>{const ex=!!S.executed[d.id];const long=d.dir==='long';
+      return Object.assign({},d,{
+        open:()=>this.setState({ideaId:d.id}),
+        entryS:this.fmt(d.entry,d.dec), slS:this.fmt(d.sl,d.dec),
+        tpS:d.tp.map(t=>this.fmt(t,d.dec)).join(' / '),
+        tps:d.tp.map((t,k)=>({n:'TP'+(k+1),p:this.fmt(t,d.dec),share:['50%','30%','20%'][k],r:'+'+(Math.abs(t-d.entry)/Math.abs(d.entry-d.sl)).toFixed(1).replace('.',',')+'R'})),
+        dirLabel:long?'LONG':'SHORT', dirC:long?grn:red, dirBg:long?'rgba(47,213,117,.13)':'rgba(255,92,92,.13)',
+        ringBg:'conic-gradient(#FFD400 '+(d.score*3.6)+'deg, #26262C 0deg)',
+        stLabel:ex?'В работе':'Новая', stC:ex?'#FFD400':mut, stB:ex?'rgba(255,212,0,.4)':'#26262C',
+        chgC:d.chgUp?grn:red, qtyStr:qty(d),
+        factors:d.factors.map(f=>({n:f[0],t:f[1],pct:f[2]*33.4,c:f[2]===3?'#FFD400':f[2]===2?'#B9A03E':'#5A5A64'})),
+        news:d.news.map(n=>({t:n[0],x:n[1],c:impC[n[2]]}))
+      });});
+    const cur=ideas.find(i=>i.id===S.ideaId)||ideas[0];
+    const curExec=!!S.executed[cur.id];
+    const tab=S.tab, det=!!S.ideaId;
+    const cOf=t=>tab===t&&!det||t==='ideas'&&det?'#FFD400':'#6B6B75';
+    const go=t=>()=>this.setState({tab:t,ideaId:null,sheet:false});
+    const mkSw=(grp,key)=>{const on=S[grp][key];return this.sw(on,()=>this.setState(s=>({[grp]:Object.assign({},s[grp],{[key]:!s[grp][key]})})));};
+    const bt=S.btDone?{info:'180 дней · 221 сделка · только что',stats:[['+47%','доходность',grn],['59%','винрейт','#F2F2EF'],['2,0','профит-фактор','#F2F2EF'],['−5,8%','макс. просадка',red]],eq:[0,.6,.3,1.2,1,1.9,1.6,2.6,2.2,3.4,3,4.4,4,5.2,4.7,6.1,6.9,6.4,7.6,8.3]}
+      :{info:'Последний прогон · 180 дней · 214 сделок',stats:[['+41%','доходность',grn],['58%','винрейт','#F2F2EF'],['1,9','профит-фактор','#F2F2EF'],['−6,2%','макс. просадка',red]],eq:[0,.5,.2,1,.8,1.6,1.3,2.2,1.9,2.9,2.5,3.7,3.3,4.4,4,5.1,5.8,5.4,6.4,7]};
+    return {
+      vIdeas:tab==='ideas'&&!det, vDetail:det, vTrades:tab==='trades'&&!det, vStrats:tab==='strats'&&!det, vSettings:tab==='settings'&&!det,
+      vNav:!S.sheet, vSheet:S.sheet, vToast:!!S.toast, toastMsg:S.toast,
+      cIdeas:cOf('ideas'), cTrades:cOf('trades'), cStrats:cOf('strats'), cSettings:cOf('settings'),
+      goIdeas:go('ideas'), goTrades:go('trades'), goStrats:go('strats'), goSettings:go('settings'),
+      back:()=>this.setState({ideaId:null,sheet:false}),
+      openSheet:()=>this.setState({sheet:true}), closeSheet:()=>this.setState({sheet:false}),
+      stop:e=>e.stopPropagation(),
+      execute:()=>{this.setState(s=>({executed:Object.assign({},s.executed,{[cur.id]:true}),sheet:false}));this.toastNow('Ордер отправлен · OCO SL + TP выставлены');},
+      ideas, cur, chartEl:this.chart(this.data().find(d=>d.id===cur.id)),
+      vCtaNew:!curExec, vCtaDone:curExec,
+      riskRubS:this.fmt(riskRub,0)+' ₽', riskPctS:riskPct.toString().replace('.',',')+'%', depoS:this.fmt(deposit,0)+' ₽',
+      sheetRows:[
+        {n:'Вход · лимит',v:cur.entryS,c:'#FFD400'},
+        {n:'Объём (риск '+riskPct.toString().replace('.',',')+'%)',v:cur.qtyStr,c:'#F2F2EF'},
+        {n:'Стоп-лосс',v:cur.slS,c:red},
+        {n:'TP1 / TP2 / TP3',v:cur.tpS,c:grn},
+        {n:'Риск, если SL',v:'−'+this.fmt(riskRub,0)+' ₽',c:red},
+        {n:'R:R до TP2',v:cur.rr,c:'#F2F2EF'}],
+      regime:[{n:'IMOEX',v:'−0,42%',c:red},{n:'Si',v:'+0,31%',c:grn},{n:'BR',v:'−1,12%',c:red},{n:'BTC',v:'+1,84%',c:grn},{n:'RVI',v:'28,4',c:'#C9C9D1'}],
+      events:[{t:'16:30',x:'Решение ЦБ по ключевой ставке',c:red,on:'MXU6 · Si'},{t:'15:30',x:'Розничные продажи США',c:'#FFD400',on:'BTCUSDT'},{t:'28.07',x:'Набсовет Сбербанка — дивиденды',c:red,on:'SBER'}],
+      stats:[{v:'61%',n:'винрейт',c:'#F2F2EF'},{v:'+0,62R',n:'ср. сделка',c:grn},{v:'2,1',n:'профит-фактор',c:'#F2F2EF'},{v:'38',n:'сделок',c:'#F2F2EF'}],
+      equityEl:this.spark([0,.4,.2,.9,.7,1.5,1.2,2,1.7,2.6,2.3,3.2,2.9,3.8,3.5,4.3,5,4.6,5.6,6.2,5.9,7,7.7,7.3,8.4],64,grn),
+      active:[
+        {sec:'SiU6',dir:'LONG',dirC:grn,dirBg:'rgba(47,213,117,.13)',entry:'87 450',now:'87 890',pnl:'+14 080 ₽',prog:59,stage:'До TP1 осталось 310 п. · SL на месте'},
+        {sec:'BTCUSDT',dir:'LONG',dirC:grn,dirBg:'rgba(47,213,117,.13)',entry:'118 250',now:'119 905',pnl:'+9 340 ₽',prog:52,stage:'TP1 ✓ 50% зафиксировано · SL в безубыток'}],
+      journal:[
+        {d:'24.07',s:'SiU6',dir:'L',dc:grn,r:'+2,1R',rc:grn,st:'TP2'},
+        {d:'23.07',s:'BR-8.26',dir:'S',dc:red,r:'−1,0R',rc:red,st:'SL'},
+        {d:'23.07',s:'BTCUSDT',dir:'L',dc:grn,r:'+1,4R',rc:grn,st:'TP1'},
+        {d:'22.07',s:'SBER',dir:'L',dc:grn,r:'+2,8R',rc:grn,st:'TP3'},
+        {d:'21.07',s:'MXU6',dir:'S',dc:red,r:'+0,9R',rc:grn,st:'эксп.'},
+        {d:'20.07',s:'NG-7.26',dir:'S',dc:red,r:'−1,0R',rc:red,st:'SL'},
+        {d:'20.07',s:'ETHUSDT',dir:'L',dc:grn,r:'+2,2R',rc:grn,st:'TP2'}],
+      packs:[
+        {k:'s1',name:'Интеграционная · MOEX FORTS',desc:'Wyckoff + SMC + Price Action + RSI + Эллиотт + объём/OI. TOP-10 по обороту.',stats:'WR 61% · PF 2,1 · 38 сделок / 90д'},
+        {k:'s2',name:'Crypto SMC · Bybit',desc:'Ордер-блоки, свипы ликвидности, funding-фильтр. BTC, ETH, SOL.',stats:'WR 57% · PF 1,8 · 52 сделки / 90д'},
+        {k:'s3',name:'Свинг · Акции МосБиржи',desc:'Ретесты BOS на D1, фильтр дивидендных отсечек.',stats:'WR 54% · PF 1,6 · 21 сделка / 90д'}
+      ].map(p=>Object.assign(p,this.sw(S.strat[p.k],()=>this.setState(s=>({strat:Object.assign({},s.strat,{[p.k]:!s.strat[p.k]})}))))),
+      params:[
+        {n:'Риск на сделку',v:riskPct.toString().replace('.',',')+'% депозита'},
+        {n:'Мин. R:R до TP2',v:'2,0'},
+        {n:'Идей в день',v:'до 5'},
+        {n:'Фильтр экспирации',v:'больше 3 торговых дней'},
+        {n:'Таймфреймы',v:'1H · 1D (10м — уровни)'},
+        {n:'Вселенная',v:'TOP-10 по обороту + BTC/ETH'},
+        {n:'Режим-фильтр',v:'не против индекса и валюты'}],
+      btInfo:S.btRunning?'считаем…':bt.info,
+      btStats:bt.stats.map(b=>({v:b[0],n:b[1],c:b[2]})),
+      btEl:this.spark(bt.eq,56,S.btRunning?'#5A5A64':'#FFD400'),
+      btLabel:S.btRunning?'Тестируем 180 дней…':'Запустить бэктест',
+      btBtnBg:S.btRunning?'#1C1C22':'#16161A', btBtnC:S.btRunning?mut:'#FFD400',
+      runBt:()=>{if(S.btRunning)return;this.setState({btRunning:true});setTimeout(()=>{this.setState({btRunning:false,btDone:true});this.toastNow('Бэктест завершён · PF 2,0');},1700);},
+      exchanges:[
+        {ab:'T',ic:'#FFD400',name:'Т-Инвестиции API',sub:'MOEX: фьючерсы и акции · токен активен',st:'Подключено',stC:grn,stB:'rgba(47,213,117,.3)',cb:()=>{}},
+        {ab:'B',ic:'#F7A600',name:'Bybit',sub:'Перпетуалы · ключ read+trade',st:'Подключено',stC:grn,stB:'rgba(47,213,117,.3)',cb:()=>{}},
+        {ab:'BN',ic:'#8E8E98',name:'Binance',sub:S.bin?'Спот · ключ read+trade':'Не подключено',st:S.bin?'Подключено':'Подключить',stC:S.bin?grn:'#FFD400',stB:S.bin?'rgba(47,213,117,.3)':'rgba(255,212,0,.35)',cb:()=>{this.setState({bin:true});this.toastNow('Binance подключена по API-ключу');}}],
+      channels:[
+        Object.assign({name:'Telegram-бот',sub:'@signalai_bot · идеи + алерты TP/SL'},mkSw('ch','tg')),
+        Object.assign({name:'MAX',sub:'Личный чат · дублирование дайджеста'},mkSw('ch','max')),
+        Object.assign({name:'Пуш-уведомления',sub:'Android · критичные события мгновенно'},mkSw('ch','push'))],
+      notifs:[
+        Object.assign({name:'Утренний дайджест',sub:'Будни · 10:10 МСК · топ-5 идей'},mkSw('nt','digest')),
+        Object.assign({name:'Срабатывания TP / SL',sub:'По каждой активной сделке'},mkSw('nt','alerts')),
+        Object.assign({name:'События по активным идеям',sub:'Новости и календарь — только по вашим позициям'},mkSw('nt','events'))],
+      riskRows:[
+        {n:'Депозит',v:this.fmt(deposit,0)+' ₽'},
+        {n:'Риск на сделку',v:riskPct.toString().replace('.',',')+'% · '+this.fmt(riskRub,0)+' ₽'},
+        {n:'Дневной лимит потерь',v:'−2% · автостоп'},
+        {n:'Одновременных сделок',v:'до 3'},
+        {n:'После 2 SL подряд',v:'пауза до завтра'}]
+    };
+  }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,223 @@
+import 'package:flutter/widgets.dart';
+
+import '../../core/format.dart';
+import '../../domain/models/settings.dart';
+import '../../domain/models/signal.dart';
+import '../../domain/position_sizing.dart';
+import '../../theme/tokens.dart';
+import '../../theme/typography.dart';
+import '../tone.dart';
+import 'common.dart';
+import 'vector_icon.dart';
+
+/// Шит подтверждения сделки.
+///
+/// Последний рубеж контроля (ТЗ §7): ничего не исполняется без явного
+/// подтверждения. После нажатия сервер выставляет лимитку и OCO-связку.
+class ConfirmSheet extends StatelessWidget {
+  const ConfirmSheet({
+    super.key,
+    required this.signal,
+    required this.risk,
+    required this.onExecute,
+    required this.onClose,
+    required this.busy,
+  });
+
+  final TradingSignal signal;
+  final RiskProfile risk;
+  final VoidCallback onExecute;
+  final VoidCallback onClose;
+  final bool busy;
+
+  @override
+  Widget build(BuildContext context) {
+    final decimals = signal.priceDecimals;
+    final shares = signal.takeProfits.map((tp) => '${tp.sharePercent}').join('/');
+    final rows = <_SheetRow>[
+      _SheetRow('Вход · лимит', fmtPrice(signal.entry, decimals), C.accent),
+      _SheetRow(
+        'Объём (риск ${riskPercentLabel(risk.riskPercent)})',
+        PositionSizing.quantityLabel(signal, risk),
+        C.text,
+      ),
+      _SheetRow('Стоп-лосс', fmtPrice(signal.stopLoss, decimals), C.red),
+      _SheetRow(
+        signal.takeProfits.map((tp) => tp.label).join(' / '),
+        signal.takeProfits.map((tp) => fmtPrice(tp.price, decimals)).join(' / '),
+        C.green,
+      ),
+      _SheetRow('Риск, если SL', '−${fmt(risk.riskRub, 0)} ₽', C.red),
+      _SheetRow('R:R до TP2', signal.riskReward, C.text),
+    ];
+
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: onClose,
+      child: ColoredBox(
+        color: const Color(0x99000000),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.end,
+          children: [
+            GestureDetector(
+              onTap: () {}, // клик по самому шиту не закрывает его
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.fromLTRB(18, 16, 18, 22),
+                decoration: const BoxDecoration(
+                  color: C.sheet,
+                  border: Border(top: BorderSide(color: C.borderStrong)),
+                  borderRadius: BorderRadius.vertical(top: Radius.circular(R.sheet)),
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Center(
+                      child: Container(
+                        width: 36,
+                        height: 4,
+                        margin: const EdgeInsets.only(bottom: 14),
+                        decoration: BoxDecoration(
+                          color: C.handle,
+                          borderRadius: BorderRadius.circular(2),
+                        ),
+                      ),
+                    ),
+                    Row(
+                      children: [
+                        Flexible(
+                          child: Text(
+                            signal.symbol,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: T.jost(18),
+                          ),
+                        ),
+                        const SizedBox(width: 9),
+                        DirectionBadge(
+                          label: signal.direction.label,
+                          color: directionColor(signal.direction),
+                          background: directionBackground(signal.direction),
+                        ),
+                        const Spacer(),
+                        Text('лимитный ордер', style: T.body(11, color: C.muted)),
+                      ],
+                    ),
+                    const SizedBox(height: 13),
+                    InsetBox(
+                      padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 4),
+                      radius: R.inner,
+                      child: Column(
+                        children: [
+                          for (final row in rows)
+                            Container(
+                              padding: const EdgeInsets.symmetric(vertical: 8),
+                              decoration: const BoxDecoration(
+                                border: Border(bottom: BorderSide(color: C.divider)),
+                              ),
+                              child: Row(
+                                children: [
+                                  Expanded(
+                                    child: Text(row.name, style: T.body(12, color: C.muted)),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Flexible(
+                                    child: Text(
+                                      row.value,
+                                      textAlign: TextAlign.right,
+                                      style: T.mono(12, weight: 600, color: row.color),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 9),
+                      decoration: BoxDecoration(
+                        color: const Color(0x0FFFD400),
+                        border: Border.all(color: const Color(0x33FFD400)),
+                        borderRadius: BorderRadius.circular(R.inset),
+                      ),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const VectorIcon(Icons.info, size: 14, color: C.accent),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              'После подтверждения лимитка и OCO-связка '
+                              '(SL + ${signal.takeProfits.length} TP по $shares%) '
+                              'выставятся на бирже автоматически.',
+                              style: T.body(11, color: C.textSecondary, height: 1.45),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Pressable(
+                            pressedScale: .98,
+                            onTap: busy ? null : onExecute,
+                            child: Container(
+                              padding: const EdgeInsets.all(14),
+                              decoration: BoxDecoration(
+                                color: busy ? C.chip : C.accent,
+                                borderRadius: BorderRadius.circular(R.button),
+                              ),
+                              child: Center(
+                                child: Text(
+                                  busy ? 'Отправляем…' : 'Исполнить на бирже',
+                                  style: T.body(
+                                    14,
+                                    weight: 800,
+                                    color: busy ? C.muted : C.onAccent,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 9),
+                        Pressable(
+                          onTap: onClose,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+                            decoration: BoxDecoration(
+                              color: C.inset,
+                              border: Border.all(color: C.border),
+                              borderRadius: BorderRadius.circular(R.button),
+                            ),
+                            child: Text(
+                              'Отмена',
+                              style: T.body(14, weight: 700, color: C.muted),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SheetRow {
+  const _SheetRow(this.name, this.value, this.color);
+
+  final String name;
+  final String value;
+  final Color color;
+}

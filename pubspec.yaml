@@ -1,0 +1,35 @@
+name: signalai
+description: "SignalAI — персональная система торговых сигналов и исполнения (мобильный клиент)"
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.10.0
+
+# Тонкий клиент по ТЗ §2: никаких ключей и расчётов на устройстве.
+# Сознательно без внешних зависимостей — только Flutter SDK.
+dependencies:
+  flutter:
+    sdk: flutter
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/images/
+
+  fonts:
+    - family: Jost
+      fonts:
+        - asset: assets/fonts/Jost-Variable.ttf
+    - family: Manrope
+      fonts:
+        - asset: assets/fonts/Manrope-Variable.ttf
+    - family: JetBrains Mono
+      fonts:
+        - asset: assets/fonts/JetBrainsMono-Variable.ttf
