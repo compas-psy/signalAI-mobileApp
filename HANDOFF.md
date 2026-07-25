@@ -119,19 +119,49 @@ Telegram; есть ли VPS.
 
 ## Незакрытое по инфраструктуре
 
-Релиз v1.0.0 и сборка в CI не запускались — упёрлись не в код, а в права.
+Код на GitHub есть, релиза нет. Упёрлись не в код, а в права.
 
-Тег `v1.0.0` создан локально на коммите `55868d5`, но на GitHub его нет: пуш
-тегов из рабочего контейнера отдаёт 403, а запись через GitHub API закрыта
-прокси. Тег приезжает вместе с бандлом — его достаточно запушить оттуда, где
-права есть.
+**Что уже сделано.** Ветка `claude/release-y40hk5` запушена в
+`compas-psy/signalAI-mobileApp` — репозиторий был пустой, поэтому GitHub сделал
+её веткой по умолчанию. Это стоит переиграть: создать `main` из этого же
+коммита и переключить default branch (**Settings → General → Default branch**),
+иначе история проекта навсегда живёт в ветке с временным именем.
 
-Actions недоступны установленному приложению: `/actions/workflows` и
-`/actions/runs` отвечают `403 Resource not accessible by integration`, поэтому
-`workflow_dispatch` не запускается (GitHub отдаёт 404 на невидимый ресурс).
-Лечится выдачей **Repository permissions → Actions → Read and write** и новой
-сессией — installation-токен несёт права на момент выпуска и на лету их не
-подхватывает.
+**Тег `v1.0.0`** создан на вершине ветки (аннотированный, сообщение
+«SignalAI 1.0.0 — мобильный клиент, автономный режим анализа»), на GitHub его
+по-прежнему нет. `git push origin v1.0.0` из контейнера отдаёт
+`HTTP 403 / RPC failed`: git-прокси сессии пропускает `refs/heads/*`, но не
+`refs/tags/*`. Обход через API тоже закрыт — `POST /git/tags` и `POST /git/refs`
+отвечают «Write access to this GitHub API path is not permitted through this
+proxy».
+
+**Создание релиза** запрещено типом сессии явно: `POST /releases` →
+«Creating, editing, or deleting releases is not permitted for this session
+type». Это политика, а не сбой — обходить её не нужно.
+
+**Actions** по-прежнему невидимы установленному приложению: `/actions/workflows`
+и `/actions/runs` отвечают `403 Resource not accessible by integration`,
+`/actions/permissions` закрыт прокси. Поэтому `workflow_dispatch` не
+запускается, а сборка по тегу не стартует. Лечится выдачей **Repository
+permissions → Actions → Read and write** и новой сессией — installation-токен
+несёт права на момент выпуска и на лету их не подхватывает.
+
+**Что нужно сделать владельцу**, чтобы релиз состоялся (с машины, где есть
+права):
+
+```bash
+git clone https://github.com/compas-psy/signalAI-mobileApp
+cd signalAI-mobileApp
+git checkout -b main claude/release-y40hk5   # если main ещё нет
+git push -u origin main
+git tag -a v1.0.0 -m "SignalAI 1.0.0 — мобильный клиент, автономный режим анализа"
+git push origin v1.0.0
+```
+
+Пуш тега запускает `.github/workflows/android-release.yml` — но только после
+того, как в `Settings → Secrets and variables → Actions` заданы секреты подписи
+(список ниже). Без них сборка падает намеренно. Текст релиза — раздел `1.0.0`
+в `CHANGELOG.md`.
 
 Собрать APK на месте тоже нельзя: `dl.google.com` закрыт сетевой политикой,
 Android SDK не поставить. Flutter при этом ставится — он на
