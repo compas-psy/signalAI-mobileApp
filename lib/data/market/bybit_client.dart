@@ -68,11 +68,17 @@ class BybitClient {
     required Timeframe timeframe,
     int limit = 200,
   }) async {
+    // Сетка интервалов Bybit: 1/3/5/15/30/60/120/240/360/720/D/W/M. Десяти
+    // минут в ней нет, а тихо отдавать вместо них пятнадцатиминутки нельзя:
+    // ISS по тому же Timeframe.m10 вернёт настоящие 10 минут, и два рынка
+    // окажутся на разных таймфреймах при одинаковом запросе.
     final interval = switch (timeframe) {
-      Timeframe.m10 => '15',
       Timeframe.h1 => '60',
       Timeframe.h4 => '240',
       Timeframe.d1 => 'D',
+      Timeframe.m10 => throw ArgumentError(
+          'Bybit не отдаёт 10-минутные свечи: используйте Timeframe.h1',
+        ),
     };
     final json = await _http.get(
       Uri.parse('$_base/v5/market/kline?category=linear&symbol=$symbol'

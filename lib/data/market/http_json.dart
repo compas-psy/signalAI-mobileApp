@@ -3,9 +3,13 @@ import 'dart:io';
 
 /// Ошибка загрузки рыночных данных.
 class MarketDataException implements Exception {
-  MarketDataException(this.message);
+  MarketDataException(this.message, {this.retryable = true});
 
   final String message;
+
+  /// Имеет ли смысл повторять запрос. Неверный символ или сломанный формат
+  /// ответа не починятся повтором — такие ошибки поднимаются сразу.
+  final bool retryable;
 
   @override
   String toString() => 'MarketDataException: $message';
@@ -26,6 +30,10 @@ class HttpJson {
   final Duration timeout;
 
   /// GET с экспоненциальной паузой между попытками (ТЗ §3.3).
+  ///
+  /// Повторяются только те ответы, которые имеет смысл повторять: 5xx и 429.
+  /// Остальные 4xx — это ошибка запроса (не тот символ, не та колонка), она не
+  /// пройдёт и с третьей попытки, поэтому бросается сразу и с кодом в тексте.
   Future<Map<String, dynamic>> get(Uri uri, {int attempts = 3}) async {
     Object? lastError;
     for (var attempt = 0; attempt < attempts; attempt++) {
@@ -38,14 +46,28 @@ class HttpJson {
         final response = await request.close().timeout(timeout);
         final body = await response.transform(utf8.decoder).join();
         if (response.statusCode >= 400) {
-          lastError = MarketDataException('${uri.host} ответил ${response.statusCode}');
+          final code = response.statusCode;
+          // 429 и 5xx — временные, остальные 4xx повторять бессмысленно.
+          final retryable = code == 429 || code >= 500;
+          final error = MarketDataException(
+            '${uri.host} ответил $code',
+            retryable: retryable,
+          );
+          if (!retryable) throw error;
+          lastError = error;
           continue;
         }
         final decoded = jsonDecode(body);
         if (decoded is! Map<String, dynamic>) {
-          throw MarketDataException('${uri.host}: неожиданный формат ответа');
+          throw MarketDataException(
+            '${uri.host}: неожиданный формат ответа',
+            retryable: false,
+          );
         }
         return decoded;
+      } on MarketDataException catch (e) {
+        if (!e.retryable) rethrow;
+        lastError = e;
       } on Exception catch (e) {
         lastError = e;
       }

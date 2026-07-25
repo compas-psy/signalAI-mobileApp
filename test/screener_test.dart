@@ -145,7 +145,7 @@ void main() {
 
   test('уровни расставлены по кратностям риска', () {
     final signal = screener.evaluate(input(), bullishRegime)!.signal;
-    final risk = signal.riskPerUnit;
+    final risk = signal.priceRisk;
 
     expect((signal.takeProfits[0].price - signal.entry) / risk, closeTo(1.4, 1e-6));
     expect((signal.takeProfits[1].price - signal.entry) / risk, closeTo(2.2, 1e-6));
@@ -156,7 +156,7 @@ void main() {
 
   test('денежный риск на контракт считается через стоимость пункта', () {
     final signal = screener.evaluate(input(), bullishRegime)!.signal;
-    expect(signal.unitRisk, closeTo(signal.riskPerUnit * spec.valuePerPoint, 1e-6));
+    expect(signal.unitRisk, closeTo(signal.priceRisk * spec.valuePerPoint, 1e-6));
   });
 
   test('оценка складывается из шести блоков и нормируется на 100', () {

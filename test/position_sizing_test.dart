@@ -50,7 +50,7 @@ void main() {
 
   test('шорт считается так же, как лонг', () {
     final br = byId('br');
-    expect(br.riskPerUnit, closeTo(0.91, 1e-9));
+    expect(br.priceRisk, closeTo(0.91, 1e-9));
     expect(PositionSizing.takeProfitR(br, br.takeProfits[1]), '+2,2R');
   });
 }

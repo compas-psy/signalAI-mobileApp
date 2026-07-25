@@ -95,7 +95,7 @@ class _ChartPainter extends CustomPainter {
     canvas.scale(size.width / _w, size.height / _h);
     canvas.clipRect(const Rect.fromLTWH(0, 0, _w, _h));
 
-    final risk = signal.riskPerUnit;
+    final risk = signal.priceRisk;
     final direction = signal.direction.isLong ? 1 : -1;
     // Цена, соответствующая уровню u (в единицах риска).
     double price(double u) => signal.entry + direction * u * risk;

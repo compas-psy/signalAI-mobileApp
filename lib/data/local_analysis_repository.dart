@@ -26,6 +26,7 @@ class LocalAnalysisRepository implements SignalAiRepository {
     this.fortsRoots = const ['SI', 'BR', 'MX', 'RI', 'NG', 'GAZR', 'SBRF'],
     this.cryptoSymbols = const ['BTCUSDT', 'ETHUSDT', 'SOLUSDT'],
     this.maxIdeas = 5,
+    this.staleQuoteAfter = const Duration(minutes: 30),
   })  : _iss = iss ?? IssClient(),
         _bybit = bybit ?? BybitClient();
 
@@ -39,6 +40,14 @@ class LocalAnalysisRepository implements SignalAiRepository {
 
   /// Сколько идей показывать (ТЗ §5.4 — не больше пяти на рынок).
   final int maxIdeas;
+
+  /// Насколько старой может быть котировка ISS внутри торговой сессии.
+  ///
+  /// Проверка работает только когда срочный рынок открыт: вне сессии ISS
+  /// держит время последней сделки, и отбраковка по возрасту выбросила бы
+  /// вечером и в выходные всю вселенную — а свинг-идеи на 1–5 дней там
+  /// по-прежнему осмысленны.
+  final Duration staleQuoteAfter;
 
   /// Причины отбраковки последнего прогона — видны в логе, не теряются молча.
   final List<RejectedCandidate> lastRejections = [];
@@ -95,6 +104,7 @@ class LocalAnalysisRepository implements SignalAiRepository {
   /// и с наибольшим оборотом (ТЗ §5.4).
   Map<String, FortsSnapshot> _selectContracts(List<FortsSnapshot> snapshots) {
     final now = DateTime.now();
+    final sessionOpen = _isFortsSessionOpen(IssClient.mskNow());
     final byRoot = <String, FortsSnapshot>{};
 
     for (final snapshot in snapshots) {
@@ -109,12 +119,34 @@ class LocalAnalysisRepository implements SignalAiRepository {
       if (expiration != null && expiration.difference(now).inDays < screener.minDaysToExpiration) {
         continue;
       }
+
+      // Внутри сессии котировка обязана быть свежей: торгуем по цене, а не по
+      // следу вчерашних торгов.
+      if (sessionOpen) {
+        final age = snapshot.ageAt(now);
+        if (age != null && age > staleQuoteAfter) {
+          lastRejections.add(
+            RejectedCandidate(symbol, 'котировка старше ${age.inMinutes} мин.'),
+          );
+          continue;
+        }
+      }
       final current = byRoot[root];
       if (current == null || snapshot.turnover > current.turnover) {
         byRoot[root] = snapshot;
       }
     }
     return byRoot;
+  }
+
+  /// Идут ли торги на срочном рынке. [mskNow] — московское время.
+  ///
+  /// Грубо: будни с 09:00 до 23:50. Клиринговые перерывы сюда не заводятся —
+  /// они короче порога свежести, и лишний раз дробить окно незачем.
+  static bool _isFortsSessionOpen(DateTime mskNow) {
+    if (mskNow.weekday > DateTime.friday) return false;
+    final minutes = mskNow.hour * 60 + mskNow.minute;
+    return minutes >= 9 * 60 && minutes < 23 * 60 + 50;
   }
 
   /// Курс доллара из фьючерса Si (котируется в рублях за 1000 долларов).

@@ -178,8 +178,11 @@ class TradingSignal {
 
   final String? strategyId;
 
-  /// Расстояние от входа до стопа — 1R.
-  double get riskPerUnit => (entry - stopLoss).abs();
+  /// Расстояние от входа до стопа в единицах цены — 1R.
+  ///
+  /// Не путать с [unitRisk]: тот же риск, но уже пересчитанный в рубли через
+  /// стоимость пункта (`InstrumentSpec.riskPerUnit`). Здесь — только цена.
+  double get priceRisk => (entry - stopLoss).abs();
 
   TradingSignal copyWith({SignalStatus? status}) => TradingSignal(
         id: id,

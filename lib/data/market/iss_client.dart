@@ -24,8 +24,17 @@ class FortsSnapshot {
   final double turnover;
   final double openInterest;
 
-  /// Время последнего обновления данных — для контроля протухания.
+  /// Время последнего обновления данных в UTC — для контроля протухания.
+  ///
+  /// null означает, что ISS не отдал `UPDATETIME` (нет торгов по контракту).
   final DateTime? updatedAt;
+
+  /// Возраст котировки относительно [now]. null, если времени обновления нет.
+  Duration? ageAt(DateTime now) {
+    final at = updatedAt;
+    if (at == null) return null;
+    return now.toUtc().difference(at);
+  }
 }
 
 /// Клиент MOEX ISS.
@@ -42,21 +51,39 @@ class IssClient {
   static const _fortsPath = 'engines/futures/markets/forts';
 
   /// Снимок срочного рынка целиком.
+  ///
+  /// ISS отдаёт `securities.json` страницами, поэтому блоки собираются по
+  /// курсору `start`, иначе на срочном рынке молча теряется хвост контрактов.
   Future<List<FortsSnapshot>> fortsSnapshot() async {
-    final uri = Uri.parse(
-      '$_base/$_fortsPath/securities.json'
-      '?iss.meta=off&iss.only=securities,marketdata'
-      '&securities.columns=SECID,SHORTNAME,LASTTRADEDATE,MINSTEP,STEPPRICE,DECIMALS,PREVSETTLEPRICE'
-      '&marketdata.columns=SECID,LAST,VALTODAY,OPENPOSITION,UPDATETIME',
-    );
-    final json = await _http.get(uri);
+    Uri page(int start) => Uri.parse(
+          '$_base/$_fortsPath/securities.json'
+          '?iss.meta=off&iss.only=securities,marketdata'
+          '&securities.columns=SECID,SHORTNAME,LASTTRADEDATE,MINSTEP,STEPPRICE,DECIMALS,PREVSETTLEPRICE'
+          '&marketdata.columns=SECID,LAST,VALTODAY,OPENPOSITION,UPDATETIME'
+          '&start=$start',
+        );
+
+    final securities = <Map<String, Object?>>[];
+    final marketDataRows = <Map<String, Object?>>[];
+    for (var start = 0, guard = 0; guard < _maxPages; guard++) {
+      final json = await _http.get(page(start));
+      final securitiesPage = issRows(json, 'securities');
+      final marketDataPage = issRows(json, 'marketdata');
+      if (securitiesPage.isEmpty && marketDataPage.isEmpty) break;
+      securities.addAll(securitiesPage);
+      marketDataRows.addAll(marketDataPage);
+      // Курсор двигается по блоку securities — он ведущий в этом запросе.
+      if (securitiesPage.isEmpty) break;
+      start += securitiesPage.length;
+    }
 
     final marketData = {
-      for (final row in issRows(json, 'marketdata')) row['SECID'] as String? ?? '': row,
+      for (final row in marketDataRows) row['SECID'] as String? ?? '': row,
     };
 
+    final now = mskNow();
     final result = <FortsSnapshot>[];
-    for (final row in issRows(json, 'securities')) {
+    for (final row in securities) {
       final secId = row['SECID'] as String?;
       if (secId == null) continue;
       final md = marketData[secId];
@@ -89,54 +116,101 @@ class IssClient {
               previous == null || previous == 0 ? 0 : (last - previous) / previous * 100,
           turnover: _toDouble(md?['VALTODAY']) ?? 0,
           openInterest: _toDouble(md?['OPENPOSITION']) ?? 0,
-          updatedAt: _parseUpdateTime(md?['UPDATETIME'] as String?),
+          updatedAt: parseUpdateTime(md?['UPDATETIME'] as String?, now: now),
         ),
       );
     }
     return result;
   }
 
-  /// Свечи по инструменту. [interval] в минутах: 10, 60, 1440 (день).
+  /// Свечи по инструменту.
+  ///
+  /// Код интервала у ISS — не всегда минуты: день кодируется числом 24, а не
+  /// 1440. Ответ страничный (около 500 свечей), поэтому страницы собираются по
+  /// курсору `start` — без этого история молча обрезается.
   Future<List<Candle>> candles(
     String secId, {
     required Timeframe timeframe,
     required DateTime from,
   }) async {
-    final interval = timeframe == Timeframe.d1 ? 24 : timeframe.minutes;
-    final uri = Uri.parse(
-      '$_base/$_fortsPath/securities/$secId/candles.json'
-      '?iss.meta=off&interval=$interval&from=${_date(from)}',
-    );
-    final json = await _http.get(uri);
+    final interval = _issInterval(timeframe);
+    Uri page(int start) => Uri.parse(
+          '$_base/$_fortsPath/securities/$secId/candles.json'
+          '?iss.meta=off&interval=$interval&from=${_date(from)}&start=$start',
+        );
 
-    return [
-      for (final row in issRows(json, 'candles'))
-        if (_toDouble(row['close']) != null)
+    final candles = <Candle>[];
+    for (var start = 0, guard = 0; guard < _maxPages; guard++) {
+      final rows = issRows(await _http.get(page(start)), 'candles');
+      if (rows.isEmpty) break;
+      for (final row in rows) {
+        final close = _toDouble(row['close']);
+        final begin = DateTime.tryParse((row['begin'] as String?) ?? '');
+        // Свеча без цены или без времени бесполезна для анализа — пропускаем,
+        // подставлять «сейчас» вместо неразобранной даты нельзя.
+        if (close == null || begin == null) continue;
+        candles.add(
           Candle(
-            time: DateTime.tryParse((row['begin'] as String?) ?? '') ?? DateTime.now(),
-            open: _toDouble(row['open'])!,
-            high: _toDouble(row['high'])!,
-            low: _toDouble(row['low'])!,
-            close: _toDouble(row['close'])!,
+            time: begin,
+            open: _toDouble(row['open']) ?? close,
+            high: _toDouble(row['high']) ?? close,
+            low: _toDouble(row['low']) ?? close,
+            close: close,
             volume: _toDouble(row['volume']) ?? 0,
           ),
-    ];
+        );
+      }
+      start += rows.length;
+    }
+    return candles;
   }
+
+  /// Код интервала ISS: минуты для внутридневных, 24 — дневная свеча.
+  ///
+  /// Четырёхчасовых свечей у ISS нет. Молча подменять их часовыми нельзя —
+  /// анализ получит не тот таймфрейм, о котором просил, поэтому здесь отказ.
+  static int _issInterval(Timeframe timeframe) => switch (timeframe) {
+        Timeframe.m10 => 10,
+        Timeframe.h1 => 60,
+        Timeframe.d1 => 24,
+        Timeframe.h4 => throw ArgumentError(
+            'MOEX ISS не отдаёт 4-часовые свечи: агрегируйте из часовых',
+          ),
+      };
 
   static String _date(DateTime d) =>
       '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
 
-  /// ISS отдаёт UPDATETIME как «ЧЧ:ММ:СС» текущего торгового дня.
-  static DateTime? _parseUpdateTime(String? value) {
-    if (value == null || value.length < 8) return null;
-    final now = DateTime.now();
+  /// Текущее московское время как «настенные часы» биржи.
+  static DateTime mskNow() => DateTime.now().toUtc().add(_mskOffset);
+
+  /// Смещение московского времени. С 2014 года фиксированное, перевода нет.
+  static const _mskOffset = Duration(hours: 3);
+
+  /// Предел страниц — страховка от зацикливания, если ISS проигнорирует `start`.
+  static const _maxPages = 40;
+
+  /// ISS отдаёт UPDATETIME как «ЧЧ:ММ:СС» по Москве, без даты.
+  ///
+  /// Возвращает момент в UTC: часы биржи склеиваются с московской датой, а не с
+  /// датой устройства — иначе у телефона в другом поясе возраст котировки
+  /// уезжает на часы. [now] — текущее московское время.
+  static DateTime? parseUpdateTime(String? value, {required DateTime now}) {
+    if (value == null) return null;
     final parts = value.split(':');
     if (parts.length < 3) return null;
     final h = int.tryParse(parts[0]);
     final m = int.tryParse(parts[1]);
     final s = int.tryParse(parts[2]);
     if (h == null || m == null || s == null) return null;
-    return DateTime(now.year, now.month, now.day, h, m, s);
+
+    // Собираем момент в UTC: московские часы минус смещение.
+    var utc = DateTime.utc(now.year, now.month, now.day, h, m, s).subtract(_mskOffset);
+    // Около полуночи по Москве метка может относиться к прошедшим суткам.
+    if (utc.difference(now.subtract(_mskOffset)) > const Duration(hours: 12)) {
+      utc = utc.subtract(const Duration(days: 1));
+    }
+    return utc;
   }
 
   static double? _toDouble(Object? value) => switch (value) {

@@ -27,7 +27,7 @@ abstract final class PositionSizing {
 
   /// Кратность риска для тейка: «+2,1R».
   static String takeProfitR(TradingSignal signal, TakeProfit tp) {
-    final risk = signal.riskPerUnit;
+    final risk = signal.priceRisk;
     if (risk == 0) return '';
     final r = (tp.price - signal.entry).abs() / risk;
     return '+${r.toStringAsFixed(1).replaceAll('.', ',')}R';
