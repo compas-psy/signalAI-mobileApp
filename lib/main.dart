@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 
 import 'data/api/api_config.dart';
 import 'data/api/rest_repository.dart';
+import 'data/local_analysis_repository.dart';
 import 'data/mock/demo_repository.dart';
 import 'data/repository.dart';
 import 'state/app_controller.dart';
@@ -26,9 +27,18 @@ void main() {
     DeviceOrientation.portraitDown,
   ]);
 
-  // Есть адрес гейтвея — работаем с сервером, нет — показываем данные макета.
-  final SignalAiRepository repository =
-      ApiConfig.isConfigured ? RestRepository() : DemoRepository();
+  // Режим сборки:
+  //   server — тонкий клиент, всё считает сервер (ТЗ §2);
+  //   local  — автономный анализ на устройстве по публичным данным бирж;
+  //   demo   — данные макета, без сети.
+  // Если адрес гейтвея задан, он всегда выигрывает.
+  const mode = String.fromEnvironment('SIGNALAI_MODE', defaultValue: 'local');
+  final SignalAiRepository repository = ApiConfig.isConfigured
+      ? RestRepository()
+      : switch (mode) {
+          'demo' => DemoRepository(),
+          _ => LocalAnalysisRepository(),
+        };
 
   runApp(SignalAiApp(repository: repository));
 }
