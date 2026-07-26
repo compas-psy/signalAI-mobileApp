@@ -198,7 +198,8 @@ class BrokerPosition {
     required this.entryPrice,
     required this.unrealizedPnl,
     this.stopLoss = 0,
-  });
+    bool? protected,
+  }) : _protected = protected;
 
   final String symbol;
   final bool long;
@@ -206,11 +207,22 @@ class BrokerPosition {
   final double entryPrice;
   final double unrealizedPnl;
 
-  /// Уровень защитного стопа на бирже. Ноль означает, что защиты нет.
+  /// Уровень защитного стопа на бирже. Ноль — уровень неизвестен.
+  ///
+  /// У Bybit стоп прикреплён к позиции, и цена приходит вместе с ней. У
+  /// брокера стоп живёт отдельной заявкой: там известен сам факт защиты, а
+  /// цену пришлось бы искать по заявкам. Поэтому ноль здесь означает «цена
+  /// неизвестна», а не «стопа нет», — см. [protectedByStop].
   final double stopLoss;
 
+  /// Защищена ли позиция, когда цену стопа площадка не отдаёт.
+  final bool? _protected;
+
+  /// Есть ли на бирже защита по этой позиции.
+  bool get protectedByStop => _protected ?? stopLoss > 0;
+
   /// Позиция без стопа. Ровно то состояние, в котором её нельзя оставлять.
-  bool get unprotected => stopLoss == 0;
+  bool get unprotected => !protectedByStop;
 }
 
 /// Торговый доступ к бирже.

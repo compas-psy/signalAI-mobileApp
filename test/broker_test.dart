@@ -131,6 +131,44 @@ void main() {
       expect(result.message, contains('insufficient balance'));
     });
 
+    test('401 объясняет, что не так с ключом', () async {
+      // Заготовка отдаёт 401 вместе с телом: раньше тело выбрасывалось, и
+      // владелец видел голое «Bybit ответил 401», по которому нельзя понять,
+      // просрочен ключ, перепутана площадка или сработал IP-фильтр.
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(() => server.close(force: true));
+      server.listen((request) async {
+        request.response
+          ..statusCode = 401
+          ..headers.contentType = ContentType.json
+          ..write(jsonEncode({'retCode': 10003, 'retMsg': 'API key is invalid.'}));
+        await request.response.close();
+      });
+
+      final broker = BybitBroker(
+        mode: TradingMode.testnet,
+        baseUrl: 'http://127.0.0.1:${server.port}',
+        apiKey: () async => 'KEY',
+        signer: (_) async => 'sig',
+      );
+      addTearDown(broker.close);
+
+      await expectLater(
+        broker.checkAccess(),
+        throwsA(
+          isA<BrokerException>().having(
+            (e) => e.message,
+            'message',
+            allOf(
+              contains('API key is invalid'),
+              contains('10003'),
+              contains('просрочен'),
+            ),
+          ),
+        ),
+      );
+    });
+
     test('без ключа запрос на биржу не уходит', () async {
       final b = await broker(reply: const {'retCode': 0}, apiKey: null);
 

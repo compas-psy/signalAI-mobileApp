@@ -279,17 +279,56 @@ class TInvestBroker implements Broker {
 
       final uid = row['instrumentUid'] as String?;
       result.add(BrokerPosition(
-        symbol: await instrumentCache.tickerFor(uid) ?? (row['figi'] as String? ?? ''),
+        symbol: await _tickerOf(uid, row['figi'] as String?),
         long: quantity > 0,
         quantity: quantity.abs(),
         entryPrice: quotationToDouble(row['averagePositionPrice']),
         unrealizedPnl: quotationToDouble(row['expectedYield']),
         // Стоп у брокера живёт отдельной заявкой, поэтому «защищена» здесь
-        // означает «нашлась стоп-заявка по этому инструменту».
-        stopLoss: uid != null && protectedUids.contains(uid) ? 1 : 0,
+        // означает «нашлась стоп-заявка по этому инструменту». Цену стопа
+        // подставлять нельзя: единица вместо неё выглядела на экране как
+        // уровень защиты в один пункт.
+        protected: uid != null && protectedUids.contains(uid),
       ));
     }
     return result;
+  }
+
+  /// Тикер инструмента по его идентификатору.
+  ///
+  /// Сначала кэш: соответствие уже известно, если заявку ставило приложение.
+  /// Позиция могла быть открыта и не им — тогда спрашиваем брокера, потому что
+  /// показывать вместо тикера идентификатор (а при его отсутствии — пустоту)
+  /// значит показывать мусор там, где владелец сверяет свои позиции.
+  Future<String> _tickerOf(String? uid, String? figi) async {
+    final known = await instrumentCache.tickerFor(uid);
+    if (known != null) return known;
+    if (uid != null) {
+      try {
+        final json = await _call('InstrumentsService', 'FutureBy', {
+          'idType': 'INSTRUMENT_ID_TYPE_UID',
+          'id': uid,
+        });
+        final data = json['instrument'] as Map<String, dynamic>?;
+        final ticker = data?['ticker'] as String?;
+        if (data != null && ticker != null && ticker.isNotEmpty) {
+          await instrumentCache.put(
+            ticker,
+            TInvestInstrument(
+              uid: uid,
+              ticker: ticker,
+              lot: (data['lot'] as num?)?.toInt() ?? 1,
+              priceStep: quotationToDouble(data['minPriceIncrement']),
+            ),
+          );
+          return ticker;
+        }
+      } on BrokerException {
+        // Брокер не ответил — покажем то, что есть, но не выдумаем тикер.
+      }
+    }
+    final fallback = figi ?? '';
+    return fallback.isEmpty ? (uid ?? '—') : fallback;
   }
 
   /// Инструменты, по которым на бирже есть стоп-заявка.
@@ -357,8 +396,10 @@ class TInvestBroker implements Broker {
       final row = item as Map<String, dynamic>;
       result.add(BrokerOrder(
         orderId: row['orderId'] as String? ?? '',
-        symbol: await instrumentCache.tickerFor(row['instrumentUid'] as String?) ??
-            (row['figi'] as String? ?? ''),
+        symbol: await _tickerOf(
+          row['instrumentUid'] as String?,
+          row['figi'] as String?,
+        ),
         long: (row['direction'] as String? ?? '') == 'ORDER_DIRECTION_BUY',
         quantity: _int(row['lotsRequested']).toDouble(),
         price: quotationToDouble(row['initialSecurityPrice']),

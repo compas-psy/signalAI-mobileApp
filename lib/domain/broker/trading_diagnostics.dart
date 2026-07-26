@@ -160,10 +160,12 @@ Stream<TradingCheck> diagnoseTradingWith(TradingProbe probe) async* {
         details: [
           'открытых позиций: ${positions.length}',
           for (final p in positions)
-            '· ${p.symbol} ${p.long ? 'long' : 'short'} ${p.quantity} @ ${p.entryPrice}'
-                ' · ${p.unprotected ? 'без стопа' : 'стоп ${p.stopLoss}'}',
+            '· ${p.symbol} ${p.long ? 'long' : 'short'} ${_amount(p.quantity)} '
+                'по ${_amount(p.entryPrice)} · ${_stopNote(p)} · '
+                'результат ${_signed(p.unrealizedPnl)}',
           'активных заявок: ${orders.length}',
-          for (final o in orders) '· ${o.symbol} ${o.quantity} @ ${o.price} — ${o.status}',
+          for (final o in orders)
+            '· ${o.symbol} ${_amount(o.quantity)} по ${_amount(o.price)} — ${o.status}',
           if (naked.isEmpty)
             'позиций без защитного стопа нет'
           else
@@ -174,6 +176,28 @@ Stream<TradingCheck> diagnoseTradingWith(TradingProbe probe) async* {
     });
   }
 }
+
+/// Состояние защиты позиции словами, а не числом.
+///
+/// Площадки отдают разное: Bybit — цену стопа вместе с позицией, брокер —
+/// только факт, что стоп-заявка есть. Печатать в обоих случаях число значило
+/// бы выдавать признак за уровень.
+String _stopNote(BrokerPosition position) {
+  if (position.unprotected) return 'БЕЗ СТОПА';
+  return position.stopLoss > 0
+      ? 'стоп ${_amount(position.stopLoss)}'
+      : 'стоп-заявка на бирже есть';
+}
+
+/// Число без хвоста `.0` и с запятой — как в остальном приложении.
+String _amount(double value) {
+  final text = value == value.roundToDouble() && value.abs() < 1e15
+      ? value.toStringAsFixed(0)
+      : value.toStringAsFixed(value.abs() < 100 ? 4 : 2);
+  return text.replaceAll('.', ',');
+}
+
+String _signed(double value) => '${value > 0 ? '+' : ''}${_amount(value)}';
 
 /// Любой отказ — это результат проверки, а не падение экрана.
 Future<TradingCheck> _guard(String name, Future<TradingCheck> Function() body) async {

@@ -237,7 +237,15 @@ class BybitBroker implements Broker {
       final response = await request.close().timeout(timeout);
       final text = await response.transform(utf8.decoder).join().timeout(timeout);
       if (response.statusCode >= 400) {
-        throw BrokerException('Bybit ответил ${response.statusCode}');
+        // Тело ответа выбрасывать нельзя: причина отказа именно в нём. Голое
+        // «Bybit ответил 401» не отличает просроченный ключ от неверного
+        // адреса площадки и от IP-фильтра — чинить по такому сообщению нечего.
+        throw BrokerException(
+          'Bybit ответил ${response.statusCode}${_reason(text)}'
+          '${response.statusCode == 401 ? '. Ключ отклонён: он просрочен, '
+              'отозван, введён от другой площадки (testnet ↔ live) либо '
+              'ограничен по IP' : ''}',
+        );
       }
       final decoded = jsonDecode(text);
       if (decoded is! Map<String, dynamic>) {
@@ -253,6 +261,26 @@ class BybitBroker implements Broker {
     } on Object catch (e) {
       throw BrokerException('Нет связи с Bybit: $e');
     }
+  }
+
+  /// Причина отказа из тела ответа: `retMsg`, если он там есть, иначе само
+  /// тело, обрезанное до читаемого. Пустая строка — сказать нечего.
+  static String _reason(String body) {
+    final text = body.trim();
+    if (text.isEmpty) return '';
+    try {
+      final decoded = jsonDecode(text);
+      if (decoded is Map<String, dynamic>) {
+        final message = decoded['retMsg'] ?? decoded['msg'] ?? decoded['message'];
+        final code = decoded['retCode'];
+        if (message != null && '$message'.isNotEmpty) {
+          return ' · $message${code == null ? '' : ' (retCode $code)'}';
+        }
+      }
+    } on FormatException {
+      // Не JSON — покажем как есть: это обычно страница шлюза.
+    }
+    return ' · ${text.length > 160 ? '${text.substring(0, 157)}…' : text}';
   }
 
   /// Числа уходят строками: биржа отвергает экспоненциальную запись, в которую

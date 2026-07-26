@@ -315,6 +315,9 @@ void main() {
 
       final positions = await b.positions();
       expect(positions, hasLength(1), reason: 'валюта — не позиция срочного рынка');
+      // Тикер, а не идентификатор: позицию мог открыть не мы, и тогда кэш о
+      // ней ничего не знает — брокера надо спросить, а не показать GUID.
+      expect(positions.single.symbol, 'SiZ5');
       expect(positions.single.quantity, 2);
       expect(positions.single.entryPrice, 90000);
       expect(positions.single.unrealizedPnl, closeTo(350.5, 1e-9));
@@ -334,6 +337,18 @@ void main() {
       ]));
 
       expect(await b.unprotectedPositions(), isEmpty);
+    });
+
+    test('защита от стоп-заявки не выдаётся за уровень стопа', () async {
+      final b = await broker(replies: portfolioReplies(stops: [
+        {'instrumentUid': 'UID-SI', 'stopOrderId': 'S-1'},
+      ]));
+
+      final position = (await b.positions()).single;
+      expect(position.protectedByStop, isTrue);
+      // Цена стопа брокером не отдаётся. Раньше вместо неё стояла единица —
+      // и на экране это читалось как «стоп на уровне 1» по контракту за 90 000.
+      expect(position.stopLoss, 0);
     });
 
     test('недоступный список стопов не выдаёт позицию за защищённую', () async {
