@@ -1,5 +1,6 @@
 import '../domain/analysis/backtester.dart';
 import '../domain/broker/broker.dart';
+import '../domain/broker/trading_diagnostics.dart';
 import '../domain/broker/trading_gate.dart';
 import '../domain/analysis/candle.dart';
 import '../domain/analysis/indicators.dart';
@@ -41,11 +42,14 @@ class LocalAnalysisRepository
         ProgressReporting,
         ParameterOptimizing,
         TradingDesk,
+        TradingProbe,
+        PaperTracking,
         MonitorTarget {
   LocalAnalysisRepository({
     IssClient? iss,
     BybitClient? bybit,
     LocalStore? store,
+    this.vault = const SecureVault(),
     this.fortsRoots = const ['SI', 'BR', 'MX', 'RI', 'NG', 'GAZR', 'SBRF'],
     this.cryptoSymbols = const ['BTCUSDT', 'ETHUSDT', 'SOLUSDT'],
     this.maxIdeas = 5,
@@ -124,7 +128,10 @@ class LocalAnalysisRepository
   final RiskEngine riskEngine = const RiskEngine(limits: _limits);
 
   /// Хранилище торговых ключей поверх Android Keystore.
-  final SecureVault vault = const SecureVault();
+  ///
+  /// Подменяется в тестах: проверить, что отвергнутый ключ не удаляется,
+  /// иначе можно только на устройстве.
+  final SecureVault vault;
 
   /// Кто сейчас владеет состоянием на диске: интерфейс или фоновый контур.
   late final StateLock stateLock = StateLock(_store);
@@ -157,6 +164,7 @@ class LocalAnalysisRepository
       };
 
   /// Брокер площадки в её текущем режиме.
+  @override
   Broker brokerOf(BrokerId id) =>
       _brokers[id] ??= _brokerFor(id, _trading.modeOf(id));
 
@@ -196,12 +204,41 @@ class LocalAnalysisRepository
       final probe = _brokerFor(broker, mode);
       final answer = await probe.checkAccess();
       if (mode == _trading.modeOf(broker)) _brokers[broker] = probe;
+      await _rememberKeyCheck(broker, mode, ok: true, note: answer);
       return answer;
     } on BrokerException catch (e) {
-      await vault.deleteKeys(exchange: broker.name, mode: mode.name);
+      // Ключ остаётся в хранилище. Раньше он удалялся, и владелец, у которого
+      // на секунду пропала сеть, был обязан заново набирать длинный секрет с
+      // телефона — при том что с самим ключом всё было в порядке. Причина
+      // отказа сохраняется и видна в настройках, пока проверка не пройдёт.
+      await _rememberKeyCheck(broker, mode, ok: false, note: e.message);
       throw FeatureUnavailableException('${broker.title} не принял ключ: ${e.message}');
     }
   }
+
+  /// Итоги последней проверки ключей по площадкам и режимам.
+  ///
+  /// Ключ карты — `брокер/режим`: у песочницы и живого счёта ключи разные, и
+  /// вердикт по одному ничего не говорит про другой.
+  final Map<String, BrokerKeyCheck> _keyChecks = {};
+
+  static String _keyCheckId(BrokerId broker, TradingMode mode) =>
+      '${broker.name}/${mode.name}';
+
+  Future<void> _rememberKeyCheck(
+    BrokerId broker,
+    TradingMode mode, {
+    required bool ok,
+    required String note,
+  }) async {
+    _keyChecks[_keyCheckId(broker, mode)] =
+        BrokerKeyCheck(ok: ok, note: note, at: DateTime.now());
+    await _persistState();
+  }
+
+  /// Проверка ключей площадки в её текущем режиме.
+  BrokerKeyCheck? keyCheckOf(BrokerId broker) =>
+      _keyChecks[_keyCheckId(broker, _trading.modeOf(broker))];
 
   @override
   Future<void> setTradingEnabled(bool enabled) async {
@@ -415,6 +452,13 @@ class LocalAnalysisRepository
         }
         final trading = state['trading'] as Map<String, dynamic>?;
         if (trading != null) _trading = TradingState.fromJson(trading);
+        final keyChecks = state['key_checks'] as Map<String, dynamic>?;
+        if (keyChecks != null) {
+          for (final entry in keyChecks.entries) {
+            final check = BrokerKeyCheck.fromJson(entry.value as Map<String, dynamic>);
+            if (check != null) _keyChecks[entry.key] = check;
+          }
+        }
         final background = state['background'] as Map<String, dynamic>?;
         if (background != null) {
           _backgroundMode = BackgroundMode.parse(background['mode'] as String?);
@@ -477,6 +521,9 @@ class LocalAnalysisRepository
           for (final entry in _params.entries) entry.key: entry.value.toJson(),
         },
         'trading': _trading.toJson(),
+        'key_checks': {
+          for (final entry in _keyChecks.entries) entry.key: entry.value.toJson(),
+        },
         'background': {
           'mode': _backgroundMode.name,
           'enabled': _backgroundEnabled,
@@ -1301,15 +1348,7 @@ class LocalAnalysisRepository
   Future<void> confirmSignal(String signalId) async {
     await _ensureLoaded();
 
-    final signal = _cachedDigest?.signals.firstWhere(
-      (s) => s.id == signalId,
-      orElse: () => throw const FeatureUnavailableException(
-        'Идея больше не в выдаче — пересчитайте перед отправкой.',
-      ),
-    );
-    if (signal == null) {
-      throw const FeatureUnavailableException('Идея больше не в выдаче.');
-    }
+    final signal = _signalById(signalId);
     final brokerId = BrokerId.forMarket(signal.market);
     if (brokerId == null) {
       throw FeatureUnavailableException(
@@ -1318,8 +1357,9 @@ class LocalAnalysisRepository
     }
     if (!_trading.enabled) {
       throw const FeatureUnavailableException(
-        'Торговля выключена. Включите её в настройках, в разделе '
-        '«Торговый контур».',
+        'Торговля выключена: на биржу ничего не уходит. Включите её в '
+        'настройках, в разделе «Торговый контур». На бумаге идею можно '
+        'вести и без этого — кнопкой в карточке.',
       );
     }
     if (_trading.killSwitch) {
@@ -1391,6 +1431,60 @@ class LocalAnalysisRepository
       throw FeatureUnavailableException(result.message);
     }
   }
+
+  // ── Бумажный журнал ─────────────────────────────────────────────────────
+
+  @override
+  String? paperNoteFor(String symbol) {
+    for (final trade in ledger.openOrPending) {
+      if (trade.symbol != symbol) continue;
+      final since = 'с ${_timeLabel(trade.createdAt)}';
+      return switch (trade.status) {
+        PaperStatus.pending => 'ждёт входа по ${_num(trade.entry)} · $since',
+        PaperStatus.open =>
+          'в позиции${trade.unrealizedR == null ? '' : ' · ${_signedR(trade.unrealizedR!)}'} · $since',
+        _ => since,
+      };
+    }
+    return null;
+  }
+
+  @override
+  Future<String> trackOnPaper(String signalId) async {
+    await _ensureLoaded();
+    final signal = _signalById(signalId);
+    final existing = paperNoteFor(signal.symbol);
+    if (existing != null) {
+      return 'Идея уже ведётся на бумаге: $existing. Смотрите её на «Сделках».';
+    }
+
+    // Издержки и шаг цены берутся из спецификации ровно как при
+    // автоматической записи: бумажная сделка обязана мериться теми же
+    // правилами, иначе журнал перестанет сходиться с бэктестом.
+    final spec = await _specForSignal(signal);
+    ledger.record(
+      signal,
+      DateTime.now(),
+      costs: spec == null ? TradingCosts.none : defaultCostsFor(spec),
+      fillMargin: spec?.tick ?? 0,
+    );
+    await _store.write('ledger', ledger.toJson());
+    return 'Идея заведена на бумаге: лимитка ${_num(signal.entry)}, '
+        'стоп ${_num(signal.stopLoss)}. Результат появится на «Сделках».';
+  }
+
+  /// Идея из последней выдачи. Отсутствие — отказ, а не пустой результат.
+  TradingSignal _signalById(String signalId) {
+    for (final signal in _cachedDigest?.signals ?? const <TradingSignal>[]) {
+      if (signal.id == signalId) return signal;
+    }
+    throw const FeatureUnavailableException(
+      'Идея больше не в выдаче — пересчитайте идеи и попробуйте снова.',
+    );
+  }
+
+  static String _signedR(double r) =>
+      '${r >= 0 ? '+' : '−'}${r.abs().toStringAsFixed(2).replaceAll('.', ',')}R';
 
   /// Спецификация инструмента идеи — нужна риск-движку и расчёту объёма.
   ///
@@ -1827,14 +1921,18 @@ class LocalAnalysisRepository
           : gate.allowed
               ? ''
               : gate.reason;
+      final check = keyCheckOf(id);
+      final hasKeys = await hasBrokerKeys(id);
       brokers.add(BrokerView(
         id: id.name,
         title: id.title,
         modeLabel: mode.labelFor(id),
         live: mode == TradingMode.live,
-        hasKeys: await hasBrokerKeys(id),
+        hasKeys: hasKeys,
         liveAllowed: blocked.isEmpty,
         liveBlockedReason: blocked,
+        keyNote: check == null ? '' : '${_timeLabel(check.at)} · ${check.note}',
+        keysAccepted: hasKeys && (check?.ok ?? false),
       ));
     }
 
@@ -1846,8 +1944,41 @@ class LocalAnalysisRepository
       gateReason: gate.reason,
       gateProgress: gate.progress.clamp(0, 1).toDouble(),
       vaultAvailable: await vault.isAvailable,
-      biometricsAvailable: await vault.biometricsAvailable,
+      confirmMethod: await vault.confirmMethod,
     );
+  }
+
+  // ── Диагностика торгового контура ───────────────────────────────────────
+
+  @override
+  Stream<TradingCheck> diagnoseTrading() async* {
+    await _ensureLoaded();
+    yield* diagnoseTradingWith(this);
+  }
+
+  @override
+  Future<bool> get vaultAvailable => vault.isAvailable;
+
+  @override
+  Future<ConfirmMethod> get confirmMethod => vault.confirmMethod;
+
+  @override
+  bool get tradingEnabled => _trading.enabled;
+
+  @override
+  bool get killSwitch => _trading.killSwitch;
+
+  @override
+  List<BrokerId> get probedBrokers => BrokerId.values;
+
+  @override
+  String modeLabelOf(BrokerId broker) => _trading.modeOf(broker).labelFor(broker);
+
+  @override
+  String? keyNoteOf(BrokerId broker) {
+    final check = keyCheckOf(broker);
+    if (check == null) return null;
+    return '${check.ok ? 'принят' : 'ОТКАЗ'} · ${_timeLabel(check.at)} · ${check.note}';
   }
 
   @override

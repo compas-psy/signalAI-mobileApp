@@ -51,6 +51,10 @@ class IdeaDetailScreen extends StatelessWidget {
               const SizedBox(height: 12),
               _SignalEventsCard(events: signal.events),
               const SizedBox(height: 12),
+              if (controller.paperAvailable) ...[
+                _PaperCard(signal: signal),
+                const SizedBox(height: 12),
+              ],
               if (signal.status.canConfirm)
                 Row(
                   children: [
@@ -66,7 +70,7 @@ class IdeaDetailScreen extends StatelessWidget {
                           ),
                           child: Center(
                             child: Text(
-                              'Подтвердить и исполнить',
+                              'Отправить на биржу',
                               style: T.body(14, weight: 800, color: C.onAccent),
                             ),
                           ),
@@ -108,6 +112,62 @@ class IdeaDetailScreen extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+/// Ведение идеи на бумаге — отдельно от отправки на биржу.
+///
+/// Это разные вещи, и раньше их путала одна кнопка: «Подтвердить и
+/// исполнить» упиралась в ключи, режим и подтверждение, а завести ту же идею
+/// в журнал было нечем — при том что бумажному журналу не нужно ничего из
+/// этого. Здесь видно, ведётся ли идея уже, и её можно завести одним нажатием.
+class _PaperCard extends StatelessWidget {
+  const _PaperCard({required this.signal});
+
+  final TradingSignal signal;
+
+  @override
+  Widget build(BuildContext context) {
+    final controller = AppScope.read(context);
+    final note = controller.paperNote(signal);
+    return SectionCard(
+      margin: EdgeInsets.zero,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const SectionLabel('На бумаге'),
+          const SizedBox(height: 6),
+          Text(
+            note == null
+                ? 'Идея в журнале не ведётся. Бумажная сделка проживается по '
+                    'реальным свечам — без ключей, биржи и подтверждения: '
+                    'именно она набирает выборку для допуска к живым деньгам.'
+                : 'Ведётся в журнале: $note. Результат считается по реальным '
+                    'свечам, уровни задним числом не правятся.',
+            style: T.body(11.5, color: note == null ? C.muted : C.green, height: 1.5),
+          ),
+          if (note == null) ...[
+            const SizedBox(height: 10),
+            Pressable(
+              onTap: controller.trackCurrentSignalOnPaper,
+              child: Container(
+                padding: const EdgeInsets.symmetric(vertical: 11),
+                decoration: BoxDecoration(
+                  border: Border.all(color: C.borderHover),
+                  borderRadius: BorderRadius.circular(R.inner),
+                ),
+                child: Center(
+                  child: Text(
+                    'Вести на бумаге',
+                    style: T.body(12.5, weight: 800, color: C.accent),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
     );
   }
 }

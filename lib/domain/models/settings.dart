@@ -1,3 +1,5 @@
+import '../broker/broker.dart';
+
 /// Подключение к брокеру (MOEX) или крипто-бирже (ТЗ §7).
 ///
 /// Ключи живут только на сервере (ТЗ §11) — сюда приходит лишь статус.
@@ -140,6 +142,8 @@ class BrokerView {
     required this.hasKeys,
     required this.liveAllowed,
     required this.liveBlockedReason,
+    this.keyNote = '',
+    this.keysAccepted = false,
   });
 
   /// Идентификатор площадки строкой — интерфейсу хватает его для вызовов.
@@ -156,6 +160,16 @@ class BrokerView {
 
   /// Почему нельзя. Пусто, если можно.
   final String liveBlockedReason;
+
+  /// Итог последней проверки ключей у биржи: её ответ либо причина отказа.
+  ///
+  /// Причина живёт дальше тоста: ключ, который биржа не приняла, обязан
+  /// объяснять это и через сутки, а не оставлять владельца гадать.
+  final String keyNote;
+
+  /// Ключи есть и биржа их приняла. Только в этом состоянии площадка
+  /// действительно может отправить заявку.
+  final bool keysAccepted;
 }
 
 /// Состояние торгового контура для настроек.
@@ -172,7 +186,7 @@ class TradingView {
     required this.gateReason,
     required this.gateProgress,
     required this.vaultAvailable,
-    required this.biometricsAvailable,
+    required this.confirmMethod,
   });
 
   final List<BrokerView> brokers;
@@ -186,10 +200,36 @@ class TradingView {
 
   /// Есть ли на устройстве защищённое хранилище и чем подтверждать сделку.
   final bool vaultAvailable;
-  final bool biometricsAvailable;
+  final ConfirmMethod confirmMethod;
+
+  bool get biometricsAvailable => confirmMethod.available;
 
   /// Можно ли прямо сейчас отправить ордер хоть куда-нибудь.
-  bool get ready => enabled && !killSwitch && brokers.any((b) => b.hasKeys);
+  ///
+  /// Считается по всей цепочке, а не по её началу. Раньше здесь хватало
+  /// заданных ключей — и контур показывал «ГОТОВ» на устройстве, где сделку
+  /// подтвердить нечем и ни один ордер уйти не мог. Зелёный бейдж, который
+  /// врёт, хуже красного: именно ему верят, когда решают не проверять.
+  bool get ready =>
+      enabled &&
+      !killSwitch &&
+      vaultAvailable &&
+      confirmMethod.available &&
+      brokers.any((b) => b.keysAccepted);
+
+  /// Чего не хватает до готовности. Пусто, если всё на месте.
+  String get blockingReason {
+    if (killSwitch) return 'активна аварийная остановка';
+    if (!vaultAvailable) return 'нет защищённого хранилища для ключей';
+    if (!confirmMethod.available) return 'сделку нечем подтвердить';
+    if (!brokers.any((b) => b.keysAccepted)) {
+      return brokers.any((b) => b.hasKeys)
+          ? 'ни одна площадка не подтвердила ключи'
+          : 'ключи площадок не заданы';
+    }
+    if (!enabled) return 'отправка ордеров выключена';
+    return '';
+  }
 }
 
 /// Состояние фонового контура для настроек.

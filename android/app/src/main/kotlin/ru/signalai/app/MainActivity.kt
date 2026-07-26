@@ -36,6 +36,10 @@ class MainActivity : FlutterActivity() {
 
                     "biometricsAvailable" -> result.success(biometrics.isAvailable())
 
+                    // Не «да/нет», а чем именно: владелец должен видеть, что
+                    // сделку подтвердит отпечаток, ПИН — или ничего.
+                    "confirmMethod" -> result.success(biometrics.method())
+
                     "biometricConfirm" -> biometrics.confirm(
                         call.argument<String>("title") ?: "Подтвердите сделку",
                         call.argument<String>("subtitle") ?: "",

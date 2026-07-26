@@ -67,6 +67,9 @@ class NativeBridge {
   /// Есть ли на устройстве чем подтверждать сделку.
   Future<bool> biometricsAvailable() => _bool('biometricsAvailable');
 
+  /// Чем именно подтверждается сделка: `biometrics`, `credential` или `none`.
+  Future<String?> confirmMethod() => _string('confirmMethod');
+
   /// Диалог подтверждения. false — отказ, отмена или ошибка: при любом
   /// сомнении ордер не уходит.
   Future<bool> biometricConfirm({required String title, String subtitle = ''}) =>

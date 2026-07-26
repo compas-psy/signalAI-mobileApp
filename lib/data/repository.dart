@@ -1,4 +1,5 @@
 import '../domain/broker/broker.dart';
+import '../domain/broker/trading_diagnostics.dart';
 import '../domain/broker/trading_gate.dart';
 import '../domain/models/digest.dart';
 import '../monitor/background_mode.dart';
@@ -97,6 +98,24 @@ abstract interface class TradingDesk {
 
   /// Итог последнего фонового прогона — для honest-подписи в настройках.
   Future<String> backgroundStateNote();
+
+  /// Живой прогон торгового контура: хранилище, подтверждение, ключи, счета.
+  ///
+  /// Нужен ровно затем, зачем и диагностика данных: чтобы «работает или нет»
+  /// был проверяемым фактом, а не ощущением от зелёной подписи.
+  Stream<TradingCheck> diagnoseTrading();
+}
+
+/// Репозиторий, ведущий журнал бумажных сделок.
+///
+/// Отдельная способность: бумажный журнал есть только у автономного режима,
+/// где сделки проживаются по реальным свечам на устройстве.
+abstract interface class PaperTracking {
+  /// Как идея по этому инструменту записана в журнале. null — не ведётся.
+  String? paperNoteFor(String symbol);
+
+  /// Завести идею в журнал вручную. Возвращает строку для тоста.
+  Future<String> trackOnPaper(String signalId);
 }
 
 abstract interface class SignalAiRepository {

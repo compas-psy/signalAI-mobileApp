@@ -55,8 +55,8 @@ void main() {
     await scrollTo(tester, find.text('32 конт.'));
     expect(find.text('32 конт.'), findsOneWidget);
 
-    await scrollTo(tester, find.text('Подтвердить и исполнить'));
-    expect(find.text('Подтвердить и исполнить'), findsOneWidget);
+    await scrollTo(tester, find.text('Отправить на биржу'));
+    expect(find.text('Отправить на биржу'), findsOneWidget);
   });
 
   testWidgets('подтверждение выставляет ордер и показывает тост', (tester) async {
@@ -65,8 +65,8 @@ void main() {
     await tester.tap(find.text('SiU6'));
     await tester.pump(const Duration(milliseconds: 300));
 
-    await scrollTo(tester, find.text('Подтвердить и исполнить'));
-    await tester.tap(find.text('Подтвердить и исполнить'));
+    await scrollTo(tester, find.text('Отправить на биржу'));
+    await tester.tap(find.text('Отправить на биржу'));
     await tester.pump(const Duration(milliseconds: 300));
     expect(find.text('Исполнить на бирже'), findsOneWidget);
     expect(find.text('Риск, если SL'), findsOneWidget);

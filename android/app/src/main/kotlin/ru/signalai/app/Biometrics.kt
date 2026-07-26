@@ -18,15 +18,47 @@ import android.os.CancellationSignal
 class Biometrics(private val activity: Activity) {
 
     /** Есть ли на устройстве чем подтверждать. */
-    fun isAvailable(): Boolean {
-        if (Build.VERSION.SDK_INT < 29) {
-            return keyguard()?.isDeviceSecure == true
-        }
+    fun isAvailable(): Boolean = method() != NONE
+
+    /**
+     * Чем именно можно подтвердить сделку прямо сейчас.
+     *
+     * Различать способы важно: «недоступно» без причины владельцу ничего не
+     * говорит, а «нет блокировки экрана» — прямое указание, что включить.
+     * Отсутствие сервиса биометрии не означает отказ: ПИН и графический ключ
+     * подтверждают сделку не хуже отпечатка, и раньше этот случай терялся.
+     */
+    @Suppress("DEPRECATION")
+    fun method(): String {
+        // Ниже Android 9 системного диалога нет вовсе — подтверждать нечем,
+        // и [confirm] это честно повторяет отказом.
+        if (Build.VERSION.SDK_INT < 28) return NONE
+        val secure = keyguard()?.isDeviceSecure == true
         val manager = activity.getSystemService(Context.BIOMETRIC_SERVICE)
-            as? android.hardware.biometrics.BiometricManager ?: return false
-        return manager.canAuthenticate() ==
-            android.hardware.biometrics.BiometricManager.BIOMETRIC_SUCCESS ||
-            keyguard()?.isDeviceSecure == true
+            as? android.hardware.biometrics.BiometricManager
+        if (manager != null && Build.VERSION.SDK_INT >= 30) {
+            val strong = manager.canAuthenticate(
+                android.hardware.biometrics.BiometricManager.Authenticators.BIOMETRIC_STRONG,
+            )
+            if (strong == android.hardware.biometrics.BiometricManager.BIOMETRIC_SUCCESS) {
+                return BIOMETRICS
+            }
+            val credential = manager.canAuthenticate(
+                android.hardware.biometrics.BiometricManager.Authenticators.DEVICE_CREDENTIAL,
+            )
+            if (credential == android.hardware.biometrics.BiometricManager.BIOMETRIC_SUCCESS) {
+                return CREDENTIAL
+            }
+            return if (secure) CREDENTIAL else NONE
+        }
+        if (manager != null && Build.VERSION.SDK_INT >= 29) {
+            if (manager.canAuthenticate() ==
+                android.hardware.biometrics.BiometricManager.BIOMETRIC_SUCCESS
+            ) {
+                return BIOMETRICS
+            }
+        }
+        return if (secure) CREDENTIAL else NONE
     }
 
     /**
@@ -82,4 +114,15 @@ class Biometrics(private val activity: Activity) {
 
     private fun keyguard(): KeyguardManager? =
         activity.getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager
+
+    companion object {
+        /** Отпечаток или лицо. */
+        const val BIOMETRICS = "biometrics"
+
+        /** ПИН, пароль или графический ключ устройства. */
+        const val CREDENTIAL = "credential"
+
+        /** Подтверждать нечем: блокировка экрана не настроена. */
+        const val NONE = "none"
+    }
 }

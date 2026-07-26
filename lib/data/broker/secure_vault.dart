@@ -1,3 +1,4 @@
+import '../../domain/broker/broker.dart';
 import '../native_bridge.dart';
 
 /// Торговые секреты: доступ к ним и подпись запросов.
@@ -59,4 +60,8 @@ class SecureVault {
       _bridge.biometricConfirm(title: title, subtitle: subtitle);
 
   Future<bool> get biometricsAvailable => _bridge.biometricsAvailable();
+
+  /// Чем именно подтверждается сделка на этом устройстве.
+  Future<ConfirmMethod> get confirmMethod async =>
+      ConfirmMethod.parse(await _bridge.confirmMethod());
 }

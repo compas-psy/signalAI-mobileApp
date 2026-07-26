@@ -57,6 +57,75 @@ enum TradingMode {
       };
 }
 
+/// Чем подтверждается сделка на этом устройстве.
+///
+/// Отдельный тип вместо «доступно/недоступно»: отказ обязан называть причину,
+/// иначе владельцу нечего чинить. Подтверждение — не украшение, а условие
+/// отправки ордера: без него торговый контур не готов, что бы ни показывал
+/// остальной интерфейс.
+enum ConfirmMethod {
+  /// Отпечаток или лицо.
+  biometrics,
+
+  /// ПИН, пароль или графический ключ устройства.
+  credential,
+
+  /// Подтверждать нечем.
+  none;
+
+  static ConfirmMethod parse(String? v) => switch (v) {
+        'biometrics' => ConfirmMethod.biometrics,
+        'credential' => ConfirmMethod.credential,
+        _ => ConfirmMethod.none,
+      };
+
+  bool get available => this != ConfirmMethod.none;
+
+  String get label => switch (this) {
+        ConfirmMethod.biometrics => 'отпечаток или лицо',
+        ConfirmMethod.credential => 'ПИН устройства',
+        ConfirmMethod.none => 'нечем',
+      };
+
+  /// Что делать владельцу, если подтверждать нечем.
+  String get hint => this == ConfirmMethod.none
+      ? 'Ордер нельзя отправить: подтверждать сделку нечем. Включите '
+          'блокировку экрана (ПИН, пароль или отпечаток) в настройках '
+          'телефона — приложение спросит подтверждение перед каждой заявкой.'
+      : '';
+}
+
+/// Итог последней проверки ключей площадки.
+///
+/// Хранится вместе с состоянием приложения: отказ биржи обязан пережить тост,
+/// иначе владелец видит «ключи заданы» и не знает, что ими нельзя торговать.
+class BrokerKeyCheck {
+  const BrokerKeyCheck({required this.ok, required this.note, required this.at});
+
+  /// Биржа приняла ключ.
+  final bool ok;
+
+  /// Её ответ либо причина отказа — как есть, без пересказа.
+  final String note;
+  final DateTime at;
+
+  Map<String, dynamic> toJson() => {
+        'ok': ok,
+        'note': note,
+        'at': at.toIso8601String(),
+      };
+
+  static BrokerKeyCheck? fromJson(Map<String, dynamic> j) {
+    final at = DateTime.tryParse(j['at'] as String? ?? '');
+    if (at == null) return null;
+    return BrokerKeyCheck(
+      ok: j['ok'] as bool? ?? false,
+      note: j['note'] as String? ?? '',
+      at: at,
+    );
+  }
+}
+
 /// Активная заявка на бирже.
 class BrokerOrder {
   const BrokerOrder({

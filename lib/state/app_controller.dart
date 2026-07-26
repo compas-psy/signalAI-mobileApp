@@ -343,6 +343,45 @@ class AppController extends ChangeNotifier {
     }
   }
 
+  // ── Бумажный журнал ────────────────────────────────────────────────────
+
+  /// Журнал бумажных сделок. null — режим без журнала (демо, сервер).
+  PaperTracking? get _paper {
+    final repository = _repository;
+    return repository is PaperTracking ? repository as PaperTracking : null;
+  }
+
+  /// Как идея уже ведётся на бумаге. null — не ведётся или журнала нет.
+  String? paperNote(TradingSignal signal) => _paper?.paperNoteFor(signal.symbol);
+
+  /// Есть ли вообще бумажный журнал: без него кнопку показывать незачем.
+  bool get paperAvailable => _paper != null;
+
+  /// Завести текущую идею на бумаге.
+  ///
+  /// Отдельно от подтверждения сделки намеренно: бумажный журнал не зависит
+  /// ни от ключей, ни от биржи, ни от подтверждения — и запретить его тем,
+  /// что торговля выключена, было бы бессмысленно.
+  Future<void> trackCurrentSignalOnPaper() async {
+    final signal = currentSignal;
+    final paper = _paper;
+    if (signal == null || paper == null) return;
+    try {
+      showToast(await paper.trackOnPaper(signal.id));
+    } catch (e) {
+      showToast(_errorText(e));
+    }
+    notifyListeners();
+    // Журнал изменился — вкладка «Сделки» должна показывать это сразу, а не
+    // после следующего пересчёта.
+    try {
+      _trades = await _repository.fetchTrades();
+      notifyListeners();
+    } on Object {
+      // Не удалось перечитать — запись всё равно сделана.
+    }
+  }
+
   Future<void> toggleStrategy(String id, bool enabled) async {
     final snapshot = _strategies;
     if (snapshot == null) return;
@@ -414,6 +453,10 @@ class AppController extends ChangeNotifier {
     final repository = _repository;
     return repository is TradingDesk ? repository as TradingDesk : null;
   }
+
+  /// Торговый контур для экранов, которым нужен он сам, а не срез состояния:
+  /// диагностика гоняет живые запросы к биржам.
+  TradingDesk? get tradingDesk => _desk;
 
   /// Сохраняет ключи биржи и сразу проверяет их: молча принять нерабочий ключ
   /// значит узнать об этом в момент отправки ордера.

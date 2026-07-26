@@ -11,6 +11,7 @@ import '../widgets/broker_keys_sheet.dart';
 import '../widgets/common.dart';
 import '../widgets/risk_edit_sheet.dart';
 import 'diagnostics_screen.dart';
+import 'trading_diagnostics_screen.dart';
 
 /// Экран «Настройки»: подключения, доставка сигналов, уведомления, риск (ТЗ §9).
 class SettingsScreen extends StatelessWidget {
@@ -274,6 +275,17 @@ class _TradingCard extends StatelessWidget {
           ),
           const SizedBox(height: 8),
 
+          // Чего не хватает до готовности — одной строкой и сразу под
+          // бейджем: «НЕ ГОТОВ» без причины заставляет гадать.
+          if (!trading.ready && trading.blockingReason.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Text(
+                'Ордер сейчас не уйдёт: ${trading.blockingReason}.',
+                style: T.body(11.5, color: C.red, height: 1.4),
+              ),
+            ),
+
           if (!trading.vaultAvailable)
             Padding(
               padding: const EdgeInsets.only(bottom: 8),
@@ -283,6 +295,33 @@ class _TradingCard extends StatelessWidget {
                 style: T.body(11.5, color: C.red, height: 1.4),
               ),
             ),
+
+          // ── Общее для всех площадок ──────────────────────────────────
+          KeyValueRow(
+            name: 'Подтверждение сделки',
+            value: trading.confirmMethod.label,
+            valueStyle: T.mono(
+              12,
+              color: trading.confirmMethod.available ? C.text : C.red,
+            ),
+          ),
+          if (!trading.confirmMethod.available)
+            Padding(
+              padding: const EdgeInsets.only(top: 2, bottom: 6),
+              child: Text(
+                trading.confirmMethod.hint,
+                style: T.body(11, color: C.red, height: 1.4),
+              ),
+            ),
+          KeyValueRow(
+            name: 'Допуск к живым деньгам',
+            value: trading.gateAllowed ? 'открыт' : 'закрыт',
+            valueStyle: T.mono(12, color: trading.gateAllowed ? C.green : C.muted),
+          ),
+          Padding(
+            padding: const EdgeInsets.only(top: 2, bottom: 10),
+            child: Text(trading.gateReason, style: T.body(11, color: C.muted, height: 1.4)),
+          ),
 
           // Каждая площадка со своим режимом и ключами: крипта может стоять
           // на testnet, пока российский счёт ещё в песочнице.
@@ -302,8 +341,21 @@ class _TradingCard extends StatelessWidget {
             ),
             KeyValueRow(
               name: 'Ключи',
-              value: broker.hasKeys ? 'заданы · изменить' : 'не заданы · ввести',
-              valueStyle: T.mono(12, color: broker.hasKeys ? C.green : C.accent),
+              // Три разных состояния, а не два: ключ может лежать в хранилище
+              // и при этом быть отвергнутым биржей — молчать об этом нельзя.
+              value: !broker.hasKeys
+                  ? 'не заданы · ввести'
+                  : broker.keysAccepted
+                      ? 'приняты · изменить'
+                      : 'НЕ ПРИНЯТЫ · изменить',
+              valueStyle: T.mono(
+                12,
+                color: !broker.hasKeys
+                    ? C.accent
+                    : broker.keysAccepted
+                        ? C.green
+                        : C.red,
+              ),
               onTap: () => showBrokerKeysSheet(
                 context,
                 broker: BrokerId.parse(broker.id),
@@ -312,7 +364,21 @@ class _TradingCard extends StatelessWidget {
                     controller.saveBrokerKeys(BrokerId.parse(broker.id), key, secret),
               ),
             ),
-            if (!broker.liveAllowed)
+            if (broker.keyNote.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 2, bottom: 4),
+                child: Text(
+                  broker.keyNote,
+                  style: T.body(
+                    10.5,
+                    color: broker.keysAccepted ? C.muted : C.red,
+                    height: 1.4,
+                  ),
+                ),
+              ),
+            // Общая причина уже написана выше в блоке «Допуск» — здесь только
+            // то, что относится именно к этой площадке.
+            if (!broker.liveAllowed && broker.liveBlockedReason != trading.gateReason)
               Padding(
                 padding: const EdgeInsets.only(top: 2, bottom: 6),
                 child: Text(
@@ -320,24 +386,8 @@ class _TradingCard extends StatelessWidget {
                   style: T.body(10.5, color: C.muted, height: 1.4),
                 ),
               ),
+            const SizedBox(height: 4),
           ],
-          KeyValueRow(
-            name: 'Подтверждение сделки',
-            value: trading.biometricsAvailable ? 'биометрия' : 'недоступно',
-            valueStyle: T.mono(
-              12,
-              color: trading.biometricsAvailable ? C.text : C.red,
-            ),
-          ),
-          KeyValueRow(
-            name: 'Допуск к живым деньгам',
-            value: trading.gateAllowed ? 'открыт' : 'закрыт',
-            valueStyle: T.mono(12, color: trading.gateAllowed ? C.green : C.muted),
-          ),
-          Padding(
-            padding: const EdgeInsets.only(top: 2, bottom: 8),
-            child: Text(trading.gateReason, style: T.body(11, color: C.muted, height: 1.4)),
-          ),
 
           _TradingSwitch(
             title: 'Отправлять ордера',
@@ -354,6 +404,32 @@ class _TradingCard extends StatelessWidget {
             value: trading.killSwitch,
             danger: true,
             onChanged: controller.setKillSwitch,
+          ),
+          const SizedBox(height: 12),
+          // Состояние выше — словами приложения. Здесь его можно проверить
+          // словами биржи: что она отвечает на наш ключ и что видит на счёте.
+          Pressable(
+            onTap: () => Navigator.of(context).push(
+              PageRouteBuilder<void>(
+                pageBuilder: (context, animation, secondary) =>
+                    const TradingDiagnosticsScreen(),
+                transitionsBuilder: (context, animation, secondary, child) =>
+                    FadeTransition(opacity: animation, child: child),
+              ),
+            ),
+            child: Container(
+              padding: const EdgeInsets.symmetric(vertical: 10),
+              decoration: BoxDecoration(
+                border: Border.all(color: C.borderHover),
+                borderRadius: BorderRadius.circular(R.inner),
+              ),
+              child: Center(
+                child: Text(
+                  'Диагностика торговли',
+                  style: T.body(12, weight: 800, color: C.accent),
+                ),
+              ),
+            ),
           ),
         ],
       ),
