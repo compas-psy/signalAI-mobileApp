@@ -243,6 +243,8 @@ class Screener {
       return null;
     }
 
+    final chart = _chart(hourly, structure, direction, entry, atrHourly);
+
     return ScreenerResult(
       components: components,
       signal: TradingSignal(
@@ -278,7 +280,56 @@ class Screener {
         status: score >= 75 ? SignalStatus.pushed : SignalStatus.proposed,
         invalidationPrice: stopLoss,
         correlationGroup: _correlationGroup(spec),
+        chart: chart,
       ),
+    );
+  }
+
+  /// Сколько последних свечей отдаётся в график идеи. Окно усечено сознательно:
+  /// полная история в памяти каждого сигнала не нужна ни графику, ни телефону.
+  static const chartWindow = 72;
+
+  /// График идеи из тех же свечей, по которым считался сигнал.
+  ///
+  /// Разметка — только реально найденная: уровень слома из структуры, FVG из
+  /// индикатора. Ничего декоративного здесь не рисуется.
+  SignalChart _chart(
+    List<Candle> hourly,
+    MarketStructure structure,
+    Direction direction,
+    double entry,
+    double atrHourly,
+  ) {
+    final start = hourly.length > chartWindow ? hourly.length - chartWindow : 0;
+    final window = hourly.sublist(start);
+
+    final long = direction == Direction.long;
+    final zones = <ChartZone>[
+      for (final gap in fairValueGaps(hourly))
+        if (gap.bullish == long &&
+            gap.index >= start &&
+            (gap.mid - entry).abs() < atrHourly * 2)
+          ChartZone(
+            from: gap.from,
+            to: gap.to,
+            startIndex: gap.index - start,
+            label: 'FVG',
+          ),
+    ];
+
+    return SignalChart(
+      timeframeLabel: '1H',
+      candles: [
+        for (final c in window) ChartCandle(c.open, c.high, c.low, c.close),
+      ],
+      breakLevel: structure.breakType == StructureBreak.none ? null : structure.breakLevel,
+      breakLabel: switch (structure.breakType) {
+        StructureBreak.bos => 'BOS',
+        StructureBreak.choch => 'CHoCH',
+        StructureBreak.none => null,
+      },
+      // Больше двух зон загромождают график — оставляем ближайшие к текущему краю.
+      zones: zones.length > 2 ? zones.sublist(zones.length - 2) : zones,
     );
   }
 

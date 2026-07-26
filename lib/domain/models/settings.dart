@@ -9,6 +9,7 @@ class ExchangeAccount {
     required this.subtitle,
     required this.connected,
     required this.accentHex,
+    this.isDataSource = false,
   });
 
   final String id;
@@ -24,6 +25,12 @@ class ExchangeAccount {
   /// Фирменный цвет метки, 0xAARRGGBB.
   final int accentHex;
 
+  /// Источник рыночных данных (котировки/свечи), а не торговый доступ.
+  ///
+  /// Разница принципиальна и показывается в интерфейсе отдельными секциями:
+  /// «подключено» у источника данных не означает, что можно торговать.
+  final bool isDataSource;
+
   ExchangeAccount copyWith({bool? connected, String? subtitle}) => ExchangeAccount(
         id: id,
         abbr: abbr,
@@ -31,6 +38,7 @@ class ExchangeAccount {
         subtitle: subtitle ?? this.subtitle,
         connected: connected ?? this.connected,
         accentHex: accentHex,
+        isDataSource: isDataSource,
       );
 
   factory ExchangeAccount.fromJson(Map<String, dynamic> j) => ExchangeAccount(
@@ -43,6 +51,7 @@ class ExchangeAccount {
           (j['accent'] as String? ?? '#8E8E98').replaceFirst('#', 'FF'),
           radix: 16,
         ),
+        isDataSource: j['is_data_source'] as bool? ?? false,
       );
 }
 

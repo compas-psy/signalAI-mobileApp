@@ -68,11 +68,14 @@ class AppShell extends StatelessWidget {
       }
     }
     return switch (controller.tab) {
-      AppTab.ideas => IdeasScreen(digest: controller.digest!),
+      AppTab.ideas => controller.digest == null
+          ? _DigestPending(controller: controller)
+          : IdeasScreen(digest: controller.digest!),
       AppTab.trades => TradesScreen(summary: controller.trades!),
       AppTab.strategies => StrategiesScreen(
           snapshot: controller.strategies!,
           backtestRunning: controller.backtestRunning,
+          backtestStage: controller.analysisStage,
         ),
       AppTab.settings => SettingsScreen(snapshot: controller.settings!),
     };
@@ -98,6 +101,70 @@ class AppShell extends StatelessWidget {
           busy: controller.confirming,
           onExecute: controller.confirmCurrentSignal,
           onClose: controller.closeSheet,
+        ),
+      ),
+    );
+  }
+}
+
+/// Вкладка «Идеи», пока дайджест ещё считается или расчёт упал.
+///
+/// Это не заставка: оболочка уже работает, вкладки переключаются, а здесь
+/// виден живой прогресс реального расчёта по данным бирж.
+class _DigestPending extends StatelessWidget {
+  const _DigestPending({required this.controller});
+
+  final AppController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final failed = controller.digestError != null && !controller.digestLoading;
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(28),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              failed ? 'Данные бирж недоступны' : 'Считаем идеи…',
+              style: T.jost(20),
+            ),
+            const SizedBox(height: 10),
+            if (failed) ...[
+              Text(
+                controller.digestErrorText,
+                textAlign: TextAlign.center,
+                style: T.body(12, color: C.muted, height: 1.5),
+              ),
+              const SizedBox(height: 18),
+              GestureDetector(
+                onTap: controller.refreshDigest,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 13),
+                  decoration: BoxDecoration(
+                    color: C.accent,
+                    borderRadius: BorderRadius.circular(R.button),
+                  ),
+                  child: Text('Повторить', style: T.body(14, weight: 800, color: C.onAccent)),
+                ),
+              ),
+            ] else ...[
+              // Стадия обновляется репозиторием: видно, какой инструмент
+              // анализируется прямо сейчас.
+              Text(
+                controller.analysisStage ?? 'Подключаемся к биржам…',
+                textAlign: TextAlign.center,
+                style: T.mono(12, color: C.accent),
+              ),
+              const SizedBox(height: 10),
+              Text(
+                'Идёт реальный расчёт по котировкам MOEX ISS и Bybit — '
+                'обычно 5–20 секунд. Остальные вкладки уже работают.',
+                textAlign: TextAlign.center,
+                style: T.body(11, color: C.muted, height: 1.5),
+              ),
+            ],
+          ],
         ),
       ),
     );
@@ -137,11 +204,11 @@ class _ErrorState extends StatelessWidget {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Text('Нет связи с сервером', style: T.jost(20)),
+                  Text('Не удалось запуститься', style: T.jost(20)),
                   const SizedBox(height: 8),
                   Text(
-                    'Сигналы приходят с вашего сервера. Проверьте подключение '
-                    'и повторите попытку.',
+                    'Не получилось загрузить данные приложения. Проверьте '
+                    'подключение к интернету и повторите попытку.',
                     textAlign: TextAlign.center,
                     style: T.body(12, color: C.muted, height: 1.5),
                   ),

@@ -37,6 +37,10 @@ class AppController extends ChangeNotifier {
   SettingsSnapshot? _settings;
   Object? _error;
 
+  bool _digestLoading = false;
+  Object? _digestError;
+  String? _analysisStage;
+
   AppTab get tab => _tab;
   bool get sheetOpen => _sheetOpen;
   String? get toast => _toast;
@@ -48,7 +52,22 @@ class AppController extends ChangeNotifier {
   SettingsSnapshot? get settings => _settings;
   Object? get error => _error;
 
-  bool get isLoading => _digest == null && _error == null;
+  /// Идёт ли расчёт дайджеста (анализ на устройстве или запрос к серверу).
+  bool get digestLoading => _digestLoading;
+
+  /// Ошибка расчёта дайджеста — оболочка при этом остаётся рабочей.
+  Object? get digestError => _digestError;
+
+  /// Текущая стадия длинного расчёта («Анализ SiU6…») — для индикатора.
+  String? get analysisStage => _analysisStage;
+
+  /// Текст ошибки дайджеста для экрана — тот же словарь, что у тостов.
+  String get digestErrorText =>
+      _digestError == null ? '' : _errorText(_digestError!);
+
+  /// Быстрая фаза запуска: оболочка ждёт только настройки и справочники.
+  /// Дайджест считается отдельно и показывает прогресс, а не заставку.
+  bool get isLoading => _settings == null && _error == null;
 
   /// Открыта ли карточка идеи (детальный экран поверх вкладки «Идеи»).
   bool get isDetailOpen => _selectedSignalId != null;
@@ -65,23 +84,54 @@ class AppController extends ChangeNotifier {
 
   RiskProfile? get risk => _settings?.risk;
 
+  /// Запуск: сначала быстрые данные (настройки, стратегии, сделки) — оболочка
+  /// появляется сразу; затем дайджест с живым прогрессом расчёта.
   Future<void> load() async {
     try {
       _error = null;
       final results = await Future.wait([
-        _repository.fetchDigest(),
         _repository.fetchTrades(),
         _repository.fetchStrategies(),
         _repository.fetchSettings(),
       ]);
-      _digest = results[0] as DailyDigest;
-      _trades = results[1] as TradesSummary;
-      _strategies = results[2] as StrategiesSnapshot;
-      _settings = results[3] as SettingsSnapshot;
+      _trades = results[0] as TradesSummary;
+      _strategies = results[1] as StrategiesSnapshot;
+      _settings = results[2] as SettingsSnapshot;
     } catch (e) {
       _error = e;
+      notifyListeners();
+      return;
     }
     notifyListeners();
+    await refreshDigest();
+  }
+
+  /// Пересчёт идей. Доступен и с экрана — идея дня не обязана жить до
+  /// перезапуска приложения.
+  Future<void> refreshDigest() async {
+    if (_digestLoading) return;
+    _digestLoading = true;
+    _digestError = null;
+    final repository = _repository;
+    if (repository is ProgressReporting) {
+      (repository as ProgressReporting).onProgress = (stage) {
+        _analysisStage = stage;
+        notifyListeners();
+      };
+    }
+    notifyListeners();
+    try {
+      _digest = await _repository.fetchDigest();
+    } catch (e) {
+      _digestError = e;
+    } finally {
+      _digestLoading = false;
+      _analysisStage = null;
+      if (repository is ProgressReporting) {
+        (repository as ProgressReporting).onProgress = null;
+      }
+      notifyListeners();
+    }
   }
 
   // ── Навигация ──────────────────────────────────────────────────────────
@@ -160,6 +210,13 @@ class AppController extends ChangeNotifier {
   Future<void> runBacktest(String strategyId) async {
     if (_backtestRunning) return;
     _backtestRunning = true;
+    final repository = _repository;
+    if (repository is ProgressReporting) {
+      (repository as ProgressReporting).onProgress = (stage) {
+        _analysisStage = stage;
+        notifyListeners();
+      };
+    }
     notifyListeners();
     try {
       final result = await _repository.runBacktest(strategyId);
@@ -169,6 +226,10 @@ class AppController extends ChangeNotifier {
       showToast(_errorText(e));
     } finally {
       _backtestRunning = false;
+      _analysisStage = null;
+      if (repository is ProgressReporting) {
+        (repository as ProgressReporting).onProgress = null;
+      }
       notifyListeners();
     }
   }
@@ -279,8 +340,16 @@ class AppController extends ChangeNotifier {
     return '—';
   }
 
-  String _errorText(Object e) =>
-      e is ApiException ? e.message : 'Нет связи с сервером — попробуйте ещё раз';
+  /// Текст ошибки для пользователя. «Нет связи с сервером» здесь возможен
+  /// только для серверного режима: в автономном сервера нет, и сваливать на
+  /// него честнее всего не получится.
+  String _errorText(Object e) => switch (e) {
+        ApiException(:final message) => message,
+        FeatureUnavailableException(:final message) => message,
+        UnimplementedError(:final String message) => message,
+        _ => 'Не удалось получить данные: нет сети или биржа не отвечает. '
+            'Попробуйте ещё раз.',
+      };
 
   @override
   void dispose() {

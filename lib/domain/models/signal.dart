@@ -69,6 +69,91 @@ class MarketEvent {
       );
 }
 
+/// Свеча графика идеи: только OHLC.
+///
+/// Сознательно без времени, объёма и OI — график идеи рисует цену и уровни,
+/// а держать в памяти лишние поля на каждую свечу каждого сигнала незачем.
+class ChartCandle {
+  const ChartCandle(this.open, this.high, this.low, this.close);
+
+  final double open;
+  final double high;
+  final double low;
+  final double close;
+
+  factory ChartCandle.fromJson(List<dynamic> j) => ChartCandle(
+        (j[0] as num).toDouble(),
+        (j[1] as num).toDouble(),
+        (j[2] as num).toDouble(),
+        (j[3] as num).toDouble(),
+      );
+}
+
+/// Ценовая зона на графике (например, незакрытый FVG).
+class ChartZone {
+  const ChartZone({
+    required this.from,
+    required this.to,
+    required this.startIndex,
+    required this.label,
+  });
+
+  final double from;
+  final double to;
+
+  /// Свеча, с которой зона начинается (индекс в [SignalChart.candles]).
+  final int startIndex;
+  final String label;
+
+  factory ChartZone.fromJson(Map<String, dynamic> j) => ChartZone(
+        from: (j['from'] as num).toDouble(),
+        to: (j['to'] as num).toDouble(),
+        startIndex: (j['start_index'] as num?)?.toInt() ?? 0,
+        label: j['label'] as String? ?? '',
+      );
+}
+
+/// Данные для графика идеи: реальные свечи и реальная разметка.
+///
+/// Здесь нет ничего нарисованного «для красоты»: свечи — те самые, по которым
+/// скринер считал сигнал (усечённое окно, чтобы не держать в памяти полную
+/// историю), зоны и уровень слома — только если скринер их действительно нашёл.
+class SignalChart {
+  const SignalChart({
+    required this.timeframeLabel,
+    required this.candles,
+    this.breakLevel,
+    this.breakLabel,
+    this.zones = const [],
+  });
+
+  /// Таймфрейм отображаемых свечей — всегда виден тегом на графике («1H»).
+  final String timeframeLabel;
+
+  final List<ChartCandle> candles;
+
+  /// Уровень слома структуры; null — слома не было, линия не рисуется.
+  final double? breakLevel;
+
+  /// «BOS» / «CHoCH» — подпись слома, если он есть.
+  final String? breakLabel;
+
+  /// Реально найденные зоны (FVG и т.п.); пусто — не рисуем.
+  final List<ChartZone> zones;
+
+  factory SignalChart.fromJson(Map<String, dynamic> j) => SignalChart(
+        timeframeLabel: j['timeframe'] as String? ?? '',
+        candles: (j['candles'] as List<dynamic>? ?? const [])
+            .map((e) => ChartCandle.fromJson(e as List<dynamic>))
+            .toList(growable: false),
+        breakLevel: (j['break_level'] as num?)?.toDouble(),
+        breakLabel: j['break_label'] as String?,
+        zones: (j['zones'] as List<dynamic>? ?? const [])
+            .map((e) => ChartZone.fromJson(e as Map<String, dynamic>))
+            .toList(growable: false),
+      );
+}
+
 /// Торговый сигнал (идея) — центральная сущность приложения.
 ///
 /// Все уровни и скоринг приходят с сервера (ТЗ §5): клиент ничего не считает,
@@ -105,6 +190,7 @@ class TradingSignal {
     this.invalidationPrice,
     this.correlationGroup,
     this.strategyId,
+    this.chart,
   });
 
   final String id;
@@ -178,6 +264,10 @@ class TradingSignal {
 
   final String? strategyId;
 
+  /// Реальные свечи и разметка для графика. null — графика нет (и рисовать
+  /// вместо него муляж нельзя: виджет покажет честную заглушку).
+  final SignalChart? chart;
+
   /// Расстояние от входа до стопа в единицах цены — 1R.
   ///
   /// Не путать с [unitRisk]: тот же риск, но уже пересчитанный в рубли через
@@ -215,6 +305,7 @@ class TradingSignal {
         invalidationPrice: invalidationPrice,
         correlationGroup: correlationGroup,
         strategyId: strategyId,
+        chart: chart,
       );
 
   factory TradingSignal.fromJson(Map<String, dynamic> j) => TradingSignal(
@@ -258,5 +349,8 @@ class TradingSignal {
         invalidationPrice: (j['invalidation_price'] as num?)?.toDouble(),
         correlationGroup: j['correlation_group'] as String?,
         strategyId: j['strategy_id'] as String?,
+        chart: j['chart'] == null
+            ? null
+            : SignalChart.fromJson(j['chart'] as Map<String, dynamic>),
       );
 }

@@ -436,6 +436,49 @@ class _SmartRiskCard extends StatelessWidget {
                 ),
               ],
             ),
+            const SizedBox(height: 8),
+            // Потенциал сделки в деньгах: сколько принесут все тейки с их
+            // долями и сколько заберёт стоп — при рассчитанном объёме.
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: InsetBox(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Потенциальная прибыль', style: T.body(10, color: C.muted)),
+                        const SizedBox(height: 2),
+                        Text(
+                          '+${fmt(PositionSizing.potentialProfitRub(signal, risk), 0)} ₽',
+                          style: T.mono(13, weight: 600, color: C.green),
+                        ),
+                        const SizedBox(height: 1),
+                        Text('все тейки с долями объёма', style: T.body(10, color: C.muted)),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: InsetBox(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Потенциальный убыток', style: T.body(10, color: C.muted)),
+                        const SizedBox(height: 2),
+                        Text(
+                          '−${fmt(PositionSizing.potentialLossRub(signal, risk), 0)} ₽',
+                          style: T.mono(13, weight: 600, color: C.red),
+                        ),
+                        const SizedBox(height: 1),
+                        Text('если сработает стоп-лосс', style: T.body(10, color: C.muted)),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
           ],
         ),
       );

@@ -1,3 +1,4 @@
+import '../domain/analysis/backtester.dart';
 import '../domain/analysis/candle.dart';
 import '../domain/analysis/indicators.dart';
 import '../domain/analysis/instrument_spec.dart';
@@ -18,7 +19,7 @@ import 'repository.dart';
 /// режима честные: расчёт идёт в момент открытия приложения, а не по
 /// расписанию 10:10, и позиции не сопровождаются, пока приложение закрыто —
 /// для этого нужен серверный контур из ТЗ §2.
-class LocalAnalysisRepository implements SignalAiRepository {
+class LocalAnalysisRepository implements SignalAiRepository, ProgressReporting {
   LocalAnalysisRepository({
     IssClient? iss,
     BybitClient? bybit,
@@ -52,6 +53,13 @@ class LocalAnalysisRepository implements SignalAiRepository {
   /// Причины отбраковки последнего прогона — видны в логе, не теряются молча.
   final List<RejectedCandidate> lastRejections = [];
 
+  /// Слушатель стадий расчёта: интерфейс показывает живой прогресс,
+  /// а не зависшую заставку.
+  @override
+  void Function(String stage)? onProgress;
+
+  void _stage(String stage) => onProgress?.call(stage);
+
   RiskProfile _risk = const RiskProfile(
     deposit: 1000000,
     riskPercent: 0.75,
@@ -67,18 +75,23 @@ class LocalAnalysisRepository implements SignalAiRepository {
   Future<DailyDigest> fetchDigest() async {
     lastRejections.clear();
 
+    _stage('Снимок срочного рынка MOEX…');
     final snapshots = await _iss.fortsSnapshot();
     final selected = _selectContracts(snapshots);
     final usdRub = _usdRub(selected);
 
+    _stage('Режим рынка: индекс, валюта, биткоин…');
     final regime = await _regime(selected);
     final results = <ScreenerResult>[];
 
-    for (final snapshot in selected.values) {
-      final input = await _fortsInput(snapshot);
-      if (input == null) continue;
-      final result = screener.evaluate(input, regime, rejected: lastRejections);
-      if (result != null) results.add(result);
+    if (_strategyEnabled['forts'] ?? true) {
+      for (final snapshot in selected.values) {
+        _stage('Анализ ${snapshot.spec.symbol}…');
+        final input = await _fortsInput(snapshot);
+        if (input == null) continue;
+        final result = screener.evaluate(input, regime, rejected: lastRejections);
+        if (result != null) results.add(result);
+      }
     }
 
     if (_strategyEnabled['crypto'] ?? true) {
@@ -87,16 +100,24 @@ class LocalAnalysisRepository implements SignalAiRepository {
 
     results.sort((a, b) => b.signal.score.compareTo(a.signal.score));
     final signals = [for (final r in results.take(maxIdeas)) r.signal];
+    final now = DateTime.now();
 
     return DailyDigest(
       title: 'Идеи на сегодня',
-      subtitle: '${_dateLabel(DateTime.now())} · расчёт на устройстве',
+      subtitle: '${_dateLabel(now)} · расчёт на устройстве',
       deliveryBadges: const [],
       regime: _regimeQuotes(selected, regime),
       regimeNote: _regimeNote(regime),
       events: const [],
       signals: signals,
       signalsQuota: '${signals.length} из $maxIdeas',
+      sourceNote: 'Идеи и уровни рассчитаны на этом устройстве в '
+          '${_timeLabel(now)} по котировкам MOEX ISS и публичного Bybit. '
+          'Это не демо-данные: график в карточке — те же свечи, по которым '
+          'считался сигнал.',
+      rejections: [
+        for (final r in lastRejections) '${r.symbol} — ${r.reason}',
+      ],
     );
   }
 
@@ -184,9 +205,11 @@ class LocalAnalysisRepository implements SignalAiRepository {
 
   Future<List<ScreenerResult>> _cryptoResults(MarketRegime regime, double usdRub) async {
     final results = <ScreenerResult>[];
+    _stage('Bybit: тикеры…');
     final tickers = await _bybit.tickers(symbols: cryptoSymbols);
 
     for (final ticker in tickers) {
+      _stage('Анализ ${ticker.symbol}…');
       try {
         final hourly = await _bybit.candles(ticker.symbol, timeframe: Timeframe.h1);
         final daily = await _bybit.candles(ticker.symbol, timeframe: Timeframe.d1, limit: 120);
@@ -341,37 +364,51 @@ class LocalAnalysisRepository implements SignalAiRepository {
             value: Screener.takeProfitMultiples.map((m) => '${_num(m)}R').join(' / '),
           ),
         ],
-        backtest: const BacktestResult(
-          info: 'локальный прогон пока не реализован',
-          stats: [],
-          equityCurve: [],
-        ),
+        backtest: _lastBacktests['forts'] ??
+            _lastBacktests['crypto'] ??
+            const BacktestResult(
+              info: 'прогона ещё не было — запустите',
+              stats: [],
+              equityCurve: [],
+            ),
       );
 
   @override
   Future<SettingsSnapshot> fetchSettings() async => SettingsSnapshot(
         exchanges: const [
+          // Источники данных: отсюда приходят котировки и свечи. «Активно»
+          // здесь не значит «можно торговать» — торговый доступ ниже.
           ExchangeAccount(
             id: 'moex-iss',
             abbr: 'M',
             name: 'MOEX ISS',
-            subtitle: 'Публичные данные срочного рынка · ключ не нужен',
+            subtitle: 'Котировки и свечи срочного рынка · ключ не нужен',
             connected: true,
             accentHex: 0xFFFFD400,
+            isDataSource: true,
           ),
           ExchangeAccount(
             id: 'bybit-public',
             abbr: 'B',
-            name: 'Bybit',
-            subtitle: 'Публичные свечи, OI и фандинг · ключ не нужен',
+            name: 'Bybit · публичный API',
+            subtitle: 'Свечи, открытый интерес, фандинг · ключ не нужен',
             connected: true,
             accentHex: 0xFFF7A600,
+            isDataSource: true,
           ),
           ExchangeAccount(
             id: 'tinvest',
             abbr: 'T',
             name: 'Т-Инвестиции API',
-            subtitle: 'Нужен для остатков и исполнения',
+            subtitle: 'Исполнение сделок пока не реализовано в приложении',
+            connected: false,
+            accentHex: 0xFF8E8E98,
+          ),
+          ExchangeAccount(
+            id: 'bybit-trade',
+            abbr: 'B',
+            name: 'Bybit · торговый доступ',
+            subtitle: 'Исполнение сделок пока не реализовано в приложении',
             connected: false,
             accentHex: 0xFF8E8E98,
           ),
@@ -422,8 +459,9 @@ class LocalAnalysisRepository implements SignalAiRepository {
   @override
   Future<void> confirmSignal(String signalId) async {
     // Исполнение появится вместе с брокерским адаптером и ключами в Keystore.
-    throw UnimplementedError(
-      'Исполнение недоступно: подключите брокера в настройках',
+    throw const FeatureUnavailableException(
+      'Исполнение сделок ещё не реализовано: приложение пока только '
+      'анализирует рынок. Брокерский адаптер — следующий шаг разработки.',
     );
   }
 
@@ -432,13 +470,130 @@ class LocalAnalysisRepository implements SignalAiRepository {
     _strategyEnabled = {..._strategyEnabled, strategyId: enabled};
   }
 
+  /// Прогон стратегии по реальной истории на устройстве.
+  ///
+  /// Даты правил и допущения прогона — в [Backtester]; итоговая подпись
+  /// перечисляет их честно, а не прячет.
   @override
-  Future<BacktestResult> runBacktest(String strategyId) async =>
-      throw UnimplementedError('Локальный бэктест пока не реализован');
+  Future<BacktestResult> runBacktest(String strategyId) async {
+    final histories = strategyId == 'crypto'
+        ? await _cryptoHistories()
+        : await _fortsHistories();
+    if (histories.isEmpty) {
+      throw const FeatureUnavailableException(
+        'История не получена: биржа не отдала свечи. Попробуйте позже.',
+      );
+    }
+
+    final summary = await const Backtester().run(histories, onProgress: onProgress);
+    final backtest = _lastBacktests[strategyId] = _formatBacktest(summary);
+    return backtest;
+  }
+
+  /// Итоги последних прогонов — чтобы карточка бэктеста переживала уход
+  /// с экрана «Стратегии» и возврат на него.
+  final Map<String, BacktestResult> _lastBacktests = {};
+
+  Future<List<InstrumentHistory>> _fortsHistories() async {
+    _stage('MOEX: снимок рынка…');
+    final snapshots = await _iss.fortsSnapshot();
+    final selected = _selectContracts(snapshots);
+    final histories = <InstrumentHistory>[];
+    for (final snapshot in selected.values) {
+      final symbol = snapshot.spec.symbol;
+      _stage('История $symbol…');
+      try {
+        final hourly = await _iss.candles(
+          symbol,
+          timeframe: Timeframe.h1,
+          from: DateTime.now().subtract(const Duration(days: 60)),
+        );
+        final daily = await _iss.candles(
+          symbol,
+          timeframe: Timeframe.d1,
+          from: DateTime.now().subtract(const Duration(days: 180)),
+        );
+        histories.add(InstrumentHistory(spec: snapshot.spec, hourly: hourly, daily: daily));
+      } on Exception {
+        // Инструмент без истории просто не участвует в прогоне.
+        continue;
+      }
+    }
+    return histories;
+  }
+
+  Future<List<InstrumentHistory>> _cryptoHistories() async {
+    _stage('Bybit: тикеры…');
+    final tickers = await _bybit.tickers(symbols: cryptoSymbols);
+    final usdRub = 90.0;
+    final histories = <InstrumentHistory>[];
+    for (final ticker in tickers) {
+      _stage('История ${ticker.symbol}…');
+      try {
+        final hourly = await _bybit.candles(ticker.symbol, timeframe: Timeframe.h1, limit: 1000);
+        final daily = await _bybit.candles(ticker.symbol, timeframe: Timeframe.d1, limit: 200);
+        histories.add(
+          InstrumentHistory(
+            spec: InstrumentSpec(
+              id: ticker.symbol.toLowerCase(),
+              symbol: ticker.symbol,
+              name: 'Bybit · перпетуал',
+              market: Market.crypto,
+              priceDecimals: ticker.lastPrice >= 1000 ? 0 : 2,
+              valuePerPoint: 0.01 * usdRub,
+              unitMultiplier: 0.01,
+              unitDecimals: 2,
+              unitName: ticker.symbol.replaceAll('USDT', ''),
+              unitRiskSuffix: '0,01 ${ticker.symbol.replaceAll('USDT', '')}',
+            ),
+            hourly: hourly,
+            daily: daily,
+          ),
+        );
+      } on Exception {
+        continue;
+      }
+    }
+    return histories;
+  }
+
+  BacktestResult _formatBacktest(BacktestSummary summary) {
+    final pf = summary.profitFactor;
+    return BacktestResult(
+      info: '${summary.days} дн · ${summary.instruments} инстр. · на устройстве · '
+          'без комиссий · режим рынка нейтрален',
+      stats: [
+        StatTile(
+          value: summary.count == 0 ? '—' : '${summary.winRate.round()}%',
+          label: 'винрейт',
+        ),
+        StatTile(
+          value: summary.count == 0
+              ? '—'
+              : '${summary.averageR >= 0 ? '+' : '−'}'
+                  '${summary.averageR.abs().toStringAsFixed(2).replaceAll('.', ',')}R',
+          label: 'ср. сделка',
+        ),
+        StatTile(
+          value: summary.count == 0
+              ? '—'
+              : pf == null
+                  ? '∞'
+                  : pf.toStringAsFixed(1).replaceAll('.', ','),
+          label: 'профит-фактор',
+        ),
+        StatTile(value: '${summary.count}', label: 'сделок'),
+      ],
+      equityCurve: summary.equityCurve,
+    );
+  }
 
   @override
   Future<ExchangeAccount> connectExchange(String exchangeId) async =>
-      throw UnimplementedError('Ввод ключей появится в следующей версии');
+      throw const FeatureUnavailableException(
+        'Торговый доступ ещё не реализован: ввод ключей появится вместе с '
+        'исполнением сделок. Для анализа ключи не нужны — данные уже идут.',
+      );
 
   @override
   Future<void> setChannelEnabled(String channelId, bool enabled) async {
@@ -477,11 +632,11 @@ class LocalAnalysisRepository implements SignalAiRepository {
   ];
   static const _weekdays = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
 
-  static String _dateLabel(DateTime now) {
-    final time = '${now.hour.toString().padLeft(2, '0')}:'
-        '${now.minute.toString().padLeft(2, '0')}';
-    return '${_weekdays[now.weekday - 1]}, ${now.day} ${_months[now.month - 1]} · $time';
-  }
+  static String _timeLabel(DateTime now) =>
+      '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
+
+  static String _dateLabel(DateTime now) =>
+      '${_weekdays[now.weekday - 1]}, ${now.day} ${_months[now.month - 1]} · ${_timeLabel(now)}';
 
   /// Ограничение автономного режима: без сервера нет ни расписания, ни
   /// круглосуточного присмотра за позициями.

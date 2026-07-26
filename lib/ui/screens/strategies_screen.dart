@@ -14,10 +14,14 @@ class StrategiesScreen extends StatelessWidget {
     super.key,
     required this.snapshot,
     required this.backtestRunning,
+    this.backtestStage,
   });
 
   final StrategiesSnapshot snapshot;
   final bool backtestRunning;
+
+  /// Стадия идущего прогона («История SiU6…») — показывается вместо подписи.
+  final String? backtestStage;
 
   @override
   Widget build(BuildContext context) {
@@ -42,6 +46,7 @@ class StrategiesScreen extends StatelessWidget {
               _BacktestCard(
                 backtest: snapshot.backtest,
                 running: backtestRunning,
+                stage: backtestStage,
                 onRun: () => controller.runBacktest(
                   snapshot.packs.isEmpty ? 's1' : snapshot.packs.first.id,
                 ),
@@ -116,11 +121,13 @@ class _BacktestCard extends StatelessWidget {
     required this.backtest,
     required this.running,
     required this.onRun,
+    this.stage,
   });
 
   final BacktestResult backtest;
   final bool running;
   final VoidCallback onRun;
+  final String? stage;
 
   @override
   Widget build(BuildContext context) => SectionCard(
@@ -137,7 +144,7 @@ class _BacktestCard extends StatelessWidget {
                 // Подпись прогона длинная — прижимаем вправо и режем многоточием.
                 Expanded(
                   child: Text(
-                    running ? 'считаем…' : backtest.info,
+                    running ? (stage ?? 'считаем…') : backtest.info,
                     textAlign: TextAlign.right,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
@@ -190,7 +197,7 @@ class _BacktestCard extends StatelessWidget {
                 ),
                 child: Center(
                   child: Text(
-                    running ? 'Тестируем 180 дней…' : 'Запустить бэктест',
+                    running ? 'Считаем…' : 'Запустить бэктест',
                     style: T.body(13, weight: 800, color: running ? C.muted : C.accent),
                   ),
                 ),

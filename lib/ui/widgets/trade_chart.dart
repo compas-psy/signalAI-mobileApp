@@ -5,15 +5,16 @@ import 'package:flutter/widgets.dart';
 import '../../core/format.dart';
 import '../../domain/models/signal.dart';
 import '../../theme/tokens.dart';
+import '../../theme/typography.dart';
 
-/// График сделки в стиле TradingView.
+/// График сделки по реальным свечам сигнала.
 ///
-/// Порт SVG-графика из макета (`design/SignalAI App.dc.html`, метод `chart()`):
-/// свечи, диапазон Вайкоффа, ордер-блок, BOS/CHoCH, spring/UTAD, зоны риска и
-/// профита, линии входа/SL/TP и ценовые чипы на шкале.
+/// Рисуется только то, что действительно есть в данных: свечи, по которым
+/// скринер посчитал идею, уровни входа/SL/TP, реально найденный слом структуры
+/// и зоны FVG. Если свечей нет ([TradingSignal.chart] == null) — честная
+/// заглушка, а не нарисованная картинка.
 ///
-/// Система координат исходника — 380×292; здесь она масштабируется под ширину
-/// контейнера, поэтому пропорции и все отступы сохраняются точно.
+/// Тег в левом верхнем углу всегда показывает таймфрейм отображаемых свечей.
 class TradeChart extends StatefulWidget {
   const TradeChart({super.key, required this.signal});
 
@@ -27,67 +28,94 @@ class TradeChart extends StatefulWidget {
 }
 
 class _TradeChartState extends State<TradeChart> with SingleTickerProviderStateMixin {
-  late final AnimationController _pulse = AnimationController(
-    vsync: this,
-    // @keyframes pulseDot: 1.6s, opacity 1 → .35 → 1
-    duration: const Duration(milliseconds: 1600),
-  )..repeat();
+  // Создаётся лениво: у заглушки без свечей анимации нет, и заводить для неё
+  // тикер (а потом создавать его в dispose через late) незачем.
+  AnimationController? _pulse;
 
   @override
   void dispose() {
-    _pulse.dispose();
+    _pulse?.dispose();
     super.dispose();
   }
 
   @override
+  Widget build(BuildContext context) {
+    final chart = widget.signal.chart;
+    if (chart == null || chart.candles.length < 2) {
+      return const _ChartUnavailable();
+    }
+    final pulse = _pulse ??= AnimationController(
+      vsync: this,
+      // @keyframes pulseDot из макета: 1.6s, opacity 1 → .35 → 1
+      duration: const Duration(milliseconds: 1600),
+    )..repeat();
+    return AspectRatio(
+      aspectRatio: TradeChart.viewWidth / TradeChart.viewHeight,
+      child: RepaintBoundary(
+        child: AnimatedBuilder(
+          animation: pulse,
+          builder: (context, _) => CustomPaint(
+            painter: _ChartPainter(
+              signal: widget.signal,
+              chart: chart,
+              // 0 → 1 → 0: opacity 1 в начале и конце, .35 в середине
+              pulse: 1 - 0.65 * (1 - (2 * pulse.value - 1).abs()),
+            ),
+            size: Size.infinite,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Заглушка вместо графика, когда свечей нет. Показывать вместо неё
+/// синтетическую картинку нельзя: график обязан относиться к сделке.
+class _ChartUnavailable extends StatelessWidget {
+  const _ChartUnavailable();
+
+  @override
   Widget build(BuildContext context) => AspectRatio(
         aspectRatio: TradeChart.viewWidth / TradeChart.viewHeight,
-        child: RepaintBoundary(
-          child: AnimatedBuilder(
-            animation: _pulse,
-            builder: (context, _) => CustomPaint(
-              painter: _ChartPainter(
-                signal: widget.signal,
-                // 0 → 1 → 0: opacity 1 в начале и конце, .35 в середине
-                pulse: 1 - 0.65 * (1 - (2 * _pulse.value - 1).abs()),
+        child: ColoredBox(
+          color: C.inset,
+          child: Center(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text('Живой график недоступен', style: T.body(13, weight: 700, color: C.muted)),
+                  const SizedBox(height: 6),
+                  Text(
+                    'Для этой идеи не получены свечи от источника данных — '
+                    'уровни сделки указаны в карточке ниже.',
+                    textAlign: TextAlign.center,
+                    style: T.body(11, color: C.dim, height: 1.5),
+                  ),
+                ],
               ),
-              size: Size.infinite,
             ),
           ),
         ),
       );
 }
 
-/// Одна свеча в единицах риска (R) относительно цены входа.
-class _Candle {
-  const _Candle(this.open, this.close, this.high, this.low);
-
-  final double open;
-  final double close;
-  final double high;
-  final double low;
-}
-
 class _ChartPainter extends CustomPainter {
-  _ChartPainter({required this.signal, required this.pulse});
+  _ChartPainter({required this.signal, required this.chart, required this.pulse});
 
   final TradingSignal signal;
+  final SignalChart chart;
   final double pulse;
 
-  // Геометрия исходного SVG.
+  // Геометрия совпадает с макетом: поле графика слева, шкала цен справа.
   static const double _w = TradeChart.viewWidth;
   static const double _h = TradeChart.viewHeight;
   static const double _padTop = 12;
   static const double _padBottom = 16;
+  static const double _plotLeft = 8;
   static const double _plotRight = 302;
   static const double _axisX = 308;
-  static const int _candleCount = 44;
-
-  /// Опорные точки ломаной цены: [индекс свечи, цена в R].
-  static const List<List<double>> _anchors = [
-    [0, 1.95], [9, .5], [12, .12], [16, .58], [20, .08], [24, .5],
-    [25, -.5], [26, .12], [30, .6], [33, 1.12], [36, .55], [40, .02], [43, .14],
-  ];
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -95,28 +123,37 @@ class _ChartPainter extends CustomPainter {
     canvas.scale(size.width / _w, size.height / _h);
     canvas.clipRect(const Rect.fromLTWH(0, 0, _w, _h));
 
-    final risk = signal.priceRisk;
-    final direction = signal.direction.isLong ? 1 : -1;
-    // Цена, соответствующая уровню u (в единицах риска).
-    double price(double u) => signal.entry + direction * u * risk;
-    final tpLevels = [
-      for (final tp in signal.takeProfits) (tp.price - signal.entry).abs() / risk,
-    ];
+    final candles = chart.candles;
+    final tps = signal.takeProfits;
 
-    final candles = _buildCandles();
-
-    var uMin = -1.35;
-    var uMax = (tpLevels.isEmpty ? 1.0 : tpLevels.last) + .4;
-    for (final c in candles) {
-      uMin = math.min(uMin, c.low - .12);
-      uMax = math.max(uMax, c.high + .12);
+    // Диапазон цен: свечи плюс все уровни сделки, с небольшим запасом.
+    var lo = signal.stopLoss;
+    var hi = signal.entry;
+    for (final tp in tps) {
+      lo = math.min(lo, tp.price);
+      hi = math.max(hi, tp.price);
     }
-    double y(double u) => _padTop + (uMax - u) / (uMax - uMin) * (_h - _padTop - _padBottom);
+    for (final c in candles) {
+      lo = math.min(lo, c.low);
+      hi = math.max(hi, c.high);
+    }
+    final level = chart.breakLevel;
+    if (level != null) {
+      lo = math.min(lo, level);
+      hi = math.max(hi, level);
+    }
+    final pad = math.max((hi - lo) * 0.05, 1e-9);
+    lo -= pad;
+    hi += pad;
 
-    const candleWidth = (216 - 8) / _candleCount;
-    double x(num i) => 8 + i * candleWidth + candleWidth / 2;
+    double y(double price) =>
+        _padTop + (hi - price) / (hi - lo) * (_h - _padTop - _padBottom);
 
-    String label(double u) => fmt(price(u), signal.priceDecimals);
+    final n = candles.length;
+    final candleWidth = (_plotRight - _plotLeft) / n;
+    double x(num i) => _plotLeft + i * candleWidth + candleWidth / 2;
+
+    String label(double price) => fmt(price, signal.priceDecimals);
 
     // Фон.
     canvas.drawRect(const Rect.fromLTWH(0, 0, _w, _h), Paint()..color = C.inset);
@@ -126,104 +163,78 @@ class _ChartPainter extends CustomPainter {
       ..color = C.grid
       ..strokeWidth = 1;
     for (var g = 0; g < 5; g++) {
-      final u = uMin + (uMax - uMin) * (g + .5) / 5;
-      final gy = y(u);
+      final price = lo + (hi - lo) * (g + .5) / 5;
+      final gy = y(price);
       canvas.drawLine(Offset(6, gy), Offset(_plotRight, gy), gridPaint);
-      _text(canvas, label(u), Offset(_axisX, gy + 3), size: 8.5, color: C.axis, mono: true);
+      _text(canvas, label(price), Offset(_axisX, gy + 3), size: 8.5, color: C.axis, mono: true);
     }
 
-    // Диапазон Вайкоффа.
-    final wyckoffRect = _rect(x(10) - candleWidth, y(.72), x(30) - x(10) + candleWidth, y(-.08) - y(.72));
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(wyckoffRect, const Radius.circular(2)),
-      Paint()..color = const Color.fromRGBO(142, 142, 152, .05),
-    );
-    _dashed(
-      canvas,
-      Path()..addRRect(RRect.fromRectAndRadius(wyckoffRect, const Radius.circular(2))),
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1
-        ..color = C.dim,
-      dash: 4,
-      gap: 3,
-    );
-    _text(
-      canvas,
-      signal.direction.isLong
-          ? 'Диапазон Вайкоффа · фаза C'
-          : 'Диапазон Вайкоффа · распределение',
-      Offset(x(10) - candleWidth, y(.72) - 5),
-      size: 8.5,
-      color: C.muted,
-      weight: 600,
-    );
+    // Зоны FVG — только реально найденные скринером.
+    for (final zone in chart.zones) {
+      final startX = x(zone.startIndex.clamp(0, n - 1)) - candleWidth / 2;
+      final rect = Rect.fromLTRB(startX, y(math.max(zone.from, zone.to)), _plotRight,
+          y(math.min(zone.from, zone.to)));
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(rect, const Radius.circular(2)),
+        Paint()..color = const Color.fromRGBO(255, 212, 0, .07),
+      );
+      _dashed(
+        canvas,
+        Path()..addRRect(RRect.fromRectAndRadius(rect, const Radius.circular(2))),
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1
+          ..color = const Color.fromRGBO(255, 212, 0, .35),
+        dash: 3,
+        gap: 3,
+      );
+      _text(canvas, zone.label, Offset(startX + 4, rect.top + 9),
+          size: 8, color: C.accent, weight: 700);
+    }
 
-    // Ордер-блок.
-    final obRect = _rect(x(30), y(.12), _plotRight - x(30), y(-.35) - y(.12));
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(obRect, const Radius.circular(2)),
-      Paint()..color = const Color.fromRGBO(255, 212, 0, .09),
-    );
-    _dashed(
-      canvas,
-      Path()..addRRect(RRect.fromRectAndRadius(obRect, const Radius.circular(2))),
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1
-        ..color = const Color.fromRGBO(255, 212, 0, .45),
-      dash: 3,
-      gap: 3,
-    );
-    _text(canvas, 'OB 1H', Offset(x(30) + 4, y(-.35) - 4),
-        size: 8.5, color: C.accent, weight: 700);
+    // Слом структуры — если он был.
+    if (level != null && chart.breakLabel != null) {
+      _dashedLine(
+        canvas,
+        Offset(_plotLeft, y(level)),
+        Offset(_plotRight, y(level)),
+        Paint()
+          ..color = C.muted
+          ..strokeWidth = 1,
+        dash: 2,
+        gap: 3,
+      );
+      _text(
+        canvas,
+        '${chart.breakLabel} ${signal.direction.isLong ? '↑' : '↓'}',
+        Offset(_plotLeft + 4, y(level) - 4),
+        size: 8.5,
+        color: C.textSecondary,
+        weight: 700,
+      );
+    }
 
-    // Слом структуры.
-    _dashedLine(
-      canvas,
-      Offset(x(13), y(.72)),
-      Offset(x(34), y(.72)),
-      Paint()
-        ..color = C.muted
-        ..strokeWidth = 1,
-      dash: 2,
-      gap: 3,
-    );
-    _text(
-      canvas,
-      signal.direction.isLong ? 'BOS ↑' : 'CHoCH ↓',
-      Offset(x(34) + 2, y(.72) + 11),
-      size: 8.5,
-      color: C.textSecondary,
-      weight: 700,
-    );
-
-    // Spring / UTAD.
-    _text(
-      canvas,
-      signal.direction.isLong ? 'Spring' : 'UTAD',
-      Offset(x(25) - 12, y(-.78) + 13),
-      size: 8.5,
-      color: C.accent,
-      weight: 700,
-    );
-
-    // Инструмент позиции: зоны риска и профита, линии входа, стопа и тейков.
-    final toolLeft = x(43) + 8;
+    // Зоны риска и профита от последней свечи до края поля.
+    final toolLeft = x(n - 1) + 6;
+    final entryY = y(signal.entry);
+    final slY = y(signal.stopLoss);
     canvas.drawRect(
-      _rect(toolLeft, y(0), _plotRight - toolLeft, y(-1) - y(0)),
+      Rect.fromLTRB(toolLeft, math.min(entryY, slY), _plotRight, math.max(entryY, slY)),
       Paint()..color = const Color.fromRGBO(255, 92, 92, .10),
     );
-    if (tpLevels.isNotEmpty) {
+    if (tps.isNotEmpty) {
+      final lastTpY = y(tps.last.price);
       canvas.drawRect(
-        _rect(toolLeft, y(tpLevels.last), _plotRight - toolLeft, y(0) - y(tpLevels.last)),
+        Rect.fromLTRB(toolLeft, math.min(entryY, lastTpY), _plotRight, math.max(entryY, lastTpY)),
         Paint()..color = const Color.fromRGBO(47, 213, 117, .08),
       );
     }
+
+    // Линии входа, стопа и тейков.
     _dashedLine(
       canvas,
-      Offset(x(28), y(0)),
-      Offset(_plotRight, y(0)),
+      Offset(_plotLeft, entryY),
+      Offset(_plotRight, entryY),
       Paint()
         ..color = C.accent
         ..strokeWidth = 1.2,
@@ -232,16 +243,16 @@ class _ChartPainter extends CustomPainter {
     );
     _dashedLine(
       canvas,
-      Offset(toolLeft - 30, y(-1)),
-      Offset(_plotRight, y(-1)),
+      Offset(toolLeft - 30, slY),
+      Offset(_plotRight, slY),
       Paint()
         ..color = C.red
         ..strokeWidth = 1,
       dash: 4,
       gap: 3,
     );
-    for (var k = 0; k < tpLevels.length; k++) {
-      final ty = y(tpLevels[k]);
+    for (var k = 0; k < tps.length; k++) {
+      final ty = y(tps[k].price);
       _dashedLine(
         canvas,
         Offset(toolLeft - 4, ty),
@@ -252,12 +263,12 @@ class _ChartPainter extends CustomPainter {
         dash: 3,
         gap: 3,
       );
-      _text(canvas, 'TP${k + 1}', Offset(toolLeft, ty - 3),
-          size: 8, color: C.green, mono: true);
+      _text(canvas, 'TP${k + 1}', Offset(toolLeft, ty - 3), size: 8, color: C.green, mono: true);
     }
 
-    // Свечи.
-    for (var i = 0; i < candles.length; i++) {
+    // Свечи — реальные данные, по которым считался сигнал.
+    final bodyWidth = math.max(1.6, candleWidth * 0.52);
+    for (var i = 0; i < n; i++) {
       final candle = candles[i];
       final up = candle.close >= candle.open;
       final paint = Paint()
@@ -268,75 +279,73 @@ class _ChartPainter extends CustomPainter {
       final top = y(math.max(candle.open, candle.close));
       final bottom = y(math.min(candle.open, candle.close));
       canvas.drawRect(
-        Rect.fromLTWH(cx - 1.7, top, 3.4, math.max(1, bottom - top)),
+        Rect.fromLTWH(cx - bodyWidth / 2, top, bodyWidth, math.max(1, bottom - top)),
         paint,
       );
     }
 
     // Маркер текущей цены — пульсирует, как в макете.
     canvas.drawCircle(
-      Offset(x(_candleCount - 1), y(candles.last.close)),
+      Offset(x(n - 1), y(candles.last.close)),
       3.4,
       Paint()..color = C.accent.withValues(alpha: pulse),
     );
 
     // Ценовые чипы на шкале: стоп, тейки, вход.
-    void chip(double u, Color background, Color foreground) {
+    void chip(double price, Color background, Color foreground) {
       canvas.drawRRect(
         RRect.fromRectAndRadius(
-          Rect.fromLTWH(_axisX - 6, y(u) - 7.5, 80, 15),
+          Rect.fromLTWH(_axisX - 6, y(price) - 7.5, 80, 15),
           const Radius.circular(3),
         ),
         Paint()..color = background,
       );
-      _text(canvas, label(u), Offset(_axisX, y(u) + 3.5),
+      _text(canvas, label(price), Offset(_axisX, y(price) + 3.5),
           size: 9, color: foreground, weight: 600, mono: true);
     }
 
-    chip(-1, C.chipSl, const Color(0xFFFFFFFF));
-    for (final level in tpLevels) {
-      chip(level, C.chipTp, C.chipTpText);
+    chip(signal.stopLoss, C.chipSl, const Color(0xFFFFFFFF));
+    for (final tp in tps) {
+      chip(tp.price, C.chipTp, C.chipTpText);
     }
-    chip(0, C.accent, C.onAccent);
+    chip(signal.entry, C.accent, C.onAccent);
+
+    // Тег таймфрейма — всегда виден: зритель должен знать, что за свечи.
+    _tag(canvas, chart.timeframeLabel, const Offset(_plotLeft, 8));
 
     canvas.restore();
   }
 
-  /// Свечи строятся детерминированно из опорных точек — те же формулы,
-  /// что в макете, поэтому картинка совпадает свеча в свечу.
-  List<_Candle> _buildCandles() {
-    final closes = <double>[];
-    for (var i = 0; i < _candleCount; i++) {
-      var j = 0;
-      while (j < _anchors.length - 2 && _anchors[j + 1][0] < i) {
-        j++;
-      }
-      final x0 = _anchors[j][0], y0 = _anchors[j][1];
-      final x1 = _anchors[j + 1][0], y1 = _anchors[j + 1][1];
-      final t = math.min(1.0, math.max(0.0, (i - x0) / math.max(1, x1 - x0)));
-      closes.add(y0 + (y1 - y0) * t + math.sin(i * 3.7) * .05);
-    }
-
-    return [
-      for (var i = 0; i < closes.length; i++)
-        () {
-          final close = closes[i];
-          final open = i > 0 ? closes[i - 1] : close + .12;
-          final wick = .05 + (math.sin(i * 2.3)).abs() * .09;
-          var high = math.max(open, close) + wick;
-          var low = math.min(open, close) - wick;
-          // Хвосты spring и кульминации — заданы явно.
-          if (i == 25) low = -.78;
-          if (i == 33) high = 1.22;
-          return _Candle(open, close, high, low);
-        }(),
-    ];
+  /// Чип таймфрейма в левом верхнем углу.
+  void _tag(Canvas canvas, String text, Offset topLeft) {
+    final painter = TextPainter(
+      text: TextSpan(
+        text: text,
+        style: const TextStyle(
+          fontFamily: 'JetBrains Mono',
+          fontSize: 9,
+          fontWeight: FontWeight.w700,
+          fontVariations: [FontVariation('wght', 700)],
+          color: C.accent,
+          height: 1,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    final rect = Rect.fromLTWH(topLeft.dx, topLeft.dy, painter.width + 12, 15);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(rect, const Radius.circular(3)),
+      Paint()..color = const Color.fromRGBO(255, 212, 0, .10),
+    );
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(rect, const Radius.circular(3)),
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1
+        ..color = const Color.fromRGBO(255, 212, 0, .35),
+    );
+    painter.paint(canvas, Offset(rect.left + 6, rect.top + (rect.height - painter.height) / 2));
   }
-
-  /// Прямоугольник по левому-верхнему углу и размерам (высота может быть
-  /// отрицательной, как в SVG-координатах макета).
-  Rect _rect(double left, double top, double width, double height) =>
-      Rect.fromLTWH(left, top, width, height);
 
   void _dashedLine(Canvas canvas, Offset from, Offset to, Paint paint,
       {required double dash, required double gap}) {

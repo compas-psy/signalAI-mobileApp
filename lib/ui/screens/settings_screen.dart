@@ -25,23 +25,36 @@ class SettingsScreen extends StatelessWidget {
           child: ListView(
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 90),
             children: [
-              SectionCard(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Padding(
-                      padding: EdgeInsets.only(top: 9, bottom: 3),
-                      child: SectionLabel('Биржи · API'),
-                    ),
-                    for (final exchange in snapshot.exchanges)
-                      _ExchangeRow(
-                        exchange: exchange,
-                        onConnect: () => controller.connectExchange(exchange.id),
-                      ),
+              // Источники данных и торговый доступ — принципиально разные
+              // вещи, и смешивать их в одну секцию «Биржи» нечестно: активный
+              // поток котировок не означает, что можно торговать.
+              if (snapshot.exchanges.any((e) => e.isDataSource)) ...[
+                _ExchangesCard(
+                  title: 'Источники данных',
+                  exchanges: [
+                    for (final e in snapshot.exchanges)
+                      if (e.isDataSource) e,
                   ],
+                  connectedLabel: 'Данные идут',
+                  onConnect: controller.connectExchange,
                 ),
-              ),
+                const SizedBox(height: 12),
+                _ExchangesCard(
+                  title: 'Торговый доступ',
+                  exchanges: [
+                    for (final e in snapshot.exchanges)
+                      if (!e.isDataSource) e,
+                  ],
+                  connectedLabel: 'Подключено',
+                  onConnect: controller.connectExchange,
+                ),
+              ] else
+                _ExchangesCard(
+                  title: 'Биржи · API',
+                  exchanges: snapshot.exchanges,
+                  connectedLabel: 'Подключено',
+                  onConnect: controller.connectExchange,
+                ),
               const SizedBox(height: 12),
               _TogglesCard(
                 title: 'Доставка сигналов',
@@ -64,10 +77,49 @@ class SettingsScreen extends StatelessWidget {
   }
 }
 
+class _ExchangesCard extends StatelessWidget {
+  const _ExchangesCard({
+    required this.title,
+    required this.exchanges,
+    required this.connectedLabel,
+    required this.onConnect,
+  });
+
+  final String title;
+  final List<ExchangeAccount> exchanges;
+  final String connectedLabel;
+  final void Function(String id) onConnect;
+
+  @override
+  Widget build(BuildContext context) => SectionCard(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.only(top: 9, bottom: 3),
+              child: SectionLabel(title),
+            ),
+            for (final exchange in exchanges)
+              _ExchangeRow(
+                exchange: exchange,
+                connectedLabel: connectedLabel,
+                onConnect: () => onConnect(exchange.id),
+              ),
+          ],
+        ),
+      );
+}
+
 class _ExchangeRow extends StatelessWidget {
-  const _ExchangeRow({required this.exchange, required this.onConnect});
+  const _ExchangeRow({
+    required this.exchange,
+    required this.onConnect,
+    this.connectedLabel = 'Подключено',
+  });
 
   final ExchangeAccount exchange;
+  final String connectedLabel;
   final VoidCallback onConnect;
 
   @override
@@ -114,7 +166,7 @@ class _ExchangeRow extends StatelessWidget {
                   borderRadius: BorderRadius.circular(R.chipLg),
                 ),
                 child: Text(
-                  exchange.connected ? 'Подключено' : 'Подключить',
+                  exchange.connected ? connectedLabel : 'Подключить',
                   style: T.body(
                     11,
                     weight: 700,

@@ -34,6 +34,8 @@ class DailyDigest {
     required this.events,
     required this.signals,
     required this.signalsQuota,
+    this.sourceNote,
+    this.rejections = const [],
   });
 
   /// «Утренний дайджест».
@@ -58,6 +60,13 @@ class DailyDigest {
   /// «5 из 5» — сколько идей отдано из дневного лимита (ТЗ §5.4).
   final String signalsQuota;
 
+  /// Происхождение данных: где и когда посчитаны идеи. null — не показывается.
+  final String? sourceNote;
+
+  /// Причины отбраковки кандидатов последнего прогона — чтобы было видно,
+  /// что скринер реально работал, а не выдал заготовку.
+  final List<String> rejections;
+
   DailyDigest copyWith({List<TradingSignal>? signals}) => DailyDigest(
         title: title,
         subtitle: subtitle,
@@ -67,6 +76,8 @@ class DailyDigest {
         events: events,
         signals: signals ?? this.signals,
         signalsQuota: signalsQuota,
+        sourceNote: sourceNote,
+        rejections: rejections,
       );
 
   factory DailyDigest.fromJson(Map<String, dynamic> j) => DailyDigest(
@@ -86,5 +97,9 @@ class DailyDigest {
             .map((e) => TradingSignal.fromJson(e as Map<String, dynamic>))
             .toList(growable: false),
         signalsQuota: j['signals_quota'] as String? ?? '',
+        sourceNote: j['source_note'] as String?,
+        rejections: (j['rejections'] as List<dynamic>? ?? const [])
+            .map((e) => e as String)
+            .toList(growable: false),
       );
 }

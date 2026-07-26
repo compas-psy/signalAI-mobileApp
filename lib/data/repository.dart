@@ -13,6 +13,29 @@ import '../domain/models/strategy.dart';
 /// Реализации:
 ///  * [DemoRepository] — данные макета, работают без сети;
 ///  * [RestRepository] — HTTP к мобильному гейтвею Server B.
+/// Функция ещё не реализована — и приложение говорит об этом прямо.
+///
+/// Отличается от сетевой ошибки принципиально: «нет связи с сервером» в
+/// автономном режиме — ложь, сервера там нет вовсе. [message] показывается
+/// пользователю как есть.
+class FeatureUnavailableException implements Exception {
+  const FeatureUnavailableException(this.message);
+
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
+/// Репозиторий, умеющий сообщать о ходе долгого расчёта.
+///
+/// Автономный анализ занимает секунды: слушатель получает человекочитаемые
+/// стадии («Анализ SiU6…»), чтобы пользователь видел живой прогресс, а не
+/// зависшую заставку.
+abstract interface class ProgressReporting {
+  set onProgress(void Function(String stage)? listener);
+}
+
 abstract interface class SignalAiRepository {
   /// Утренний дайджест: режим рынка, события, идеи дня.
   Future<DailyDigest> fetchDigest();

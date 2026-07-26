@@ -32,4 +32,25 @@ abstract final class PositionSizing {
     final r = (tp.price - signal.entry).abs() / risk;
     return '+${r.toStringAsFixed(1).replaceAll('.', ',')}R';
   }
+
+  /// Фактический убыток при срабатывании стопа, ₽.
+  ///
+  /// Не равен риску из настроек: объём округляется вниз до целых единиц,
+  /// поэтому реальный риск обычно чуть меньше запрошенного.
+  static double potentialLossRub(TradingSignal signal, RiskProfile risk) =>
+      quantity(signal, risk) * signal.unitRisk;
+
+  /// Прибыль при исполнении всех тейков с их долями объёма, ₽.
+  ///
+  /// Считается по реальным ценам тейков сигнала, а не по номинальным
+  /// кратностям: сколько R даёт каждый тейк — столько и учитывается.
+  static double potentialProfitRub(TradingSignal signal, RiskProfile risk) {
+    final priceRisk = signal.priceRisk;
+    if (priceRisk == 0) return 0;
+    var weightedR = 0.0;
+    for (final tp in signal.takeProfits) {
+      weightedR += tp.sharePercent / 100 * (tp.price - signal.entry).abs() / priceRisk;
+    }
+    return potentialLossRub(signal, risk) * weightedR;
+  }
 }

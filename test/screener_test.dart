@@ -143,6 +143,27 @@ void main() {
     expect(signal.takeProfits.first.price, greaterThan(signal.entry));
   });
 
+  test('график сигнала — реальные свечи входных данных, не заготовка', () {
+    final bars = risingWithBreakout();
+    final signal = screener.evaluate(input(hourly: bars), bullishRegime)!.signal;
+    final chart = signal.chart;
+
+    expect(chart, isNotNull);
+    expect(chart!.timeframeLabel, '1H');
+    // Окно усечено, но это хвост входной истории: последняя свеча графика —
+    // последняя свеча данных, свеча в свечу.
+    expect(chart.candles.length, lessThanOrEqualTo(72));
+    expect(chart.candles.last.close, bars.last.close);
+    expect(chart.candles.last.high, bars.last.high);
+    expect(
+      chart.candles.first.close,
+      bars[bars.length - chart.candles.length].close,
+    );
+    // Пробой в фикстуре есть — слом обязан быть размечен, и по реальной цене.
+    expect(chart.breakLabel, isNotNull);
+    expect(chart.breakLevel, signal.entry);
+  });
+
   test('уровни расставлены по кратностям риска', () {
     final signal = screener.evaluate(input(), bullishRegime)!.signal;
     final risk = signal.priceRisk;

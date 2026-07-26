@@ -47,9 +47,16 @@ class IdeasScreen extends StatelessWidget {
                   padding: const EdgeInsets.fromLTRB(16, 0, 16, 90),
                   child: Column(
                     children: [
-                      for (final signal in digest.signals) ...[
-                        IdeaCard(signal: signal),
-                        if (signal != digest.signals.last) const SizedBox(height: 10),
+                      if (digest.signals.isEmpty)
+                        const _NoIdeasCard()
+                      else
+                        for (final signal in digest.signals) ...[
+                          IdeaCard(signal: signal),
+                          if (signal != digest.signals.last) const SizedBox(height: 10),
+                        ],
+                      if (digest.sourceNote != null || digest.rejections.isNotEmpty) ...[
+                        const SizedBox(height: 10),
+                        _ProvenanceCard(digest: digest),
                       ],
                     ],
                   ),
@@ -252,6 +259,106 @@ class _EventsCard extends StatelessWidget {
           ],
         ),
       );
+}
+
+/// Честная пустая выдача: идей нет — и это результат, а не сбой.
+class _NoIdeasCard extends StatelessWidget {
+  const _NoIdeasCard();
+
+  @override
+  Widget build(BuildContext context) => SectionCard(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Сегодня идей нет', style: T.body(14, weight: 700)),
+            const SizedBox(height: 4),
+            Text(
+              'Скринер отработал, но ни один кандидат не прошёл фильтры. '
+              'Это нормально: отсутствие сделки — тоже решение. Причины '
+              'отбраковки — ниже.',
+              style: T.body(11, color: C.muted, height: 1.5),
+            ),
+          ],
+        ),
+      );
+}
+
+/// Происхождение данных: где посчитано, что отбраковано, кнопка пересчёта.
+///
+/// Карточка отвечает на вопрос «это муляж или реальные идеи?» прямо в
+/// интерфейсе: видно время расчёта, источники и работу фильтров.
+class _ProvenanceCard extends StatefulWidget {
+  const _ProvenanceCard({required this.digest});
+
+  final DailyDigest digest;
+
+  @override
+  State<_ProvenanceCard> createState() => _ProvenanceCardState();
+}
+
+class _ProvenanceCardState extends State<_ProvenanceCard> {
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final controller = AppScope.read(context);
+    final digest = widget.digest;
+    final rejections = digest.rejections;
+    final shown = _expanded ? rejections : rejections.take(4).toList();
+
+    return SectionCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const SectionLabel('Откуда эти идеи'),
+          if (digest.sourceNote != null) ...[
+            const SizedBox(height: 6),
+            Text(digest.sourceNote!, style: T.body(11, color: C.textSecondary, height: 1.5)),
+          ],
+          if (rejections.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            Text(
+              'Отбраковано кандидатов: ${rejections.length}',
+              style: T.body(11, weight: 700, color: C.muted),
+            ),
+            const SizedBox(height: 4),
+            for (final line in shown)
+              Padding(
+                padding: const EdgeInsets.only(top: 3),
+                child: Text('· $line', style: T.mono(10.5, color: C.dim)),
+              ),
+            if (rejections.length > 4) ...[
+              const SizedBox(height: 6),
+              Pressable(
+                onTap: () => setState(() => _expanded = !_expanded),
+                child: Text(
+                  _expanded ? 'Свернуть' : 'Показать все ${rejections.length}',
+                  style: T.body(11, weight: 700, color: C.accent),
+                ),
+              ),
+            ],
+          ],
+          const SizedBox(height: 10),
+          Pressable(
+            onTap: controller.refreshDigest,
+            child: Container(
+              padding: const EdgeInsets.symmetric(vertical: 10),
+              decoration: BoxDecoration(
+                border: Border.all(color: C.borderHover),
+                borderRadius: BorderRadius.circular(R.inner),
+              ),
+              child: Center(
+                child: Text(
+                  'Пересчитать идеи',
+                  style: T.body(12, weight: 800, color: C.accent),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 /// Карточка идеи в списке дайджеста.

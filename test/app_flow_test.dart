@@ -107,7 +107,7 @@ void main() {
     await scrollTo(tester, find.text('Запустить бэктест'));
     await tester.tap(find.text('Запустить бэктест'));
     await tester.pump(const Duration(milliseconds: 100));
-    expect(find.text('Тестируем 180 дней…'), findsOneWidget);
+    expect(find.text('Считаем…'), findsOneWidget);
 
     await tester.pump(const Duration(milliseconds: 1800));
     expect(find.text('Бэктест завершён · PF 2,0'), findsOneWidget);
