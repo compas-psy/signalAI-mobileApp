@@ -5,6 +5,8 @@ import '../../domain/models/settings.dart';
 import '../../state/app_scope.dart';
 import '../../theme/tokens.dart';
 import '../../theme/typography.dart';
+import '../../domain/broker/broker.dart';
+import '../widgets/broker_keys_sheet.dart';
 import '../widgets/common.dart';
 import '../widgets/risk_edit_sheet.dart';
 import 'diagnostics_screen.dart';
@@ -56,6 +58,10 @@ class SettingsScreen extends StatelessWidget {
                   connectedLabel: 'Подключено',
                   onConnect: controller.connectExchange,
                 ),
+              if (snapshot.trading != null) ...[
+                const SizedBox(height: 12),
+                _TradingCard(trading: snapshot.trading!),
+              ],
               const SizedBox(height: 12),
               _TogglesCard(
                 title: 'Доставка сигналов',
@@ -219,6 +225,153 @@ class _ExchangeRow extends StatelessWidget {
             ),
           ],
         ),
+      );
+}
+
+/// Торговый контур: режим, ключи, допуск и аварийная остановка.
+///
+/// Всё, от чего зависит, уйдёт ли ордер, собрано в одном месте и написано
+/// прямо. Приложение, которому доверяют счёт, не имеет права прятать это
+/// в подменю.
+class _TradingCard extends StatelessWidget {
+  const _TradingCard({required this.trading});
+
+  final TradingView trading;
+
+  @override
+  Widget build(BuildContext context) {
+    final controller = AppScope.read(context);
+    return SectionCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Expanded(child: SectionLabel('Торговый контур')),
+              Builder(builder: (_) {
+                final color = trading.killSwitch
+                    ? C.red
+                    : trading.ready
+                        ? C.green
+                        : C.muted;
+                return OutlineBadge(
+                  label: trading.killSwitch
+                      ? 'ОСТАНОВЛЕН'
+                      : trading.ready
+                          ? 'ГОТОВ'
+                          : 'НЕ ГОТОВ',
+                  color: color,
+                  borderColor: color,
+                  fontWeight: 700,
+                );
+              }),
+            ],
+          ),
+          const SizedBox(height: 8),
+
+          if (!trading.vaultAvailable)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Text(
+                'Защищённое хранилище на этом устройстве недоступно — ключи '
+                'биржи сохранять некуда. Торговля отключена.',
+                style: T.body(11.5, color: C.red, height: 1.4),
+              ),
+            ),
+
+          KeyValueRow(
+            name: 'Режим',
+            value: trading.modeLabel,
+            valueStyle: T.mono(12, color: trading.live ? C.red : C.text),
+            onTap: () => controller.setTradingMode(
+              trading.live ? TradingMode.testnet : TradingMode.live,
+            ),
+          ),
+          KeyValueRow(
+            name: 'Ключи Bybit',
+            value: trading.hasKeys ? 'заданы · изменить' : 'не заданы · ввести',
+            valueStyle: T.mono(12, color: trading.hasKeys ? C.green : C.accent),
+            onTap: () => showBrokerKeysSheet(
+              context,
+              mode: trading.live ? TradingMode.live : TradingMode.testnet,
+              onSubmit: controller.saveBrokerKeys,
+            ),
+          ),
+          KeyValueRow(
+            name: 'Подтверждение сделки',
+            value: trading.biometricsAvailable ? 'биометрия' : 'недоступно',
+            valueStyle: T.mono(
+              12,
+              color: trading.biometricsAvailable ? C.text : C.red,
+            ),
+          ),
+          KeyValueRow(
+            name: 'Допуск к живым деньгам',
+            value: trading.gateAllowed ? 'открыт' : 'закрыт',
+            valueStyle: T.mono(12, color: trading.gateAllowed ? C.green : C.muted),
+          ),
+          Padding(
+            padding: const EdgeInsets.only(top: 2, bottom: 8),
+            child: Text(trading.gateReason, style: T.body(11, color: C.muted, height: 1.4)),
+          ),
+
+          _TradingSwitch(
+            title: 'Отправлять ордера',
+            subtitle: 'Каждая сделка подтверждается отдельно — молча ничего '
+                'не отправляется',
+            value: trading.enabled,
+            onChanged: controller.setTradingEnabled,
+          ),
+          const SizedBox(height: 10),
+          _TradingSwitch(
+            title: 'Аварийная остановка',
+            subtitle: 'Снимает активные заявки и запрещает новые. Снимается '
+                'только руками',
+            value: trading.killSwitch,
+            danger: true,
+            onChanged: controller.setKillSwitch,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _TradingSwitch extends StatelessWidget {
+  const _TradingSwitch({
+    required this.title,
+    required this.subtitle,
+    required this.value,
+    required this.onChanged,
+    this.danger = false,
+  });
+
+  final String title;
+  final String subtitle;
+  final bool value;
+  final bool danger;
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context) => Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: T.body(13, weight: 600, color: danger && value ? C.red : C.text),
+                ),
+                const SizedBox(height: 2),
+                Text(subtitle, style: T.body(11, color: C.muted, height: 1.4)),
+              ],
+            ),
+          ),
+          const SizedBox(width: 10),
+          AppToggle(value: value, onChanged: onChanged),
+        ],
       );
 }
 

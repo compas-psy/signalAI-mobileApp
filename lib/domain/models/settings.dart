@@ -130,12 +130,53 @@ class RiskProfile {
 }
 
 /// Данные экрана «Настройки».
+/// Состояние торгового контура для настроек.
+///
+/// Показывается ровно то, от чего зависит, уйдёт ли ордер: режим, наличие
+/// ключей, допуск по бумажной статистике, аварийная остановка. Ничего
+/// декоративного здесь быть не должно.
+class TradingView {
+  const TradingView({
+    required this.modeLabel,
+    required this.live,
+    required this.enabled,
+    required this.killSwitch,
+    required this.hasKeys,
+    required this.gateAllowed,
+    required this.gateReason,
+    required this.gateProgress,
+    required this.vaultAvailable,
+    required this.biometricsAvailable,
+  });
+
+  final String modeLabel;
+
+  /// Живой режим (реальные деньги), а не testnet.
+  final bool live;
+  final bool enabled;
+  final bool killSwitch;
+  final bool hasKeys;
+
+  /// Открыт ли допуск к живым деньгам по журналу бумажных сделок.
+  final bool gateAllowed;
+  final String gateReason;
+  final double gateProgress;
+
+  /// Есть ли на устройстве защищённое хранилище и чем подтверждать сделку.
+  final bool vaultAvailable;
+  final bool biometricsAvailable;
+
+  /// Можно ли прямо сейчас отправить ордер.
+  bool get ready => enabled && !killSwitch && hasKeys;
+}
+
 class SettingsSnapshot {
   const SettingsSnapshot({
     required this.exchanges,
     required this.channels,
     required this.notifications,
     required this.risk,
+    this.trading,
   });
 
   final List<ExchangeAccount> exchanges;
@@ -143,16 +184,21 @@ class SettingsSnapshot {
   final List<ToggleSetting> notifications;
   final RiskProfile risk;
 
+  /// Торговый контур. null — режим без исполнения сделок (демо).
+  final TradingView? trading;
+
   SettingsSnapshot copyWith({
     List<ExchangeAccount>? exchanges,
     List<ToggleSetting>? channels,
     List<ToggleSetting>? notifications,
     RiskProfile? risk,
+    TradingView? trading,
   }) =>
       SettingsSnapshot(
         exchanges: exchanges ?? this.exchanges,
         channels: channels ?? this.channels,
         notifications: notifications ?? this.notifications,
         risk: risk ?? this.risk,
+        trading: trading ?? this.trading,
       );
 }

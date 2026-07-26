@@ -1,5 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:signalai/data/local_store.dart';
 import 'package:signalai/data/market/bybit_client.dart';
+import 'package:signalai/data/market/candle_store.dart';
 import 'package:signalai/data/market/http_json.dart';
 import 'package:signalai/data/market/iss_client.dart';
 import 'package:signalai/domain/analysis/candle.dart';
@@ -214,41 +216,62 @@ void main() {
     });
   });
 
-  group('IssClient кэш свечей', () {
-    test('повторный запрос той же истории биржу не беспокоит', () async {
+  group('IssClient инкрементальная история', () {
+    test('вторая загрузка тянет хвост, а не всю историю заново', () async {
       final http = FakeHttp([
-        issCandles([issCandleRow('2025-07-14 10:00:00', 100)]),
+        issCandles([
+          issCandleRow('2025-07-14 10:00:00', 100),
+          issCandleRow('2025-07-15 10:00:00', 101),
+        ]),
+        issCandles([issCandleRow('2025-07-16 10:00:00', 102)]),
       ]);
-      final client = IssClient(http: http, candlesPageSize: 2);
+      final client = IssClient(http: http, candlesPageSize: 5)
+        ..store = CandleStore(LocalStore.inMemory());
 
       Future<List<Candle>> load() => client.candles(
+            'SiU5',
+            timeframe: Timeframe.d1,
+            from: DateTime.utc(2025, 7, 1),
+            cache: true,
+          );
+
+      final first = await load();
+      expect(first, hasLength(2));
+
+      final second = await load();
+      // Известные свечи никуда не делись, новая добавилась.
+      expect(second.map((c) => c.close), [100, 101, 102]);
+      expect(http.requested, hasLength(2));
+      expect(
+        http.requested[0].queryParameters['from'],
+        '2025-07-01',
+        reason: 'первый раз истории нет — качаем с запрошенной даты',
+      );
+      expect(
+        http.requested[1].queryParameters['from'],
+        '2025-07-15',
+        reason: 'второй раз догружаем от последней известной свечи',
+      );
+    });
+
+    test('без хранилища поведение прежнее — полная загрузка', () async {
+      final http = FakeHttp([
+        issCandles([issCandleRow('2025-07-14 10:00:00', 100)]),
+        issCandles([issCandleRow('2025-07-14 10:00:00', 100)]),
+      ]);
+      final client = IssClient(http: http, candlesPageSize: 5);
+
+      Future<void> load() => client.candles(
             'SiU5',
             timeframe: Timeframe.h1,
             from: DateTime.utc(2025, 7, 14),
             cache: true,
           );
 
-      expect((await load()).single.close, 100);
-      expect((await load()).single.close, 100);
-      expect(http.requested, hasLength(1), reason: 'второй обход был лишним');
-    });
-
-    test('без cache кэш не используется', () async {
-      final http = FakeHttp([
-        issCandles([issCandleRow('2025-07-14 10:00:00', 100)]),
-        issCandles([issCandleRow('2025-07-14 10:00:00', 100)]),
-      ]);
-      final client = IssClient(http: http, candlesPageSize: 2);
-
-      Future<void> load() => client.candles(
-            'SiU5',
-            timeframe: Timeframe.h1,
-            from: DateTime.utc(2025, 7, 14),
-          );
-
       await load();
       await load();
       expect(http.requested, hasLength(2));
+      expect(http.requested[1].queryParameters['from'], '2025-07-14');
     });
   });
 

@@ -1,3 +1,5 @@
+import '../domain/broker/broker.dart';
+import '../domain/broker/trading_gate.dart';
 import '../domain/models/digest.dart';
 import '../domain/models/portfolio.dart';
 import '../domain/models/settings.dart';
@@ -45,6 +47,41 @@ abstract interface class ParameterOptimizing {
   /// Прогон оптимизации по включённым стратегиям. Возвращает короткий
   /// человекочитаемый итог для тоста.
   Future<String> optimizeParameters();
+}
+
+/// Репозиторий, умеющий торговать: ключи, режим, гейты и отправка ордера.
+///
+/// Отдельный интерфейс, а не часть [SignalAiRepository]: анализ работает без
+/// торгового доступа, и реализация без брокера — это нормальный режим, а не
+/// урезанный. Экран проверяет `is TradingDesk` и просто не рисует торговый
+/// блок, если торговать нечем.
+abstract interface class TradingDesk {
+  /// Текущее состояние контура: режим, включённость, аварийная остановка.
+  TradingState get tradingState;
+
+  /// Допуск к живым деньгам по бумажной статистике.
+  GateVerdict get liveGate;
+
+  /// Есть ли ключи для текущего режима.
+  Future<bool> get hasBrokerKeys;
+
+  /// Сохраняет ключи и сразу проверяет их на бирже. Возвращает ответ биржи.
+  Future<String> saveBrokerKeys({
+    required TradingMode mode,
+    required String apiKey,
+    required String apiSecret,
+  });
+
+  Future<void> setTradingEnabled(bool enabled);
+
+  /// Смена режима. Переход в live разрешён только при открытом [liveGate].
+  Future<void> setTradingMode(TradingMode mode);
+
+  /// Аварийная остановка: снимает заявки и запрещает новые. Снимается руками.
+  Future<String> setKillSwitch(bool on);
+
+  /// Позиции, как их видит биржа.
+  Future<List<BrokerPosition>> brokerPositions();
 }
 
 abstract interface class SignalAiRepository {

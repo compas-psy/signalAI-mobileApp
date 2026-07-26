@@ -1,6 +1,7 @@
 import '../../domain/analysis/candle.dart';
 import '../../domain/analysis/instrument_spec.dart';
 import '../../domain/enums.dart';
+import 'candle_store.dart';
 import 'http_json.dart';
 
 /// Снимок торгуемого фьючерса из ISS.
@@ -167,20 +168,18 @@ class IssClient {
     return result;
   }
 
+  /// Постоянное хранилище истории. null — работаем без него, как раньше.
+  CandleStore? store;
+
   /// Свечи по инструменту.
   ///
   /// Код интервала у ISS — не всегда минуты: день кодируется числом 24, а не
   /// 1440. Ответ страничный (около 500 свечей), поэтому страницы собираются по
   /// курсору `start` — без этого история молча обрезается.
-  /// Кэш истории свечей: ключ «символ|интервал|дата начала».
   ///
-  /// Бэктест и оптимизация идут подряд и просят одно и то же; на 28 сериях
-  /// это второй полный обход биржи впустую. История прошлых часов не
-  /// меняется, поэтому двенадцати часов жизни кэша более чем достаточно.
-  final Map<String, (DateTime, List<Candle>)> _candleCache = {};
-
-  static const _candleTtl = Duration(hours: 12);
-
+  /// При [cache] история берётся из постоянного хранилища, а с биржи
+  /// запрашивается только хвост от последней известной свечи. Для истёкшей
+  /// серии это ноль новых свечей и один короткий ответ вместо трёх страниц.
   Future<List<Candle>> candles(
     String secId, {
     required Timeframe timeframe,
@@ -188,16 +187,17 @@ class IssClient {
     bool cache = false,
   }) async {
     final interval = _issInterval(timeframe);
-    final key = '$secId|$interval|${_date(from)}';
-    if (cache) {
-      final hit = _candleCache[key];
-      if (hit != null && DateTime.now().difference(hit.$1) < _candleTtl) {
-        return hit.$2;
-      }
+    final candleStore = store;
+    if (!cache || candleStore == null) {
+      return _fetchCandles(secId, interval, from);
     }
-    final result = await _fetchCandles(secId, interval, from);
-    if (cache) _candleCache[key] = (DateTime.now(), result);
-    return result;
+
+    final key = CandleStore.keyFor(secId, '$interval');
+    final known = await candleStore.load(key);
+    final since = candleStore.incrementalStart(known, from);
+    final fresh = await _fetchCandles(secId, interval, since ?? from);
+    final merged = await candleStore.merge(key, fresh, coveredFrom: from);
+    return [for (final c in merged) if (!c.time.isBefore(from)) c];
   }
 
   Future<List<Candle>> _fetchCandles(String secId, int interval, DateTime from) async {

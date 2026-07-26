@@ -20,6 +20,9 @@ class MainActivity : FlutterActivity() {
     private val channelName = "ru.signalai.app/native"
     private val notificationChannelId = "signals"
 
+    private val vault by lazy { Vault(applicationContext) }
+    private val biometrics by lazy { Biometrics(this) }
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
@@ -46,6 +49,54 @@ class MainActivity : FlutterActivity() {
                         val body = call.argument<String>("body") ?: ""
                         val id = call.argument<Int>("id") ?: 1
                         result.success(postNotification(id, title, body))
+                    }
+
+                    // ── Хранилище торговых секретов ───────────────────────
+                    //
+                    // Секрет биржи наружу не отдаётся ни одним методом: в Dart
+                    // уходит только факт наличия, идентификатор ключа API и
+                    // готовая подпись запроса.
+                    "vaultAvailable" -> result.success(vault.isAvailable())
+
+                    "vaultPut" -> {
+                        val name = call.argument<String>("name")
+                        val value = call.argument<String>("value")
+                        if (name == null || value == null) {
+                            result.error("args", "нужны name и value", null)
+                        } else {
+                            vault.put(name, value)
+                            result.success(true)
+                        }
+                    }
+
+                    "vaultHas" -> result.success(vault.has(call.argument<String>("name") ?: ""))
+
+                    "vaultGet" -> result.success(vault.get(call.argument<String>("name") ?: ""))
+
+                    "vaultDelete" -> {
+                        vault.delete(call.argument<String>("name") ?: "")
+                        result.success(true)
+                    }
+
+                    "vaultClear" -> {
+                        vault.clear()
+                        result.success(true)
+                    }
+
+                    "vaultSign" -> {
+                        val name = call.argument<String>("name") ?: ""
+                        val payload = call.argument<String>("payload") ?: ""
+                        result.success(vault.signHmac(name, payload))
+                    }
+
+                    // ── Подтверждение сделки ──────────────────────────────
+                    "biometricsAvailable" -> result.success(biometrics.isAvailable())
+
+                    "biometricConfirm" -> {
+                        biometrics.confirm(
+                            call.argument<String>("title") ?: "Подтвердите сделку",
+                            call.argument<String>("subtitle") ?: "",
+                        ) { ok -> result.success(ok) }
                     }
 
                     else -> result.notImplemented()

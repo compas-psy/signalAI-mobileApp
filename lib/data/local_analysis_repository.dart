@@ -1,4 +1,6 @@
 import '../domain/analysis/backtester.dart';
+import '../domain/broker/broker.dart';
+import '../domain/broker/trading_gate.dart';
 import '../domain/analysis/candle.dart';
 import '../domain/analysis/indicators.dart';
 import '../domain/analysis/instrument_spec.dart';
@@ -14,8 +16,11 @@ import '../domain/models/settings.dart';
 import '../domain/models/signal.dart';
 import '../domain/models/strategy.dart';
 import '../domain/risk/risk_engine.dart';
+import 'broker/bybit_broker.dart';
+import 'broker/secure_vault.dart';
 import 'local_store.dart';
 import 'market/bybit_client.dart';
+import 'market/candle_store.dart';
 import 'market/http_json.dart';
 import 'market/iss_client.dart';
 import 'repository.dart';
@@ -28,7 +33,7 @@ import 'repository.dart';
 /// расписанию 10:10, и позиции не сопровождаются, пока приложение закрыто —
 /// для этого нужен серверный контур из ТЗ §2.
 class LocalAnalysisRepository
-    implements SignalAiRepository, ProgressReporting, ParameterOptimizing {
+    implements SignalAiRepository, ProgressReporting, ParameterOptimizing, TradingDesk {
   LocalAnalysisRepository({
     IssClient? iss,
     BybitClient? bybit,
@@ -40,7 +45,13 @@ class LocalAnalysisRepository
     this.digestFreshFor = const Duration(minutes: 60),
   })  : _iss = iss ?? IssClient(),
         _bybit = bybit ?? BybitClient(),
-        _store = store ?? LocalStore();
+        _store = store ?? LocalStore() {
+    // История свечей живёт на диске и докачивается хвостом. Без этого год
+    // часовиков по 44 сериям качался бы заново при каждом прогоне.
+    final candles = CandleStore(_store);
+    _iss.store ??= candles;
+    _bybit.store ??= candles;
+  }
 
   final IssClient _iss;
   final BybitClient _bybit;
@@ -96,6 +107,118 @@ class LocalAnalysisRepository
   /// Риск-гейты перед публикацией идеи.
   final RiskEngine riskEngine = const RiskEngine(limits: _limits);
 
+  /// Хранилище торговых ключей поверх Android Keystore.
+  final SecureVault vault = const SecureVault();
+
+  /// Допуск стратегии к живым деньгам.
+  static const _gate = LiveTradingGate();
+
+  TradingState _trading = const TradingState();
+
+  /// Брокер под текущий режим. Пересоздаётся при смене testnet/live, чтобы
+  /// ключи тренировочного счёта физически не могли уйти на живой.
+  Broker? _broker;
+
+  Broker _brokerFor(TradingMode mode) {
+    final exchange = 'bybit';
+    return BybitBroker(
+      mode: mode,
+      apiKey: () => vault.apiKey(exchange: exchange, mode: mode.name),
+      signer: (payload) =>
+          vault.sign(exchange: exchange, mode: mode.name, payload: payload),
+    );
+  }
+
+  Broker get broker => _broker ??= _brokerFor(_trading.mode);
+
+  @override
+  TradingState get tradingState => _trading;
+
+  @override
+  GateVerdict get liveGate => _gate.evaluate(ledger);
+
+  @override
+  Future<bool> get hasBrokerKeys =>
+      vault.hasKeys(exchange: 'bybit', mode: _trading.mode.name);
+
+  @override
+  Future<String> saveBrokerKeys({
+    required TradingMode mode,
+    required String apiKey,
+    required String apiSecret,
+  }) async {
+    await _ensureLoaded();
+    if (!await vault.isAvailable) {
+      throw const FeatureUnavailableException(
+        'Защищённое хранилище недоступно на этом устройстве: ключи биржи '
+        'сохранять некуда, а класть их в открытый файл нельзя.',
+      );
+    }
+    await vault.saveKeys(
+      exchange: 'bybit',
+      mode: mode.name,
+      apiKey: apiKey,
+      apiSecret: apiSecret,
+    );
+    // Ключ проверяется сразу: молча сохранить нерабочий — значит узнать об
+    // этом в момент отправки ордера.
+    try {
+      final probe = _brokerFor(mode);
+      final answer = await probe.checkAccess();
+      if (mode == _trading.mode) _broker = probe;
+      return answer;
+    } on BrokerException catch (e) {
+      await vault.deleteKeys(exchange: 'bybit', mode: mode.name);
+      throw FeatureUnavailableException('Биржа не приняла ключ: ${e.message}');
+    }
+  }
+
+  @override
+  Future<void> setTradingEnabled(bool enabled) async {
+    await _ensureLoaded();
+    _trading = _trading.copyWith(enabled: enabled);
+    await _persistState();
+  }
+
+  @override
+  Future<void> setTradingMode(TradingMode mode) async {
+    await _ensureLoaded();
+    if (mode == TradingMode.live && !liveGate.allowed) {
+      throw FeatureUnavailableException(
+        'Живой режим пока закрыт: ${liveGate.reason}.',
+      );
+    }
+    _trading = _trading.copyWith(mode: mode);
+    _broker = null;
+    await _persistState();
+  }
+
+  @override
+  Future<String> setKillSwitch(bool on) async {
+    await _ensureLoaded();
+    _trading = _trading.copyWith(killSwitch: on);
+    await _persistState();
+    if (!on) return 'Аварийная остановка снята';
+    try {
+      final cancelled = await broker.cancelAllOrders();
+      return 'Остановлено: снято заявок — $cancelled';
+    } on BrokerException catch (e) {
+      // Флаг всё равно поднят: новые ордера не уйдут, даже если биржа не
+      // ответила. Молчать об этом нельзя — заявки могли остаться.
+      return 'Новые ордера запрещены, но заявки снять не удалось: ${e.message}';
+    }
+  }
+
+  @override
+  Future<List<BrokerPosition>> brokerPositions() async {
+    if (!await hasBrokerKeys) return const [];
+    try {
+      return await broker.positions();
+    } on BrokerException {
+      return const [];
+    }
+  }
+
   DailyDigest? _cachedDigest;
   DateTime? _digestAt;
   DateTime? _optimizedAt;
@@ -141,6 +264,8 @@ class LocalAnalysisRepository
                 StrategyParams.fromJson(entry.value as Map<String, dynamic>);
           }
         }
+        final trading = state['trading'] as Map<String, dynamic>?;
+        if (trading != null) _trading = TradingState.fromJson(trading);
         _optimizedAt = DateTime.tryParse(state['optimized_at'] as String? ?? '');
         _optimizationNote = state['optimization_note'] as String?;
 
@@ -197,6 +322,7 @@ class LocalAnalysisRepository
         'params': {
           for (final entry in _params.entries) entry.key: entry.value.toJson(),
         },
+        'trading': _trading.toJson(),
         'optimized_at': _optimizedAt?.toIso8601String(),
         'optimization_note': _optimizationNote,
         'backtests': {
@@ -584,6 +710,7 @@ class LocalAnalysisRepository
         snapshot.spec.symbol,
         timeframe: Timeframe.h1,
         from: DateTime.now().subtract(const Duration(days: 14)),
+        cache: true,
       );
       final daily = await _iss.candles(
         snapshot.spec.symbol,
@@ -993,16 +1120,122 @@ class LocalAnalysisRepository
           ),
         ],
         risk: _risk,
+        trading: await _tradingView(),
       );
   }
 
   @override
   Future<void> confirmSignal(String signalId) async {
-    // Исполнение появится вместе с брокерским адаптером и ключами в Keystore.
-    throw const FeatureUnavailableException(
-      'Исполнение сделок ещё не реализовано: приложение пока только '
-      'анализирует рынок. Брокерский адаптер — следующий шаг разработки.',
+    await _ensureLoaded();
+
+    final signal = _cachedDigest?.signals.firstWhere(
+      (s) => s.id == signalId,
+      orElse: () => throw const FeatureUnavailableException(
+        'Идея больше не в выдаче — пересчитайте перед отправкой.',
+      ),
     );
+    if (signal == null) {
+      throw const FeatureUnavailableException('Идея больше не в выдаче.');
+    }
+    if (signal.market != Market.crypto) {
+      throw const FeatureUnavailableException(
+        'Пока исполняется только крипта через Bybit. Для FORTS нужен брокер '
+        'с торговым API — это следующий адаптер.',
+      );
+    }
+    if (!_trading.enabled) {
+      throw const FeatureUnavailableException(
+        'Торговля выключена. Включите её в настройках, в разделе '
+        '«Торговый контур».',
+      );
+    }
+    if (_trading.killSwitch) {
+      throw const FeatureUnavailableException(
+        'Активна аварийная остановка: новые заявки не отправляются.',
+      );
+    }
+    if (!await hasBrokerKeys) {
+      throw FeatureUnavailableException(
+        'Ключи Bybit для режима «${_trading.mode.label}» не заданы.',
+      );
+    }
+
+    // Риск-гейты применяются ещё раз перед отправкой: между показом идеи и
+    // нажатием могло смениться всё — открыться позиция, выбраться дневной
+    // лимит, начаться пауза после стопов.
+    final spec = _specForSignal(signal);
+    if (spec != null) {
+      final decision = riskEngine.check(
+        spec: spec,
+        signal: signal,
+        ledger: ledger,
+        risk: _risk,
+        now: DateTime.now(),
+      );
+      if (!decision.allowed) {
+        throw FeatureUnavailableException('Риск-лимит: ${decision.reason}.');
+      }
+    }
+
+    // Подтверждение — последнее, что происходит перед отправкой: всё, что
+    // могло запретить сделку, уже проверено, и человека не дёргают зря.
+    final confirmed = await vault.confirm(
+      title: '${signal.direction.isLong ? 'Покупка' : 'Продажа'} ${signal.symbol}',
+      subtitle: '${_trading.mode.label} · риск ${_num(_risk.riskPercent)}% депозита',
+    );
+    if (!confirmed) {
+      throw const FeatureUnavailableException('Сделка не подтверждена.');
+    }
+
+    final quantity = _orderQuantity(signal, spec);
+    if (quantity <= 0) {
+      throw const FeatureUnavailableException(
+        'Объём получился нулевым: риск на сделку меньше минимального лота.',
+      );
+    }
+
+    final result = await broker.placeOrder(OrderRequest(
+      symbol: signal.symbol,
+      long: signal.direction.isLong,
+      quantity: quantity,
+      entry: signal.entry,
+      stopLoss: signal.stopLoss,
+      takeProfit: signal.takeProfits.isEmpty
+          ? signal.entry
+          : signal.takeProfits.first.price,
+    ));
+    if (!result.accepted) {
+      throw FeatureUnavailableException(result.message);
+    }
+  }
+
+  /// Спецификация инструмента идеи — нужна риск-движку и расчёту объёма.
+  InstrumentSpec? _specForSignal(TradingSignal signal) {
+    if (signal.market != Market.crypto) return null;
+    return InstrumentSpec(
+      id: signal.symbol.toLowerCase(),
+      symbol: signal.symbol,
+      name: signal.name,
+      market: signal.market,
+      priceDecimals: signal.priceDecimals,
+      valuePerPoint: signal.unitMultiplier * _lastUsdRub,
+      unitMultiplier: signal.unitMultiplier,
+      unitDecimals: signal.unitDecimals,
+      unitName: signal.unitName,
+      unitRiskSuffix: signal.unitName,
+      tickSize: signal.entry >= 1000 ? 1 : 0.01,
+    );
+  }
+
+  /// Объём заявки в единицах биржи из риска на сделку.
+  double _orderQuantity(TradingSignal signal, InstrumentSpec? spec) {
+    if (spec == null) return 0;
+    final perUnit = spec.riskPerUnit(signal.unitRisk);
+    if (perUnit <= 0) return 0;
+    final units = _risk.riskRub / perUnit;
+    // Единица объёма у нас 0,01 монеты; биржа принимает объём в монетах.
+    final quantity = units * signal.unitMultiplier;
+    return double.parse(quantity.toStringAsFixed(signal.unitDecimals + 1));
   }
 
   @override
@@ -1237,7 +1470,11 @@ class LocalAnalysisRepository
       try {
         final hourly =
             await _bybit.candles(ticker.symbol, timeframe: Timeframe.h1, from: from);
-        final daily = await _bybit.candles(ticker.symbol, timeframe: Timeframe.d1, limit: 400);
+        final daily = await _bybit.candles(
+          ticker.symbol,
+          timeframe: Timeframe.d1,
+          from: DateTime.now().subtract(const Duration(days: 400)),
+        );
         histories.add(
           InstrumentHistory(
             spec: InstrumentSpec(
@@ -1310,6 +1547,23 @@ class LocalAnalysisRepository
         StatTile(value: '${summary.count}', label: 'сделок'),
       ],
       equityCurve: summary.equityCurve,
+    );
+  }
+
+  /// Снимок торгового контура для настроек.
+  Future<TradingView> _tradingView() async {
+    final gate = liveGate;
+    return TradingView(
+      modeLabel: _trading.mode.label,
+      live: _trading.mode == TradingMode.live,
+      enabled: _trading.enabled,
+      killSwitch: _trading.killSwitch,
+      hasKeys: await hasBrokerKeys,
+      gateAllowed: gate.allowed,
+      gateReason: gate.reason,
+      gateProgress: gate.progress.clamp(0, 1).toDouble(),
+      vaultAvailable: await vault.isAvailable,
+      biometricsAvailable: await vault.biometricsAvailable,
     );
   }
 

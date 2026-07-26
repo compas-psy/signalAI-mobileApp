@@ -6,6 +6,7 @@ import '../data/api/api_client.dart';
 import '../data/local_analysis_repository.dart';
 import '../data/native_bridge.dart';
 import '../data/repository.dart';
+import '../domain/broker/broker.dart';
 import '../domain/enums.dart';
 import '../domain/models/digest.dart';
 import '../domain/models/portfolio.dart';
@@ -392,6 +393,72 @@ class AppController extends ChangeNotifier {
       showToast('${updated.name} подключена по API-ключу');
     } catch (e) {
       showToast(_errorText(e));
+    }
+    notifyListeners();
+  }
+
+  // ── Торговый контур ─────────────────────────────────────────────────────
+
+  /// Торговый доступ репозитория. null — режим без исполнения сделок.
+  TradingDesk? get _desk {
+    // Явное приведение, а не promotion: TradingDesk не наследник
+    // SignalAiRepository — это независимая способность реализации.
+    final repository = _repository;
+    return repository is TradingDesk ? repository as TradingDesk : null;
+  }
+
+  /// Сохраняет ключи биржи и сразу проверяет их: молча принять нерабочий ключ
+  /// значит узнать об этом в момент отправки ордера.
+  Future<void> saveBrokerKeys(String apiKey, String apiSecret) async {
+    final desk = _desk;
+    if (desk == null) return;
+    try {
+      final answer = await desk.saveBrokerKeys(
+        mode: desk.tradingState.mode,
+        apiKey: apiKey,
+        apiSecret: apiSecret,
+      );
+      showToast(answer);
+    } catch (e) {
+      showToast(_errorText(e));
+    }
+    await _reloadSettings();
+  }
+
+  Future<void> setTradingEnabled(bool enabled) async {
+    final desk = _desk;
+    if (desk == null) return;
+    await desk.setTradingEnabled(enabled);
+    showToast(enabled
+        ? 'Отправка ордеров включена — каждая сделка всё равно подтверждается'
+        : 'Отправка ордеров выключена');
+    await _reloadSettings();
+  }
+
+  Future<void> setTradingMode(TradingMode mode) async {
+    final desk = _desk;
+    if (desk == null) return;
+    try {
+      await desk.setTradingMode(mode);
+      showToast('Режим: ${mode.label}');
+    } catch (e) {
+      showToast(_errorText(e));
+    }
+    await _reloadSettings();
+  }
+
+  Future<void> setKillSwitch(bool on) async {
+    final desk = _desk;
+    if (desk == null) return;
+    showToast(await desk.setKillSwitch(on));
+    await _reloadSettings();
+  }
+
+  Future<void> _reloadSettings() async {
+    try {
+      _settings = await _repository.fetchSettings();
+    } catch (_) {
+      // Снимок не обновился — на экране останется прежний.
     }
     notifyListeners();
   }

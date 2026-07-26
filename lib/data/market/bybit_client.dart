@@ -1,4 +1,5 @@
 import '../../domain/analysis/candle.dart';
+import 'candle_store.dart';
 import 'http_json.dart';
 
 /// Снимок бессрочного контракта Bybit.
@@ -38,6 +39,9 @@ class BybitClient {
   /// Задаётся явно, как и у [IssClient]: по неполной странице видно, что
   /// история кончилась, а в тестах фикстуры остаются короткими.
   final int candlesPageSize;
+
+  /// Постоянное хранилище истории. null — работаем без него.
+  CandleStore? store;
 
   String get _base => testnet ? 'https://api-testnet.bybit.com' : 'https://api.bybit.com';
 
@@ -105,6 +109,15 @@ class BybitClient {
   }) async {
     if (from == null) return _candlesPage(symbol, timeframe: timeframe, limit: limit);
 
+    // Известную историю не перекачиваем: с биржи берём только хвост.
+    final candleStore = store;
+    final key = CandleStore.keyFor(symbol, timeframe.name);
+    var effectiveFrom = from;
+    if (candleStore != null) {
+      final known = await candleStore.load(key);
+      effectiveFrom = candleStore.incrementalStart(known, from) ?? from;
+    }
+
     final pageSize = candlesPageSize;
     final collected = <int, Candle>{};
     int? end;
@@ -120,16 +133,18 @@ class BybitClient {
         collected[candle.time.millisecondsSinceEpoch] = candle;
       }
       final oldest = page.first.time;
-      if (!oldest.isAfter(from) || page.length < pageSize) break;
+      if (!oldest.isAfter(effectiveFrom) || page.length < pageSize) break;
       // Следующая страница — строго старше самой ранней полученной свечи.
       end = oldest.millisecondsSinceEpoch - 1;
     }
 
-    final keys = collected.keys.toList()..sort();
-    return [
-      for (final key in keys)
-        if (!collected[key]!.time.isBefore(from)) collected[key]!,
-    ];
+    final times = collected.keys.toList()..sort();
+    final fetched = [for (final t in times) collected[t]!];
+    if (candleStore == null) {
+      return [for (final c in fetched) if (!c.time.isBefore(from)) c];
+    }
+    final merged = await candleStore.merge(key, fetched, coveredFrom: from);
+    return [for (final c in merged) if (!c.time.isBefore(from)) c];
   }
 
   /// Предел страниц — страховка от зацикливания, если курсор не сдвинется.
