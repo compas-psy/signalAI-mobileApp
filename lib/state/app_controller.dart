@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import '../data/api/api_client.dart';
+import '../data/local_analysis_repository.dart';
+import '../data/native_bridge.dart';
 import '../data/repository.dart';
 import '../domain/enums.dart';
 import '../domain/models/digest.dart';
@@ -19,9 +21,24 @@ enum AppTab { ideas, trades, strategies, settings }
 /// Никакой торговой логики здесь нет — только загрузка данных, навигация и
 /// оптимистичные переключатели. Решения принимает сервер (ТЗ §2).
 class AppController extends ChangeNotifier {
-  AppController(this._repository);
+  AppController(this._repository, {NativeBridge bridge = const NativeBridge()})
+      : _bridge = bridge {
+    // Часовой пульс: пока приложение живо, идеи не старше часа. Проверка
+    // раз в минуту, пересчёт — когда дайджест реально устарел.
+    _autoRefreshTimer = Timer.periodic(const Duration(minutes: 1), (_) {
+      _autoRefreshIfStale();
+    });
+  }
 
   final SignalAiRepository _repository;
+  final NativeBridge _bridge;
+  Timer? _autoRefreshTimer;
+  DateTime? _digestFetchedAt;
+  bool _optimizationTriggered = false;
+  bool _optimizing = false;
+
+  /// Идёт ли подбор параметров (walk-forward).
+  bool get optimizing => _optimizing;
 
   AppTab _tab = AppTab.ideas;
   String? _selectedSignalId;
@@ -106,12 +123,13 @@ class AppController extends ChangeNotifier {
     await refreshDigest();
   }
 
-  /// Пересчёт идей. Доступен и с экрана — идея дня не обязана жить до
-  /// перезапуска приложения.
-  Future<void> refreshDigest() async {
+  /// Пересчёт идей. [force] — игнорировать свежий кэш (кнопка «Пересчитать»);
+  /// без него репозиторий вправе вернуть недавний результат мгновенно.
+  Future<void> refreshDigest({bool force = false}) async {
     if (_digestLoading) return;
     _digestLoading = true;
     _digestError = null;
+    final previous = _digest;
     final repository = _repository;
     if (repository is ProgressReporting) {
       (repository as ProgressReporting).onProgress = (stage) {
@@ -121,11 +139,86 @@ class AppController extends ChangeNotifier {
     }
     notifyListeners();
     try {
-      _digest = await _repository.fetchDigest();
+      _digest = await _repository.fetchDigest(force: force);
+      _digestFetchedAt = DateTime.now();
+      await _notifyNewSignals(previous, _digest);
+      _maybeScheduleOptimization();
     } catch (e) {
       _digestError = e;
     } finally {
       _digestLoading = false;
+      _analysisStage = null;
+      if (repository is ProgressReporting) {
+        (repository as ProgressReporting).onProgress = null;
+      }
+      notifyListeners();
+    }
+  }
+
+  /// Часовой автопересчёт: смысл терминала — следить за рынком, а не
+  /// показывать утренний снимок весь день.
+  void _autoRefreshIfStale() {
+    if (_digestLoading || _backtestRunning || _optimizing) return;
+    final at = _digestFetchedAt;
+    if (_digest == null || at == null) return;
+    if (DateTime.now().difference(at) < const Duration(minutes: 60)) return;
+    refreshDigest(force: true);
+  }
+
+  /// Локальный пуш о новых сильных сигналах (score ≥ 75), если пуш включён.
+  Future<void> _notifyNewSignals(DailyDigest? previous, DailyDigest? current) async {
+    if (previous == null || current == null) return;
+    final repository = _repository;
+    final pushEnabled = repository is LocalAnalysisRepository && repository.pushEnabled;
+    if (!pushEnabled) return;
+
+    final known = {for (final s in previous.signals) s.symbol};
+    var id = 100;
+    for (final signal in current.signals) {
+      if (signal.score < 75 || known.contains(signal.symbol)) continue;
+      await _bridge.notify(
+        id: id++,
+        title: '${signal.symbol} · ${signal.direction.label} · ${signal.score}/100',
+        body: 'Вход ${signal.entry.toStringAsFixed(signal.priceDecimals)} · '
+            'SL ${signal.stopLoss.toStringAsFixed(signal.priceDecimals)} · '
+            'R:R ${signal.riskReward}. Открыть SignalAI, чтобы посмотреть разбор.',
+      );
+    }
+  }
+
+  /// Автозапуск walk-forward оптимизации, когда пришёл срок (раз в неделю).
+  /// Идёт в фоне после дайджеста и не мешает пользоваться приложением.
+  void _maybeScheduleOptimization() {
+    final repository = _repository;
+    if (repository is! ParameterOptimizing) return;
+    if (_optimizationTriggered || !(repository as ParameterOptimizing).optimizationDue) {
+      return;
+    }
+    _optimizationTriggered = true;
+    // ignore: discarded_futures — сознательный фон: итог придёт тостом.
+    runOptimization(auto: true);
+  }
+
+  /// Подбор параметров стратегий walk-forward прогоном.
+  Future<void> runOptimization({bool auto = false}) async {
+    final repository = _repository;
+    if (repository is! ParameterOptimizing || _optimizing || _backtestRunning) return;
+    _optimizing = true;
+    if (repository is ProgressReporting) {
+      (repository as ProgressReporting).onProgress = (stage) {
+        _analysisStage = stage;
+        notifyListeners();
+      };
+    }
+    notifyListeners();
+    try {
+      final note = await (repository as ParameterOptimizing).optimizeParameters();
+      _strategies = await _repository.fetchStrategies();
+      showToast(auto ? 'Недельная оптимизация: $note' : note);
+    } catch (e) {
+      if (!auto) showToast(_errorText(e));
+    } finally {
+      _optimizing = false;
       _analysisStage = null;
       if (repository is ProgressReporting) {
         (repository as ProgressReporting).onProgress = null;
@@ -254,6 +347,13 @@ class AppController extends ChangeNotifier {
   Future<void> toggleChannel(String id, bool enabled) async {
     final snapshot = _settings;
     if (snapshot == null) return;
+    // Включение пуша — момент спросить разрешение системы (Android 13+).
+    if (id == 'push' && enabled) {
+      final granted = await _bridge.requestNotificationPermission();
+      if (!granted) {
+        showToast('Разрешите уведомления SignalAI в настройках Android');
+      }
+    }
     _settings = snapshot.copyWith(
       channels: [
         for (final c in snapshot.channels) c.id == id ? c.copyWith(enabled: enabled) : c,
@@ -354,6 +454,7 @@ class AppController extends ChangeNotifier {
   @override
   void dispose() {
     _toastTimer?.cancel();
+    _autoRefreshTimer?.cancel();
     super.dispose();
   }
 }

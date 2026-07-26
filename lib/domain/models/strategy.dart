@@ -91,6 +91,12 @@ class BacktestResult {
             .map((e) => (e as num).toDouble())
             .toList(growable: false),
       );
+
+  Map<String, dynamic> toJson() => {
+        'info': info,
+        'stats': [for (final s in stats) s.toJson()],
+        'equity_curve': equityCurve,
+      };
 }
 
 /// Данные экрана «Стратегии».

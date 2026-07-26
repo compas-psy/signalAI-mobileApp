@@ -340,7 +340,7 @@ class _ProvenanceCardState extends State<_ProvenanceCard> {
           ],
           const SizedBox(height: 10),
           Pressable(
-            onTap: controller.refreshDigest,
+            onTap: () => controller.refreshDigest(force: true),
             child: Container(
               padding: const EdgeInsets.symmetric(vertical: 10),
               decoration: BoxDecoration(

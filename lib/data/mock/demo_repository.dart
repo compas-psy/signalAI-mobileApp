@@ -35,7 +35,7 @@ class DemoRepository implements SignalAiRepository {
       Future<T>.delayed(const Duration(milliseconds: 120), () => value);
 
   @override
-  Future<DailyDigest> fetchDigest() => _delayed(
+  Future<DailyDigest> fetchDigest({bool force = false}) => _delayed(
         DailyDigest(
           title: 'Утренний дайджест',
           subtitle: 'Сб, 25 июля · 10:10 МСК',

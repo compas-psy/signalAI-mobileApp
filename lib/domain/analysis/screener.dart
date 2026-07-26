@@ -115,6 +115,8 @@ class Screener {
     this.minRiskRewardToTp2 = 1.5,
     this.maxEntryDistanceAtr = 0.5,
     this.minDaysToExpiration = 3,
+    this.takeProfitMultiples = defaultTakeProfitMultiples,
+    this.takeProfitShares = defaultTakeProfitShares,
   });
 
   /// Ниже этого SignalScore кандидат не показывается вовсе.
@@ -129,11 +131,18 @@ class Screener {
   /// Фильтр близкой экспирации (ТЗ §5.4).
   final int minDaysToExpiration;
 
-  /// Доли фиксации по тейкам.
-  static const takeProfitShares = [50, 30, 20];
+  /// Доли фиксации по тейкам. Настраиваемы: walk-forward оптимизация может
+  /// выбрать другой профиль фиксации.
+  final List<int> takeProfitShares;
 
   /// Кратности риска для тейков.
-  static const takeProfitMultiples = [1.4, 2.2, 3.5];
+  final List<double> takeProfitMultiples;
+
+  /// Дефолтные доли фиксации (ТЗ §6.5, выбор владельца — 50/30/20).
+  static const defaultTakeProfitShares = [50, 30, 20];
+
+  /// Дефолтные кратности тейков.
+  static const defaultTakeProfitMultiples = [1.4, 2.2, 3.5];
 
   /// Веса блоков SignalScore (ТЗ §5.3). Блок LLM (15) в автономном режиме
   /// отсутствует, поэтому итог нормируется на сумму доступных весов.

@@ -75,6 +75,7 @@ class AppShell extends StatelessWidget {
       AppTab.strategies => StrategiesScreen(
           snapshot: controller.strategies!,
           backtestRunning: controller.backtestRunning,
+          optimizing: controller.optimizing,
           backtestStage: controller.analysisStage,
         ),
       AppTab.settings => SettingsScreen(snapshot: controller.settings!),

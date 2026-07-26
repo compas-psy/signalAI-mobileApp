@@ -11,6 +11,8 @@ class RegimeQuote {
   final String value;
   final Tone tone;
 
+  Map<String, dynamic> toJson() => {'name': name, 'value': value, 'tone': tone.name};
+
   factory RegimeQuote.fromJson(Map<String, dynamic> j) => RegimeQuote(
         name: j['name'] as String,
         value: j['value'] as String,
@@ -102,4 +104,17 @@ class DailyDigest {
             .map((e) => e as String)
             .toList(growable: false),
       );
+
+  Map<String, dynamic> toJson() => {
+        'title': title,
+        'subtitle': subtitle,
+        'delivery_badges': deliveryBadges,
+        'regime': [for (final q in regime) q.toJson()],
+        'regime_note': regimeNote,
+        'events': [for (final e in events) e.toJson()],
+        'signals': [for (final s in signals) s.toJson()],
+        'signals_quota': signalsQuota,
+        'source_note': sourceNote,
+        'rejections': rejections,
+      };
 }

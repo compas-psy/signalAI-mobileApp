@@ -18,6 +18,8 @@ class SignalFactor {
         text: j['text'] as String,
         weight: (j['weight'] as num).toInt(),
       );
+
+  Map<String, dynamic> toJson() => {'name': name, 'text': text, 'weight': weight};
 }
 
 /// Уровень фиксации прибыли с долей объёма.
@@ -42,6 +44,9 @@ class TakeProfit {
         price: (j['price'] as num).toDouble(),
         sharePercent: (j['share_percent'] as num).toInt(),
       );
+
+  Map<String, dynamic> toJson() =>
+      {'index': index, 'price': price, 'share_percent': sharePercent};
 }
 
 /// Событие календаря/новостей, привязанное к идее (ТЗ §3, §5.4).
@@ -67,6 +72,9 @@ class MarketEvent {
         impact: EventImpact.parse(j['impact'] as String? ?? 'low'),
         affects: j['affects'] as String?,
       );
+
+  Map<String, dynamic> toJson() =>
+      {'time': time, 'text': text, 'impact': impact.name, 'affects': affects};
 }
 
 /// Свеча графика идеи: только OHLC.
@@ -87,6 +95,8 @@ class ChartCandle {
         (j[2] as num).toDouble(),
         (j[3] as num).toDouble(),
       );
+
+  List<double> toJson() => [open, high, low, close];
 }
 
 /// Ценовая зона на графике (например, незакрытый FVG).
@@ -111,6 +121,9 @@ class ChartZone {
         startIndex: (j['start_index'] as num?)?.toInt() ?? 0,
         label: j['label'] as String? ?? '',
       );
+
+  Map<String, dynamic> toJson() =>
+      {'from': from, 'to': to, 'start_index': startIndex, 'label': label};
 }
 
 /// Данные для графика идеи: реальные свечи и реальная разметка.
@@ -152,6 +165,14 @@ class SignalChart {
             .map((e) => ChartZone.fromJson(e as Map<String, dynamic>))
             .toList(growable: false),
       );
+
+  Map<String, dynamic> toJson() => {
+        'timeframe': timeframeLabel,
+        'candles': [for (final c in candles) c.toJson()],
+        'break_level': breakLevel,
+        'break_label': breakLabel,
+        'zones': [for (final z in zones) z.toJson()],
+      };
 }
 
 /// Торговый сигнал (идея) — центральная сущность приложения.
@@ -353,4 +374,38 @@ class TradingSignal {
             ? null
             : SignalChart.fromJson(j['chart'] as Map<String, dynamic>),
       );
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'symbol': symbol,
+        'name': name,
+        'market': market.label,
+        'direction': direction.name,
+        'horizon': horizon.name,
+        'horizon_label': horizonLabel,
+        'score': score,
+        'entry': entry,
+        'stop_loss': stopLoss,
+        'take_profits': [for (final tp in takeProfits) tp.toJson()],
+        'price_decimals': priceDecimals,
+        'risk_reward': riskReward,
+        'chips': chips,
+        'note': note,
+        'factors': [for (final f in factors) f.toJson()],
+        'events': [for (final e in events) e.toJson()],
+        'unit_risk': unitRisk,
+        'unit_risk_label': unitRiskLabel,
+        'unit_multiplier': unitMultiplier,
+        'unit_decimals': unitDecimals,
+        'unit_name': unitName,
+        'last_price': lastPrice,
+        'change_label': changeLabel,
+        'change_up': changeUp,
+        'status': status.name,
+        'valid_until': validUntil?.toIso8601String(),
+        'invalidation_price': invalidationPrice,
+        'correlation_group': correlationGroup,
+        'strategy_id': strategyId,
+        'chart': chart?.toJson(),
+      };
 }

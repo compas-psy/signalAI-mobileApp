@@ -16,7 +16,7 @@ class RestRepository implements SignalAiRepository {
   final ApiClient _api;
 
   @override
-  Future<DailyDigest> fetchDigest() async =>
+  Future<DailyDigest> fetchDigest({bool force = false}) async =>
       DailyDigest.fromJson(await _api.get('/v1/digest'));
 
   @override

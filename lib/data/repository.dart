@@ -36,9 +36,24 @@ abstract interface class ProgressReporting {
   set onProgress(void Function(String stage)? listener);
 }
 
+/// Репозиторий, умеющий подбирать параметры стратегии walk-forward
+/// оптимизацией на устройстве.
+abstract interface class ParameterOptimizing {
+  /// Пора ли пересчитывать параметры (по расписанию — раз в неделю).
+  bool get optimizationDue;
+
+  /// Прогон оптимизации по включённым стратегиям. Возвращает короткий
+  /// человекочитаемый итог для тоста.
+  Future<String> optimizeParameters();
+}
+
 abstract interface class SignalAiRepository {
   /// Утренний дайджест: режим рынка, события, идеи дня.
-  Future<DailyDigest> fetchDigest();
+  ///
+  /// [force] — пересчитать заново, игнорируя свежий кэш. Без него реализация
+  /// вправе вернуть недавний результат: рынок не меняется настолько, чтобы
+  /// пересчитывать всё при каждом переключении вкладки.
+  Future<DailyDigest> fetchDigest({bool force = false});
 
   /// Экран «Сделки»: эквити, статистика, активные позиции, журнал.
   Future<TradesSummary> fetchTrades();

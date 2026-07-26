@@ -2,12 +2,15 @@ import '../domain/analysis/backtester.dart';
 import '../domain/analysis/candle.dart';
 import '../domain/analysis/indicators.dart';
 import '../domain/analysis/instrument_spec.dart';
+import '../domain/analysis/optimizer.dart';
 import '../domain/analysis/screener.dart';
 import '../domain/enums.dart';
 import '../domain/models/digest.dart';
 import '../domain/models/portfolio.dart';
 import '../domain/models/settings.dart';
+import '../domain/models/signal.dart';
 import '../domain/models/strategy.dart';
+import 'local_store.dart';
 import 'market/bybit_client.dart';
 import 'market/iss_client.dart';
 import 'repository.dart';
@@ -19,21 +22,41 @@ import 'repository.dart';
 /// режима честные: расчёт идёт в момент открытия приложения, а не по
 /// расписанию 10:10, и позиции не сопровождаются, пока приложение закрыто —
 /// для этого нужен серверный контур из ТЗ §2.
-class LocalAnalysisRepository implements SignalAiRepository, ProgressReporting {
+class LocalAnalysisRepository
+    implements SignalAiRepository, ProgressReporting, ParameterOptimizing {
   LocalAnalysisRepository({
     IssClient? iss,
     BybitClient? bybit,
-    this.screener = const Screener(),
+    LocalStore? store,
     this.fortsRoots = const ['SI', 'BR', 'MX', 'RI', 'NG', 'GAZR', 'SBRF'],
     this.cryptoSymbols = const ['BTCUSDT', 'ETHUSDT', 'SOLUSDT'],
     this.maxIdeas = 5,
     this.staleQuoteAfter = const Duration(minutes: 30),
+    this.digestFreshFor = const Duration(minutes: 60),
   })  : _iss = iss ?? IssClient(),
-        _bybit = bybit ?? BybitClient();
+        _bybit = bybit ?? BybitClient(),
+        _store = store ?? LocalStore();
 
   final IssClient _iss;
   final BybitClient _bybit;
-  final Screener screener;
+  final LocalStore _store;
+
+  /// Параметры стратегий: дефолт либо результат walk-forward оптимизации.
+  final Map<String, StrategyParams> _params = {
+    'forts': StrategyParams.defaults,
+    'crypto': StrategyParams.defaults,
+  };
+
+  /// Скринер для стратегии — собирается из её текущих параметров.
+  Screener _screenerFor(String strategyId) =>
+      (_params[strategyId] ?? StrategyParams.defaults).buildScreener();
+
+  /// Скринер FORTS — базовый: его пороги показываются в параметрах.
+  Screener get screener => _screenerFor('forts');
+
+  /// Сколько дайджест считается свежим: в течение этого срока повторные
+  /// запросы отдают кэш, а не гоняют расчёт заново.
+  final Duration digestFreshFor;
 
   /// Корни фьючерсов вселенной: из них выбирается ближний ликвидный контракт.
   final List<String> fortsRoots;
@@ -60,6 +83,95 @@ class LocalAnalysisRepository implements SignalAiRepository, ProgressReporting {
 
   void _stage(String stage) => onProgress?.call(stage);
 
+  bool _loaded = false;
+  DailyDigest? _cachedDigest;
+  DateTime? _digestAt;
+  DateTime? _optimizedAt;
+  String? _optimizationNote;
+
+  /// Ленивая загрузка сохранённого состояния — один раз на процесс.
+  Future<void> _ensureLoaded() async {
+    if (_loaded) return;
+    _loaded = true;
+
+    final state = await _store.read('state');
+    if (state != null) {
+      try {
+        final risk = state['risk'] as Map<String, dynamic>?;
+        if (risk != null) {
+          _risk = _risk.copyWith(
+            deposit: (risk['deposit'] as num?)?.toDouble(),
+            riskPercent: (risk['risk_percent'] as num?)?.toDouble(),
+          );
+        }
+        void mergeBools(String key, Map<String, bool> into) {
+          final saved = state[key] as Map<String, dynamic>?;
+          if (saved == null) return;
+          for (final entry in saved.entries) {
+            if (entry.value is bool) into[entry.key] = entry.value as bool;
+          }
+        }
+
+        final strategies = <String, bool>{..._strategyEnabled};
+        mergeBools('strategy_enabled', strategies);
+        _strategyEnabled = strategies;
+        final channels = <String, bool>{..._channels};
+        mergeBools('channels', channels);
+        _channels = channels;
+        final notifications = <String, bool>{..._notifications};
+        mergeBools('notifications', notifications);
+        _notifications = notifications;
+
+        final params = state['params'] as Map<String, dynamic>?;
+        if (params != null) {
+          for (final entry in params.entries) {
+            _params[entry.key] =
+                StrategyParams.fromJson(entry.value as Map<String, dynamic>);
+          }
+        }
+        _optimizedAt = DateTime.tryParse(state['optimized_at'] as String? ?? '');
+        _optimizationNote = state['optimization_note'] as String?;
+
+        final backtests = state['backtests'] as Map<String, dynamic>?;
+        if (backtests != null) {
+          for (final entry in backtests.entries) {
+            _lastBacktests[entry.key] =
+                BacktestResult.fromJson(entry.value as Map<String, dynamic>);
+          }
+        }
+      } on Exception {
+        // Битое состояние не должно ломать запуск — работаем с дефолтами.
+      }
+    }
+
+    final cached = await _store.read('digest');
+    if (cached != null) {
+      try {
+        _digestAt = DateTime.tryParse(cached['at'] as String? ?? '');
+        _cachedDigest =
+            DailyDigest.fromJson(cached['digest'] as Map<String, dynamic>);
+      } on Exception {
+        _cachedDigest = null;
+      }
+    }
+  }
+
+  Future<void> _persistState() => _store.write('state', {
+        'risk': {'deposit': _risk.deposit, 'risk_percent': _risk.riskPercent},
+        'strategy_enabled': _strategyEnabled,
+        'channels': _channels,
+        'notifications': _notifications,
+        'params': {
+          for (final entry in _params.entries) entry.key: entry.value.toJson(),
+        },
+        'optimized_at': _optimizedAt?.toIso8601String(),
+        'optimization_note': _optimizationNote,
+        'backtests': {
+          for (final entry in _lastBacktests.entries)
+            entry.key: entry.value.toJson(),
+        },
+      });
+
   RiskProfile _risk = const RiskProfile(
     deposit: 1000000,
     riskPercent: 0.75,
@@ -71,8 +183,22 @@ class LocalAnalysisRepository implements SignalAiRepository, ProgressReporting {
   Map<String, bool> _channels = {'push': false, 'telegram': false, 'max': false};
   Map<String, bool> _notifications = {'digest': false, 'alerts': false, 'events': false};
 
+  /// Возраст последнего расчёта; null — расчёта ещё не было.
+  Duration? get digestAge =>
+      _digestAt == null ? null : DateTime.now().difference(_digestAt!);
+
   @override
-  Future<DailyDigest> fetchDigest() async {
+  Future<DailyDigest> fetchDigest({bool force = false}) async {
+    await _ensureLoaded();
+
+    // Свежий кэш отдаётся сразу: переключение вкладок и перезапуск приложения
+    // не повод пересчитывать рынок. Пересчёт — по кнопке, по часу или force.
+    final cached = _cachedDigest;
+    final age = digestAge;
+    if (!force && cached != null && age != null && age < digestFreshFor) {
+      return cached;
+    }
+
     lastRejections.clear();
 
     _stage('Снимок срочного рынка MOEX…');
@@ -85,11 +211,12 @@ class LocalAnalysisRepository implements SignalAiRepository, ProgressReporting {
     final results = <ScreenerResult>[];
 
     if (_strategyEnabled['forts'] ?? true) {
+      final fortsScreener = _screenerFor('forts');
       for (final snapshot in selected.values) {
         _stage('Анализ ${snapshot.spec.symbol}…');
         final input = await _fortsInput(snapshot);
         if (input == null) continue;
-        final result = screener.evaluate(input, regime, rejected: lastRejections);
+        final result = fortsScreener.evaluate(input, regime, rejected: lastRejections);
         if (result != null) results.add(result);
       }
     }
@@ -99,10 +226,27 @@ class LocalAnalysisRepository implements SignalAiRepository, ProgressReporting {
     }
 
     results.sort((a, b) => b.signal.score.compareTo(a.signal.score));
-    final signals = [for (final r in results.take(maxIdeas)) r.signal];
+
+    // Дисциплина корреляций (ТЗ §1: «сделки не толкаются плечами»): из каждой
+    // группы — только лучшая идея. Два лонга Si и CNY — это одна ставка на
+    // рубль двойным размером, а не две идеи.
+    final signals = <TradingSignal>[];
+    final takenGroups = <String>{};
+    for (final r in results) {
+      final group = r.signal.correlationGroup;
+      if (group != null && !takenGroups.add(group)) {
+        lastRejections.add(RejectedCandidate(
+          r.signal.symbol,
+          'коррелирует с ${signals.firstWhere((s) => s.correlationGroup == group).symbol} — берём лучшую из группы',
+        ));
+        continue;
+      }
+      signals.add(r.signal);
+      if (signals.length >= maxIdeas) break;
+    }
     final now = DateTime.now();
 
-    return DailyDigest(
+    final digest = DailyDigest(
       title: 'Идеи на сегодня',
       subtitle: '${_dateLabel(now)} · расчёт на устройстве',
       deliveryBadges: const [],
@@ -119,6 +263,14 @@ class LocalAnalysisRepository implements SignalAiRepository, ProgressReporting {
         for (final r in lastRejections) '${r.symbol} — ${r.reason}',
       ],
     );
+
+    _cachedDigest = digest;
+    _digestAt = now;
+    await _store.write('digest', {
+      'at': now.toIso8601String(),
+      'digest': digest.toJson(),
+    });
+    return digest;
   }
 
   /// Ближний контракт по каждому корню: не ближе трёх дней до экспирации
@@ -326,14 +478,17 @@ class LocalAnalysisRepository implements SignalAiRepository, ProgressReporting {
       );
 
   @override
-  Future<StrategiesSnapshot> fetchStrategies() async => StrategiesSnapshot(
+  Future<StrategiesSnapshot> fetchStrategies() async {
+    await _ensureLoaded();
+    return StrategiesSnapshot(
         packs: [
           StrategyPack(
             id: 'forts',
             name: 'Интеграционная · MOEX FORTS',
             description: 'Структура и BOS/CHoCH, зона входа, Price Action, RSI, '
                 'объём. Данные — MOEX ISS, расчёт на устройстве.',
-            statsLabel: 'вселенная: ${fortsRoots.join(' · ')}',
+            statsLabel: 'вселенная: ${fortsRoots.join(' · ')}\n'
+                '${(_params['forts'] ?? StrategyParams.defaults).label}',
             enabled: _strategyEnabled['forts'] ?? true,
           ),
           StrategyPack(
@@ -341,7 +496,8 @@ class LocalAnalysisRepository implements SignalAiRepository, ProgressReporting {
             name: 'Crypto SMC · Bybit',
             description: 'То же ядро плюс фандинг и дельта открытого интереса. '
                 'Публичные данные Bybit, ключ не нужен.',
-            statsLabel: 'вселенная: ${cryptoSymbols.join(' · ')}',
+            statsLabel: 'вселенная: ${cryptoSymbols.join(' · ')}\n'
+                '${(_params['crypto'] ?? StrategyParams.defaults).label}',
             enabled: _strategyEnabled['crypto'] ?? true,
           ),
         ],
@@ -361,7 +517,15 @@ class LocalAnalysisRepository implements SignalAiRepository, ProgressReporting {
           const StrategyParam(name: 'Таймфреймы', value: '1H — структура · 1D — контекст'),
           StrategyParam(
             name: 'Тейки',
-            value: Screener.takeProfitMultiples.map((m) => '${_num(m)}R').join(' / '),
+            value: screener.takeProfitMultiples.map((m) => '${_num(m)}R').join(' / '),
+          ),
+          StrategyParam(
+            name: 'Оптимизация',
+            value: _optimizedAt == null
+                ? 'walk-forward · ещё не выполнялась'
+                : 'walk-forward · ${_optimizedAt!.day.toString().padLeft(2, '0')}.'
+                    '${_optimizedAt!.month.toString().padLeft(2, '0')}'
+                    '${_optimizationNote == null ? '' : ' · $_optimizationNote'}',
           ),
         ],
         backtest: _lastBacktests['forts'] ??
@@ -372,9 +536,12 @@ class LocalAnalysisRepository implements SignalAiRepository, ProgressReporting {
               equityCurve: [],
             ),
       );
+  }
 
   @override
-  Future<SettingsSnapshot> fetchSettings() async => SettingsSnapshot(
+  Future<SettingsSnapshot> fetchSettings() async {
+    await _ensureLoaded();
+    return SettingsSnapshot(
         exchanges: const [
           // Источники данных: отсюда приходят котировки и свечи. «Активно»
           // здесь не значит «можно торговать» — торговый доступ ниже.
@@ -417,7 +584,8 @@ class LocalAnalysisRepository implements SignalAiRepository, ProgressReporting {
           ToggleSetting(
             id: 'push',
             name: 'Пуш-уведомления',
-            subtitle: 'Требуют серверного контура — пока недоступны',
+            subtitle: 'Новый сигнал с оценкой 75+ — уведомление на устройстве. '
+                'Работает, пока приложение запущено (хотя бы в фоне)',
             enabled: _channels['push'] ?? false,
           ),
           ToggleSetting(
@@ -436,8 +604,9 @@ class LocalAnalysisRepository implements SignalAiRepository, ProgressReporting {
         notifications: [
           ToggleSetting(
             id: 'digest',
-            name: 'Утренний дайджест',
-            subtitle: 'В автономном режиме идеи считаются при открытии приложения',
+            name: 'Автопересчёт раз в час',
+            subtitle: 'Пока приложение запущено, идеи пересчитываются каждый час '
+                'и сверяются с рынком',
             enabled: _notifications['digest'] ?? false,
           ),
           ToggleSetting(
@@ -455,6 +624,7 @@ class LocalAnalysisRepository implements SignalAiRepository, ProgressReporting {
         ],
         risk: _risk,
       );
+  }
 
   @override
   Future<void> confirmSignal(String signalId) async {
@@ -467,7 +637,9 @@ class LocalAnalysisRepository implements SignalAiRepository, ProgressReporting {
 
   @override
   Future<void> setStrategyEnabled(String strategyId, bool enabled) async {
+    await _ensureLoaded();
     _strategyEnabled = {..._strategyEnabled, strategyId: enabled};
+    await _persistState();
   }
 
   /// Прогон стратегии по реальной истории на устройстве.
@@ -485,9 +657,55 @@ class LocalAnalysisRepository implements SignalAiRepository, ProgressReporting {
       );
     }
 
-    final summary = await const Backtester().run(histories, onProgress: onProgress);
+    final summary = await Backtester(screener: _screenerFor(strategyId))
+        .run(histories, onProgress: onProgress);
     final backtest = _lastBacktests[strategyId] = _formatBacktest(summary);
+    await _persistState();
     return backtest;
+  }
+
+  // ── Walk-forward оптимизация ───────────────────────────────────────────
+
+  /// Пора ли пересчитывать параметры. Раз в неделю: чаще для свинга 1–5 дней
+  /// означает подгонку под последние колебания — между ежедневными прогонами
+  /// накапливается слишком мало новых сделок (обоснование в [StrategyOptimizer]).
+  @override
+  bool get optimizationDue =>
+      _optimizedAt == null ||
+      DateTime.now().difference(_optimizedAt!) > const Duration(days: 7);
+
+  @override
+  Future<String> optimizeParameters() async {
+    await _ensureLoaded();
+    const optimizer = StrategyOptimizer();
+    final notes = <String>[];
+
+    for (final strategyId in ['forts', 'crypto']) {
+      if (!(_strategyEnabled[strategyId] ?? true)) continue;
+      _stage('Оптимизация $strategyId: история…');
+      final histories = strategyId == 'crypto'
+          ? await _cryptoHistories()
+          : await _fortsHistories();
+      if (histories.isEmpty) continue;
+
+      final outcome = await optimizer.optimize(
+        histories,
+        onProgress: (stage) => _stage('$strategyId: $stage'),
+      );
+      _params[strategyId] = outcome.params;
+      final pf = outcome.testProfitFactor;
+      notes.add(outcome.improved
+          ? '$strategyId: новые параметры, PF ${pf == null ? '∞' : pf.toStringAsFixed(1).replaceAll('.', ',')} '
+              'на ${outcome.testTrades} сделках вне выборки'
+          : '$strategyId: дефолт не обыгран — параметры не тронуты');
+    }
+
+    _optimizedAt = DateTime.now();
+    _optimizationNote = notes.isEmpty ? null : notes.join(' · ');
+    await _persistState();
+    return notes.isEmpty
+        ? 'Оптимизация пропущена: нет истории'
+        : notes.join(' · ');
   }
 
   /// Итоги последних прогонов — чтобы карточка бэктеста переживала уход
@@ -597,19 +815,31 @@ class LocalAnalysisRepository implements SignalAiRepository, ProgressReporting {
 
   @override
   Future<void> setChannelEnabled(String channelId, bool enabled) async {
+    await _ensureLoaded();
     _channels = {..._channels, channelId: enabled};
+    await _persistState();
   }
 
   @override
   Future<void> setNotificationEnabled(String notificationId, bool enabled) async {
+    await _ensureLoaded();
     _notifications = {..._notifications, notificationId: enabled};
+    await _persistState();
   }
 
   @override
   Future<RiskProfile> updateRiskProfile({double? deposit, double? riskPercent}) async {
+    await _ensureLoaded();
     _risk = _risk.copyWith(deposit: deposit, riskPercent: riskPercent);
+    await _persistState();
     return _risk;
   }
+
+  /// Включён ли локальный пуш о новых сигналах.
+  bool get pushEnabled => _channels['push'] ?? false;
+
+  /// Включён ли часовой автопересчёт.
+  bool get autoRefreshEnabled => _notifications['digest'] ?? false;
 
   static String _percentLabel(double percent) {
     final sign = percent < 0 ? '−' : '+';

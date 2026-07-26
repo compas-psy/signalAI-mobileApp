@@ -90,6 +90,8 @@ class StatTile {
           _ => Tone.neutral,
         },
       );
+
+  Map<String, dynamic> toJson() => {'value': value, 'label': label, 'tone': tone.name};
 }
 
 /// Сводка экрана «Сделки».

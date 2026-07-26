@@ -37,11 +37,11 @@ class FakeScreener extends Screener {
       entry: entry,
       stopLoss: entry - risk,
       takeProfits: [
-        for (var i = 0; i < Screener.takeProfitMultiples.length; i++)
+        for (var i = 0; i < Screener.defaultTakeProfitMultiples.length; i++)
           TakeProfit(
             index: i + 1,
-            price: entry + risk * Screener.takeProfitMultiples[i],
-            sharePercent: Screener.takeProfitShares[i],
+            price: entry + risk * Screener.defaultTakeProfitMultiples[i],
+            sharePercent: Screener.defaultTakeProfitShares[i],
           ),
       ],
       priceDecimals: 0,
