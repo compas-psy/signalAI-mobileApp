@@ -63,11 +63,12 @@ abstract interface class TradingDesk {
   /// Допуск к живым деньгам по бумажной статистике.
   GateVerdict get liveGate;
 
-  /// Есть ли ключи для текущего режима.
-  Future<bool> get hasBrokerKeys;
+  /// Есть ли ключи площадки для её текущего режима.
+  Future<bool> hasBrokerKeys(BrokerId broker);
 
-  /// Сохраняет ключи и сразу проверяет их на бирже. Возвращает ответ биржи.
+  /// Сохраняет ключи и сразу проверяет их у брокера. Возвращает его ответ.
   Future<String> saveBrokerKeys({
+    required BrokerId broker,
     required TradingMode mode,
     required String apiKey,
     required String apiSecret,
@@ -75,8 +76,9 @@ abstract interface class TradingDesk {
 
   Future<void> setTradingEnabled(bool enabled);
 
-  /// Смена режима. Переход в live разрешён только при открытом [liveGate].
-  Future<void> setTradingMode(TradingMode mode);
+  /// Смена режима площадки. Переход в live разрешён только при открытом
+  /// [liveGate] — и не для всех площадок.
+  Future<void> setTradingMode(BrokerId broker, TradingMode mode);
 
   /// Аварийная остановка: снимает заявки и запрещает новые. Снимается руками.
   Future<String> setKillSwitch(bool on);

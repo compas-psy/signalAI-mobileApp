@@ -12,6 +12,7 @@ import 'common.dart';
 /// и это не недоработка, а условие хранения.
 Future<void> showBrokerKeysSheet(
   BuildContext context, {
+  required BrokerId broker,
   required TradingMode mode,
   required Future<void> Function(String apiKey, String apiSecret) onSubmit,
 }) =>
@@ -20,12 +21,18 @@ Future<void> showBrokerKeysSheet(
       backgroundColor: const Color(0x00000000),
       barrierColor: const Color(0x99000000),
       isScrollControlled: true,
-      builder: (context) => _BrokerKeysSheet(mode: mode, onSubmit: onSubmit),
+      builder: (context) =>
+          _BrokerKeysSheet(broker: broker, mode: mode, onSubmit: onSubmit),
     );
 
 class _BrokerKeysSheet extends StatefulWidget {
-  const _BrokerKeysSheet({required this.mode, required this.onSubmit});
+  const _BrokerKeysSheet({
+    required this.broker,
+    required this.mode,
+    required this.onSubmit,
+  });
 
+  final BrokerId broker;
   final TradingMode mode;
   final Future<void> Function(String apiKey, String apiSecret) onSubmit;
 
@@ -49,13 +56,21 @@ class _BrokerKeysSheetState extends State<_BrokerKeysSheet> {
     if (_busy) return;
     setState(() => _busy = true);
     final navigator = Navigator.of(context);
-    await widget.onSubmit(_key.text, _secret.text);
+    // У Т-Инвестиций одна строка авторизации — токен. Он кладётся в оба слота
+    // хранилища: читаемый слот нужен для заголовка запроса, а проверка
+    // «ключи заданы» смотрит на оба.
+    final token = widget.broker == BrokerId.tinvest;
+    await widget.onSubmit(
+      token ? _key.text : _key.text,
+      token ? _key.text : _secret.text,
+    );
     if (mounted) navigator.pop();
   }
 
   @override
   Widget build(BuildContext context) {
     final live = widget.mode == TradingMode.live;
+    final tinvest = widget.broker == BrokerId.tinvest;
     return Padding(
       padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
       child: Container(
@@ -79,23 +94,36 @@ class _BrokerKeysSheetState extends State<_BrokerKeysSheet> {
               ),
             ),
             const SizedBox(height: 16),
-            Text('Ключи Bybit', style: T.body(16, weight: 700)),
+            Text('Ключи ${widget.broker.title}', style: T.body(16, weight: 700)),
             const SizedBox(height: 4),
             Text(
               live
                   ? 'Живой счёт: ключ распоряжается реальными деньгами. Права на '
                       'вывод средств давать не нужно — приложению хватает торговли.'
-                  : 'Тренировочный счёт testnet: денег там нет, ошибиться безопасно.',
+                  : '${widget.mode.labelFor(widget.broker)}: денег там нет, '
+                      'ошибиться безопасно.',
               style: T.body(11.5, color: live ? C.red : C.muted, height: 1.4),
             ),
             const SizedBox(height: 14),
-            _Field(label: 'API key', controller: _key),
-            const SizedBox(height: 10),
-            _Field(label: 'API secret', controller: _secret, obscure: true),
+            if (tinvest)
+              _Field(label: 'Токен Invest API', controller: _key, obscure: true)
+            else ...[
+              _Field(label: 'API key', controller: _key),
+              const SizedBox(height: 10),
+              _Field(label: 'API secret', controller: _secret, obscure: true),
+            ],
             const SizedBox(height: 8),
             Text(
-              'Ключи шифруются Android Keystore. Секрет не покидает устройство '
-              'и не показывается обратно — подпись запросов считается на месте.',
+              tinvest
+                  // Про токен нельзя говорить то же, что про секрет Bybit: у
+                  // bearer-авторизации нет способа не показывать его коду,
+                  // который формирует заголовок.
+                  ? 'Токен шифруется Android Keystore и хранится только здесь. '
+                      'В отличие от ключа Bybit, он попадает в память приложения '
+                      'на время запроса — этого требует сам способ авторизации. '
+                      'Выдавайте токен только на торговлю, без права вывода средств.'
+                  : 'Ключи шифруются Android Keystore. Секрет не покидает устройство '
+                      'и не показывается обратно — подпись запросов считается на месте.',
               style: T.body(10.5, color: C.muted, height: 1.4),
             ),
             const SizedBox(height: 16),

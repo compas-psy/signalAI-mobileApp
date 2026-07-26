@@ -24,10 +24,18 @@ class TradesScreen extends StatelessWidget {
               padding: const EdgeInsets.fromLTRB(16, 12, 16, 90),
               children: [
                 _EquityCard(summary: summary),
+                if (summary.gate != null) ...[
+                  const SizedBox(height: 12),
+                  _GateCard(gate: summary.gate!),
+                ],
+                if (summary.exchange.isNotEmpty) ...[
+                  const SizedBox(height: 12),
+                  _ExchangeCard(rows: summary.exchange),
+                ],
                 const SizedBox(height: 12),
                 Padding(
                   padding: const EdgeInsets.fromLTRB(2, 4, 2, 0),
-                  child: SectionLabel('Активные · ${summary.positions.length}'),
+                  child: SectionLabel('Бумажные · ${summary.positions.length}'),
                 ),
                 for (final position in summary.positions) ...[
                   const SizedBox(height: 12),
@@ -48,10 +56,172 @@ class TradesScreen extends StatelessWidget {
                     ],
                   ),
                 ),
+                if (summary.rejections.isNotEmpty) ...[
+                  const SizedBox(height: 12),
+                  _RejectionsCard(rows: summary.rejections),
+                ],
               ],
             ),
           ),
         ],
+      );
+}
+
+/// Что стоит на бирже прямо сейчас.
+///
+/// Отдельным блоком и с пометкой площадки: бумажная сделка и настоящая позиция
+/// не должны выглядеть одинаково ни при каком беглом взгляде.
+class _ExchangeCard extends StatelessWidget {
+  const _ExchangeCard({required this.rows});
+
+  final List<ExchangeRow> rows;
+
+  @override
+  Widget build(BuildContext context) => SectionCard(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const SectionLabel('На бирже'),
+            const SizedBox(height: 6),
+            for (var i = 0; i < rows.length; i++)
+              Padding(
+                padding: EdgeInsets.only(bottom: i < rows.length - 1 ? 10 : 0),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Text(rows[i].symbol, style: T.body(13, weight: 700)),
+                              const SizedBox(width: 6),
+                              OutlineBadge(
+                                label: rows[i].position ? 'ПОЗИЦИЯ' : 'ЗАЯВКА',
+                                color: rows[i].position ? C.accent : C.muted,
+                                borderColor: rows[i].position ? C.accentBorder : C.border,
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            rows[i].detail,
+                            style: T.mono(11, color: toneColor(rows[i].tone)),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Text(rows[i].venue, style: T.body(10.5, color: C.muted)),
+                  ],
+                ),
+              ),
+          ],
+        ),
+      );
+}
+
+/// Прогресс допуска к живым деньгам.
+class _GateCard extends StatelessWidget {
+  const _GateCard({required this.gate});
+
+  final GateView gate;
+
+  @override
+  Widget build(BuildContext context) => SectionCard(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Expanded(child: SectionLabel('Допуск к живым деньгам')),
+                OutlineBadge(
+                  label: gate.allowed ? 'ОТКРЫТ' : 'ЗАКРЫТ',
+                  color: gate.allowed ? C.green : C.muted,
+                  borderColor: gate.allowed ? C.green : C.border,
+                  fontWeight: 700,
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(3),
+              child: Stack(
+                children: [
+                  Container(height: 6, color: C.inset),
+                  FractionallySizedBox(
+                    widthFactor: gate.progress.clamp(0, 1),
+                    child: Container(
+                      height: 6,
+                      color: gate.allowed ? C.green : C.accent,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(gate.reason, style: T.body(11, color: C.muted, height: 1.4)),
+          ],
+        ),
+      );
+}
+
+/// Что не прошло фильтры — и чего это стоило.
+///
+/// Отбраковка без последствий выглядит как осторожность; отбраковка, после
+/// которой цена ушла в нашу сторону, — как упущенная сделка. Видеть надо и то,
+/// и другое, иначе фильтры невозможно оценить.
+class _RejectionsCard extends StatelessWidget {
+  const _RejectionsCard({required this.rows});
+
+  final List<RejectionRow> rows;
+
+  @override
+  Widget build(BuildContext context) => SectionCard(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const SectionLabel('Отбраковано'),
+            const SizedBox(height: 4),
+            Text(
+              'Ход цены за сутки после отказа: сколько стоила осторожность.',
+              style: T.body(10.5, color: C.muted, height: 1.4),
+            ),
+            const SizedBox(height: 8),
+            for (var i = 0; i < rows.length; i++)
+              Padding(
+                padding: EdgeInsets.only(bottom: i < rows.length - 1 ? 8 : 0),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    SizedBox(
+                      width: 74,
+                      child: Text(rows[i].symbol, style: T.body(12, weight: 600)),
+                    ),
+                    Expanded(
+                      child: Text(
+                        rows[i].reason,
+                        style: T.body(10.5, color: C.muted, height: 1.35),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      rows[i].moveLabel,
+                      style: T.mono(
+                        11.5,
+                        color: rows[i].moveLabel == '—'
+                            ? C.dim
+                            : rows[i].movePositive
+                                ? C.green
+                                : C.red,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        ),
       );
 }
 

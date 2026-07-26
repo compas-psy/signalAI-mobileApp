@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:signalai/data/broker/bybit_broker.dart';
 import 'package:signalai/domain/broker/broker.dart';
 import 'package:signalai/domain/broker/trading_gate.dart';
+import 'package:signalai/domain/enums.dart';
 import 'package:signalai/domain/ledger/signal_ledger.dart';
 
 /// Перехваченный запрос к «бирже».
@@ -255,17 +256,51 @@ void main() {
     });
 
     test('состояние переживает сериализацию', () {
-      const state = TradingState(mode: TradingMode.live, enabled: true, killSwitch: true);
+      final state = const TradingState(enabled: true, killSwitch: true)
+          .withMode(BrokerId.bybit, TradingMode.live);
       final restored = TradingState.fromJson(state.toJson());
-      expect(restored.mode, TradingMode.live);
+
+      expect(restored.modeOf(BrokerId.bybit), TradingMode.live);
+      expect(restored.modeOf(BrokerId.tinvest), TradingMode.testnet);
       expect(restored.enabled, isTrue);
       expect(restored.killSwitch, isTrue);
     });
 
+    test('режим одной площадки не тянет за собой другую', () {
+      final state = const TradingState().withMode(BrokerId.bybit, TradingMode.live);
+      expect(state.modeOf(BrokerId.bybit), TradingMode.live);
+      expect(state.modeOf(BrokerId.tinvest), TradingMode.testnet,
+          reason: 'у каждой площадки свой режим');
+      expect(state.anyLive, isTrue);
+    });
+
+    test('состояние прошлой версии читается как режим Bybit', () {
+      // Раньше режим был один на приложение и относился к единственной
+      // площадке. Терять его при обновлении нельзя.
+      final restored = TradingState.fromJson(const {
+        'mode': 'live',
+        'enabled': true,
+        'kill_switch': false,
+      });
+
+      expect(restored.modeOf(BrokerId.bybit), TradingMode.live);
+      expect(restored.modeOf(BrokerId.tinvest), TradingMode.testnet);
+      expect(restored.enabled, isTrue);
+    });
+
     test('по умолчанию режим тренировочный, торговля выключена', () {
       const state = TradingState();
-      expect(state.mode, TradingMode.testnet);
+      expect(state.modeOf(BrokerId.bybit), TradingMode.testnet);
+      expect(state.modeOf(BrokerId.tinvest), TradingMode.testnet);
       expect(state.enabled, isFalse);
+      expect(state.anyLive, isFalse);
+    });
+
+    test('рынок определяет площадку исполнения', () {
+      expect(BrokerId.forMarket(Market.crypto), BrokerId.bybit);
+      expect(BrokerId.forMarket(Market.forts), BrokerId.tinvest);
+      expect(BrokerId.forMarket(Market.moex), isNull,
+          reason: 'акции скринер не выдаёт — и исполнять их нечем');
     });
   });
 }

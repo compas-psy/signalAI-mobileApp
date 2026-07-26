@@ -417,12 +417,13 @@ class AppController extends ChangeNotifier {
 
   /// Сохраняет ключи биржи и сразу проверяет их: молча принять нерабочий ключ
   /// значит узнать об этом в момент отправки ордера.
-  Future<void> saveBrokerKeys(String apiKey, String apiSecret) async {
+  Future<void> saveBrokerKeys(BrokerId broker, String apiKey, String apiSecret) async {
     final desk = _desk;
     if (desk == null) return;
     try {
       final answer = await desk.saveBrokerKeys(
-        mode: desk.tradingState.mode,
+        broker: broker,
+        mode: desk.tradingState.modeOf(broker),
         apiKey: apiKey,
         apiSecret: apiSecret,
       );
@@ -443,12 +444,12 @@ class AppController extends ChangeNotifier {
     await _reloadSettings();
   }
 
-  Future<void> setTradingMode(TradingMode mode) async {
+  Future<void> setTradingMode(BrokerId broker, TradingMode mode) async {
     final desk = _desk;
     if (desk == null) return;
     try {
-      await desk.setTradingMode(mode);
-      showToast('Режим: ${mode.label}');
+      await desk.setTradingMode(broker, mode);
+      showToast('${broker.title}: ${mode.labelFor(broker)}');
     } catch (e) {
       showToast(_errorText(e));
     }

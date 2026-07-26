@@ -73,17 +73,22 @@ class GateVerdict {
   final double progress;
 }
 
-/// Состояние торгового контура: режим, аварийная остановка, готовность.
+/// Состояние торгового контура: режимы площадок, включённость, остановка.
+///
+/// Режим — свойство площадки, а не приложения: крипта может стоять на testnet,
+/// пока российский счёт ещё в песочнице, и это независимые решения. А вот
+/// аварийная остановка одна на всё: выключатель «стоп, всё» перестаёт быть
+/// выключателем, если его надо нажимать в нескольких местах.
 class TradingState {
   const TradingState({
-    this.mode = TradingMode.testnet,
+    Map<BrokerId, TradingMode>? modes,
     this.enabled = false,
     this.killSwitch = false,
-  });
+  }) : _modes = modes ?? const {};
 
-  final TradingMode mode;
+  final Map<BrokerId, TradingMode> _modes;
 
-  /// Включена ли автоматическая отправка ордеров вообще.
+  /// Включена ли отправка ордеров вообще.
   final bool enabled;
 
   /// Аварийная остановка: заявки сняты, новые не отправляются.
@@ -92,23 +97,49 @@ class TradingState {
   /// возвращает в исходное, не выключатель.
   final bool killSwitch;
 
+  /// Режим площадки. По умолчанию тренировочный — живой режим включается
+  /// только осознанно и только через допуск.
+  TradingMode modeOf(BrokerId broker) => _modes[broker] ?? TradingMode.testnet;
+
   bool get canSendOrders => enabled && !killSwitch;
 
-  TradingState copyWith({TradingMode? mode, bool? enabled, bool? killSwitch}) => TradingState(
-        mode: mode ?? this.mode,
+  /// Есть ли хоть одна площадка на живых деньгах.
+  bool get anyLive => BrokerId.values.any((b) => modeOf(b) == TradingMode.live);
+
+  TradingState copyWith({bool? enabled, bool? killSwitch}) => TradingState(
+        modes: _modes,
         enabled: enabled ?? this.enabled,
         killSwitch: killSwitch ?? this.killSwitch,
       );
 
+  TradingState withMode(BrokerId broker, TradingMode mode) => TradingState(
+        modes: {..._modes, broker: mode},
+        enabled: enabled,
+        killSwitch: killSwitch,
+      );
+
   Map<String, dynamic> toJson() => {
-        'mode': mode.name,
+        'modes': {for (final e in _modes.entries) e.key.name: e.value.name},
         'enabled': enabled,
         'kill_switch': killSwitch,
       };
 
-  factory TradingState.fromJson(Map<String, dynamic> j) => TradingState(
-        mode: TradingMode.parse(j['mode'] as String? ?? 'testnet'),
-        enabled: j['enabled'] as bool? ?? false,
-        killSwitch: j['kill_switch'] as bool? ?? false,
-      );
+  factory TradingState.fromJson(Map<String, dynamic> j) {
+    final modes = <BrokerId, TradingMode>{};
+    final stored = j['modes'] as Map<String, dynamic>?;
+    if (stored != null) {
+      for (final entry in stored.entries) {
+        modes[BrokerId.parse(entry.key)] = TradingMode.parse(entry.value as String? ?? '');
+      }
+    } else if (j['mode'] != null) {
+      // Состояние старой версии: единственный режим относился к Bybit —
+      // единственной тогда площадке. Терять его при обновлении нельзя.
+      modes[BrokerId.bybit] = TradingMode.parse(j['mode'] as String);
+    }
+    return TradingState(
+      modes: modes,
+      enabled: j['enabled'] as bool? ?? false,
+      killSwitch: j['kill_switch'] as bool? ?? false,
+    );
+  }
 }

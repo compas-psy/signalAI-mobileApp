@@ -130,18 +130,44 @@ class RiskProfile {
 }
 
 /// Данные экрана «Настройки».
-/// Состояние торгового контура для настроек.
-///
-/// Показывается ровно то, от чего зависит, уйдёт ли ордер: режим, наличие
-/// ключей, допуск по бумажной статистике, аварийная остановка. Ничего
-/// декоративного здесь быть не должно.
-class TradingView {
-  const TradingView({
+/// Состояние одной торговой площадки.
+class BrokerView {
+  const BrokerView({
+    required this.id,
+    required this.title,
     required this.modeLabel,
     required this.live,
+    required this.hasKeys,
+    required this.liveAllowed,
+    required this.liveBlockedReason,
+  });
+
+  /// Идентификатор площадки строкой — интерфейсу хватает его для вызовов.
+  final String id;
+  final String title;
+  final String modeLabel;
+
+  /// Площадка стоит на живых деньгах.
+  final bool live;
+  final bool hasKeys;
+
+  /// Можно ли перевести эту площадку в живой режим прямо сейчас.
+  final bool liveAllowed;
+
+  /// Почему нельзя. Пусто, если можно.
+  final String liveBlockedReason;
+}
+
+/// Состояние торгового контура для настроек.
+///
+/// Показывается ровно то, от чего зависит, уйдёт ли ордер: площадки с их
+/// режимами и ключами, общая включённость, аварийная остановка и допуск.
+/// Ничего декоративного здесь быть не должно.
+class TradingView {
+  const TradingView({
+    required this.brokers,
     required this.enabled,
     required this.killSwitch,
-    required this.hasKeys,
     required this.gateAllowed,
     required this.gateReason,
     required this.gateProgress,
@@ -149,13 +175,9 @@ class TradingView {
     required this.biometricsAvailable,
   });
 
-  final String modeLabel;
-
-  /// Живой режим (реальные деньги), а не testnet.
-  final bool live;
+  final List<BrokerView> brokers;
   final bool enabled;
   final bool killSwitch;
-  final bool hasKeys;
 
   /// Открыт ли допуск к живым деньгам по журналу бумажных сделок.
   final bool gateAllowed;
@@ -166,8 +188,8 @@ class TradingView {
   final bool vaultAvailable;
   final bool biometricsAvailable;
 
-  /// Можно ли прямо сейчас отправить ордер.
-  bool get ready => enabled && !killSwitch && hasKeys;
+  /// Можно ли прямо сейчас отправить ордер хоть куда-нибудь.
+  bool get ready => enabled && !killSwitch && brokers.any((b) => b.hasKeys);
 }
 
 /// Состояние фонового контура для настроек.

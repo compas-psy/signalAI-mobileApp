@@ -1,3 +1,35 @@
+import '../enums.dart';
+
+/// Площадка, через которую идёт исполнение.
+enum BrokerId {
+  /// Криптовалютные перпетуалы.
+  bybit,
+
+  /// Российский рынок: срочная секция MOEX через Т-Инвестиции.
+  tinvest;
+
+  static BrokerId parse(String? v) =>
+      BrokerId.values.firstWhere((b) => b.name == v, orElse: () => BrokerId.bybit);
+
+  String get title => switch (this) {
+        BrokerId.bybit => 'Bybit',
+        BrokerId.tinvest => 'Т-Инвестиции',
+      };
+
+  /// Какой рынок исполняет эта площадка.
+  Market get market => switch (this) {
+        BrokerId.bybit => Market.crypto,
+        BrokerId.tinvest => Market.forts,
+      };
+
+  static BrokerId? forMarket(Market market) => switch (market) {
+        Market.crypto => BrokerId.bybit,
+        Market.forts => BrokerId.tinvest,
+        // Акции пока не исполняются: скринер их не выдаёт.
+        Market.moex => null,
+      };
+}
+
 /// Куда уходит ордер: тестовая площадка или живые деньги.
 enum TradingMode {
   /// Testnet биржи. Ключи отдельные, денег нет — здесь проверяется, что
@@ -15,6 +47,35 @@ enum TradingMode {
         TradingMode.testnet => 'testnet — тренировочный счёт',
         TradingMode.live => 'live — реальные деньги',
       };
+
+  /// Название режима на языке площадки: у Bybit это testnet, у брокера —
+  /// песочница. Одно и то же по смыслу, но подписывать чужим словом нельзя.
+  String labelFor(BrokerId broker) => switch ((this, broker)) {
+        (TradingMode.testnet, BrokerId.bybit) => 'testnet — тренировочный счёт',
+        (TradingMode.testnet, BrokerId.tinvest) => 'песочница — виртуальный счёт',
+        (TradingMode.live, _) => 'live — реальные деньги',
+      };
+}
+
+/// Активная заявка на бирже.
+class BrokerOrder {
+  const BrokerOrder({
+    required this.orderId,
+    required this.symbol,
+    required this.long,
+    required this.quantity,
+    required this.price,
+    required this.status,
+  });
+
+  final String orderId;
+  final String symbol;
+  final bool long;
+  final double quantity;
+  final double price;
+
+  /// Состояние заявки словами биржи.
+  final String status;
 }
 
 /// Заявка на открытие позиции.
@@ -78,6 +139,9 @@ class BrokerPosition {
 
 /// Торговый доступ к бирже.
 abstract class Broker {
+  /// Кто исполняет.
+  BrokerId get id;
+
   /// Название площадки для интерфейса.
   String get name;
 
@@ -93,6 +157,9 @@ abstract class Broker {
   Future<OrderResult> placeOrder(OrderRequest request);
 
   Future<List<BrokerPosition>> positions();
+
+  /// Активные заявки. Пусто, если их нет или площадка их не отдаёт.
+  Future<List<BrokerOrder>> orders();
 
   /// Снятие всех активных заявок. Используется аварийной остановкой.
   Future<int> cancelAllOrders();

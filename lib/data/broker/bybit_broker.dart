@@ -40,6 +40,9 @@ class BybitBroker implements Broker {
   final Duration timeout;
 
   @override
+  BrokerId get id => BrokerId.bybit;
+
+  @override
   String get name => 'Bybit';
 
   /// Адрес биржи. Подменяется в тестах на локальный сервер — иначе проверить
@@ -126,6 +129,26 @@ class BybitBroker implements Broker {
       ));
     }
     return result;
+  }
+
+  @override
+  Future<List<BrokerOrder>> orders() async {
+    final json = await _get('/v5/order/realtime', {
+      'category': 'linear',
+      'settleCoin': 'USDT',
+    });
+    final list = (json['result']?['list'] as List<dynamic>? ?? const []);
+    return [
+      for (final item in list.cast<Map<String, dynamic>>())
+        BrokerOrder(
+          orderId: item['orderId'] as String? ?? '',
+          symbol: item['symbol'] as String? ?? '',
+          long: (item['side'] as String? ?? 'Buy') == 'Buy',
+          quantity: _toDouble(item['qty']) ?? 0,
+          price: _toDouble(item['price']) ?? 0,
+          status: item['orderStatus'] as String? ?? '',
+        ),
+    ];
   }
 
   @override

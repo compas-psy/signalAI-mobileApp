@@ -94,6 +94,62 @@ class StatTile {
   Map<String, dynamic> toJson() => {'value': value, 'label': label, 'tone': tone.name};
 }
 
+/// Строка блока «На бирже»: то, что видит биржа, а не наш журнал.
+class ExchangeRow {
+  const ExchangeRow({
+    required this.symbol,
+    required this.venue,
+    required this.detail,
+    required this.position,
+    this.tone = Tone.neutral,
+  });
+
+  final String symbol;
+
+  /// «Bybit · testnet», «Т-Инвестиции · песочница».
+  final String venue;
+
+  /// Готовая подпись: объём, цена, состояние заявки.
+  final String detail;
+
+  /// true — позиция, false — активная заявка.
+  final bool position;
+
+  final Tone tone;
+}
+
+/// Прогресс допуска к живым деньгам.
+class GateView {
+  const GateView({
+    required this.allowed,
+    required this.reason,
+    required this.progress,
+  });
+
+  final bool allowed;
+  final String reason;
+
+  /// Доля пути, 0–1.
+  final double progress;
+}
+
+/// Отбракованный кандидат и то, чего отказ стоил.
+class RejectionRow {
+  const RejectionRow({
+    required this.symbol,
+    required this.reason,
+    required this.moveLabel,
+    required this.movePositive,
+  });
+
+  final String symbol;
+  final String reason;
+
+  /// Ход цены за сутки после отбраковки: «+1,8%» либо «—», если рано.
+  final String moveLabel;
+  final bool movePositive;
+}
+
 /// Сводка экрана «Сделки».
 class TradesSummary {
   const TradesSummary({
@@ -103,7 +159,19 @@ class TradesSummary {
     required this.stats,
     required this.positions,
     required this.journal,
+    this.exchange = const [],
+    this.gate,
+    this.rejections = const [],
   });
+
+  /// Позиции и заявки на биржах. Пусто — торговый доступ не подключён.
+  final List<ExchangeRow> exchange;
+
+  /// Допуск к живым деньгам. null — режим без исполнения сделок.
+  final GateView? gate;
+
+  /// Что не прошло фильтры и риск-лимиты.
+  final List<RejectionRow> rejections;
 
   final String equityTitle;
 

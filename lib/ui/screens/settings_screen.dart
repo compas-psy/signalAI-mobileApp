@@ -284,24 +284,43 @@ class _TradingCard extends StatelessWidget {
               ),
             ),
 
-          KeyValueRow(
-            name: 'Режим',
-            value: trading.modeLabel,
-            valueStyle: T.mono(12, color: trading.live ? C.red : C.text),
-            onTap: () => controller.setTradingMode(
-              trading.live ? TradingMode.testnet : TradingMode.live,
+          // Каждая площадка со своим режимом и ключами: крипта может стоять
+          // на testnet, пока российский счёт ещё в песочнице.
+          for (final broker in trading.brokers) ...[
+            Padding(
+              padding: const EdgeInsets.only(top: 4, bottom: 2),
+              child: Text(broker.title, style: T.body(12.5, weight: 700)),
             ),
-          ),
-          KeyValueRow(
-            name: 'Ключи Bybit',
-            value: trading.hasKeys ? 'заданы · изменить' : 'не заданы · ввести',
-            valueStyle: T.mono(12, color: trading.hasKeys ? C.green : C.accent),
-            onTap: () => showBrokerKeysSheet(
-              context,
-              mode: trading.live ? TradingMode.live : TradingMode.testnet,
-              onSubmit: controller.saveBrokerKeys,
+            KeyValueRow(
+              name: 'Режим',
+              value: '${broker.modeLabel} · сменить',
+              valueStyle: T.mono(12, color: broker.live ? C.red : C.text),
+              onTap: () => controller.setTradingMode(
+                BrokerId.parse(broker.id),
+                broker.live ? TradingMode.testnet : TradingMode.live,
+              ),
             ),
-          ),
+            KeyValueRow(
+              name: 'Ключи',
+              value: broker.hasKeys ? 'заданы · изменить' : 'не заданы · ввести',
+              valueStyle: T.mono(12, color: broker.hasKeys ? C.green : C.accent),
+              onTap: () => showBrokerKeysSheet(
+                context,
+                broker: BrokerId.parse(broker.id),
+                mode: broker.live ? TradingMode.live : TradingMode.testnet,
+                onSubmit: (key, secret) =>
+                    controller.saveBrokerKeys(BrokerId.parse(broker.id), key, secret),
+              ),
+            ),
+            if (!broker.liveAllowed)
+              Padding(
+                padding: const EdgeInsets.only(top: 2, bottom: 6),
+                child: Text(
+                  'Живой режим закрыт: ${broker.liveBlockedReason}.',
+                  style: T.body(10.5, color: C.muted, height: 1.4),
+                ),
+              ),
+          ],
           KeyValueRow(
             name: 'Подтверждение сделки',
             value: trading.biometricsAvailable ? 'биометрия' : 'недоступно',

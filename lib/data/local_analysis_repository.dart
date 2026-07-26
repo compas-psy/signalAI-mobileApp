@@ -19,6 +19,7 @@ import '../domain/risk/risk_engine.dart';
 import '../monitor/background_cycle.dart';
 import '../monitor/background_mode.dart';
 import 'broker/bybit_broker.dart';
+import 'broker/tinvest_broker.dart';
 import 'broker/secure_vault.dart';
 import 'local_store.dart';
 import 'state_lock.dart';
@@ -126,21 +127,31 @@ class LocalAnalysisRepository
 
   TradingState _trading = const TradingState();
 
-  /// Брокер под текущий режим. Пересоздаётся при смене testnet/live, чтобы
-  /// ключи тренировочного счёта физически не могли уйти на живой.
-  Broker? _broker;
+  /// Брокеры по площадкам. Пересоздаются при смене режима, чтобы ключи
+  /// тренировочного счёта физически не могли уйти на живой.
+  final Map<BrokerId, Broker> _brokers = {};
 
-  Broker _brokerFor(TradingMode mode) {
-    final exchange = 'bybit';
-    return BybitBroker(
-      mode: mode,
-      apiKey: () => vault.apiKey(exchange: exchange, mode: mode.name),
-      signer: (payload) =>
-          vault.sign(exchange: exchange, mode: mode.name, payload: payload),
-    );
-  }
+  /// Кэш инструментов Т-Инвестиций — общий для всех режимов: соответствие
+  /// «тикер → uid» от песочницы не зависит.
+  late final StoredInstrumentCache _instruments = StoredInstrumentCache(_store);
 
-  Broker get broker => _broker ??= _brokerFor(_trading.mode);
+  Broker _brokerFor(BrokerId id, TradingMode mode) => switch (id) {
+        BrokerId.bybit => BybitBroker(
+            mode: mode,
+            apiKey: () => vault.apiKey(exchange: id.name, mode: mode.name),
+            signer: (payload) =>
+                vault.sign(exchange: id.name, mode: mode.name, payload: payload),
+          ),
+        BrokerId.tinvest => TInvestBroker(
+            mode: mode,
+            token: () => vault.apiKey(exchange: id.name, mode: mode.name),
+            instrumentCache: _instruments,
+          ),
+      };
+
+  /// Брокер площадки в её текущем режиме.
+  Broker brokerOf(BrokerId id) =>
+      _brokers[id] ??= _brokerFor(id, _trading.modeOf(id));
 
   @override
   TradingState get tradingState => _trading;
@@ -149,11 +160,12 @@ class LocalAnalysisRepository
   GateVerdict get liveGate => _gate.evaluate(ledger);
 
   @override
-  Future<bool> get hasBrokerKeys =>
-      vault.hasKeys(exchange: 'bybit', mode: _trading.mode.name);
+  Future<bool> hasBrokerKeys(BrokerId id) =>
+      vault.hasKeys(exchange: id.name, mode: _trading.modeOf(id).name);
 
   @override
   Future<String> saveBrokerKeys({
+    required BrokerId broker,
     required TradingMode mode,
     required String apiKey,
     required String apiSecret,
@@ -166,7 +178,7 @@ class LocalAnalysisRepository
       );
     }
     await vault.saveKeys(
-      exchange: 'bybit',
+      exchange: broker.name,
       mode: mode.name,
       apiKey: apiKey,
       apiSecret: apiSecret,
@@ -174,13 +186,13 @@ class LocalAnalysisRepository
     // Ключ проверяется сразу: молча сохранить нерабочий — значит узнать об
     // этом в момент отправки ордера.
     try {
-      final probe = _brokerFor(mode);
+      final probe = _brokerFor(broker, mode);
       final answer = await probe.checkAccess();
-      if (mode == _trading.mode) _broker = probe;
+      if (mode == _trading.modeOf(broker)) _brokers[broker] = probe;
       return answer;
     } on BrokerException catch (e) {
-      await vault.deleteKeys(exchange: 'bybit', mode: mode.name);
-      throw FeatureUnavailableException('Биржа не приняла ключ: ${e.message}');
+      await vault.deleteKeys(exchange: broker.name, mode: mode.name);
+      throw FeatureUnavailableException('${broker.title} не принял ключ: ${e.message}');
     }
   }
 
@@ -192,15 +204,27 @@ class LocalAnalysisRepository
   }
 
   @override
-  Future<void> setTradingMode(TradingMode mode) async {
+  Future<void> setTradingMode(BrokerId broker, TradingMode mode) async {
     await _ensureLoaded();
-    if (mode == TradingMode.live && !liveGate.allowed) {
-      throw FeatureUnavailableException(
-        'Живой режим пока закрыт: ${liveGate.reason}.',
-      );
+    if (mode == TradingMode.live) {
+      // Живой режим Т-Инвестиций закрыт сверх общего допуска: там защитный
+      // стоп ставится отдельным запросом, и пока на песочнице не видно, что
+      // он реально встаёт вместе с позицией, пускать туда деньги нельзя.
+      if (broker == BrokerId.tinvest) {
+        throw const FeatureUnavailableException(
+          'Живой режим Т-Инвестиций закрыт: защитный стоп там ставится '
+          'отдельной заявкой, и это ещё не проверено на песочнице. '
+          'Откроется, когда поведение подтвердится.',
+        );
+      }
+      if (!liveGate.allowed) {
+        throw FeatureUnavailableException(
+          'Живой режим пока закрыт: ${liveGate.reason}.',
+        );
+      }
     }
-    _trading = _trading.copyWith(mode: mode);
-    _broker = null;
+    _trading = _trading.withMode(broker, mode);
+    _brokers.remove(broker);
     await _persistState();
   }
 
@@ -210,14 +234,23 @@ class LocalAnalysisRepository
     _trading = _trading.copyWith(killSwitch: on);
     await _persistState();
     if (!on) return 'Аварийная остановка снята';
-    try {
-      final cancelled = await broker.cancelAllOrders();
-      return 'Остановлено: снято заявок — $cancelled';
-    } on BrokerException catch (e) {
-      // Флаг всё равно поднят: новые ордера не уйдут, даже если биржа не
-      // ответила. Молчать об этом нельзя — заявки могли остаться.
-      return 'Новые ордера запрещены, но заявки снять не удалось: ${e.message}';
+
+    // Заявки снимаются у всех площадок, где есть ключи: «стоп, всё» означает
+    // всё, а не только ту биржу, что открыта на экране.
+    var cancelled = 0;
+    final failures = <String>[];
+    for (final id in BrokerId.values) {
+      if (!await hasBrokerKeys(id)) continue;
+      try {
+        cancelled += await brokerOf(id).cancelAllOrders();
+      } on BrokerException catch (e) {
+        failures.add('${id.title}: ${e.message}');
+      }
     }
+    if (failures.isEmpty) return 'Остановлено: снято заявок — $cancelled';
+    // Флаг всё равно поднят: новые ордера не уйдут. Молчать об этом нельзя —
+    // заявки могли остаться.
+    return 'Новые ордера запрещены, но снять удалось не всё: ${failures.join('; ')}';
   }
 
   // ── Фоновый контур ──────────────────────────────────────────────────────
@@ -259,12 +292,33 @@ class LocalAnalysisRepository
 
   @override
   Future<List<BrokerPosition>> brokerPositions() async {
-    if (!await hasBrokerKeys) return const [];
-    try {
-      return await broker.positions();
-    } on BrokerException {
-      return const [];
+    final result = <BrokerPosition>[];
+    for (final id in BrokerId.values) {
+      if (!await hasBrokerKeys(id)) continue;
+      try {
+        result.addAll(await brokerOf(id).positions());
+      } on BrokerException {
+        // Недоступная площадка не должна прятать позиции остальных.
+      }
     }
+    return result;
+  }
+
+  /// Активные заявки по всем подключённым площадкам.
+  Future<List<({BrokerId broker, TradingMode mode, BrokerOrder order})>>
+      brokerOrders() async {
+    final result = <({BrokerId broker, TradingMode mode, BrokerOrder order})>[];
+    for (final id in BrokerId.values) {
+      if (!await hasBrokerKeys(id)) continue;
+      try {
+        for (final order in await brokerOf(id).orders()) {
+          result.add((broker: id, mode: _trading.modeOf(id), order: order));
+        }
+      } on BrokerException {
+        continue;
+      }
+    }
+    return result;
   }
 
   DailyDigest? _cachedDigest;
@@ -941,6 +995,13 @@ class LocalAnalysisRepository
 
     final rejectedMove = ledger.rejectedAverageMove24h;
     return TradesSummary(
+      exchange: await _exchangeRows(),
+      gate: GateView(
+        allowed: liveGate.allowed,
+        reason: liveGate.reason,
+        progress: liveGate.progress.clamp(0, 1).toDouble(),
+      ),
+      rejections: _rejectionRows(),
       equityTitle: 'Эквити · бумажная торговля (журнал сигналов)',
       equityChange: closed.isEmpty ? 'сделок ещё нет' : r(total),
       equityCurve: ledger.equityCurve,
@@ -1121,7 +1182,7 @@ class LocalAnalysisRepository
             id: 'tinvest',
             abbr: 'T',
             name: 'Т-Инвестиции API',
-            subtitle: 'Исполнение сделок пока не реализовано в приложении',
+            subtitle: 'Срочный рынок MOEX · песочница · токен в разделе ниже',
             connected: false,
             accentHex: 0xFF8E8E98,
           ),
@@ -1129,7 +1190,7 @@ class LocalAnalysisRepository
             id: 'bybit-trade',
             abbr: 'B',
             name: 'Bybit · торговый доступ',
-            subtitle: 'Исполнение сделок пока не реализовано в приложении',
+            subtitle: 'Перпетуалы USDT · testnet · ключи в разделе ниже',
             connected: false,
             accentHex: 0xFF8E8E98,
           ),
@@ -1200,10 +1261,10 @@ class LocalAnalysisRepository
     if (signal == null) {
       throw const FeatureUnavailableException('Идея больше не в выдаче.');
     }
-    if (signal.market != Market.crypto) {
-      throw const FeatureUnavailableException(
-        'Пока исполняется только крипта через Bybit. Для FORTS нужен брокер '
-        'с торговым API — это следующий адаптер.',
+    final brokerId = BrokerId.forMarket(signal.market);
+    if (brokerId == null) {
+      throw FeatureUnavailableException(
+        'Для рынка «${signal.market.name}» торгового адаптера пока нет.',
       );
     }
     if (!_trading.enabled) {
@@ -1217,9 +1278,10 @@ class LocalAnalysisRepository
         'Активна аварийная остановка: новые заявки не отправляются.',
       );
     }
-    if (!await hasBrokerKeys) {
+    final mode = _trading.modeOf(brokerId);
+    if (!await hasBrokerKeys(brokerId)) {
       throw FeatureUnavailableException(
-        'Ключи Bybit для режима «${_trading.mode.label}» не заданы.',
+        'Ключи ${brokerId.title} для режима «${mode.labelFor(brokerId)}» не заданы.',
       );
     }
 
@@ -1244,7 +1306,8 @@ class LocalAnalysisRepository
     // могло запретить сделку, уже проверено, и человека не дёргают зря.
     final confirmed = await vault.confirm(
       title: '${signal.direction.isLong ? 'Покупка' : 'Продажа'} ${signal.symbol}',
-      subtitle: '${_trading.mode.label} · риск ${_num(_risk.riskPercent)}% депозита',
+      subtitle: '${brokerId.title} · ${mode.labelFor(brokerId)} · '
+          'риск ${_num(_risk.riskPercent)}% депозита',
     );
     if (!confirmed) {
       throw const FeatureUnavailableException('Сделка не подтверждена.');
@@ -1257,7 +1320,7 @@ class LocalAnalysisRepository
       );
     }
 
-    final result = await broker.placeOrder(OrderRequest(
+    final result = await brokerOf(brokerId).placeOrder(OrderRequest(
       symbol: signal.symbol,
       long: signal.direction.isLong,
       quantity: quantity,
@@ -1613,15 +1676,94 @@ class LocalAnalysisRepository
     );
   }
 
+  /// Позиции и заявки со всех подключённых площадок.
+  ///
+  /// Отдельно от бумажного журнала и с пометкой площадки: перепутать «что я
+  /// себе записал» и «что стоит на бирже» нельзя ни на секунду.
+  Future<List<ExchangeRow>> _exchangeRows() async {
+    final rows = <ExchangeRow>[];
+    for (final id in BrokerId.values) {
+      if (!await hasBrokerKeys(id)) continue;
+      final venue = '${id.title} · ${_trading.modeOf(id).labelFor(id).split(' — ').first}';
+      try {
+        for (final p in await brokerOf(id).positions()) {
+          rows.add(ExchangeRow(
+            symbol: p.symbol,
+            venue: venue,
+            detail: '${p.long ? 'лонг' : 'шорт'} ${_num(p.quantity)}'
+                '${p.entryPrice > 0 ? ' от ${_num(p.entryPrice)}' : ''}'
+                '${p.unrealizedPnl == 0 ? '' : ' · ${_num(p.unrealizedPnl)}'}',
+            position: true,
+            tone: p.unrealizedPnl >= 0 ? Tone.positive : Tone.negative,
+          ));
+        }
+        for (final o in await brokerOf(id).orders()) {
+          rows.add(ExchangeRow(
+            symbol: o.symbol,
+            venue: venue,
+            detail: 'заявка ${o.long ? 'на покупку' : 'на продажу'} '
+                '${_num(o.quantity)} по ${_num(o.price)} · ${o.status}',
+            position: false,
+          ));
+        }
+      } on BrokerException catch (e) {
+        rows.add(ExchangeRow(
+          symbol: id.title,
+          venue: venue,
+          detail: 'не удалось получить состояние: ${e.message}',
+          position: false,
+          tone: Tone.negative,
+        ));
+      }
+    }
+    return rows;
+  }
+
+  /// Последние отбраковки с форвард-проверкой «а что было бы, если бы взяли».
+  List<RejectionRow> _rejectionRows() {
+    final recent = ledger.rejected.reversed.take(20);
+    return [
+      for (final r in recent)
+        RejectionRow(
+          symbol: r.symbol,
+          reason: r.reason,
+          moveLabel: r.movePercent24h == null
+              ? '—'
+              : '${r.movePercent24h! >= 0 ? '+' : '−'}'
+                  '${r.movePercent24h!.abs().toStringAsFixed(1).replaceAll('.', ',')}%',
+          movePositive: (r.movePercent24h ?? 0) >= 0,
+        ),
+    ];
+  }
+
   /// Снимок торгового контура для настроек.
   Future<TradingView> _tradingView() async {
     final gate = liveGate;
+    final brokers = <BrokerView>[];
+    for (final id in BrokerId.values) {
+      final mode = _trading.modeOf(id);
+      // У Т-Инвестиций живой режим закрыт сверх общего допуска, пока
+      // постановка защитного стопа не подтверждена на песочнице.
+      final blocked = id == BrokerId.tinvest
+          ? 'защитный стоп ещё не проверен на песочнице'
+          : gate.allowed
+              ? ''
+              : gate.reason;
+      brokers.add(BrokerView(
+        id: id.name,
+        title: id.title,
+        modeLabel: mode.labelFor(id),
+        live: mode == TradingMode.live,
+        hasKeys: await hasBrokerKeys(id),
+        liveAllowed: blocked.isEmpty,
+        liveBlockedReason: blocked,
+      ));
+    }
+
     return TradingView(
-      modeLabel: _trading.mode.label,
-      live: _trading.mode == TradingMode.live,
+      brokers: brokers,
       enabled: _trading.enabled,
       killSwitch: _trading.killSwitch,
-      hasKeys: await hasBrokerKeys,
       gateAllowed: gate.allowed,
       gateReason: gate.reason,
       gateProgress: gate.progress.clamp(0, 1).toDouble(),
