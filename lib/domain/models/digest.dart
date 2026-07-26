@@ -38,6 +38,7 @@ class DailyDigest {
     required this.signalsQuota,
     this.sourceNote,
     this.rejections = const [],
+    this.stale = false,
   });
 
   /// «Утренний дайджест».
@@ -69,6 +70,27 @@ class DailyDigest {
   /// что скринер реально работал, а не выдал заготовку.
   final List<String> rejections;
 
+  /// Данные показаны из кэша: обновить не удалось, уровни могли устареть.
+  final bool stale;
+
+  /// Тот же дайджест, но с пометкой, что он устарел и обновить не удалось.
+  ///
+  /// Показывать прошлые идеи с честной подписью лучше, чем пустой экран
+  /// «данные недоступны»: уровни всё ещё видны, а их возраст назван прямо.
+  DailyDigest withStaleNote(String note) => DailyDigest(
+        title: title,
+        subtitle: subtitle,
+        deliveryBadges: deliveryBadges,
+        regime: regime,
+        regimeNote: regimeNote,
+        events: events,
+        signals: signals,
+        signalsQuota: signalsQuota,
+        sourceNote: sourceNote == null ? note : '$note\n\n$sourceNote',
+        rejections: rejections,
+        stale: true,
+      );
+
   DailyDigest copyWith({List<TradingSignal>? signals}) => DailyDigest(
         title: title,
         subtitle: subtitle,
@@ -80,6 +102,7 @@ class DailyDigest {
         signalsQuota: signalsQuota,
         sourceNote: sourceNote,
         rejections: rejections,
+        stale: stale,
       );
 
   factory DailyDigest.fromJson(Map<String, dynamic> j) => DailyDigest(

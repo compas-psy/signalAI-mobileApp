@@ -1,27 +1,23 @@
 import 'dart:convert';
 import 'dart:io';
 
-/// Ошибка загрузки рыночных данных.
-class MarketDataException implements Exception {
-  MarketDataException(this.message, {this.retryable = true});
+import '../net/resilient_http.dart';
+import 'net_failure.dart';
 
-  final String message;
+export 'net_failure.dart' show MarketDataException, NetFailureKind;
 
-  /// Имеет ли смысл повторять запрос. Неверный символ или сломанный формат
-  /// ответа не починятся повтором — такие ошибки поднимаются сразу.
-  final bool retryable;
-
-  @override
-  String toString() => 'MarketDataException: $message';
-}
-
-/// Минимальный GET-JSON поверх dart:io с ретраями.
+/// Минимальный GET-JSON поверх dart:io с ретраями и обходом сломанного DNS.
 ///
 /// Используется для публичных эндпоинтов MOEX ISS и Bybit — авторизации там нет,
 /// поэтому и клиент простой (ТЗ §3: публичные данные бесплатны и без ключа).
+///
+/// Если системный резолвер устройства отказал, соединение устанавливается на
+/// адрес, полученный по DNS-over-HTTPS — этим занимается
+/// [resilientHttpClient]. Проверка сертификата и SNI при этом остаются
+/// полными и по настоящему имени хоста.
 class HttpJson {
   HttpJson({HttpClient? client, this.timeout = const Duration(seconds: 15)})
-      : _client = client ?? HttpClient() {
+      : _client = client ?? resilientHttpClient() {
     _client.connectionTimeout = timeout;
     _client.userAgent = 'SignalAI/1.0 (personal)';
   }
@@ -31,11 +27,11 @@ class HttpJson {
 
   /// GET с экспоненциальной паузой между попытками (ТЗ §3.3).
   ///
-  /// Повторяются только те ответы, которые имеет смысл повторять: 5xx и 429.
-  /// Остальные 4xx — это ошибка запроса (не тот символ, не та колонка), она не
-  /// пройдёт и с третьей попытки, поэтому бросается сразу и с кодом в тексте.
+  /// Повторяются только те отказы, которые имеет смысл повторять: 5xx, 429,
+  /// таймауты и обрывы соединения. Ошибка запроса (не тот символ, не та
+  /// колонка) и отказ резолвера повтором не лечатся — они поднимаются сразу.
   Future<Map<String, dynamic>> get(Uri uri, {int attempts = 3}) async {
-    Object? lastError;
+    MarketDataException? lastError;
     for (var attempt = 0; attempt < attempts; attempt++) {
       if (attempt > 0) {
         await Future<void>.delayed(Duration(milliseconds: 400 * (1 << (attempt - 1))));
@@ -47,13 +43,13 @@ class HttpJson {
         final body = await response.transform(utf8.decoder).join();
         if (response.statusCode >= 400) {
           final code = response.statusCode;
-          // 429 и 5xx — временные, остальные 4xx повторять бессмысленно.
-          final retryable = code == 429 || code >= 500;
           final error = MarketDataException(
             '${uri.host} ответил $code',
-            retryable: retryable,
+            kind: code == 429 || code >= 500
+                ? NetFailureKind.serverError
+                : NetFailureKind.badRequest,
           );
-          if (!retryable) throw error;
+          if (!error.retryable) throw error;
           lastError = error;
           continue;
         }
@@ -61,18 +57,17 @@ class HttpJson {
         if (decoded is! Map<String, dynamic>) {
           throw MarketDataException(
             '${uri.host}: неожиданный формат ответа',
-            retryable: false,
+            kind: NetFailureKind.badFormat,
           );
         }
         return decoded;
-      } on MarketDataException catch (e) {
-        if (!e.retryable) rethrow;
-        lastError = e;
-      } on Exception catch (e) {
-        lastError = e;
+      } on Object catch (e) {
+        final failure = MarketDataException.from(e, uri.host);
+        if (!failure.retryable) throw failure;
+        lastError = failure;
       }
     }
-    throw MarketDataException('Не удалось получить данные с ${uri.host}: $lastError');
+    throw lastError ?? MarketDataException('Не удалось получить данные с ${uri.host}');
   }
 
   void close() => _client.close(force: true);

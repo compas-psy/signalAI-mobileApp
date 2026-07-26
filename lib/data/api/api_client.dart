@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:io';
 
+import '../net/resilient_http.dart';
+
 import 'api_config.dart';
 
 /// Ошибка обращения к мобильному гейтвею.
@@ -22,7 +24,7 @@ class ApiClient {
   ApiClient({String? baseUrl, String? deviceToken, HttpClient? httpClient})
       : _baseUrl = baseUrl ?? ApiConfig.baseUrl,
         _deviceToken = deviceToken ?? ApiConfig.deviceToken,
-        _client = httpClient ?? HttpClient() {
+        _client = httpClient ?? resilientHttpClient() {
     _client.connectionTimeout = ApiConfig.requestTimeout;
   }
 

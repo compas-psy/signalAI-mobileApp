@@ -126,7 +126,12 @@ class AppController extends ChangeNotifier {
   /// Пересчёт идей. [force] — игнорировать свежий кэш (кнопка «Пересчитать»);
   /// без него репозиторий вправе вернуть недавний результат мгновенно.
   Future<void> refreshDigest({bool force = false}) async {
-    if (_digestLoading) return;
+    // Кнопка не должна быть немой: если расчёт уже идёт, честно об этом
+    // сказать, а не проглотить нажатие.
+    if (_digestLoading) {
+      showToast('Расчёт уже идёт${_analysisStage == null ? '' : ': $_analysisStage'}');
+      return;
+    }
     _digestLoading = true;
     _digestError = null;
     final previous = _digest;
@@ -138,15 +143,15 @@ class AppController extends ChangeNotifier {
       };
     }
     notifyListeners();
+    var succeeded = false;
     try {
       _digest = await _repository.fetchDigest(force: force);
       _digestFetchedAt = DateTime.now();
-      // Журнал сигналов обновился вместе с дайджестом — перечитываем «Сделки».
-      _trades = await _repository.fetchTrades();
-      await _notifyNewSignals(previous, _digest);
-      _maybeScheduleOptimization();
+      succeeded = true;
+      _failedRefreshes = 0;
     } catch (e) {
       _digestError = e;
+      _failedRefreshes++;
     } finally {
       _digestLoading = false;
       _analysisStage = null;
@@ -155,7 +160,22 @@ class AppController extends ChangeNotifier {
       }
       notifyListeners();
     }
+
+    // Всё, что идёт после дайджеста, живёт отдельно: сбой журнала или
+    // уведомления не должен превращаться в «данные бирж недоступны».
+    if (!succeeded) return;
+    try {
+      _trades = await _repository.fetchTrades();
+      await _notifyNewSignals(previous, _digest);
+      _maybeScheduleOptimization();
+    } on Object {
+      // Вторичные шаги — не повод показывать ошибку расчёта.
+    }
+    notifyListeners();
   }
+
+  /// Сколько пересчётов подряд не удалось — по нему растёт пауза до повтора.
+  int _failedRefreshes = 0;
 
   /// Автопересчёт по закрытию часового бара: смысл терминала — следить за
   /// рынком, а не показывать утренний снимок весь день.
@@ -165,16 +185,37 @@ class AppController extends ChangeNotifier {
   /// то же, иначе статистика прогона мерила бы другую стратегию.
   void _autoRefreshIfStale() {
     if (_digestLoading || _backtestRunning || _optimizing) return;
+    final now = DateTime.now();
+
+    // Расчёт не удался — повторяем с нарастающей паузой (1 → 5 → 15 минут),
+    // а не ждём, пока владелец сам нажмёт кнопку. Раньше после первого
+    // провала автоповтора не было никогда.
+    if (_failedRefreshes > 0) {
+      final wait = switch (_failedRefreshes) {
+        1 => const Duration(minutes: 1),
+        2 => const Duration(minutes: 5),
+        _ => const Duration(minutes: 15),
+      };
+      final since = _lastAttemptAt;
+      if (since == null || now.difference(since) >= wait) {
+        _lastAttemptAt = now;
+        refreshDigest(force: true);
+      }
+      return;
+    }
+
     final at = _digestFetchedAt;
     if (_digest == null || at == null) return;
-    final now = DateTime.now();
     final barClosed =
         DateTime(now.year, now.month, now.day, now.hour)
             .isAfter(DateTime(at.year, at.month, at.day, at.hour));
     if (!barClosed || now.minute < 1) return;
     if (now.difference(at) < const Duration(minutes: 5)) return;
+    _lastAttemptAt = now;
     refreshDigest(force: true);
   }
+
+  DateTime? _lastAttemptAt;
 
   /// Локальный пуш о новых сильных сигналах (score ≥ 75), если пуш включён.
   Future<void> _notifyNewSignals(DailyDigest? previous, DailyDigest? current) async {

@@ -1,6 +1,9 @@
+import 'dart:io';
+
 import 'package:flutter/widgets.dart';
 
 import '../../data/market/bybit_client.dart';
+import '../../data/net/dns_resolver.dart';
 import '../../data/market/iss_client.dart';
 import '../../domain/analysis/candle.dart';
 import '../../theme/tokens.dart';
@@ -60,6 +63,103 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
       }
       setState(() => _results.add(result));
     }
+
+    // ── Сначала связь устройства: без неё остальные чеки бессмысленны ──
+    //
+    // Три состояния различаются намеренно. Сокеты по литеральному IP не
+    // требуют DNS: если они не проходят — сеть закрыта самому приложению, и
+    // чинить надо телефон. Если сокеты есть, а имена не резолвятся — сломан
+    // DNS, и приложение обойдёт его само.
+    var socketsWork = false;
+    var systemDnsWorks = false;
+
+    await check('Связь устройства: сокеты наружу', () async {
+      try {
+        final socket = await Socket.connect(
+          InternetAddress('1.1.1.1'),
+          443,
+          timeout: const Duration(seconds: 8),
+        );
+        socket.destroy();
+        socketsWork = true;
+        return const _CheckResult(
+          name: 'Связь устройства: сокеты наружу',
+          ok: true,
+          details: [
+            'соединение на 1.1.1.1:443 установлено (DNS для этого не нужен)',
+            'сеть приложению доступна',
+          ],
+        );
+      } on Object catch (e) {
+        return _CheckResult(
+          name: 'Связь устройства: сокеты наружу',
+          ok: false,
+          details: [
+            'не удалось соединиться с 1.1.1.1:443 — $e',
+            'СЕТЬ ЗАКРЫТА САМОМУ ПРИЛОЖЕНИЮ. Что проверить на Samsung:',
+            '1) Настройки → Приложения → SignalAI → Мобильные данные — включить '
+                '«Разрешить использование фоновых данных» и «Разрешить при '
+                'включённой экономии трафика»',
+            '2) Настройки → Приложения → SignalAI → Мобильные данные → Wi-Fi — разрешить',
+            '3) отключить активный VPN, если он включён',
+            '4) Настройки → Подключения → Использование данных → Экономия трафика — выключить',
+          ],
+        );
+      }
+    });
+
+    await check('Связь устройства: системный DNS', () async {
+      try {
+        final result = await InternetAddress.lookup('example.com')
+            .timeout(const Duration(seconds: 8));
+        systemDnsWorks = result.isNotEmpty;
+        return _CheckResult(
+          name: 'Связь устройства: системный DNS',
+          ok: systemDnsWorks,
+          details: ['example.com → ${result.map((a) => a.address).join(', ')}'],
+        );
+      } on Object catch (e) {
+        return _CheckResult(
+          name: 'Связь устройства: системный DNS',
+          ok: false,
+          details: [
+            'резолв не прошёл — $e',
+            if (socketsWork)
+              'Сокеты работают, а имена не резолвятся — сломан DNS. Приложение '
+                  'включит обходной резолвер (DoH) само, следующий чек это покажет.'
+            else
+              'Скорее всего следствие закрытой сети (см. чек выше).',
+            'Проверить: Настройки → Подключения → Другие настройки → Частный DNS '
+                '— поставить «Выключено» или «Автоматически».',
+          ],
+        );
+      }
+    });
+
+    await check('Связь устройства: обходной резолвер (DoH)', () async {
+      final resolver = DnsResolver();
+      try {
+        final addresses = await resolver.resolve('iss.moex.com');
+        return _CheckResult(
+          name: 'Связь устройства: обходной резолвер (DoH)',
+          ok: addresses.isNotEmpty,
+          details: [
+            if (addresses.isEmpty)
+              'обходной резолвер тоже не смог получить адрес'
+            else ...[
+              'iss.moex.com → ${addresses.map((a) => a.address).join(', ')}',
+              systemDnsWorks
+                  ? 'системный DNS работает — обход не понадобится'
+                  : 'системный DNS сломан, но обход работает: приложение будет '
+                      'ходить на биржи через него, проверка сертификата при этом '
+                      'остаётся полной',
+            ],
+          ],
+        );
+      } finally {
+        resolver.close();
+      }
+    });
 
     String? fortsSymbol;
 

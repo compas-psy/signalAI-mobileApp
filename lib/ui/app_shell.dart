@@ -159,8 +159,10 @@ class _DigestPending extends StatelessWidget {
               ),
               const SizedBox(height: 10),
               Text(
-                'Идёт реальный расчёт по котировкам MOEX ISS и Bybit — '
-                'обычно 5–20 секунд. Остальные вкладки уже работают.',
+                'Идёт реальный расчёт по котировкам MOEX ISS и Bybit: десятки '
+                'запросов к биржам, обычно от полуминуты до пары минут. '
+                'Расчёт не прерывается, если уйти на другую вкладку — '
+                'остальные разделы уже работают.',
                 textAlign: TextAlign.center,
                 style: T.body(11, color: C.muted, height: 1.5),
               ),

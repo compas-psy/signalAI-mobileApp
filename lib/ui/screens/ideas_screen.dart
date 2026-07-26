@@ -27,6 +27,7 @@ class IdeasScreen extends StatelessWidget {
               padding: EdgeInsets.zero,
               children: [
                 _DigestTitle(digest: digest),
+                if (digest.stale) const _StaleBanner(),
                 _RegimeCard(digest: digest),
                 _EventsCard(events: digest.events),
                 Padding(
@@ -256,6 +257,36 @@ class _EventsCard extends StatelessWidget {
                 ],
               ),
             ],
+          ],
+        ),
+      );
+}
+
+/// Данные показаны из кэша: обновить не удалось. Молчать об этом нельзя —
+/// уровни могли устареть, а решение принимает человек.
+class _StaleBanner extends StatelessWidget {
+  const _StaleBanner();
+
+  @override
+  Widget build(BuildContext context) => Container(
+        margin: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        decoration: BoxDecoration(
+          color: const Color(0x1AFFD400),
+          border: Border.all(color: const Color(0x59FFD400)),
+          borderRadius: BorderRadius.circular(R.inner),
+        ),
+        child: Row(
+          children: [
+            const VectorIcon(Icons.shield, size: 14, color: C.accent),
+            const SizedBox(width: 9),
+            Expanded(
+              child: Text(
+                'Данные из кэша: обновить не удалось. Проверьте связь — '
+                'Настройки → Диагностика данных.',
+                style: T.body(11, color: C.accent, height: 1.4),
+              ),
+            ),
           ],
         ),
       );

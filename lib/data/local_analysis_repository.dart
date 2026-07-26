@@ -13,6 +13,7 @@ import '../domain/models/signal.dart';
 import '../domain/models/strategy.dart';
 import 'local_store.dart';
 import 'market/bybit_client.dart';
+import 'market/http_json.dart';
 import 'market/iss_client.dart';
 import 'repository.dart';
 
@@ -215,10 +216,50 @@ class LocalAnalysisRepository
       return cached;
     }
 
+    try {
+      return await _computeDigest();
+    } on Object catch (e) {
+      // Пересчёт не удался. Если на диске лежат прошлые идеи — показать их
+      // с честной пометкой лучше, чем пустой экран «данные недоступны».
+      final fallback = _cachedDigest;
+      if (fallback == null) rethrow;
+      _lastRefreshError = e;
+      return fallback.withStaleNote(
+        'Обновить не удалось (${_shortReason(e)}). Показаны идеи от '
+        '${_timeLabel(_digestAt ?? DateTime.now())} — уровни могли устареть.',
+      );
+    }
+  }
+
+  /// Ошибка последнего неудачного пересчёта, когда показан старый кэш.
+  Object? get lastRefreshError => _lastRefreshError;
+  Object? _lastRefreshError;
+
+  /// Был ли последний успешный расчёт неполным (один из источников молчал).
+  bool get lastResultPartial => _lastPartial;
+  bool _lastPartial = false;
+
+  Future<DailyDigest> _computeDigest() async {
+    final now0 = DateTime.now();
+    _lastRefreshError = null;
+    assert(now0.isBefore(now0.add(const Duration(days: 1))));
     lastRejections.clear();
 
+    // Источники независимы: падение одного не должно уносить другой. Раньше
+    // отказ MOEX убивал и крипто-идеи, а отказ Bybit — уже посчитанные идеи
+    // FORTS. Теперь каждый источник огорожен, а чего не хватило — честно
+    // написано в дайджесте.
+    final unavailable = <String>[];
+
     _stage('Снимок срочного рынка MOEX…');
-    final snapshots = await _iss.fortsSnapshot();
+    var snapshots = <FortsSnapshot>[];
+    if (_strategyEnabled['forts'] ?? true) {
+      try {
+        snapshots = await _iss.fortsSnapshot();
+      } on Exception catch (e) {
+        unavailable.add('MOEX ISS: ${_shortReason(e)}');
+      }
+    }
     final selected = _selectContracts(snapshots);
     final usdRub = _usdRub(selected);
 
@@ -242,7 +283,20 @@ class LocalAnalysisRepository
     }
 
     if (_strategyEnabled['crypto'] ?? true) {
-      results.addAll(await _cryptoResults(regime, usdRub, hourlyBySymbol));
+      try {
+        results.addAll(await _cryptoResults(regime, usdRub, hourlyBySymbol));
+      } on Exception catch (e) {
+        unavailable.add('Bybit: ${_shortReason(e)}');
+      }
+    }
+
+    // Ни один источник не ответил — отдавать пустой дайджест нечестно:
+    // пусть вызывающий покажет прошлые идеи из кэша.
+    if (unavailable.length >= _enabledSourceCount && results.isEmpty) {
+      throw MarketDataException(
+        'Ни один источник данных не ответил: ${unavailable.join('; ')}',
+        kind: NetFailureKind.connection,
+      );
     }
 
     results.sort((a, b) => b.signal.score.compareTo(a.signal.score));
@@ -279,31 +333,53 @@ class LocalAnalysisRepository
       sourceNote: 'Идеи и уровни рассчитаны на этом устройстве в '
           '${_timeLabel(now)} по котировкам MOEX ISS и публичного Bybit. '
           'Это не демо-данные: график в карточке — те же свечи, по которым '
-          'считался сигнал.',
+          'считался сигнал.'
+          '${unavailable.isEmpty ? '' : ' Внимание: расчёт неполный — '
+              '${unavailable.join('; ')}.'}',
       rejections: [
         for (final r in lastRejections) '${r.symbol} — ${r.reason}',
       ],
     );
 
-    // Журнал: новые сигналы записываются, живые — проживаются вперёд по тем
-    // же свечам, отбраковки получают цену для форвард-проверки.
-    for (final signal in signals) {
-      ledger.record(signal, now);
-    }
-    for (final r in lastRejections) {
-      final price = r.price;
-      if (price != null) ledger.recordRejection(r.symbol, r.reason, price, now);
-    }
-    await _reconcileLedger(hourlyBySymbol);
-
+    // Сначала фиксируем результат: посчитанный дайджест не должен пропадать
+    // из-за проблемы в журнале, который к нему отношения не имеет.
     _cachedDigest = digest;
     _digestAt = now;
+    _lastPartial = unavailable.isNotEmpty;
     await _store.write('digest', {
       'at': now.toIso8601String(),
+      'partial': _lastPartial,
       'digest': digest.toJson(),
     });
+
+    // Журнал: новые сигналы записываются, живые — проживаются вперёд по тем
+    // же свечам, отбраковки получают цену для форвард-проверки.
+    try {
+      for (final signal in signals) {
+        ledger.record(signal, now);
+      }
+      for (final r in lastRejections) {
+        final price = r.price;
+        if (price != null) ledger.recordRejection(r.symbol, r.reason, price, now);
+      }
+      await _reconcileLedger(hourlyBySymbol);
+    } on Object {
+      // Журнал — вторичен по отношению к дайджесту: сверимся в следующий раз.
+    }
     return digest;
   }
+
+  /// Сколько источников включено сейчас — чтобы понять, всё ли отвалилось.
+  int get _enabledSourceCount {
+    var count = 0;
+    if (_strategyEnabled['forts'] ?? true) count++;
+    if (_strategyEnabled['crypto'] ?? true) count++;
+    return count == 0 ? 1 : count;
+  }
+
+  /// Короткая причина отказа для подписи дайджеста.
+  static String _shortReason(Object e) =>
+      e is MarketDataException ? e.message : 'источник не ответил';
 
   /// Сверка журнала: живым записям без свежих свечей (символ выпал из
   /// вселенной) свечи дотягиваются отдельно.
