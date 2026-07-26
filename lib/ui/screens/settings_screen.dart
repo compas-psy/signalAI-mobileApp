@@ -409,14 +409,20 @@ class _TradingCard extends StatelessWidget {
           // Состояние выше — словами приложения. Здесь его можно проверить
           // словами биржи: что она отвечает на наш ключ и что видит на счёте.
           Pressable(
-            onTap: () => Navigator.of(context).push(
-              PageRouteBuilder<void>(
-                pageBuilder: (context, animation, secondary) =>
-                    const TradingDiagnosticsScreen(),
-                transitionsBuilder: (context, animation, secondary, child) =>
-                    FadeTransition(opacity: animation, child: child),
-              ),
-            ),
+            onTap: () {
+              // Контур берётся здесь, пока AppScope ещё виден: новый маршрут
+              // встаёт выше него в дереве, и оттуда контроллера не достать.
+              final desk = controller.tradingDesk;
+              if (desk == null) return;
+              Navigator.of(context).push(
+                PageRouteBuilder<void>(
+                  pageBuilder: (context, animation, secondary) =>
+                      TradingDiagnosticsScreen(desk: desk),
+                  transitionsBuilder: (context, animation, secondary, child) =>
+                      FadeTransition(opacity: animation, child: child),
+                ),
+              );
+            },
             child: Container(
               padding: const EdgeInsets.symmetric(vertical: 10),
               decoration: BoxDecoration(

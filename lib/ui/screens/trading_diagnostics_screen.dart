@@ -1,7 +1,7 @@
 import 'package:flutter/widgets.dart';
 
+import '../../data/repository.dart';
 import '../../domain/broker/trading_diagnostics.dart';
-import '../../state/app_scope.dart';
 import '../../theme/tokens.dart';
 import '../../theme/typography.dart';
 import '../widgets/common.dart';
@@ -13,8 +13,15 @@ import '../widgets/vector_icon.dart';
 /// «ГОТОВ». Этот экран показывает состояние словами биржи: принят ли ключ,
 /// что ответил счёт, какие позиции она за нами видит. Разница между этими
 /// двумя картинами и есть то, из-за чего терминалу перестают доверять.
+///
+/// Контур приходит параметром, а не ищется по дереву: экран открывается
+/// отдельным маршрутом поверх приложения, и `AppScope` оттуда не виден —
+/// поиск по дереву молча ронял диагностику до первой проверки, оставляя
+/// на экране «пройдено 0 из 0».
 class TradingDiagnosticsScreen extends StatefulWidget {
-  const TradingDiagnosticsScreen({super.key});
+  const TradingDiagnosticsScreen({super.key, required this.desk});
+
+  final TradingDesk desk;
 
   @override
   State<TradingDiagnosticsScreen> createState() => _TradingDiagnosticsScreenState();
@@ -27,22 +34,30 @@ class _TradingDiagnosticsScreenState extends State<TradingDiagnosticsScreen> {
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _run());
+    _run();
   }
 
   Future<void> _run() async {
     if (_running) return;
-    final desk = AppScope.read(context).tradingDesk;
-    if (desk == null) return;
     setState(() {
       _running = true;
       _results.clear();
     });
-    // Проверки приходят потоком: обращение к бирже занимает секунды, и
-    // держать экран пустым, пока идут все, незачем.
-    await for (final check in desk.diagnoseTrading()) {
+    try {
+      // Проверки приходят потоком: обращение к бирже занимает секунды, и
+      // держать экран пустым, пока идут все, незачем.
+      await for (final check in widget.desk.diagnoseTrading()) {
+        if (!mounted) return;
+        setState(() => _results.add(check));
+      }
+    } on Object catch (e) {
+      // Любой сбой — это тоже результат: пустой экран без объяснения хуже.
       if (!mounted) return;
-      setState(() => _results.add(check));
+      setState(() => _results.add(TradingCheck(
+            name: 'Диагностика прервалась',
+            ok: false,
+            details: ['ошибка: $e'],
+          )));
     }
     if (mounted) setState(() => _running = false);
   }

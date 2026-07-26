@@ -104,6 +104,20 @@ class _BrokerKeysSheetState extends State<_BrokerKeysSheet> {
                       'ошибиться безопасно.',
               style: T.body(11.5, color: live ? C.red : C.muted, height: 1.4),
             ),
+            if (!tinvest) ...[
+              const SizedBox(height: 6),
+              Text(
+                // Самая частая причина «свежий ключ не принимается»: у Bybit
+                // testnet и основная площадка — разные сайты с разными ключами.
+                live
+                    ? 'Ключ создаётся на bybit.com → API. Ключ с testnet.bybit.com '
+                        'сюда не подойдёт.'
+                    : 'Ключ создаётся на testnet.bybit.com → API. Ключ с основного '
+                        'bybit.com сюда не подойдёт — это разные площадки с '
+                        'разными ключами.',
+                style: T.body(10.5, color: C.accent, height: 1.4),
+              ),
+            ],
             const SizedBox(height: 14),
             if (tinvest)
               _Field(label: 'Токен Invest API', controller: _key, obscure: true)

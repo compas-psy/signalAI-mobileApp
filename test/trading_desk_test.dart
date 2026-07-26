@@ -135,6 +135,25 @@ void main() {
       expect(check.note, isNotEmpty);
     });
 
+    test('местный сбой не выдаётся за отказ обеих площадок', () async {
+      // Подписи нет — отказ местный, до сети дело не дошло. Кросс-проверка
+      // в этом случае не запускается: «ключ не принят нигде» было бы ложью.
+      final repository =
+          LocalAnalysisRepository(store: LocalStore.inMemory(), vault: FakeVault());
+      await repository
+          .saveBrokerKeys(
+            broker: BrokerId.bybit,
+            mode: TradingMode.testnet,
+            apiKey: 'KEY',
+            apiSecret: 'SECRET',
+          )
+          .catchError((Object _) => '');
+
+      final note = repository.keyCheckOf(BrokerId.bybit)?.note ?? '';
+      expect(note, isNot(contains('обеих площадках')));
+      expect(note, isNot(contains('ПРИЧИНА НАЙДЕНА')));
+    });
+
     test('причина отказа переживает перезапуск приложения', () async {
       final store = LocalStore.inMemory();
       final vault = FakeVault();

@@ -211,9 +211,66 @@ class LocalAnalysisRepository
       // на секунду пропала сеть, был обязан заново набирать длинный секрет с
       // телефона — при том что с самим ключом всё было в порядке. Причина
       // отказа сохраняется и видна в настройках, пока проверка не пройдёт.
-      await _rememberKeyCheck(broker, mode, ok: false, note: e.message);
-      throw FeatureUnavailableException('${broker.title} не принял ключ: ${e.message}');
+      final note =
+          '${e.message}${await _crossCheckNote(broker, mode, rejection: e.message)}';
+      await _rememberKeyCheck(broker, mode, ok: false, note: note);
+      throw FeatureUnavailableException('${broker.title} не принял ключ: $note');
     }
+  }
+
+  /// Проверка отвергнутого ключа Bybit на противоположной площадке.
+  ///
+  /// Самая частая причина отказа свежему ключу — он от другого сайта: у Bybit
+  /// testnet и основная площадка не связаны, и ключи у них разные. Спорить об
+  /// этом словами бессмысленно — приложение спрашивает вторую площадку тем же
+  /// ключом и возвращает факт. Запрос только на чтение баланса; ордера с этой
+  /// пробы уйти не могут.
+  Future<String> _crossCheckNote(
+    BrokerId broker,
+    TradingMode mode, {
+    required String rejection,
+  }) async {
+    if (broker != BrokerId.bybit) return '';
+    // Проба осмысленна только когда ключ отверг сам Bybit. Если отказ местный
+    // (нет сети, нечем подписать) — вторая площадка ответит тем же, и вывод
+    // «ключ не принят нигде» был бы неправдой.
+    if (!_authRejection(rejection)) return '';
+    final opposite = mode == TradingMode.testnet ? TradingMode.live : TradingMode.testnet;
+    final probe = BybitBroker(
+      mode: opposite,
+      // Ключ читается из слота исходного режима: проверяется именно та пара,
+      // которую только что ввёл владелец, а не то, что лежит у другого режима.
+      apiKey: () => vault.apiKey(exchange: broker.name, mode: mode.name),
+      signer: (payload) =>
+          vault.sign(exchange: broker.name, mode: mode.name, payload: payload),
+    );
+    try {
+      await probe.checkAccess();
+      return mode == TradingMode.testnet
+          ? '. ПРИЧИНА НАЙДЕНА: этот ключ от основного bybit.com, а режим — '
+              'testnet. Для testnet ключ создаётся на testnet.bybit.com'
+          : '. ПРИЧИНА НАЙДЕНА: этот ключ от testnet.bybit.com, а режим — '
+              'живой счёт. Для него ключ создаётся на bybit.com';
+    } on BrokerException catch (e) {
+      // Вторая площадка ключ тоже отвергла — значит, дело в самом ключе:
+      // просрочен, отозван или ограничен по IP.
+      if (_authRejection(e.message)) {
+        return '. Проверено на обеих площадках Bybit: ключ не принят нигде — '
+            'он просрочен, отозван либо ограничен по IP';
+      }
+      return '';
+    } on Object {
+      return '';
+    } finally {
+      probe.close();
+    }
+  }
+
+  /// Похоже ли сообщение на отказ биржи в авторизации, а не на местный сбой.
+  static bool _authRejection(String message) {
+    const markers = ['401', '403', '10003', '10004', '10005', 'api key', 'invalid'];
+    final lower = message.toLowerCase();
+    return markers.any(lower.contains);
   }
 
   /// Итоги последней проверки ключей по площадкам и режимам.
