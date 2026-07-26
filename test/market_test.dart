@@ -80,16 +80,18 @@ void main() {
   });
 
   group('IssClient.candles', () {
-    test('собирает страницы по курсору start, пока ISS их отдаёт', () async {
+    test('собирает страницы по курсору start, пока страницы полные', () async {
+      // Полная страница (2 строки) → идём дальше; неполная (1 строка) —
+      // последняя, и холостой запрос за пустой страницей больше не делается:
+      // на 16 вызовах candles() за пересчёт это 16 лишних round-trip'ов.
       final http = FakeHttp([
         issCandles([
           issCandleRow('2025-07-14 10:00:00', 100),
           issCandleRow('2025-07-14 11:00:00', 101),
         ]),
         issCandles([issCandleRow('2025-07-14 12:00:00', 102)]),
-        issCandles(const []),
       ]);
-      final client = IssClient(http: http);
+      final client = IssClient(http: http, candlesPageSize: 2);
 
       final candles = await client.candles(
         'SiU5',
@@ -99,9 +101,45 @@ void main() {
 
       expect(candles.length, 3);
       expect(candles.last.close, 102);
+      expect(http.requested, hasLength(2), reason: 'третий запрос был холостым');
       expect(http.requested[0].queryParameters['start'], '0');
       expect(http.requested[1].queryParameters['start'], '2');
-      expect(http.requested[2].queryParameters['start'], '3');
+    });
+
+    test('история длиннее одной страницы дочитывается до конца', () async {
+      // Три полные страницы подряд — курсор обязан двигаться, иначе история
+      // молча обрезается.
+      final full = issCandles([
+        issCandleRow('2025-07-14 10:00:00', 100),
+        issCandleRow('2025-07-14 11:00:00', 101),
+      ]);
+      final http = FakeHttp([
+        full,
+        full,
+        issCandles([issCandleRow('2025-07-14 12:00:00', 102)]),
+      ]);
+
+      final candles = await IssClient(http: http, candlesPageSize: 2).candles(
+        'SiU5',
+        timeframe: Timeframe.h1,
+        from: DateTime.utc(2025, 7, 14),
+      );
+
+      expect(candles.length, 5);
+      expect(http.requested, hasLength(3));
+      expect(http.requested[2].queryParameters['start'], '4');
+    });
+
+    test('запрашивается только блок candles', () async {
+      final http = FakeHttp([issCandles([issCandleRow('2025-07-14 10:00:00', 100)])]);
+
+      await IssClient(http: http, candlesPageSize: 2).candles(
+        'SiU5',
+        timeframe: Timeframe.h1,
+        from: DateTime.utc(2025, 7, 14),
+      );
+
+      expect(http.requested.single.query, contains('iss.only=candles'));
     });
 
     test('дневная свеча запрашивается интервалом 24, а не 1440', () async {

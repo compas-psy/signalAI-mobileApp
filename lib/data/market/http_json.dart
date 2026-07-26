@@ -25,6 +25,14 @@ class HttpJson {
   final HttpClient _client;
   final Duration timeout;
 
+  /// Предел времени на весь [get] со всеми попытками.
+  ///
+  /// Считается от [timeout], а не задаётся отдельно: так один параметр
+  /// по-прежнему управляет «терпением» клиента, но ретраи не могут
+  /// растянуться на минуты. Приватный намеренно: тесты подменяют HttpJson
+  /// через `implements`, и каждый публичный член ломал бы их компиляцию.
+  Duration _deadlineFor(int attempts) => timeout * (attempts.clamp(1, 3) + 0.5);
+
   /// GET с экспоненциальной паузой между попытками (ТЗ §3.3).
   ///
   /// Повторяются только те отказы, которые имеет смысл повторять: 5xx, 429,
@@ -32,15 +40,35 @@ class HttpJson {
   /// колонка) и отказ резолвера повтором не лечатся — они поднимаются сразу.
   Future<Map<String, dynamic>> get(Uri uri, {int attempts = 3}) async {
     MarketDataException? lastError;
+    // Общий дедлайн на всю операцию: без него три попытки по два таймаута
+    // складывались в полторы минуты на один URL, а при 48 запросах на
+    // пересчёт это часы.
+    final deadline = DateTime.now().add(_deadlineFor(attempts));
+
     for (var attempt = 0; attempt < attempts; attempt++) {
       if (attempt > 0) {
+        if (DateTime.now().isAfter(deadline)) break;
         await Future<void>.delayed(Duration(milliseconds: 400 * (1 << (attempt - 1))));
       }
       try {
         final request = await _client.getUrl(uri).timeout(timeout);
         request.headers.set(HttpHeaders.acceptHeader, 'application/json');
         final response = await request.close().timeout(timeout);
-        final body = await response.transform(utf8.decoder).join();
+        // Таймаут именно здесь критичен: сервер может принять соединение,
+        // отдать заголовки и замолчать на теле — типичное поведение мобильной
+        // сети при шейпинге. Без таймаута этот await не завершается никогда,
+        // и ретраи не спасают, потому что цикл до них не доходит.
+        final body = await response
+            .transform(utf8.decoder)
+            .join()
+            .timeout(timeout, onTimeout: () {
+          // Соединение бросаем: держать его в пуле нет смысла.
+          response.detachSocket().then((s) => s.destroy()).ignore();
+          throw MarketDataException(
+            '${uri.host} оборвал передачу данных',
+            kind: NetFailureKind.timeout,
+          );
+        });
         if (response.statusCode >= 400) {
           final code = response.statusCode;
           final error = MarketDataException(
@@ -65,6 +93,7 @@ class HttpJson {
         final failure = MarketDataException.from(e, uri.host);
         if (!failure.retryable) throw failure;
         lastError = failure;
+        if (DateTime.now().isAfter(deadline)) break;
       }
     }
     throw lastError ?? MarketDataException('Не удалось получить данные с ${uri.host}');

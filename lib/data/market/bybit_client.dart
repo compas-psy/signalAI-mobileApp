@@ -36,7 +36,29 @@ class BybitClient {
 
   /// Тикеры бессрочных контрактов USDT.
   Future<List<BybitTicker>> tickers({List<String>? symbols}) async {
-    final json = await _http.get(Uri.parse('$_base/v5/market/tickers?category=linear'));
+    // Один символ — просим именно его: ответ ~1 КБ вместо ~500 КБ на весь
+    // список перпетуалов. Для нескольких символов Bybit фильтра не даёт,
+    // поэтому там берём список целиком и фильтруем на устройстве.
+    final result = <BybitTicker>[];
+    if (symbols != null && symbols.length == 1) {
+      result.addAll(await _tickersPage(symbol: symbols.first));
+      return result;
+    }
+    if (symbols != null && symbols.length <= 4) {
+      for (final symbol in symbols) {
+        result.addAll(await _tickersPage(symbol: symbol));
+      }
+      return result;
+    }
+    return _tickersPage(filter: symbols);
+  }
+
+  Future<List<BybitTicker>> _tickersPage({String? symbol, List<String>? filter}) async {
+    final json = await _http.get(Uri.parse(
+      '$_base/v5/market/tickers?category=linear'
+      '${symbol == null ? '' : '&symbol=$symbol'}',
+    ));
+    final symbols = filter;
     final list = _list(json);
 
     final result = <BybitTicker>[];

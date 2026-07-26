@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/widgets.dart';
 
 import '../../data/market/bybit_client.dart';
+import '../../data/market/http_json.dart';
 import '../../data/net/dns_resolver.dart';
 import '../../data/market/iss_client.dart';
 import '../../domain/analysis/candle.dart';
@@ -50,8 +51,10 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
       _results.clear();
     });
 
-    final iss = IssClient();
-    final bybit = BybitClient();
+    // Диагностика обязана падать быстро: её задача — поставить диагноз, а не
+    // воспроизвести продовые ретраи. Короткий таймаут вместо дефолтных 15 с.
+    final iss = IssClient(http: HttpJson(timeout: const Duration(seconds: 7)));
+    final bybit = BybitClient(http: HttpJson(timeout: const Duration(seconds: 7)));
 
     Future<void> check(String name, Future<_CheckResult> Function() body) async {
       setState(() => _stage = name);

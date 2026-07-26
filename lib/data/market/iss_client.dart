@@ -43,7 +43,16 @@ class FortsSnapshot {
 /// контрактов (ТЗ §3.1). Котировки могут отдаваться с задержкой, поэтому для
 /// исполнения нужна цена от брокера, а сюда мы ходим за историей и скринером.
 class IssClient {
-  IssClient({HttpJson? http}) : _http = http ?? HttpJson();
+  IssClient({HttpJson? http, this.candlesPageSize = 500})
+      : _http = http ?? HttpJson();
+
+  /// Сколько свечей ISS отдаёт на одну страницу.
+  ///
+  /// Значение задаётся явно, а не выводится из первой страницы: если история
+  /// целиком уместилась в одну неполную страницу, вывести размер из неё
+  /// нельзя, и пришлось бы делать лишний запрос, чтобы это выяснить.
+  /// В тестах подменяется, чтобы фикстуры оставались короткими.
+  final int candlesPageSize;
 
   final HttpJson _http;
 
@@ -54,26 +63,58 @@ class IssClient {
   ///
   /// ISS отдаёт `securities.json` страницами, поэтому блоки собираются по
   /// курсору `start`, иначе на срочном рынке молча теряется хвост контрактов.
-  Future<List<FortsSnapshot>> fortsSnapshot() async {
+  /// Снимок с коротким кэшем: бэктест и оптимизация, запущенные сразу после
+  /// дайджеста, тянули весь рынок заново. Спецификации контрактов меняются
+  /// раз в квартал, обороты — не чаще минут, поэтому пять минут безопасны.
+  Future<List<FortsSnapshot>> fortsSnapshot({Duration ttl = const Duration(minutes: 5)}) async {
+    final cached = _snapshotCache;
+    final at = _snapshotAt;
+    if (cached != null && at != null && DateTime.now().difference(at) < ttl) {
+      return cached;
+    }
+    final fresh = await _fetchSnapshot();
+    _snapshotCache = fresh;
+    _snapshotAt = DateTime.now();
+    return fresh;
+  }
+
+  List<FortsSnapshot>? _snapshotCache;
+  DateTime? _snapshotAt;
+
+  Future<List<FortsSnapshot>> _fetchSnapshot() async {
     Uri page(int start) => Uri.parse(
           '$_base/$_fortsPath/securities.json'
           '?iss.meta=off&iss.only=securities,marketdata'
           '&securities.columns=SECID,SHORTNAME,LASTTRADEDATE,MINSTEP,STEPPRICE,DECIMALS,PREVSETTLEPRICE'
           '&marketdata.columns=SECID,LAST,VALTODAY,OPENPOSITION,UPDATETIME'
-          '&start=$start',
+          '&limit=$_snapshotPageSize&start=$start',
         );
 
     final securities = <Map<String, Object?>>[];
     final marketDataRows = <Map<String, Object?>>[];
+    // Дедупликация по SECID: страховка на случай, если ISS проигнорирует
+    // курсор и начнёт отдавать ту же страницу — иначе цикл честно отработал
+    // бы все 40 запросов и склеил дубликаты.
+    final seen = <String>{};
     for (var start = 0, guard = 0; guard < _maxPages; guard++) {
       final json = await _http.get(page(start));
       final securitiesPage = issRows(json, 'securities');
       final marketDataPage = issRows(json, 'marketdata');
       if (securitiesPage.isEmpty && marketDataPage.isEmpty) break;
-      securities.addAll(securitiesPage);
+
+      var fresh = 0;
+      for (final row in securitiesPage) {
+        final secId = row['SECID'] as String?;
+        if (secId == null || !seen.add(secId)) continue;
+        securities.add(row);
+        fresh++;
+      }
       marketDataRows.addAll(marketDataPage);
-      // Курсор двигается по блоку securities — он ведущий в этом запросе.
-      if (securitiesPage.isEmpty) break;
+
+      if (securitiesPage.isEmpty || fresh == 0) break;
+      // Неполная страница означает, что это последняя: лишний холостой запрос
+      // за пустой страницей не нужен.
+      if (securitiesPage.length < _snapshotPageSize) break;
       start += securitiesPage.length;
     }
 
@@ -136,7 +177,8 @@ class IssClient {
     final interval = _issInterval(timeframe);
     Uri page(int start) => Uri.parse(
           '$_base/$_fortsPath/securities/$secId/candles.json'
-          '?iss.meta=off&interval=$interval&from=${_date(from)}&start=$start',
+          '?iss.meta=off&iss.only=candles'
+          '&interval=$interval&from=${_date(from)}&start=$start',
         );
 
     final candles = <Candle>[];
@@ -160,6 +202,8 @@ class IssClient {
           ),
         );
       }
+      // Неполная страница — последняя: холостой запрос за пустой не нужен.
+      if (rows.length < candlesPageSize) break;
       start += rows.length;
     }
     return candles;
@@ -189,6 +233,10 @@ class IssClient {
 
   /// Предел страниц — страховка от зацикливания, если ISS проигнорирует `start`.
   static const _maxPages = 40;
+
+  /// Сколько строк просим на страницу снимка. Явное значение позволяет
+  /// понять, что страница последняя, не делая лишний запрос.
+  static const _snapshotPageSize = 100;
 
   /// ISS отдаёт UPDATETIME как «ЧЧ:ММ:СС» по Москве, без даты.
   ///

@@ -272,11 +272,22 @@ class LocalAnalysisRepository
 
     if (_strategyEnabled['forts'] ?? true) {
       final fortsScreener = _screenerFor('forts');
-      for (final snapshot in selected.values) {
-        _stage('Анализ ${snapshot.spec.symbol}…');
-        final input = await _fortsInput(snapshot);
+      // Инструменты грузятся параллельно с ограничением: раньше 28 round-trip'ов
+      // шли строго друг за другом, и даже на быстрой сети это десятки секунд.
+      final contracts = selected.values.toList();
+      var done = 0;
+      final inputs = await _mapLimited<FortsSnapshot, InstrumentInput?>(
+        contracts,
+        (snapshot) async {
+          final input = await _fortsInput(snapshot);
+          done++;
+          _stage('Анализ MOEX: $done из ${contracts.length}…');
+          return input;
+        },
+      );
+      for (final input in inputs) {
         if (input == null) continue;
-        hourlyBySymbol[snapshot.spec.symbol] = input.hourly;
+        hourlyBySymbol[input.spec.symbol] = input.hourly;
         final result = fortsScreener.evaluate(input, regime, rejected: lastRejections);
         if (result != null) results.add(result);
       }
@@ -367,6 +378,31 @@ class LocalAnalysisRepository
       // Журнал — вторичен по отношению к дайджесту: сверимся в следующий раз.
     }
     return digest;
+  }
+
+  /// Параллельный обход с ограничением одновременных запросов.
+  ///
+  /// Больше четырёх одновременных соединений мобильная сеть и биржевые API
+  /// не любят, а меньше — не даёт выигрыша.
+  static Future<List<R>> _mapLimited<T, R>(
+    List<T> items,
+    Future<R> Function(T item) body, {
+    int concurrency = 4,
+  }) async {
+    final results = List<R?>.filled(items.length, null);
+    var next = 0;
+    Future<void> worker() async {
+      while (true) {
+        final index = next++;
+        if (index >= items.length) return;
+        results[index] = await body(items[index]);
+      }
+    }
+
+    await Future.wait([
+      for (var i = 0; i < concurrency && i < items.length; i++) worker(),
+    ]);
+    return [for (final r in results) r as R];
   }
 
   /// Сколько источников включено сейчас — чтобы понять, всё ли отвалилось.
