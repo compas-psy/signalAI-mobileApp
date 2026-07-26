@@ -32,6 +32,97 @@ class MarketRegime {
       };
 }
 
+/// Режим рынка на любой момент прошлого — по дневной структуре якорей.
+///
+/// Нужен бэктесту: блок «Режим рынка» весит заметную долю оценки и вживую
+/// вырезает контр-трендовые идеи. Прогон с постоянным [MarketRegime.unknown]
+/// торговал бы стратегию, которой не существует, и оптимизатор подбирал бы
+/// параметры под неё же.
+///
+/// Тренды считаются заранее, по одному значению на закрывшуюся дневку: звать
+/// [analyzeStructure] на каждом часовом баре прогона (тысячи баров × три
+/// якоря) было бы неприемлемо дорого.
+class RegimeTimeline {
+  RegimeTimeline._(this._index, this._currency, this._crypto);
+
+  final List<(DateTime, StructureTrend)> _index;
+  final List<(DateTime, StructureTrend)> _currency;
+  final List<(DateTime, StructureTrend)> _crypto;
+
+  /// Собирает шкалу из дневок якорей: индекс, валюта, биткоин.
+  factory RegimeTimeline.build({
+    List<Candle> index = const [],
+    List<Candle> currency = const [],
+    List<Candle> crypto = const [],
+  }) =>
+      RegimeTimeline._(_series(index), _series(currency), _series(crypto));
+
+  /// Пустая шкала: режим всегда нейтральный. Явный объект вместо null —
+  /// чтобы «якорей не было» читалось в коде, а не угадывалось.
+  static final empty = RegimeTimeline.build();
+
+  /// Сколько дневок нужно, чтобы структура вообще что-то значила.
+  static const _minDaily = 20;
+
+  static List<(DateTime, StructureTrend)> _series(List<Candle> daily) {
+    if (daily.length < _minDaily) return const [];
+    return [
+      for (var i = _minDaily; i <= daily.length; i++)
+        // Метка — закрытие последней вошедшей свечи: раньше него этот тренд
+        // ещё не был известен, и заглядывания в будущее нет.
+        (daily[i - 1].time, analyzeStructure(daily.sublist(0, i)).trend),
+    ];
+  }
+
+  /// Режим на момент [moment] — по якорям, закрывшимся строго до него.
+  MarketRegime at(DateTime moment) => MarketRegime(
+        indexTrend: _trendAt(_index, moment),
+        currencyTrend: _trendAt(_currency, moment),
+        cryptoTrend: _trendAt(_crypto, moment),
+      );
+
+  static StructureTrend _trendAt(
+    List<(DateTime, StructureTrend)> series,
+    DateTime moment,
+  ) {
+    if (series.isEmpty || !series.first.$1.isBefore(moment)) {
+      return StructureTrend.flat;
+    }
+    // Двоичный поиск последней метки строго раньше момента.
+    var low = 0;
+    var high = series.length - 1;
+    while (low < high) {
+      final mid = (low + high + 1) ~/ 2;
+      if (series[mid].$1.isBefore(moment)) {
+        low = mid;
+      } else {
+        high = mid - 1;
+      }
+    }
+    return series[low].$2;
+  }
+}
+
+/// Группа коррелированных инструментов: в одну группу — не больше одной идеи.
+///
+/// Живёт на верхнем уровне, потому что нужна и скринеру (дедупликация выдачи),
+/// и риск-движку (лимит одновременных позиций). Две копии таблицы групп
+/// неизбежно разъехались бы.
+String correlationGroup(InstrumentSpec spec) =>
+    correlationGroupFor(spec.symbol, spec.market);
+
+/// То же по символу и рынку — журналу сделок спецификации инструмента
+/// недоступны, а группу знать надо.
+String correlationGroupFor(String rawSymbol, Market market) {
+  final symbol = rawSymbol.toUpperCase();
+  if (symbol.startsWith('SI') || symbol.startsWith('CNY') || symbol.startsWith('ED')) {
+    return 'currency';
+  }
+  if (symbol.startsWith('BR') || symbol.startsWith('NG')) return 'energy';
+  if (market == Market.crypto) return 'crypto';
+  return 'index';
+}
+
 /// Входные данные скринера по одному инструменту.
 class InstrumentInput {
   const InstrumentInput({
@@ -553,15 +644,7 @@ class Screener {
         'Расчёт выполнен на устройстве по публичным данным биржи, без LLM-разбора.';
   }
 
-  String? _correlationGroup(InstrumentSpec spec) {
-    final symbol = spec.symbol.toUpperCase();
-    if (symbol.startsWith('SI') || symbol.startsWith('CNY') || symbol.startsWith('ED')) {
-      return 'currency';
-    }
-    if (symbol.startsWith('BR') || symbol.startsWith('NG')) return 'energy';
-    if (spec.market == Market.crypto) return 'crypto';
-    return 'index';
-  }
+  String? _correlationGroup(InstrumentSpec spec) => correlationGroup(spec);
 
   String _fmt(double? value) =>
       value == null ? '—' : value.toStringAsFixed(value.abs() < 10 ? 2 : 0).replaceAll('.', ',');

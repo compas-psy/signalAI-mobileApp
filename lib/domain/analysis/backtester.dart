@@ -20,10 +20,27 @@ class InstrumentHistory {
 
 /// Закрытая сделка прогона: результат в R и символ.
 class BacktestTrade {
-  const BacktestTrade({required this.symbol, required this.resultR});
+  const BacktestTrade({
+    required this.symbol,
+    required this.resultR,
+    this.costR = 0,
+    this.components = const [],
+  });
 
   final String symbol;
+
+  /// Итог сделки в R **после** издержек.
   final double resultR;
+
+  /// Сколько R из результата съели комиссия, проскальзывание и фандинг.
+  final double costR;
+
+  /// Компоненты оценки, с которыми сделка была открыта.
+  ///
+  /// Нужны аудиту факторов: он агрегирует их по уже сыгранным сделкам, и
+  /// поэтому меряет ровно ту стратегию, которая торговалась, а не отдельную
+  /// свою модель.
+  final List<ScoreComponent> components;
 }
 
 /// Итог прогона: сделки и агрегаты.
@@ -65,6 +82,13 @@ class BacktestSummary {
     return win / loss;
   }
 
+  /// Средние издержки на сделку, R. Показываются отдельно, чтобы было видно,
+  /// сколько эджа уходит бирже.
+  double get averageCostR {
+    if (trades.isEmpty) return 0;
+    return trades.fold<double>(0, (s, t) => s + t.costR) / trades.length;
+  }
+
   /// Кривая эквити в R, накопительно по закрытым сделкам.
   List<double> get equityCurve {
     var sum = 0.0;
@@ -78,12 +102,12 @@ class BacktestSummary {
 /// написаны явно:
 ///  * скринер видит только свечи до текущего момента — заглядывания в будущее
 ///    нет по построению;
-///  * режим рынка в прогоне нейтральный: восстанавливать исторический режим
-///    индекса на каждый час — отдельная задача, и молча подменять его текущим
-///    было бы обманом;
+///  * режим рынка берётся историческим — из [RegimeTimeline], собранной по
+///    дневкам якорей на момент каждого бара;
 ///  * лимитка живёт [orderTtlBars] часов; если цена не дошла — идея отменяется;
 ///  * если свеча задевает и стоп, и тейк, засчитывается стоп (худший случай);
-///  * комиссия и проскальзывание не моделируются — это тоже написано в итоге.
+///  * комиссия, проскальзывание и фандинг вычитаются из результата —
+///    правила и цифры в [TradingCosts].
 class Backtester {
   const Backtester({
     this.screener = const Screener(),
@@ -94,9 +118,13 @@ class Backtester {
     this.orderTtlBars = 24,
     this.maxHoldBars = 120,
     this.cooldownBars = 12,
+    this.costs = defaultCostsFor,
   });
 
   final Screener screener;
+
+  /// Издержки по инструменту. Подменяется на [noCosts] в тестах механики.
+  final TradingCosts Function(InstrumentSpec spec) costs;
 
   /// Как часто скринер ищет новый сетап (в барах часовика).
   final int evaluateEveryBars;
@@ -114,9 +142,13 @@ class Backtester {
   final int cooldownBars;
 
   /// Прогон по всем инструментам. [onProgress] — человекочитаемые стадии.
+  ///
+  /// [regime] — исторический режим рынка. Без него прогон торгует нейтральный
+  /// режим, и это честно отражается в подписи результата.
   Future<BacktestSummary> run(
     List<InstrumentHistory> histories, {
     void Function(String stage)? onProgress,
+    RegimeTimeline? regime,
   }) async {
     final trades = <BacktestTrade>[];
     var maxDays = 0;
@@ -125,7 +157,7 @@ class Backtester {
       onProgress?.call('Прогон ${history.spec.symbol}…');
       // Отдаём кадр интерфейсу между инструментами: расчёт идёт в UI-изоляте.
       await Future<void>.delayed(Duration.zero);
-      trades.addAll(_runInstrument(history));
+      trades.addAll(_runInstrument(history, regime));
       if (history.hourly.isNotEmpty) {
         final span = history.hourly.last.time.difference(history.hourly.first.time).inDays;
         maxDays = math.max(maxDays, span);
@@ -141,14 +173,19 @@ class Backtester {
     );
   }
 
-  List<BacktestTrade> _runInstrument(InstrumentHistory history) {
+  List<BacktestTrade> _runInstrument(InstrumentHistory history, RegimeTimeline? regime) {
     final hourly = history.hourly;
     final daily = history.daily;
     final trades = <BacktestTrade>[];
     if (hourly.length < 80 || daily.length < 40) return trades;
 
+    final tradeCosts = costs(history.spec);
+    final fillMargin = history.spec.tick;
+
     PendingOrder? pending;
     OpenPosition? open;
+    // Компоненты оценки текущей идеи — переезжают в закрытую сделку.
+    List<ScoreComponent> pendingComponents = const [];
     var cooldownUntil = 0;
     var dailyPointer = 0;
 
@@ -165,8 +202,14 @@ class Backtester {
       if (open != null) {
         final closed = open.onBar(bar, i);
         if (closed != null) {
-          trades.add(BacktestTrade(symbol: history.spec.symbol, resultR: closed));
+          trades.add(BacktestTrade(
+            symbol: history.spec.symbol,
+            resultR: closed,
+            costR: open.costR,
+            components: pendingComponents,
+          ));
           open = null;
+          pendingComponents = const [];
           cooldownUntil = i + cooldownBars;
         }
         continue;
@@ -178,6 +221,7 @@ class Backtester {
           open = OpenPosition(order: pending, openedAt: i, maxHoldBars: maxHoldBars);
         } else if (i >= pending.expiresAt) {
           pending = null;
+          pendingComponents = const [];
         }
         if (open != null) {
           pending = null;
@@ -200,12 +244,13 @@ class Backtester {
           changePercentLabel: '0,00%',
           changeUp: true,
         ),
-        MarketRegime.unknown,
+        regime?.at(bar.time) ?? MarketRegime.unknown,
         now: bar.time,
       );
       if (result == null) continue;
 
       final signal = result.signal;
+      pendingComponents = result.components;
       pending = PendingOrder(
         long: signal.direction.isLong,
         entry: signal.entry,
@@ -214,6 +259,8 @@ class Backtester {
           for (final tp in signal.takeProfits) (price: tp.price, share: tp.sharePercent / 100),
         ],
         expiresAt: i + orderTtlBars,
+        costs: tradeCosts,
+        fillMargin: fillMargin,
       );
     }
 

@@ -57,6 +57,14 @@ class StrategiesScreen extends StatelessWidget {
                 ),
                 onOptimize: controller.runOptimization,
               ),
+              if (snapshot.riskLimits != null) ...[
+                const SizedBox(height: 12),
+                _RiskLimitsCard(limits: snapshot.riskLimits!),
+              ],
+              if (snapshot.factorEdges.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                _FactorEdgeCard(edges: snapshot.factorEdges),
+              ],
             ],
           ),
         ),
@@ -121,6 +129,109 @@ class _ParamsCard extends StatelessWidget {
         ),
       );
 }
+
+/// Живое состояние риск-лимитов.
+///
+/// Владельцу важно видеть не декларацию, а факт: сколько сделок открыто, где
+/// дневной результат относительно лимита и активна ли пауза. Ровно эти числа
+/// применяет риск-движок, когда решает пропустить идею или отклонить.
+class _RiskLimitsCard extends StatelessWidget {
+  const _RiskLimitsCard({required this.limits});
+
+  final RiskLimitsView limits;
+
+  @override
+  Widget build(BuildContext context) {
+    final dayR = limits.dayResultR;
+    final overLimit = dayR <= -limits.dailyLossLimitR;
+    return SectionCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const SectionLabel('Риск-лимиты'),
+          const SizedBox(height: 6),
+          KeyValueRow(
+            name: 'Одновременно в работе',
+            value: '${limits.open} из ${limits.maxConcurrent}',
+            valueStyle: T.mono(
+              12,
+              color: limits.open >= limits.maxConcurrent ? C.red : C.text,
+            ),
+          ),
+          KeyValueRow(
+            name: 'Результат дня',
+            value: '${_signedR(dayR)} из −${_r(limits.dailyLossLimitR)}R',
+            valueStyle: T.mono(
+              12,
+              color: overLimit
+                  ? C.red
+                  : dayR > 0
+                      ? C.green
+                      : C.text,
+            ),
+          ),
+          KeyValueRow(
+            name: 'Серия стопов',
+            value: limits.pauseNote,
+            showDivider: false,
+            valueStyle: T.mono(
+              12,
+              color: limits.pauseNote.startsWith('пауза до') ? C.red : C.text,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Таблица «фактор → эдж в R»: что из компонент оценки реально работает.
+class _FactorEdgeCard extends StatelessWidget {
+  const _FactorEdgeCard({required this.edges});
+
+  final List<FactorEdgeRow> edges;
+
+  @override
+  Widget build(BuildContext context) => SectionCard(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const SectionLabel('Эдж факторов'),
+            const SizedBox(height: 4),
+            Text(
+              'Разница средней сделки, когда фактор выражен и когда его нет — '
+              'по сделкам последнего прогона. Веса по этой таблице пока не '
+              'пересчитываются: подгонять их под несколько десятков сделок '
+              'значит подгонять под шум.',
+              style: T.body(10.5, color: C.muted, height: 1.4),
+            ),
+            const SizedBox(height: 8),
+            for (var i = 0; i < edges.length; i++)
+              KeyValueRow(
+                name: edges[i].significant
+                    ? edges[i].factor
+                    : '${edges[i].factor} · мало данных',
+                value: '${_signedR(edges[i].edgeR)} '
+                    '(${edges[i].withCount}/${edges[i].withoutCount})',
+                showDivider: i < edges.length - 1,
+                valueStyle: T.mono(
+                  12,
+                  color: !edges[i].significant
+                      ? C.muted
+                      : edges[i].edgeR > 0
+                          ? C.green
+                          : C.red,
+                ),
+              ),
+          ],
+        ),
+      );
+}
+
+String _r(double value) => value.abs().toStringAsFixed(1).replaceAll('.', ',');
+
+String _signedR(double value) =>
+    '${value < 0 ? '−' : '+'}${value.abs().toStringAsFixed(2).replaceAll('.', ',')}R';
 
 class _BacktestCard extends StatelessWidget {
   const _BacktestCard({

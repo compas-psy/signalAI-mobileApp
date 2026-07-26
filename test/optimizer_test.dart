@@ -4,6 +4,7 @@ import 'package:signalai/domain/analysis/candle.dart';
 import 'package:signalai/domain/analysis/instrument_spec.dart';
 import 'package:signalai/domain/analysis/optimizer.dart';
 import 'package:signalai/domain/analysis/screener.dart';
+import 'package:signalai/domain/analysis/trade_simulator.dart';
 import 'package:signalai/domain/enums.dart';
 import 'package:signalai/domain/models/signal.dart';
 
@@ -77,6 +78,7 @@ const spec = InstrumentSpec(
   unitDecimals: 0,
   unitName: 'конт.',
   unitRiskSuffix: 'контракт',
+  tickSize: 0.01,
 );
 
 final start = DateTime.utc(2026, 2, 2, 10);
@@ -91,7 +93,7 @@ InstrumentHistory risingHistory() {
       time: start.add(Duration(hours: i)),
       open: value,
       high: (next > value ? next : value) + 0.05,
-      low: (next < value ? next : value) - 0.01,
+      low: (next < value ? next : value) - 0.05,
       close: next,
       volume: 100,
     ));
@@ -113,7 +115,12 @@ InstrumentHistory risingHistory() {
 
 void main() {
   test('прибыльный кандидат обыгрывает молчащий дефолт и выбирается', () async {
-    const optimizer = StrategyOptimizer(minTrainTrades: 1, minTestTrades: 1);
+    // Без издержек: тест про выбор кандидата, а не про их цену.
+    const optimizer = StrategyOptimizer(
+      minTrainTrades: 1,
+      minTestTrades: 1,
+      backtester: Backtester(costs: noCosts),
+    );
     final outcome = await optimizer.optimize(
       [risingHistory()],
       // Дефолт молчит, остальные кандидаты торгуют прибыльно.
@@ -127,7 +134,12 @@ void main() {
   });
 
   test('если дефолт не обыгран — параметры не меняются', () async {
-    const optimizer = StrategyOptimizer(minTrainTrades: 1, minTestTrades: 1);
+    // Без издержек: тест про выбор кандидата, а не про их цену.
+    const optimizer = StrategyOptimizer(
+      minTrainTrades: 1,
+      minTestTrades: 1,
+      backtester: Backtester(costs: noCosts),
+    );
     final outcome = await optimizer.optimize(
       [risingHistory()],
       // Торгует только дефолт: обыграть его некому.

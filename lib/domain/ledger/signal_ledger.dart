@@ -46,6 +46,8 @@ class PaperTrade {
     this.closedAt,
     this.unrealizedR,
     this.tpsTaken = 0,
+    this.costs = TradingCosts.none,
+    this.fillMargin = 0,
   });
 
   final String id;
@@ -58,6 +60,16 @@ class PaperTrade {
   final List<int> tpShares;
   final int score;
   final DateTime createdAt;
+
+  /// Издержки сделки — те же, что считает бэктест.
+  ///
+  /// Без них бумажная статистика мерила бы более щедрую стратегию, чем прогон,
+  /// и сравнивать их было бы бессмысленно. Сохраняются вместе со сделкой:
+  /// профиль комиссий может измениться, а уже прожитая сделка — нет.
+  final TradingCosts costs;
+
+  /// Шаг цены: лимитка исполняется только при проходе за уровень.
+  final double fillMargin;
 
   PaperStatus status;
 
@@ -95,6 +107,8 @@ class PaperTrade {
           (price: tpPrices[i], share: tpShares[i] / 100),
       ],
       expiresAt: orderTtlBars,
+      costs: costs,
+      fillMargin: fillMargin,
     );
 
     OpenPosition? position;
@@ -168,6 +182,8 @@ class PaperTrade {
         'closed_at': closedAt?.toIso8601String(),
         'unrealized_r': unrealizedR,
         'tps_taken': tpsTaken,
+        'costs': costs.toJson(),
+        'fill_margin': fillMargin,
       };
 
   factory PaperTrade.fromJson(Map<String, dynamic> j) => PaperTrade(
@@ -187,6 +203,10 @@ class PaperTrade {
         closedAt: j['closed_at'] == null ? null : DateTime.tryParse(j['closed_at'] as String),
         unrealizedR: (j['unrealized_r'] as num?)?.toDouble(),
         tpsTaken: (j['tps_taken'] as num?)?.toInt() ?? 0,
+        costs: j['costs'] == null
+            ? TradingCosts.none
+            : TradingCosts.fromJson(j['costs'] as Map<String, dynamic>),
+        fillMargin: (j['fill_margin'] as num?)?.toDouble() ?? 0,
       );
 }
 
@@ -243,7 +263,12 @@ class SignalLedger {
   /// Регистрация нового сигнала. Если по символу уже есть живая запись
   /// (лимитка или позиция) — новая не создаётся: это та же идея, уточнённая
   /// пересчётом, а не вторая сделка.
-  void record(TradingSignal signal, DateTime now) {
+  void record(
+    TradingSignal signal,
+    DateTime now, {
+    TradingCosts costs = TradingCosts.none,
+    double fillMargin = 0,
+  }) {
     final alive = trades.any((t) =>
         t.symbol == signal.symbol &&
         (t.status == PaperStatus.pending || t.status == PaperStatus.open));
@@ -260,6 +285,8 @@ class SignalLedger {
       tpShares: [for (final tp in signal.takeProfits) tp.sharePercent],
       score: signal.score,
       createdAt: now,
+      costs: costs,
+      fillMargin: fillMargin,
     ));
     if (trades.length > maxTrades) trades.removeRange(0, trades.length - maxTrades);
   }

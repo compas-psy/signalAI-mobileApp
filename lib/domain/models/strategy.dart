@@ -99,6 +99,46 @@ class BacktestResult {
       };
 }
 
+/// Строка таблицы эджа факторов: «фактор → сколько R он приносит».
+class FactorEdgeRow {
+  const FactorEdgeRow({
+    required this.factor,
+    required this.edgeR,
+    required this.withCount,
+    required this.withoutCount,
+    required this.significant,
+  });
+
+  final String factor;
+
+  /// Разница средних результатов «фактор есть» и «фактора нет», R.
+  final double edgeR;
+  final int withCount;
+  final int withoutCount;
+
+  /// Хватает ли выборки, чтобы разницу вообще обсуждать.
+  final bool significant;
+}
+
+/// Живое состояние риск-лимитов для карточки на экране «Стратегии».
+class RiskLimitsView {
+  const RiskLimitsView({
+    required this.open,
+    required this.maxConcurrent,
+    required this.dayResultR,
+    required this.dailyLossLimitR,
+    required this.pauseNote,
+  });
+
+  final int open;
+  final int maxConcurrent;
+  final double dayResultR;
+  final double dailyLossLimitR;
+
+  /// «пауза не активна» либо «пауза до 14:20».
+  final String pauseNote;
+}
+
 /// Данные экрана «Стратегии».
 class StrategiesSnapshot {
   const StrategiesSnapshot({
@@ -106,6 +146,8 @@ class StrategiesSnapshot {
     required this.paramsTitle,
     required this.params,
     required this.backtest,
+    this.factorEdges = const [],
+    this.riskLimits,
   });
 
   final List<StrategyPack> packs;
@@ -115,11 +157,23 @@ class StrategiesSnapshot {
   final List<StrategyParam> params;
   final BacktestResult backtest;
 
-  StrategiesSnapshot copyWith({List<StrategyPack>? packs, BacktestResult? backtest}) =>
+  /// Эдж факторов последнего прогона. Пусто — прогона ещё не было.
+  final List<FactorEdgeRow> factorEdges;
+
+  /// Состояние риск-лимитов. null — режим без риск-движка (демо).
+  final RiskLimitsView? riskLimits;
+
+  StrategiesSnapshot copyWith({
+    List<StrategyPack>? packs,
+    BacktestResult? backtest,
+    List<FactorEdgeRow>? factorEdges,
+  }) =>
       StrategiesSnapshot(
         packs: packs ?? this.packs,
         paramsTitle: paramsTitle,
         params: params,
         backtest: backtest ?? this.backtest,
+        factorEdges: factorEdges ?? this.factorEdges,
+        riskLimits: riskLimits,
       );
 }

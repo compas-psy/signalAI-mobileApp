@@ -27,10 +27,17 @@ class BybitTicker {
 /// Рыночные данные отдаются без ключа: тикеры, свечи, открытый интерес,
 /// фандинг. Ключи нужны только для баланса и исполнения.
 class BybitClient {
-  BybitClient({HttpJson? http, this.testnet = false}) : _http = http ?? HttpJson();
+  BybitClient({HttpJson? http, this.testnet = false, this.candlesPageSize = 1000})
+      : _http = http ?? HttpJson();
 
   final HttpJson _http;
   final bool testnet;
+
+  /// Сколько свечей биржа отдаёт за один запрос — предел Bybit.
+  ///
+  /// Задаётся явно, как и у [IssClient]: по неполной странице видно, что
+  /// история кончилась, а в тестах фикстуры остаются короткими.
+  final int candlesPageSize;
 
   String get _base => testnet ? 'https://api-testnet.bybit.com' : 'https://api.bybit.com';
 
@@ -85,10 +92,54 @@ class BybitClient {
   }
 
   /// Свечи. Bybit отдаёт их от новых к старым — здесь порядок разворачивается.
+  ///
+  /// [from] включает постраничную догрузку: за один запрос биржа отдаёт не
+  /// больше 1000 свечей, а бэктесту нужен год часовиков (≈8 800). Страницы
+  /// собираются курсором `end` от новых к старым, пока история не дотянется
+  /// до [from] или страница не придёт неполной.
   Future<List<Candle>> candles(
     String symbol, {
     required Timeframe timeframe,
     int limit = 200,
+    DateTime? from,
+  }) async {
+    if (from == null) return _candlesPage(symbol, timeframe: timeframe, limit: limit);
+
+    final pageSize = candlesPageSize;
+    final collected = <int, Candle>{};
+    int? end;
+    for (var guard = 0; guard < _maxCandlePages; guard++) {
+      final page = await _candlesPage(
+        symbol,
+        timeframe: timeframe,
+        limit: pageSize,
+        end: end,
+      );
+      if (page.isEmpty) break;
+      for (final candle in page) {
+        collected[candle.time.millisecondsSinceEpoch] = candle;
+      }
+      final oldest = page.first.time;
+      if (!oldest.isAfter(from) || page.length < pageSize) break;
+      // Следующая страница — строго старше самой ранней полученной свечи.
+      end = oldest.millisecondsSinceEpoch - 1;
+    }
+
+    final keys = collected.keys.toList()..sort();
+    return [
+      for (final key in keys)
+        if (!collected[key]!.time.isBefore(from)) collected[key]!,
+    ];
+  }
+
+  /// Предел страниц — страховка от зацикливания, если курсор не сдвинется.
+  static const _maxCandlePages = 12;
+
+  Future<List<Candle>> _candlesPage(
+    String symbol, {
+    required Timeframe timeframe,
+    int limit = 200,
+    int? end,
   }) async {
     // Сетка интервалов Bybit: 1/3/5/15/30/60/120/240/360/720/D/W/M. Десяти
     // минут в ней нет, а тихо отдавать вместо них пятнадцатиминутки нельзя:
@@ -104,7 +155,7 @@ class BybitClient {
     };
     final json = await _http.get(
       Uri.parse('$_base/v5/market/kline?category=linear&symbol=$symbol'
-          '&interval=$interval&limit=$limit'),
+          '&interval=$interval&limit=$limit${end == null ? '' : '&end=$end'}'),
     );
 
     final rows = (_result(json)['list'] as List<dynamic>? ?? const []);

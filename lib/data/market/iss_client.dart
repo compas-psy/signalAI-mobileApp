@@ -151,6 +151,9 @@ class IssClient {
             unitName: 'конт.',
             unitRiskSuffix: 'контракт',
             expiration: DateTime.tryParse((row['LASTTRADEDATE'] as String?) ?? ''),
+            // Шаг цены нужен модели исполнения: у RI знаков после запятой ноль,
+            // а шаг равен 10 пунктам — вывести его из DECIMALS нельзя.
+            tickSize: minStep,
           ),
           lastPrice: last,
           changePercent:
@@ -169,12 +172,35 @@ class IssClient {
   /// Код интервала у ISS — не всегда минуты: день кодируется числом 24, а не
   /// 1440. Ответ страничный (около 500 свечей), поэтому страницы собираются по
   /// курсору `start` — без этого история молча обрезается.
+  /// Кэш истории свечей: ключ «символ|интервал|дата начала».
+  ///
+  /// Бэктест и оптимизация идут подряд и просят одно и то же; на 28 сериях
+  /// это второй полный обход биржи впустую. История прошлых часов не
+  /// меняется, поэтому двенадцати часов жизни кэша более чем достаточно.
+  final Map<String, (DateTime, List<Candle>)> _candleCache = {};
+
+  static const _candleTtl = Duration(hours: 12);
+
   Future<List<Candle>> candles(
     String secId, {
     required Timeframe timeframe,
     required DateTime from,
+    bool cache = false,
   }) async {
     final interval = _issInterval(timeframe);
+    final key = '$secId|$interval|${_date(from)}';
+    if (cache) {
+      final hit = _candleCache[key];
+      if (hit != null && DateTime.now().difference(hit.$1) < _candleTtl) {
+        return hit.$2;
+      }
+    }
+    final result = await _fetchCandles(secId, interval, from);
+    if (cache) _candleCache[key] = (DateTime.now(), result);
+    return result;
+  }
+
+  Future<List<Candle>> _fetchCandles(String secId, int interval, DateTime from) async {
     Uri page(int start) => Uri.parse(
           '$_base/$_fortsPath/securities/$secId/candles.json'
           '?iss.meta=off&iss.only=candles'
@@ -207,6 +233,56 @@ class IssClient {
       start += rows.length;
     }
     return candles;
+  }
+
+  /// Коды месяцев исполнения на срочном рынке.
+  static const _monthCodes = 'FGHJKMNQUVXZ';
+
+  /// Месяцы исполнения квартальных серий: март, июнь, сентябрь, декабрь.
+  static const _quarterlyMonths = [3, 6, 9, 12];
+
+  /// Корни с ежемесячным исполнением. Остальные — квартальные.
+  static const _monthlyRoots = {'BR', 'NG'};
+
+  /// Исполняется ли контракт ежемесячно (нефть, газ) или квартально.
+  ///
+  /// От этого зависит и число серий за год, и ширина ликвидного окна: у
+  /// месячных серий она равна месяцу, иначе соседние серии перекрывались бы
+  /// и один и тот же период торговался бы в прогоне трижды.
+  static bool isMonthlySeries(String secId) {
+    if (secId.length < 3) return false;
+    return _monthlyRoots.contains(secId.substring(0, secId.length - 2).toUpperCase());
+  }
+
+  /// Предыдущие серии того же контракта: `SiZ5` → `SiZ5, SiU5, SiM5, SiH5`.
+  ///
+  /// Нужны бэктесту: фьючерс ликвиден только в последнем окне своей жизни, и
+  /// год истории по одному текущему контракту — это в основном мёртвая доска.
+  /// Символ разбирается по факту (`база` + месяц + цифра года), а не собирается
+  /// из справочника корней: у ISS база пишется как `Si`, а не `SI`.
+  static List<String> previousSeries(String secId, {int count = 4}) {
+    if (secId.length < 3) return [secId];
+    final base = secId.substring(0, secId.length - 2);
+    final monthIndex = _monthCodes.indexOf(secId[secId.length - 2].toUpperCase());
+    final yearDigit = int.tryParse(secId[secId.length - 1]);
+    if (monthIndex < 0 || yearDigit == null) return [secId];
+
+    final monthly = _monthlyRoots.contains(base.toUpperCase());
+    final months = monthly ? [for (var m = 1; m <= 12; m++) m] : _quarterlyMonths;
+    var slot = months.indexOf(monthIndex + 1);
+    if (slot < 0) return [secId];
+
+    var year = yearDigit;
+    final result = <String>[];
+    while (result.length < count) {
+      result.add('$base${_monthCodes[months[slot] - 1]}$year');
+      slot--;
+      if (slot < 0) {
+        slot = months.length - 1;
+        year = (year + 9) % 10;
+      }
+    }
+    return result;
   }
 
   /// Код интервала ISS: минуты для внутридневных, 24 — дневная свеча.

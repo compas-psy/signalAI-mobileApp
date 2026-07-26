@@ -112,6 +112,7 @@ class StrategyOptimizer {
     List<InstrumentHistory> histories, {
     void Function(String stage)? onProgress,
     Screener Function(StrategyParams params)? screenerBuilder,
+    RegimeTimeline? regime,
   }) async {
     final build = screenerBuilder ?? (p) => p.buildScreener();
 
@@ -145,7 +146,7 @@ class StrategyOptimizer {
     final candidates = <(StrategyParams, BacktestSummary)>[];
     for (var i = 0; i < grid.length; i++) {
       onProgress?.call('Подбор: вариант ${i + 1} из ${grid.length}…');
-      final summary = await _run(build(grid[i]), train);
+      final summary = await _run(build(grid[i]), train, regime);
       if (summary.count >= minTrainTrades && _score(summary) > 0) {
         candidates.add((grid[i], summary));
       }
@@ -153,12 +154,12 @@ class StrategyOptimizer {
     candidates.sort((a, b) => _score(b.$2).compareTo(_score(a.$2)));
 
     // 2. Топ train-кандидатов проверяется на невиданных данных.
-    final defaultTest = await _runTail(build(StrategyParams.defaults), test, train);
+    final defaultTest = await _runTail(build(StrategyParams.defaults), test, train, regime);
     var best = StrategyParams.defaults;
     var bestSummary = defaultTest;
     for (final (params, _) in candidates.take(3)) {
       onProgress?.call('Проверка на новых данных: ${params.label}');
-      final summary = await _runTail(build(params), test, train);
+      final summary = await _runTail(build(params), test, train, regime);
       if (summary.count >= minTestTrades && _score(summary) > _score(bestSummary)) {
         best = params;
         bestSummary = summary;
@@ -174,7 +175,11 @@ class StrategyOptimizer {
     );
   }
 
-  Future<BacktestSummary> _run(Screener screener, List<InstrumentHistory> histories) =>
+  Future<BacktestSummary> _run(
+    Screener screener,
+    List<InstrumentHistory> histories,
+    RegimeTimeline? regime,
+  ) =>
       Backtester(
         screener: screener,
         evaluateEveryBars: backtester.evaluateEveryBars,
@@ -182,7 +187,8 @@ class StrategyOptimizer {
         orderTtlBars: backtester.orderTtlBars,
         maxHoldBars: backtester.maxHoldBars,
         cooldownBars: backtester.cooldownBars,
-      ).run(histories);
+        costs: backtester.costs,
+      ).run(histories, regime: regime);
 
   /// Прогон полной истории с учётом только сделок после train-разреза.
   ///
@@ -193,12 +199,13 @@ class StrategyOptimizer {
     Screener screener,
     List<InstrumentHistory> full,
     List<InstrumentHistory> train,
+    RegimeTimeline? regime,
   ) async {
     final tail = <BacktestTrade>[];
     var days = 0;
     for (var i = 0; i < full.length; i++) {
-      final fullRun = await _run(screener, [full[i]]);
-      final trainRun = await _run(screener, [train[i]]);
+      final fullRun = await _run(screener, [full[i]], regime);
+      final trainRun = await _run(screener, [train[i]], regime);
       if (fullRun.trades.length > trainRun.trades.length) {
         tail.addAll(fullRun.trades.sublist(trainRun.trades.length));
       }

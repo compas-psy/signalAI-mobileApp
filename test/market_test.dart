@@ -183,6 +183,75 @@ void main() {
     });
   });
 
+  group('IssClient.previousSeries', () {
+    test('квартальный контракт разворачивается назад по кварталам', () {
+      expect(
+        IssClient.previousSeries('SiZ5', count: 4),
+        ['SiZ5', 'SiU5', 'SiM5', 'SiH5'],
+      );
+    });
+
+    test('переход через год уменьшает цифру года', () {
+      expect(
+        IssClient.previousSeries('RIH6', count: 3),
+        ['RIH6', 'RIZ5', 'RIU5'],
+      );
+    });
+
+    test('нефть исполняется ежемесячно, а не поквартально', () {
+      expect(IssClient.isMonthlySeries('BRZ5'), isTrue);
+      expect(IssClient.isMonthlySeries('SiZ5'), isFalse);
+      expect(
+        IssClient.previousSeries('BRG6', count: 3),
+        ['BRG6', 'BRF6', 'BRZ5'],
+      );
+    });
+
+    test('нераспознанный символ возвращается как есть, а не выдумывается', () {
+      expect(IssClient.previousSeries('XX'), ['XX']);
+      expect(IssClient.previousSeries('SiQ5'), ['SiQ5'],
+          reason: 'август — не квартальный месяц исполнения');
+    });
+  });
+
+  group('IssClient кэш свечей', () {
+    test('повторный запрос той же истории биржу не беспокоит', () async {
+      final http = FakeHttp([
+        issCandles([issCandleRow('2025-07-14 10:00:00', 100)]),
+      ]);
+      final client = IssClient(http: http, candlesPageSize: 2);
+
+      Future<List<Candle>> load() => client.candles(
+            'SiU5',
+            timeframe: Timeframe.h1,
+            from: DateTime.utc(2025, 7, 14),
+            cache: true,
+          );
+
+      expect((await load()).single.close, 100);
+      expect((await load()).single.close, 100);
+      expect(http.requested, hasLength(1), reason: 'второй обход был лишним');
+    });
+
+    test('без cache кэш не используется', () async {
+      final http = FakeHttp([
+        issCandles([issCandleRow('2025-07-14 10:00:00', 100)]),
+        issCandles([issCandleRow('2025-07-14 10:00:00', 100)]),
+      ]);
+      final client = IssClient(http: http, candlesPageSize: 2);
+
+      Future<void> load() => client.candles(
+            'SiU5',
+            timeframe: Timeframe.h1,
+            from: DateTime.utc(2025, 7, 14),
+          );
+
+      await load();
+      await load();
+      expect(http.requested, hasLength(2));
+    });
+  });
+
   group('BybitClient', () {
     test('десятиминутный таймфрейм отклоняется, а не подменяется 15-минутным', () {
       final future = BybitClient(http: FakeHttp(const [])).candles(
@@ -214,6 +283,67 @@ void main() {
       expect(candles.first.close, 1);
       expect(candles.last.close, 2);
       expect(candles.first.time.isBefore(candles.last.time), isTrue);
+    });
+
+    test('история глубже страницы дочитывается курсором end', () async {
+      // Первая страница — новые свечи, вторая — более старые. Курсор обязан
+      // сдвинуться, иначе год истории превратится в 1000 свечей.
+      Map<String, dynamic> page(List<int> hours) => {
+            'retCode': 0,
+            'result': {
+              'list': [
+                for (final h in hours.reversed)
+                  ['${DateTime.utc(2025, 7, 14, h).millisecondsSinceEpoch}',
+                   '1', '1', '1', '1', '10', '20'],
+              ],
+            },
+          };
+
+      final http = FakeHttp([
+        page([12, 13]),
+        page([10, 11]),
+      ]);
+
+      final candles = await BybitClient(http: http, candlesPageSize: 2).candles(
+        'BTCUSDT',
+        timeframe: Timeframe.h1,
+        from: DateTime.utc(2025, 7, 14, 10),
+      );
+
+      expect(candles, hasLength(4));
+      expect(candles.first.time, DateTime.utc(2025, 7, 14, 10));
+      expect(candles.last.time, DateTime.utc(2025, 7, 14, 13));
+      expect(http.requested[0].queryParameters['end'], isNull);
+      expect(
+        http.requested[1].queryParameters['end'],
+        '${DateTime.utc(2025, 7, 14, 12).millisecondsSinceEpoch - 1}',
+        reason: 'вторая страница обязана быть строго старше первой',
+      );
+    });
+
+    test('свечи старше запрошенной границы отбрасываются', () async {
+      final http = FakeHttp([
+        {
+          'retCode': 0,
+          'result': {
+            'list': [
+              ['${DateTime.utc(2025, 7, 14, 12).millisecondsSinceEpoch}',
+               '1', '1', '1', '1', '10', '20'],
+              ['${DateTime.utc(2025, 7, 10, 12).millisecondsSinceEpoch}',
+               '1', '1', '1', '1', '10', '20'],
+            ],
+          },
+        },
+      ]);
+
+      final candles = await BybitClient(http: http).candles(
+        'BTCUSDT',
+        timeframe: Timeframe.h1,
+        from: DateTime.utc(2025, 7, 14),
+      );
+
+      expect(candles, hasLength(1));
+      expect(candles.single.time, DateTime.utc(2025, 7, 14, 12));
     });
 
     test('ненулевой retCode поднимается как ошибка рыночных данных', () {

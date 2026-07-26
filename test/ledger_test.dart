@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:signalai/domain/analysis/candle.dart';
 import 'package:signalai/domain/enums.dart';
+import 'package:signalai/domain/analysis/trade_simulator.dart';
 import 'package:signalai/domain/ledger/signal_ledger.dart';
 import 'package:signalai/domain/models/signal.dart';
 
@@ -135,6 +136,37 @@ void main() {
     final restored = SignalLedger.fromJson(ledger.toJson());
     expect(restored.trades.single.resultR, closeTo(-1, 1e-9));
     expect(restored.rejected.single.symbol, 'BRQ6');
+  });
+
+  test('журнал считает те же издержки, что и бэктест', () {
+    // Инвариант всего анализа: бумажная статистика и прогон меряют одну
+    // стратегию. Если бы журнал торговал без комиссий, сравнивать его с
+    // бэктестом было бы бессмысленно.
+    const costs = TradingCosts(feeRate: 0.00055, slippage: 0.01);
+
+    final clean = SignalLedger()..record(signal(), start);
+    final real = SignalLedger()
+      ..record(signal(), start, costs: costs, fillMargin: 0.01);
+
+    final closes = [100.0, 99.9, 101.0, 103.0, 105.0, 107.5, 108.0];
+    clean.reconcile({'TSTU6': bars(closes)});
+    real.reconcile({'TSTU6': bars(closes)});
+
+    expect(clean.trades.single.status, PaperStatus.closed);
+    expect(real.trades.single.status, PaperStatus.closed);
+    expect(real.totalR, lessThan(clean.totalR));
+  });
+
+  test('издержки переживают сериализацию журнала', () {
+    const costs = TradingCosts(feeRate: 0.00055, feePoints: 0.5, slippage: 0.01);
+    final ledger = SignalLedger()
+      ..record(signal(), start, costs: costs, fillMargin: 0.01);
+
+    final restored = SignalLedger.fromJson(ledger.toJson());
+    final trade = restored.trades.single;
+    expect(trade.costs.feeRate, closeTo(0.00055, 1e-12));
+    expect(trade.costs.feePoints, closeTo(0.5, 1e-12));
+    expect(trade.fillMargin, closeTo(0.01, 1e-12));
   });
 
   test('отбраковка получает форвард-ход за 24 часа', () {

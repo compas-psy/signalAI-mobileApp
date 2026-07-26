@@ -2,8 +2,10 @@ import '../domain/analysis/backtester.dart';
 import '../domain/analysis/candle.dart';
 import '../domain/analysis/indicators.dart';
 import '../domain/analysis/instrument_spec.dart';
+import '../domain/analysis/factor_audit.dart';
 import '../domain/analysis/optimizer.dart';
 import '../domain/analysis/screener.dart';
+import '../domain/analysis/trade_simulator.dart';
 import '../domain/enums.dart';
 import '../domain/ledger/signal_ledger.dart';
 import '../domain/models/digest.dart';
@@ -11,6 +13,7 @@ import '../domain/models/portfolio.dart';
 import '../domain/models/settings.dart';
 import '../domain/models/signal.dart';
 import '../domain/models/strategy.dart';
+import '../domain/risk/risk_engine.dart';
 import 'local_store.dart';
 import 'market/bybit_client.dart';
 import 'market/http_json.dart';
@@ -90,6 +93,9 @@ class LocalAnalysisRepository
   /// Вечный журнал сигналов: форвард-статистика стратегии на реальных свечах.
   final SignalLedger ledger = SignalLedger();
 
+  /// Риск-гейты перед публикацией идеи.
+  final RiskEngine riskEngine = const RiskEngine(limits: _limits);
+
   DailyDigest? _cachedDigest;
   DateTime? _digestAt;
   DateTime? _optimizedAt;
@@ -145,6 +151,16 @@ class LocalAnalysisRepository
                 BacktestResult.fromJson(entry.value as Map<String, dynamic>);
           }
         }
+
+        final edges = state['factor_edges'] as Map<String, dynamic>?;
+        if (edges != null) {
+          for (final entry in edges.entries) {
+            _lastFactorEdges[entry.key] = [
+              for (final e in entry.value as List<dynamic>)
+                FactorEdge.fromJson(e as Map<String, dynamic>),
+            ];
+          }
+        }
       } on Exception {
         // Битое состояние не должно ломать запуск — работаем с дефолтами.
       }
@@ -187,14 +203,25 @@ class LocalAnalysisRepository
           for (final entry in _lastBacktests.entries)
             entry.key: entry.value.toJson(),
         },
+        'factor_edges': {
+          for (final entry in _lastFactorEdges.entries)
+            entry.key: [for (final e in entry.value) e.toJson()],
+        },
       });
 
-  RiskProfile _risk = const RiskProfile(
+  // Подписи политики риска собираются из тех же чисел, которые применяет
+  // [RiskEngine]: раньше это были декоративные строки, и написанное в
+  // настройках ничего не значило.
+  static const _limits = RiskLimits();
+
+  RiskProfile _risk = RiskProfile(
     deposit: 1000000,
     riskPercent: 0.75,
-    dailyLossLimit: '−2% · автостоп',
-    maxConcurrentTrades: 'до 3',
-    pauseRule: 'пауза до завтра',
+    dailyLossLimit: '−${_limits.dailyLossLimitR.toStringAsFixed(1).replaceAll('.', ',')}R '
+        '· торговля закрывается',
+    maxConcurrentTrades: 'до ${_limits.maxConcurrent}',
+    pauseRule: '${_limits.stopsBeforePause} стопа подряд — пауза '
+        '${_limits.pauseAfterStops.inHours} ч',
   );
   Map<String, bool> _strategyEnabled = {'forts': true, 'crypto': true};
   Map<String, bool> _channels = {'push': false, 'telegram': false, 'max': false};
@@ -270,6 +297,15 @@ class LocalAnalysisRepository
     // Часовики каждого инструмента прогона — ими же сверяется журнал сигналов.
     final hourlyBySymbol = <String, List<Candle>>{};
 
+    // Спецификации и обороты по символам: без них риск-движок не посчитает
+    // ни группу корреляции, ни лимит объёма от ликвидности.
+    final specBySymbol = <String, InstrumentSpec>{};
+    final turnoverBySymbol = <String, double>{};
+    for (final snapshot in selected.values) {
+      specBySymbol[snapshot.spec.symbol] = snapshot.spec;
+      turnoverBySymbol[snapshot.spec.symbol] = snapshot.turnover;
+    }
+
     if (_strategyEnabled['forts'] ?? true) {
       final fortsScreener = _screenerFor('forts');
       // Инструменты грузятся параллельно с ограничением: раньше 28 round-trip'ов
@@ -295,7 +331,13 @@ class LocalAnalysisRepository
 
     if (_strategyEnabled['crypto'] ?? true) {
       try {
-        results.addAll(await _cryptoResults(regime, usdRub, hourlyBySymbol));
+        results.addAll(await _cryptoResults(
+          regime,
+          usdRub,
+          hourlyBySymbol,
+          specBySymbol,
+          turnoverBySymbol,
+        ));
       } on Exception catch (e) {
         unavailable.add('Bybit: ${_shortReason(e)}');
       }
@@ -332,6 +374,34 @@ class LocalAnalysisRepository
     }
     final now = DateTime.now();
 
+    // Риск-гейты. Отказ здесь — не «фильтр качества», а прямой запрет
+    // открывать позицию: экспозиция, дневной убыток, серия стопов, объём.
+    final approved = <TradingSignal>[];
+    for (final signal in signals) {
+      final spec = specBySymbol[signal.symbol];
+      if (spec == null) {
+        approved.add(signal);
+        continue;
+      }
+      final decision = riskEngine.check(
+        spec: spec,
+        signal: signal,
+        ledger: ledger,
+        risk: _risk,
+        now: now,
+        dailyTurnover: turnoverBySymbol[signal.symbol],
+      );
+      if (decision.allowed) {
+        approved.add(signal);
+      } else {
+        lastRejections.add(RejectedCandidate(
+          signal.symbol,
+          'риск-лимит: ${decision.reason}',
+          price: signal.entry,
+        ));
+      }
+    }
+
     final digest = DailyDigest(
       title: 'Идеи на сегодня',
       subtitle: '${_dateLabel(now)} · расчёт на устройстве',
@@ -339,8 +409,8 @@ class LocalAnalysisRepository
       regime: _regimeQuotes(selected, regime),
       regimeNote: _regimeNote(regime),
       events: const [],
-      signals: signals,
-      signalsQuota: '${signals.length} из $maxIdeas',
+      signals: approved,
+      signalsQuota: '${approved.length} из $maxIdeas',
       sourceNote: 'Идеи и уровни рассчитаны на этом устройстве в '
           '${_timeLabel(now)} по котировкам MOEX ISS и публичного Bybit. '
           'Это не демо-данные: график в карточке — те же свечи, по которым '
@@ -366,8 +436,17 @@ class LocalAnalysisRepository
     // Журнал: новые сигналы записываются, живые — проживаются вперёд по тем
     // же свечам, отбраковки получают цену для форвард-проверки.
     try {
-      for (final signal in signals) {
-        ledger.record(signal, now);
+      // В журнал попадают только те идеи, которые реально были бы взяты:
+      // заблокированную риском сделку мы не открывали, и записывать её
+      // бумажной означало бы мерить не ту стратегию.
+      for (final signal in approved) {
+        final spec = specBySymbol[signal.symbol];
+        ledger.record(
+          signal,
+          now,
+          costs: spec == null ? TradingCosts.none : defaultCostsFor(spec),
+          fillMargin: spec?.tick ?? 0,
+        );
       }
       for (final r in lastRejections) {
         final price = r.price;
@@ -495,8 +574,8 @@ class LocalAnalysisRepository
   /// Курс доллара из фьючерса Si (котируется в рублях за 1000 долларов).
   double _usdRub(Map<String, FortsSnapshot> selected) {
     final si = selected['SI'];
-    if (si == null || si.lastPrice <= 0) return 90;
-    return si.lastPrice / 1000;
+    if (si == null || si.lastPrice <= 0) return _lastUsdRub;
+    return _lastUsdRub = si.lastPrice / 1000;
   }
 
   Future<InstrumentInput?> _fortsInput(FortsSnapshot snapshot) async {
@@ -510,6 +589,7 @@ class LocalAnalysisRepository
         snapshot.spec.symbol,
         timeframe: Timeframe.d1,
         from: DateTime.now().subtract(const Duration(days: 90)),
+        cache: true,
       );
       return InstrumentInput(
         spec: snapshot.spec,
@@ -529,6 +609,8 @@ class LocalAnalysisRepository
     MarketRegime regime,
     double usdRub,
     Map<String, List<Candle>> hourlyBySymbol,
+    Map<String, InstrumentSpec> specBySymbol,
+    Map<String, double> turnoverBySymbol,
   ) async {
     final results = <ScreenerResult>[];
     _stage('Bybit: тикеры…');
@@ -557,7 +639,11 @@ class LocalAnalysisRepository
           unitDecimals: 2,
           unitName: ticker.symbol.replaceAll('USDT', ''),
           unitRiskSuffix: '0,01 ${ticker.symbol.replaceAll('USDT', '')}',
+          tickSize: ticker.lastPrice >= 1000 ? 1 : 0.01,
         );
+        specBySymbol[ticker.symbol] = spec;
+        // Оборот Bybit приходит в USDT — риск-движок считает в рублях.
+        turnoverBySymbol[ticker.symbol] = ticker.turnover * usdRub;
 
         final result = screener.evaluate(
           InstrumentInput(
@@ -794,7 +880,32 @@ class LocalAnalysisRepository
               stats: [],
               equityCurve: [],
             ),
+        factorEdges: [
+          for (final edge in _lastFactorEdges['forts'] ?? _lastFactorEdges['crypto'] ?? const [])
+            FactorEdgeRow(
+              factor: edge.factor,
+              edgeR: edge.edge,
+              withCount: edge.withCount,
+              withoutCount: edge.withoutCount,
+              significant: edge.significant,
+            ),
+        ],
+        riskLimits: _riskLimitsView(),
       );
+  }
+
+  RiskLimitsView _riskLimitsView() {
+    final state = riskEngine.stateOf(ledger, DateTime.now());
+    final until = state.pausedUntil;
+    return RiskLimitsView(
+      open: state.open,
+      maxConcurrent: state.maxConcurrent,
+      dayResultR: state.dayResultR,
+      dailyLossLimitR: state.dailyLossLimitR,
+      pauseNote: until == null
+          ? 'пауза не активна'
+          : 'пауза до ${_timeLabel(until)}',
+    );
   }
 
   @override
@@ -916,11 +1027,55 @@ class LocalAnalysisRepository
       );
     }
 
+    _stage('Режим рынка за всю историю…');
+    final timeline = await _regimeTimeline();
+
     final summary = await Backtester(screener: _screenerFor(strategyId))
-        .run(histories, onProgress: onProgress);
+        .run(histories, onProgress: onProgress, regime: timeline);
     final backtest = _lastBacktests[strategyId] = _formatBacktest(summary);
+    _lastFactorEdges[strategyId] = computeFactorEdges(summary.trades);
     await _persistState();
     return backtest;
+  }
+
+  /// Эдж факторов последнего прогона — по стратегиям.
+  final Map<String, List<FactorEdge>> _lastFactorEdges = {};
+
+  /// Шкала исторического режима рынка: индекс, валюта, биткоин.
+  ///
+  /// Строится один раз на прогон и переиспользуется бэктестом и оптимизацией.
+  /// Дневки якорей кэшируются, поэтому повторный вызов бирже не стоит ничего.
+  Future<RegimeTimeline> _regimeTimeline() async {
+    final from = DateTime.now().subtract(const Duration(days: 400));
+
+    Future<List<Candle>> anchor(String? symbol) async {
+      if (symbol == null) return const [];
+      try {
+        return await _iss.candles(symbol, timeframe: Timeframe.d1, from: from, cache: true);
+      } on Exception {
+        return const [];
+      }
+    }
+
+    Map<String, FortsSnapshot> selected;
+    try {
+      selected = _selectContracts(await _iss.fortsSnapshot());
+    } on Exception {
+      selected = const {};
+    }
+
+    List<Candle> crypto;
+    try {
+      crypto = await _bybit.candles('BTCUSDT', timeframe: Timeframe.d1, limit: 400);
+    } on Exception {
+      crypto = const [];
+    }
+
+    return RegimeTimeline.build(
+      index: await anchor((selected['MX'] ?? selected['RI'])?.spec.symbol),
+      currency: await anchor(selected['SI']?.spec.symbol),
+      crypto: crypto,
+    );
   }
 
   // ── Walk-forward оптимизация ───────────────────────────────────────────
@@ -950,6 +1105,7 @@ class LocalAnalysisRepository
       final outcome = await optimizer.optimize(
         histories,
         onProgress: (stage) => _stage('$strategyId: $stage'),
+        regime: await _regimeTimeline(),
       );
       _params[strategyId] = outcome.params;
       final pf = outcome.testProfitFactor;
@@ -971,44 +1127,117 @@ class LocalAnalysisRepository
   /// с экрана «Стратегии» и возврат на него.
   final Map<String, BacktestResult> _lastBacktests = {};
 
+  /// Ликвидное окно серии равно расстоянию между сериями.
+  ///
+  /// Фьючерс торгуется кварталами, но объём приходит в него только к концу
+  /// жизни: прогон по всей истории контракта мерил бы стратегию на мёртвой
+  /// доске, где спред шире стопа. Брать окно шире шага серий тоже нельзя —
+  /// тогда соседние серии перекрываются, и один и тот же период рынка
+  /// торгуется в прогоне дважды, раздувая число сделок.
+  static Duration _liquidWindow(String secId) =>
+      Duration(days: IssClient.isMonthlySeries(secId) ? 30 : 90);
+
+  /// Сколько прошлых серий берём: год истории и там, и там.
+  static int _seriesPerRoot(String secId) =>
+      IssClient.isMonthlySeries(secId) ? 12 : 4;
+
   Future<List<InstrumentHistory>> _fortsHistories() async {
     _stage('MOEX: снимок рынка…');
     final snapshots = await _iss.fortsSnapshot();
     final selected = _selectContracts(snapshots);
-    final histories = <InstrumentHistory>[];
+
+    // Каждая серия — отдельная история в её ликвидном окне. Склейки цен нет,
+    // поэтому ни одна сделка не проходит через ролловер: это единственный
+    // способ получить год данных по FORTS и не выдумать при этом сделок,
+    // которых не могло быть.
+    final symbols = <(String, InstrumentSpec)>[];
     for (final snapshot in selected.values) {
-      final symbol = snapshot.spec.symbol;
-      _stage('История $symbol…');
-      try {
-        final hourly = await _iss.candles(
-          symbol,
-          timeframe: Timeframe.h1,
-          from: DateTime.now().subtract(const Duration(days: 60)),
-        );
-        final daily = await _iss.candles(
-          symbol,
-          timeframe: Timeframe.d1,
-          from: DateTime.now().subtract(const Duration(days: 180)),
-        );
-        histories.add(InstrumentHistory(spec: snapshot.spec, hourly: hourly, daily: daily));
-      } on Exception {
-        // Инструмент без истории просто не участвует в прогоне.
-        continue;
+      for (final series in IssClient.previousSeries(
+        snapshot.spec.symbol,
+        count: _seriesPerRoot(snapshot.spec.symbol),
+      )) {
+        symbols.add((series, snapshot.spec));
       }
     }
-    return histories;
+
+    var done = 0;
+    final histories = await _mapLimited<(String, InstrumentSpec), InstrumentHistory?>(
+      symbols,
+      (entry) async {
+        final (symbol, rootSpec) = entry;
+        done++;
+        _stage('История FORTS: $done из ${symbols.length}…');
+        return _seriesHistory(symbol, rootSpec);
+      },
+    );
+    return [for (final h in histories) ?h];
+  }
+
+  /// История одной серии в её ликвидном окне. null — данных не хватило.
+  Future<InstrumentHistory?> _seriesHistory(String symbol, InstrumentSpec rootSpec) async {
+    try {
+      final hourly = await _iss.candles(
+        symbol,
+        timeframe: Timeframe.h1,
+        from: DateTime.now().subtract(const Duration(days: 400)),
+        cache: true,
+      );
+      if (hourly.length < 200) return null;
+
+      // Ликвидное окно отсчитывается от последней свечи контракта: у
+      // истёкшего это его экспирация, у текущего — сегодня.
+      final cutoff = hourly.last.time.subtract(_liquidWindow(symbol));
+      final liquidHourly = [for (final c in hourly) if (!c.time.isBefore(cutoff)) c];
+      if (liquidHourly.length < 200) return null;
+
+      // Дневки берутся за всю жизнь контракта, а не только за ликвидное окно:
+      // это контекст и ATR, торговать по ним прогон не будет, а сорока
+      // дневных свечей в месячном окне просто нет.
+      final daily = await _iss.candles(
+        symbol,
+        timeframe: Timeframe.d1,
+        from: DateTime.now().subtract(const Duration(days: 400)),
+        cache: true,
+      );
+      if (daily.length < 40) return null;
+
+      return InstrumentHistory(
+        // Спецификация берётся от текущей серии корня: размер контракта и шаг
+        // цены внутри корня не меняются, а истёкшей серии в снимке уже нет.
+        spec: InstrumentSpec(
+          id: symbol.toLowerCase(),
+          symbol: symbol,
+          name: rootSpec.name,
+          market: rootSpec.market,
+          priceDecimals: rootSpec.priceDecimals,
+          valuePerPoint: rootSpec.valuePerPoint,
+          unitMultiplier: rootSpec.unitMultiplier,
+          unitDecimals: rootSpec.unitDecimals,
+          unitName: rootSpec.unitName,
+          unitRiskSuffix: rootSpec.unitRiskSuffix,
+          tickSize: rootSpec.tickSize,
+        ),
+        hourly: liquidHourly,
+        daily: daily,
+      );
+    } on Exception {
+      // Серии, которой не было, ISS отдаст пустоту — она просто не участвует.
+      return null;
+    }
   }
 
   Future<List<InstrumentHistory>> _cryptoHistories() async {
     _stage('Bybit: тикеры…');
     final tickers = await _bybit.tickers(symbols: cryptoSymbols);
-    final usdRub = 90.0;
+    final usdRub = await _usdRubFromMarket();
+    final from = DateTime.now().subtract(const Duration(days: 365));
     final histories = <InstrumentHistory>[];
     for (final ticker in tickers) {
       _stage('История ${ticker.symbol}…');
       try {
-        final hourly = await _bybit.candles(ticker.symbol, timeframe: Timeframe.h1, limit: 1000);
-        final daily = await _bybit.candles(ticker.symbol, timeframe: Timeframe.d1, limit: 200);
+        final hourly =
+            await _bybit.candles(ticker.symbol, timeframe: Timeframe.h1, from: from);
+        final daily = await _bybit.candles(ticker.symbol, timeframe: Timeframe.d1, limit: 400);
         histories.add(
           InstrumentHistory(
             spec: InstrumentSpec(
@@ -1022,6 +1251,7 @@ class LocalAnalysisRepository
               unitDecimals: 2,
               unitName: ticker.symbol.replaceAll('USDT', ''),
               unitRiskSuffix: '0,01 ${ticker.symbol.replaceAll('USDT', '')}',
+              tickSize: ticker.lastPrice >= 1000 ? 1 : 0.01,
             ),
             hourly: hourly,
             daily: daily,
@@ -1034,11 +1264,29 @@ class LocalAnalysisRepository
     return histories;
   }
 
+  /// Курс доллара с рынка — из фьючерса Si, а не из константы.
+  ///
+  /// Снимок кэширован, поэтому лишнего обхода биржи здесь нет. Если ISS
+  /// недоступен, возвращается последний известный курс: подставлять «90»
+  /// в 2026 году значит врать в рублёвом риске на десятки процентов.
+  Future<double> _usdRubFromMarket() async {
+    try {
+      final rate = _usdRub(_selectContracts(await _iss.fortsSnapshot()));
+      _lastUsdRub = rate;
+      return rate;
+    } on Exception {
+      return _lastUsdRub;
+    }
+  }
+
+  double _lastUsdRub = 90;
+
   BacktestResult _formatBacktest(BacktestSummary summary) {
     final pf = summary.profitFactor;
     return BacktestResult(
-      info: '${summary.days} дн · ${summary.instruments} инстр. · на устройстве · '
-          'без комиссий · режим рынка нейтрален',
+      info: '${summary.days} дн · ${summary.instruments} серий · на устройстве · '
+          'издержки −${summary.averageCostR.abs().toStringAsFixed(2).replaceAll('.', ',')}R'
+          '/сделку · режим рынка исторический',
       stats: [
         StatTile(
           value: summary.count == 0 ? '—' : '${summary.winRate.round()}%',

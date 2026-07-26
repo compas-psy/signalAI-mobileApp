@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import '../enums.dart';
 
 /// Параметры инструмента, нужные для расчёта денежного риска.
@@ -17,6 +19,7 @@ class InstrumentSpec {
     required this.unitName,
     required this.unitRiskSuffix,
     this.expiration,
+    this.tickSize = 0,
   });
 
   final String id;
@@ -45,6 +48,18 @@ class InstrumentSpec {
 
   /// Дата экспирации — фильтр «не ближе 3 торговых дней» (ТЗ §5.4).
   final DateTime? expiration;
+
+  /// Минимальный шаг цены. FORTS отдаёт его как `MINSTEP`; 0 означает
+  /// «биржа не сказала», и тогда шаг выводится из числа знаков в цене.
+  final double tickSize;
+
+  /// Шаг цены, на который можно опереться в расчётах исполнения.
+  ///
+  /// Выводить шаг из [priceDecimals] можно только как запасной вариант: у RI
+  /// знаков после запятой ноль, а шаг равен 10 пунктам — поэтому настоящий
+  /// [tickSize] всегда в приоритете.
+  double get tick =>
+      tickSize > 0 ? tickSize : math.pow(10, -priceDecimals).toDouble();
 
   /// Сколько рублей теряется на одной единице при движении на [points].
   double riskPerUnit(double points) => points.abs() * valuePerPoint;
