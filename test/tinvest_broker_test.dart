@@ -274,25 +274,106 @@ void main() {
       );
     });
 
-    test('нулевые позиции открытыми не считаются', () async {
-      final b = await broker(replies: {
-        'GetSandboxAccounts': {
-          'accounts': [
-            {'id': 'ACC-1', 'status': 'ACCOUNT_STATUS_OPEN'},
-          ],
-        },
-        'GetSandboxPositions': {
-          'futures': [
-            {'instrumentUid': 'UID-A', 'figi': 'FUT-A', 'balance': '0'},
-            {'instrumentUid': 'UID-B', 'figi': 'FUT-B', 'balance': '-2'},
-          ],
-        },
-      });
+    /// Ответы с портфелем: одна длинная позиция по фьючерсу.
+    Map<String, Object> portfolioReplies({List<Map<String, dynamic>>? stops}) => {
+          'GetSandboxAccounts': {
+            'accounts': [
+              {'id': 'ACC-1', 'status': 'ACCOUNT_STATUS_OPEN'},
+            ],
+          },
+          'GetSandboxPortfolio': {
+            'positions': [
+              {
+                'instrumentType': 'currency',
+                'instrumentUid': 'UID-RUB',
+                'quantity': {'units': '100000', 'nano': 0},
+              },
+              {
+                'instrumentType': 'futures',
+                'instrumentUid': 'UID-SI',
+                'figi': 'FUT-SI',
+                'quantity': {'units': '2', 'nano': 0},
+                'averagePositionPrice': {'units': '90000', 'nano': 0},
+                'expectedYield': {'units': '350', 'nano': 500000000},
+              },
+            ],
+          },
+          'GetSandboxStopOrders': {'stopOrders': stops ?? const []},
+          'FutureBy': {
+            'instrument': {
+              'uid': 'UID-SI',
+              'ticker': 'SiZ5',
+              'lot': 1,
+              'minPriceIncrement': {'units': '1', 'nano': 0},
+            },
+          },
+          'PostStopOrder': {'stopOrderId': 'STOP-9'},
+        };
+
+    test('позиция приходит с ценой входа и результатом', () async {
+      final b = await broker(replies: portfolioReplies());
 
       final positions = await b.positions();
-      expect(positions, hasLength(1));
-      expect(positions.single.long, isFalse, reason: 'отрицательный баланс — шорт');
+      expect(positions, hasLength(1), reason: 'валюта — не позиция срочного рынка');
       expect(positions.single.quantity, 2);
+      expect(positions.single.entryPrice, 90000);
+      expect(positions.single.unrealizedPnl, closeTo(350.5, 1e-9));
+    });
+
+    test('позиция без стоп-заявки считается голой', () async {
+      final b = await broker(replies: portfolioReplies());
+
+      final naked = await b.unprotectedPositions();
+      expect(naked, hasLength(1));
+      expect(naked.single.unprotected, isTrue);
+    });
+
+    test('позиция со стоп-заявкой голой не считается', () async {
+      final b = await broker(replies: portfolioReplies(stops: [
+        {'instrumentUid': 'UID-SI', 'stopOrderId': 'S-1'},
+      ]));
+
+      expect(await b.unprotectedPositions(), isEmpty);
+    });
+
+    test('недоступный список стопов не выдаёт позицию за защищённую', () async {
+      final replies = portfolioReplies()..['GetSandboxStopOrders'] = 500;
+      final b = await broker(replies: replies);
+
+      // Молчаливое «наверное, стоп есть» — худший из возможных ответов.
+      expect(await b.unprotectedPositions(), hasLength(1));
+    });
+
+    test('защитный стоп ставится в обратную сторону', () async {
+      final b = await broker(replies: portfolioReplies());
+
+      final ok = await b.placeProtectiveStop(
+        symbol: 'SiZ5',
+        stopPrice: 89500,
+        long: true,
+        quantity: 2,
+      );
+
+      expect(ok, isTrue);
+      final body = gateway.bodyOf('PostStopOrder');
+      expect(body['direction'], 'STOP_ORDER_DIRECTION_SELL');
+      expect(body['quantity'], '2');
+      expect(body['stopPrice'], {'units': '89500', 'nano': 0});
+    });
+
+    test('отказ брокера в стопе возвращается как false, а не исключением', () async {
+      final replies = portfolioReplies()..['PostStopOrder'] = 400;
+      final b = await broker(replies: replies);
+
+      expect(
+        await b.placeProtectiveStop(
+          symbol: 'SiZ5',
+          stopPrice: 89500,
+          long: true,
+          quantity: 2,
+        ),
+        isFalse,
+      );
     });
   });
 }

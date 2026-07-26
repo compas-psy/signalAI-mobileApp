@@ -170,6 +170,51 @@ void main() {
       expect(positions.single.unrealizedPnl, -12.5);
     });
 
+    test('позиция без стопа видна как незащищённая', () async {
+      final b = await broker(reply: {
+        'retCode': 0,
+        'result': {
+          'list': [
+            {
+              'symbol': 'BTCUSDT',
+              'side': 'Buy',
+              'size': '1',
+              'avgPrice': '60000',
+              'stopLoss': '',
+            },
+            {
+              'symbol': 'ETHUSDT',
+              'side': 'Buy',
+              'size': '1',
+              'avgPrice': '3000',
+              'stopLoss': '2900',
+            },
+          ],
+        },
+      });
+
+      final naked = await b.unprotectedPositions();
+      expect(naked, hasLength(1));
+      expect(naked.single.symbol, 'BTCUSDT');
+    });
+
+    test('защитный стоп ставится по открытой позиции', () async {
+      final b = await broker(reply: {'retCode': 0, 'result': <String, dynamic>{}});
+
+      final ok = await b.placeProtectiveStop(
+        symbol: 'BTCUSDT',
+        stopPrice: 58000,
+        long: true,
+        quantity: 1,
+      );
+
+      expect(ok, isTrue);
+      expect(captured.single.path, '/v5/position/trading-stop');
+      final body = jsonDecode(captured.single.body) as Map<String, dynamic>;
+      expect(body['stopLoss'], '58000');
+      expect(body['symbol'], 'BTCUSDT');
+    });
+
     test('testnet и live — разные адреса', () {
       final testnet = BybitBroker(
         mode: TradingMode.testnet,

@@ -261,30 +261,86 @@ class TInvestBroker implements Broker {
   @override
   Future<List<BrokerPosition>> positions() async {
     final account = await _account();
+    // Портфель, а не GetPositions: только он отдаёт среднюю цену входа и
+    // плавающий результат. Без них блок «На бирже» показывал бы нули.
     final json = await _call(
       _sandbox ? 'SandboxService' : 'OperationsService',
-      _sandbox ? 'GetSandboxPositions' : 'GetPositions',
+      _sandbox ? 'GetSandboxPortfolio' : 'GetPortfolio',
       {'accountId': account},
     );
 
+    final protectedUids = await _protectedInstruments(account);
     final result = <BrokerPosition>[];
-    for (final item in json['futures'] as List<dynamic>? ?? const []) {
+    for (final item in json['positions'] as List<dynamic>? ?? const []) {
       final row = item as Map<String, dynamic>;
-      final balance = _int(row['balance']).toDouble();
-      if (balance == 0) continue;
+      if ((row['instrumentType'] as String? ?? '') != 'futures') continue;
+      final quantity = quotationToDouble(row['quantity']);
+      if (quantity == 0) continue;
+
+      final uid = row['instrumentUid'] as String?;
       result.add(BrokerPosition(
-        symbol: await instrumentCache.tickerFor(row['instrumentUid'] as String?) ??
-            (row['figi'] as String? ?? ''),
-        long: balance > 0,
-        quantity: balance.abs(),
-        // GetPositions не отдаёт среднюю цену и плавающий результат: за ними
-        // нужен отдельный портфельный запрос. Показывать ноль честнее, чем
-        // выдумать число.
-        entryPrice: 0,
-        unrealizedPnl: 0,
+        symbol: await instrumentCache.tickerFor(uid) ?? (row['figi'] as String? ?? ''),
+        long: quantity > 0,
+        quantity: quantity.abs(),
+        entryPrice: quotationToDouble(row['averagePositionPrice']),
+        unrealizedPnl: quotationToDouble(row['expectedYield']),
+        // Стоп у брокера живёт отдельной заявкой, поэтому «защищена» здесь
+        // означает «нашлась стоп-заявка по этому инструменту».
+        stopLoss: uid != null && protectedUids.contains(uid) ? 1 : 0,
       ));
     }
     return result;
+  }
+
+  /// Инструменты, по которым на бирже есть стоп-заявка.
+  Future<Set<String>> _protectedInstruments(String account) async {
+    try {
+      final json = await _call(
+        _sandbox ? 'SandboxService' : 'StopOrdersService',
+        _sandbox ? 'GetSandboxStopOrders' : 'GetStopOrders',
+        {'accountId': account},
+      );
+      return {
+        for (final item in json['stopOrders'] as List<dynamic>? ?? const [])
+          ?(item as Map<String, dynamic>)['instrumentUid'] as String?,
+      };
+    } on BrokerException {
+      // Список стопов не получен. Считать позиции защищёнными в этом случае
+      // нельзя: молчаливое «наверное, стоп есть» — худший из ответов.
+      return const {};
+    }
+  }
+
+  @override
+  Future<List<BrokerPosition>> unprotectedPositions() async =>
+      [for (final p in await positions()) if (p.unprotected) p];
+
+  @override
+  Future<bool> placeProtectiveStop({
+    required String symbol,
+    required double stopPrice,
+    required bool long,
+    required double quantity,
+  }) async {
+    try {
+      final account = await _account();
+      final instrument = await _instrument(symbol);
+      final lots = _lots(quantity, instrument);
+      if (lots < 1) return false;
+      await _call('StopOrdersService', 'PostStopOrder', {
+        'accountId': account,
+        'instrumentId': instrument.uid,
+        'quantity': lots.toString(),
+        'stopPrice': doubleToQuotation(_align(stopPrice, instrument.priceStep)),
+        'direction':
+            long ? 'STOP_ORDER_DIRECTION_SELL' : 'STOP_ORDER_DIRECTION_BUY',
+        'stopOrderType': 'STOP_ORDER_TYPE_STOP_LOSS',
+        'expirationType': 'STOP_ORDER_EXPIRATION_TYPE_GOOD_TILL_CANCEL',
+      });
+      return true;
+    } on BrokerException {
+      return false;
+    }
   }
 
   @override

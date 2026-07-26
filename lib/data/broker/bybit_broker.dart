@@ -126,6 +126,9 @@ class BybitBroker implements Broker {
         quantity: size,
         entryPrice: _toDouble(row['avgPrice']) ?? 0,
         unrealizedPnl: _toDouble(row['unrealisedPnl']) ?? 0,
+        // Bybit отдаёт стоп прямо в позиции: пустая строка или ноль означают,
+        // что защиты нет.
+        stopLoss: _toDouble(row['stopLoss']) ?? 0,
       ));
     }
     return result;
@@ -151,6 +154,33 @@ class BybitBroker implements Broker {
     ];
   }
 
+  @override
+  Future<List<BrokerPosition>> unprotectedPositions() async =>
+      [for (final p in await positions()) if (p.unprotected) p];
+
+  @override
+  Future<bool> placeProtectiveStop({
+    required String symbol,
+    required double stopPrice,
+    required bool long,
+    required double quantity,
+  }) async {
+    try {
+      await _post('/v5/position/trading-stop', {
+        'category': 'linear',
+        'symbol': symbol,
+        'stopLoss': _num(stopPrice),
+        'tpslMode': 'Full',
+        'positionIdx': 0,
+      });
+      return true;
+    } on BrokerException {
+      return false;
+    }
+  }
+
+  // Аварийная остановка снимает обычные заявки и намеренно не трогает защиту
+  // позиции: «стоп, всё» означает «не открывать новое», а не «снять стопы».
   @override
   Future<int> cancelAllOrders() async {
     final json = await _post('/v5/order/cancel-all', {

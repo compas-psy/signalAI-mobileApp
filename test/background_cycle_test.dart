@@ -26,6 +26,8 @@ class FakeTarget implements MonitorTarget {
       rejections: [],
     ),
     this.positionsList = const [],
+    this.nakedList = const [],
+    this.stopAccepted = true,
     this.onFetch,
     this.failWith,
   }) : ledger = ledger ?? SignalLedger();
@@ -35,6 +37,15 @@ class FakeTarget implements MonitorTarget {
 
   DailyDigest digest;
   List<BrokerPosition> positionsList;
+
+  /// Позиции, которые брокер считает незащищёнными.
+  List<BrokerPosition> nakedList;
+
+  /// Примет ли брокер защитный стоп.
+  bool stopAccepted;
+
+  /// Запросы на постановку стопа: символ и уровень.
+  final List<({String symbol, double price})> stopRequests = [];
 
   /// Что делать при пересчёте — например, «закрыть сделку».
   final void Function()? onFetch;
@@ -57,6 +68,20 @@ class FakeTarget implements MonitorTarget {
   Future<List<BrokerPosition>> brokerPositions() async {
     positionCalls++;
     return positionsList;
+  }
+
+  @override
+  Future<List<BrokerPosition>> unprotectedPositions() async => nakedList;
+
+  @override
+  Future<bool> placeProtectiveStop({
+    required String symbol,
+    required double stopPrice,
+    required bool long,
+    required double quantity,
+  }) async {
+    stopRequests.add((symbol: symbol, price: stopPrice));
+    return stopAccepted;
   }
 }
 
@@ -273,6 +298,104 @@ void main() {
 
     await cycle.run(state: MonitorState(), now: now);
     expect(await lock.heldByOther(StateLock.ui), isFalse);
+  });
+
+  group('Защита позиции', () {
+    BrokerPosition naked(String symbol) => BrokerPosition(
+          symbol: symbol,
+          long: true,
+          quantity: 2,
+          entryPrice: 100,
+          unrealizedPnl: 0,
+        );
+
+    test('голая позиция получает стоп по уровню из журнала', () async {
+      final target = FakeTarget(
+        ledger: SignalLedger(trades: [tradeOf('BTCUSDT', status: PaperStatus.open)]),
+        nakedList: [naked('BTCUSDT')],
+      );
+      final cycle = BackgroundCycle(target: target, lock: freeLock());
+
+      final report = await cycle.run(state: MonitorState(), now: now);
+
+      expect(target.stopRequests, hasLength(1));
+      // Уровень решила стратегия при выдаче идеи — выдумывать нельзя.
+      expect(target.stopRequests.single.price, 98);
+      expect(report.notices.map((n) => n.title), contains(contains('защита восстановлена')));
+    });
+
+    test('защищённая позиция ничего не трогает', () async {
+      final target = FakeTarget(
+        ledger: SignalLedger(trades: [tradeOf('BTCUSDT', status: PaperStatus.open)]),
+      );
+      final cycle = BackgroundCycle(target: target, lock: freeLock());
+
+      final report = await cycle.run(state: MonitorState(), now: now);
+      expect(target.stopRequests, isEmpty);
+      expect(report.notices, isEmpty);
+    });
+
+    test('чужой позиции стоп не навязывается', () async {
+      // Журнал про этот символ ничего не знает: позицию открыли руками.
+      final target = FakeTarget(nakedList: [naked('GAZP')]);
+      final cycle = BackgroundCycle(target: target, lock: freeLock());
+
+      final report = await cycle.run(state: MonitorState(), now: now);
+
+      expect(target.stopRequests, isEmpty,
+          reason: 'ставить чужой позиции свой уровень — не наше дело');
+      expect(report.notices.single.body, contains('не открывало'));
+    });
+
+    test('про чужую позицию сообщается один раз, а не каждый час', () async {
+      final target = FakeTarget(nakedList: [naked('GAZP')]);
+      final cycle = BackgroundCycle(target: target, lock: freeLock());
+      final state = MonitorState();
+
+      expect((await cycle.run(state: state, now: now)).notices, hasLength(1));
+      expect((await cycle.run(state: state, now: now)).notices, isEmpty);
+    });
+
+    test('первая неудача молчит, вторая будит', () async {
+      final target = FakeTarget(
+        ledger: SignalLedger(trades: [tradeOf('BTCUSDT', status: PaperStatus.open)]),
+        nakedList: [naked('BTCUSDT')],
+        stopAccepted: false,
+      );
+      final cycle = BackgroundCycle(target: target, lock: freeLock());
+      final state = MonitorState();
+
+      final first = await cycle.run(state: state, now: now);
+      expect(first.notices, isEmpty, reason: 'один сбой сети — не повод будить ночью');
+      expect(state.stopFailures['BTCUSDT'], 1);
+
+      final second = await cycle.run(state: state, now: now.add(const Duration(hours: 1)));
+      expect(second.notices, hasLength(1));
+      expect(second.notices.single.body, contains('не удалось'));
+    });
+
+    test('удачная постановка сбрасывает счётчик неудач', () async {
+      final target = FakeTarget(
+        ledger: SignalLedger(trades: [tradeOf('BTCUSDT', status: PaperStatus.open)]),
+        nakedList: [naked('BTCUSDT')],
+        stopAccepted: false,
+      );
+      final cycle = BackgroundCycle(target: target, lock: freeLock());
+      final state = MonitorState();
+
+      await cycle.run(state: state, now: now);
+      target.stopAccepted = true;
+      await cycle.run(state: state, now: now.add(const Duration(hours: 1)));
+
+      expect(state.stopFailures.containsKey('BTCUSDT'), isFalse);
+    });
+
+    test('счётчик неудач переживает перезапуск', () {
+      final state = MonitorState()..stopFailures['BTCUSDT'] = 1;
+      final restored = MonitorState.fromJson(state.toJson());
+      expect(restored.stopFailures['BTCUSDT'], 1,
+          reason: 'иначе после перезапуска тревога никогда не сработает');
+    });
   });
 
   test('состояние переживает сериализацию', () {

@@ -19,6 +19,17 @@ abstract interface class MonitorTarget {
 
   /// Позиции, как их видит биржа. Пусто, если торгового доступа нет.
   Future<List<BrokerPosition>> brokerPositions();
+
+  /// Позиции без защитного стопа на бирже.
+  Future<List<BrokerPosition>> unprotectedPositions();
+
+  /// Поставить защитный стоп по открытой позиции. false — брокер отказал.
+  Future<bool> placeProtectiveStop({
+    required String symbol,
+    required double stopPrice,
+    required bool long,
+    required double quantity,
+  });
 }
 
 /// Одно уведомление: заголовок и текст.
@@ -74,6 +85,11 @@ class MonitorState {
   /// Символы позиций, которые в прошлый раз были на бирже.
   final Set<String> knownPositions;
 
+  /// Сколько раз подряд не удалось восстановить стоп, по символам.
+  ///
+  /// Один сбой сети — не повод будить ночью, два подряд — повод.
+  final Map<String, int> stopFailures = {};
+
   String? lastError;
 
   /// Ограничитель: журнал живёт годами, а множества — нет.
@@ -90,6 +106,7 @@ class MonitorState {
         'notified_trades': notifiedTrades.toList(),
         'notified_signals': notifiedSignals.toList(),
         'known_positions': knownPositions.toList(),
+        'stop_failures': stopFailures,
         'last_error': lastError,
       };
 
@@ -99,7 +116,10 @@ class MonitorState {
         notifiedSignals: _strings(j['notified_signals']),
         knownPositions: _strings(j['known_positions']),
         lastError: j['last_error'] as String?,
-      );
+      )..stopFailures.addAll({
+          for (final e in (j['stop_failures'] as Map<String, dynamic>? ?? const {}).entries)
+            e.key: (e.value as num?)?.toInt() ?? 0,
+        });
 
   static Set<String> _strings(Object? value) => {
         for (final v in value as List<dynamic>? ?? const []) v as String,
@@ -148,6 +168,7 @@ class BackgroundCycle {
       notices.addAll(_closedTrades(before, state));
       notices.addAll(_newSignals(digest, state));
       notices.addAll(await _positions(state));
+      notices.addAll(await _protectPositions(state));
     } on Object catch (e) {
       // Фон обязан пережить любой отказ: сети может не быть вовсе, а сервис
       // должен дожить до следующего часа и попробовать снова.
@@ -215,6 +236,73 @@ class BackgroundCycle {
       ..addAll(open);
     return notices;
   }
+
+  /// Проверка защиты: позиция без стопа — то состояние, в котором её нельзя
+  /// оставлять ни на час.
+  ///
+  /// Уровень берётся из журнала: его решила стратегия при выдаче идеи.
+  /// Выдумать уровень нельзя, поэтому позиции, которую приложение не
+  /// открывало, стоп не ставится — только предупреждение.
+  Future<List<MonitorNotice>> _protectPositions(MonitorState state) async {
+    final naked = await target.unprotectedPositions();
+    if (naked.isEmpty) {
+      state.stopFailures.clear();
+      return const [];
+    }
+
+    final notices = <MonitorNotice>[];
+    for (final position in naked) {
+      final planned = _plannedStop(position.symbol);
+      if (planned == null) {
+        // Позиция открыта не нами: свой уровень ей навязывать не наше дело.
+        if (state.notifiedTrades.add('naked:${position.symbol}')) {
+          notices.add((
+            title: '${position.symbol}: позиция без стопа',
+            body: 'Приложение её не открывало — уровень защиты неизвестен. '
+                'Выставьте стоп сами.',
+          ));
+        }
+        continue;
+      }
+
+      final placed = await target.placeProtectiveStop(
+        symbol: position.symbol,
+        stopPrice: planned,
+        long: position.long,
+        quantity: position.quantity,
+      );
+      if (placed) {
+        state.stopFailures.remove(position.symbol);
+        notices.add((
+          title: '${position.symbol}: защита восстановлена',
+          body: 'Стоп выставлен заново на ${_price(planned)}.',
+        ));
+        continue;
+      }
+
+      final failures = (state.stopFailures[position.symbol] ?? 0) + 1;
+      state.stopFailures[position.symbol] = failures;
+      if (failures >= 2) {
+        notices.add((
+          title: '${position.symbol}: позиция без стопа',
+          body: 'Выставить защиту не удалось $failures раза подряд. '
+              'Закройте позицию или поставьте стоп вручную.',
+        ));
+      }
+    }
+    return notices;
+  }
+
+  /// Уровень стопа, который решила стратегия по живой записи журнала.
+  double? _plannedStop(String symbol) {
+    for (final trade in target.ledger.openOrPending) {
+      if (trade.symbol == symbol) return trade.stopLoss;
+    }
+    return null;
+  }
+
+  static String _price(double value) =>
+      value.toStringAsFixed(value.abs() < 100 ? 2 : 0).replaceAll('.', ',');
 
   String _summary(String? error) {
     if (error != null) return 'Последний прогон не удался: $error';

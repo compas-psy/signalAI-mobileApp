@@ -128,6 +128,7 @@ class BrokerPosition {
     required this.quantity,
     required this.entryPrice,
     required this.unrealizedPnl,
+    this.stopLoss = 0,
   });
 
   final String symbol;
@@ -135,6 +136,12 @@ class BrokerPosition {
   final double quantity;
   final double entryPrice;
   final double unrealizedPnl;
+
+  /// Уровень защитного стопа на бирже. Ноль означает, что защиты нет.
+  final double stopLoss;
+
+  /// Позиция без стопа. Ровно то состояние, в котором её нельзя оставлять.
+  bool get unprotected => stopLoss == 0;
 }
 
 /// Торговый доступ к бирже.
@@ -160,6 +167,25 @@ abstract class Broker {
 
   /// Активные заявки. Пусто, если их нет или площадка их не отдаёт.
   Future<List<BrokerOrder>> orders();
+
+  /// Позиции, у которых на бирже нет защитного стопа.
+  ///
+  /// Снять стоп может биржа по истечении заявки, брокер или сам владелец из
+  /// своего приложения — приложение обязано это замечать, а не считать, что
+  /// поставленный один раз стоп стоит вечно.
+  Future<List<BrokerPosition>> unprotectedPositions();
+
+  /// Поставить защитный стоп по уже открытой позиции.
+  ///
+  /// Возвращает false, если брокер отказал. Это не открытие позиции, а
+  /// уменьшение риска по существующей — потому и разрешено фоновому контуру,
+  /// которому торговать нельзя.
+  Future<bool> placeProtectiveStop({
+    required String symbol,
+    required double stopPrice,
+    required bool long,
+    required double quantity,
+  });
 
   /// Снятие всех активных заявок. Используется аварийной остановкой.
   Future<int> cancelAllOrders();

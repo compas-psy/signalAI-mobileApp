@@ -100,6 +100,13 @@ class LocalAnalysisRepository
   /// Причины отбраковки последнего прогона — видны в логе, не теряются молча.
   final List<RejectedCandidate> lastRejections = [];
 
+  /// Спецификации инструментов последнего пересчёта.
+  ///
+  /// Объём заявки считается по той же спецификации, по которой скринер принял
+  /// решение: собирать её заново в момент отправки значит рисковать тем, что
+  /// шаг цены или стоимость пункта разъедутся с теми, что были в расчёте.
+  final Map<String, InstrumentSpec> _specBySymbol = {};
+
   /// Слушатель стадий расчёта: интерфейс показывает живой прогресс,
   /// а не зависшую заставку.
   @override
@@ -302,6 +309,46 @@ class LocalAnalysisRepository
       }
     }
     return result;
+  }
+
+  @override
+  Future<List<BrokerPosition>> unprotectedPositions() async {
+    final result = <BrokerPosition>[];
+    for (final id in BrokerId.values) {
+      if (!await hasBrokerKeys(id)) continue;
+      try {
+        result.addAll(await brokerOf(id).unprotectedPositions());
+      } on BrokerException {
+        // Недоступная площадка не должна прятать голые позиции остальных.
+      }
+    }
+    return result;
+  }
+
+  @override
+  Future<bool> placeProtectiveStop({
+    required String symbol,
+    required double stopPrice,
+    required bool long,
+    required double quantity,
+  }) async {
+    for (final id in BrokerId.values) {
+      if (!await hasBrokerKeys(id)) continue;
+      // Площадка определяется по тому, у кого эта позиция открыта: гадать по
+      // виду тикера нельзя, а лишний запрос к чужому брокеру безвреден.
+      final mine = await brokerOf(id)
+          .positions()
+          .then((list) => list.any((p) => p.symbol == symbol))
+          .catchError((_) => false);
+      if (!mine) continue;
+      return brokerOf(id).placeProtectiveStop(
+        symbol: symbol,
+        stopPrice: stopPrice,
+        long: long,
+        quantity: quantity,
+      );
+    }
+    return false;
   }
 
   /// Активные заявки по всем подключённым площадкам.
@@ -535,8 +582,10 @@ class LocalAnalysisRepository
     final hourlyBySymbol = <String, List<Candle>>{};
 
     // Спецификации и обороты по символам: без них риск-движок не посчитает
-    // ни группу корреляции, ни лимит объёма от ликвидности.
-    final specBySymbol = <String, InstrumentSpec>{};
+    // ни группу корреляции, ни лимит объёма от ликвидности. Спецификации
+    // переживают пересчёт: по ним же считается объём заявки при подтверждении,
+    // и это обязана быть та самая спецификация, по которой принято решение.
+    final specBySymbol = _specBySymbol..clear();
     final turnoverBySymbol = <String, double>{};
     for (final snapshot in selected.values) {
       specBySymbol[snapshot.spec.symbol] = snapshot.spec;
@@ -1285,21 +1334,29 @@ class LocalAnalysisRepository
       );
     }
 
+    // Спецификация обязана быть: по ней считаются и риск, и объём. Раньше её
+    // отсутствие означало тихий пропуск риск-гейтов — сделка уходила бы без
+    // единой проверки. Теперь это отказ.
+    final spec = await _specForSignal(signal);
+    if (spec == null) {
+      throw FeatureUnavailableException(
+        'Не удалось получить параметры контракта ${signal.symbol}. '
+        'Пересчитайте идеи и попробуйте снова.',
+      );
+    }
+
     // Риск-гейты применяются ещё раз перед отправкой: между показом идеи и
     // нажатием могло смениться всё — открыться позиция, выбраться дневной
     // лимит, начаться пауза после стопов.
-    final spec = _specForSignal(signal);
-    if (spec != null) {
-      final decision = riskEngine.check(
-        spec: spec,
-        signal: signal,
-        ledger: ledger,
-        risk: _risk,
-        now: DateTime.now(),
-      );
-      if (!decision.allowed) {
-        throw FeatureUnavailableException('Риск-лимит: ${decision.reason}.');
-      }
+    final decision = riskEngine.check(
+      spec: spec,
+      signal: signal,
+      ledger: ledger,
+      risk: _risk,
+      now: DateTime.now(),
+    );
+    if (!decision.allowed) {
+      throw FeatureUnavailableException('Риск-лимит: ${decision.reason}.');
     }
 
     // Подтверждение — последнее, что происходит перед отправкой: всё, что
@@ -1336,7 +1393,26 @@ class LocalAnalysisRepository
   }
 
   /// Спецификация инструмента идеи — нужна риск-движку и расчёту объёма.
-  InstrumentSpec? _specForSignal(TradingSignal signal) {
+  ///
+  /// Сначала берётся та, по которой считался сигнал. Её может не быть после
+  /// холодного старта, когда дайджест поднят из кэша, — тогда для срочного
+  /// рынка она приходит из снимка (он кэширован пять минут и почти всегда
+  /// уже в памяти), а для крипты собирается из самого сигнала.
+  Future<InstrumentSpec?> _specForSignal(TradingSignal signal) async {
+    final known = _specBySymbol[signal.symbol];
+    if (known != null) return known;
+
+    if (signal.market == Market.forts) {
+      try {
+        final snapshots = await _iss.fortsSnapshot();
+        for (final s in snapshots) {
+          if (s.spec.symbol == signal.symbol) return _specBySymbol[signal.symbol] = s.spec;
+        }
+      } on Exception {
+        // Биржа не ответила — спецификации нет, и это честный отказ.
+      }
+      return null;
+    }
     if (signal.market != Market.crypto) return null;
     return InstrumentSpec(
       id: signal.symbol.toLowerCase(),
@@ -1354,14 +1430,16 @@ class LocalAnalysisRepository
   }
 
   /// Объём заявки в единицах биржи из риска на сделку.
-  double _orderQuantity(TradingSignal signal, InstrumentSpec? spec) {
-    if (spec == null) return 0;
+  ///
+  /// Единица расчёта у крипты — 0,01 монеты, у фьючерса — контракт; биржа в
+  /// обоих случаях принимает объём в своих единицах, поэтому множитель берётся
+  /// из спецификации, а не подставляется по рынку.
+  double _orderQuantity(TradingSignal signal, InstrumentSpec spec) {
     final perUnit = spec.riskPerUnit(signal.unitRisk);
     if (perUnit <= 0) return 0;
     final units = _risk.riskRub / perUnit;
-    // Единица объёма у нас 0,01 монеты; биржа принимает объём в монетах.
-    final quantity = units * signal.unitMultiplier;
-    return double.parse(quantity.toStringAsFixed(signal.unitDecimals + 1));
+    final quantity = units * spec.unitMultiplier;
+    return double.parse(quantity.toStringAsFixed(spec.unitDecimals + 1));
   }
 
   @override
