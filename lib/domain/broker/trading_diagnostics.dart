@@ -43,7 +43,7 @@ abstract interface class TradingProbe {
   Future<bool> hasBrokerKeys(BrokerId broker);
 
   /// Итог последней проверки ключей: почему их приняли или отвергли.
-  String? keyNoteOf(BrokerId broker);
+  BrokerKeyCheck? keyCheckOf(BrokerId broker);
 
   /// Брокер площадки в её текущем режиме.
   Broker brokerOf(BrokerId broker);
@@ -104,17 +104,21 @@ Stream<TradingCheck> diagnoseTradingWith(TradingProbe probe) async* {
   for (final id in probe.probedBrokers) {
     final mode = probe.modeLabelOf(id);
     final hasKeys = await probe.hasBrokerKeys(id);
-    final note = probe.keyNoteOf(id);
+    final check = probe.keyCheckOf(id);
 
     yield TradingCheck(
       name: '${id.title}: ключи',
-      ok: hasKeys,
+      // Ключ, который площадка отвергла, — это не «ключи на месте». Зелёная
+      // отметка рядом со словом «ОТКАЗ» ниже обесценивает обе.
+      ok: hasKeys && (check?.ok ?? true),
       details: [
         'режим: $mode',
         hasKeys
             ? 'ключ и секрет лежат в Keystore'
             : 'ключи для этого режима не заданы — введите их в настройках',
-        if (note != null) 'последняя проверка: $note',
+        if (check != null)
+          'проверка ${_time(check.at)}: '
+              '${check.ok ? 'принят' : 'ОТКАЗ'} · ${check.note}',
       ],
     );
 
@@ -176,6 +180,9 @@ Stream<TradingCheck> diagnoseTradingWith(TradingProbe probe) async* {
     });
   }
 }
+
+String _time(DateTime at) =>
+    '${at.hour.toString().padLeft(2, '0')}:${at.minute.toString().padLeft(2, '0')}';
 
 /// Состояние защиты позиции словами, а не числом.
 ///

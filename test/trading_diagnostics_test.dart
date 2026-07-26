@@ -72,14 +72,14 @@ class FakeProbe implements TradingProbe {
     this.tradingEnabled = true,
     this.killSwitch = false,
     this.keys = true,
-    this.note,
+    this.check,
     FakeBroker? broker,
   }) : broker = broker ?? FakeBroker();
 
   final bool vault;
   final ConfirmMethod method;
   final bool keys;
-  final String? note;
+  final BrokerKeyCheck? check;
   final FakeBroker broker;
 
   @override
@@ -104,7 +104,7 @@ class FakeProbe implements TradingProbe {
   Future<bool> hasBrokerKeys(BrokerId broker) async => keys;
 
   @override
-  String? keyNoteOf(BrokerId broker) => note;
+  BrokerKeyCheck? keyCheckOf(BrokerId broker) => check;
 
   @override
   Broker brokerOf(BrokerId broker) => this.broker;
@@ -151,6 +151,23 @@ void main() {
         isFalse,
         reason: 'спрашивать позиции нечем',
       );
+    });
+
+    test('отвергнутый ключ не отмечается зелёным', () async {
+      // Ключ лежит в хранилище, но биржа его не приняла. Зелёная отметка
+      // рядом со словом «ОТКАЗ» обесценивает весь экран.
+      final probe = FakeProbe(
+        check: BrokerKeyCheck(
+          ok: false,
+          note: 'Bybit ответил 401 · API key is invalid.',
+          at: DateTime(2026, 7, 26, 22, 27),
+        ),
+      );
+
+      final keys = named(await diagnoseTradingWith(probe).toList(), 'Bybit: ключи');
+      expect(keys.ok, isFalse);
+      expect(keys.details.last, contains('22:27'));
+      expect(keys.details.last, contains('401'));
     });
 
     test('нечем подтвердить — проверка красная и говорит, что включить', () async {

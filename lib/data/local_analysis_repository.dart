@@ -237,6 +237,7 @@ class LocalAnalysisRepository
   }
 
   /// Проверка ключей площадки в её текущем режиме.
+  @override
   BrokerKeyCheck? keyCheckOf(BrokerId broker) =>
       _keyChecks[_keyCheckId(broker, _trading.modeOf(broker))];
 
@@ -1974,12 +1975,7 @@ class LocalAnalysisRepository
   @override
   String modeLabelOf(BrokerId broker) => _trading.modeOf(broker).labelFor(broker);
 
-  @override
-  String? keyNoteOf(BrokerId broker) {
-    final check = keyCheckOf(broker);
-    if (check == null) return null;
-    return '${check.ok ? 'принят' : 'ОТКАЗ'} · ${_timeLabel(check.at)} · ${check.note}';
-  }
+
 
   @override
   Future<ExchangeAccount> connectExchange(String exchangeId) async =>
