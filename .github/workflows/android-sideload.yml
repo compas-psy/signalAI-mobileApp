@@ -35,6 +35,11 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # contents: write — для публикации APK в pre-release «sideload»:
+    # квота хранилища артефактов Actions на аккаунте исчерпана, а ассеты
+    # релизов в неё не входят.
+    permissions:
+      contents: write
 
     steps:
       - uses: actions/checkout@v4
@@ -75,10 +80,30 @@ jobs:
           APKSIGNER=$(find "${ANDROID_HOME}/build-tools" -name apksigner | sort -r | head -1)
           "$APKSIGNER" verify --print-certs build/app/outputs/flutter-apk/app-release.apk
 
+      # Основной канал доставки — pre-release «sideload»: квота хранилища
+      # артефактов Actions на аккаунте исчерпана (пересчёт у GitHub раз в
+      # 6–12 часов), а ассеты релизов в неё не входят. Тег один и тот же,
+      # APK перезаписывается — свежая сборка всегда по стабильной ссылке
+      # releases/tag/sideload.
+      - name: Публикация APK в pre-release «sideload»
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mv build/app/outputs/flutter-apk/app-release.apk signalai-sideload.apk
+          gh release view sideload >/dev/null 2>&1 || \
+            gh release create sideload \
+              --prerelease \
+              --title "SignalAI sideload (отладочная подпись)" \
+              --notes "Автосборка с последнего пуша. Подпись отладочная: Play Protect предупредит при установке — это ожидаемо. Перед установкой релизной сборки эту нужно удалить с устройства."
+          gh release upload sideload signalai-sideload.apk --clobber
+
+      # Артефакт Actions оставлен как запасной канал: пока квота не
+      # пересчитана, шаг падает — на итог прогона не влияет.
       - uses: actions/upload-artifact@v4
+        continue-on-error: true
         with:
           name: signalai-sideload-apk
-          path: build/app/outputs/flutter-apk/app-release.apk
+          path: signalai-sideload.apk
           # Короткий срок: это сборка «поставить и посмотреть», а место под
           # артефакты на аккаунте общее и кончается быстро.
           retention-days: 3
