@@ -13,6 +13,9 @@ import '../domain/models/portfolio.dart';
 import '../domain/models/settings.dart';
 import '../domain/models/signal.dart';
 import '../domain/models/strategy.dart';
+import '../data/state_lock.dart';
+import '../monitor/background_cycle.dart';
+import '../monitor/background_mode.dart';
 
 /// Вкладки нижней навигации.
 enum AppTab { ideas, trades, strategies, settings }
@@ -27,12 +30,22 @@ class AppController extends ChangeNotifier {
     // Часовой пульс: пока приложение живо, идеи не старше часа. Проверка
     // раз в минуту, пересчёт — когда дайджест реально устарел.
     _autoRefreshTimer = Timer.periodic(const Duration(minutes: 1), (_) {
+      // Отметка владения состоянием: пока приложение на переднем плане, оно
+      // единственный писатель, и фоновый контур в это время не считает.
+      _lock?.heartbeat(StateLock.ui);
       _autoRefreshIfStale();
     });
+    _lock?.heartbeat(StateLock.ui);
   }
 
   final SignalAiRepository _repository;
   final NativeBridge _bridge;
+
+  /// Блокировка состояния. null — режим без фонового контура (демо).
+  StateLock? get _lock {
+    final repository = _repository;
+    return repository is LocalAnalysisRepository ? repository.stateLock : null;
+  }
   Timer? _autoRefreshTimer;
   DateTime? _digestFetchedAt;
   bool _optimizationTriggered = false;
@@ -229,13 +242,8 @@ class AppController extends ChangeNotifier {
     var id = 100;
     for (final signal in current.signals) {
       if (signal.score < 75 || known.contains(signal.symbol)) continue;
-      await _bridge.notify(
-        id: id++,
-        title: '${signal.symbol} · ${signal.direction.label} · ${signal.score}/100',
-        body: 'Вход ${signal.entry.toStringAsFixed(signal.priceDecimals)} · '
-            'SL ${signal.stopLoss.toStringAsFixed(signal.priceDecimals)} · '
-            'R:R ${signal.riskReward}. Открыть SignalAI, чтобы посмотреть разбор.',
-      );
+      final notice = signalNotice(signal);
+      await _bridge.notify(id: id++, title: notice.title, body: notice.body);
     }
   }
 
@@ -461,6 +469,51 @@ class AppController extends ChangeNotifier {
       // Снимок не обновился — на экране останется прежний.
     }
     notifyListeners();
+  }
+
+  // ── Фоновый контур ──────────────────────────────────────────────────────
+
+  Future<void> setBackgroundEnabled(bool enabled) async {
+    final desk = _desk;
+    if (desk == null) return;
+    await desk.setBackgroundEnabled(enabled);
+    if (enabled) {
+      showToast('Фоновый контур включён: ${desk.backgroundMode.label}');
+    } else {
+      await _bridge.monitorStop();
+      showToast('Фоновый контур выключен');
+    }
+    await _reloadSettings();
+  }
+
+  Future<void> setBackgroundMode(BackgroundMode mode) async {
+    final desk = _desk;
+    if (desk == null) return;
+    await desk.setBackgroundMode(mode);
+    // Работающий контур перезапускаем: режим читается при старте сервиса.
+    if (desk.backgroundEnabled && await _bridge.monitorRunning()) {
+      await _bridge.monitorStop();
+      await _bridge.monitorStart(mode.name);
+    }
+    showToast('Фон: ${mode.label}');
+    await _reloadSettings();
+  }
+
+  /// Уход в фон: отдаём владение состоянием и поднимаем контур.
+  Future<void> onAppPaused() async {
+    final desk = _desk;
+    await _lock?.release(StateLock.ui);
+    if (desk == null || !desk.backgroundEnabled) return;
+    await _bridge.monitorStart(desk.backgroundMode.name);
+  }
+
+  /// Возврат на передний план: считает снова интерфейс.
+  Future<void> onAppResumed() async {
+    await _bridge.monitorStop();
+    await _lock?.heartbeat(StateLock.ui);
+    // Фон мог пересчитать дайджест — перечитываем, чтобы не показывать старое
+    // и не гонять расчёт второй раз.
+    await refreshDigest();
   }
 
   Future<void> toggleChannel(String id, bool enabled) async {

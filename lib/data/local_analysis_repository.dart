@@ -16,9 +16,12 @@ import '../domain/models/settings.dart';
 import '../domain/models/signal.dart';
 import '../domain/models/strategy.dart';
 import '../domain/risk/risk_engine.dart';
+import '../monitor/background_cycle.dart';
+import '../monitor/background_mode.dart';
 import 'broker/bybit_broker.dart';
 import 'broker/secure_vault.dart';
 import 'local_store.dart';
+import 'state_lock.dart';
 import 'market/bybit_client.dart';
 import 'market/candle_store.dart';
 import 'market/http_json.dart';
@@ -33,7 +36,11 @@ import 'repository.dart';
 /// расписанию 10:10, и позиции не сопровождаются, пока приложение закрыто —
 /// для этого нужен серверный контур из ТЗ §2.
 class LocalAnalysisRepository
-    implements SignalAiRepository, ProgressReporting, ParameterOptimizing, TradingDesk {
+    implements SignalAiRepository,
+        ProgressReporting,
+        ParameterOptimizing,
+        TradingDesk,
+        MonitorTarget {
   LocalAnalysisRepository({
     IssClient? iss,
     BybitClient? bybit,
@@ -102,6 +109,7 @@ class LocalAnalysisRepository
   bool _loaded = false;
 
   /// Вечный журнал сигналов: форвард-статистика стратегии на реальных свечах.
+  @override
   final SignalLedger ledger = SignalLedger();
 
   /// Риск-гейты перед публикацией идеи.
@@ -109,6 +117,9 @@ class LocalAnalysisRepository
 
   /// Хранилище торговых ключей поверх Android Keystore.
   final SecureVault vault = const SecureVault();
+
+  /// Кто сейчас владеет состоянием на диске: интерфейс или фоновый контур.
+  late final StateLock stateLock = StateLock(_store);
 
   /// Допуск стратегии к живым деньгам.
   static const _gate = LiveTradingGate();
@@ -209,6 +220,43 @@ class LocalAnalysisRepository
     }
   }
 
+  // ── Фоновый контур ──────────────────────────────────────────────────────
+
+  BackgroundMode _backgroundMode = BackgroundMode.persistent;
+  bool _backgroundEnabled = false;
+
+  @override
+  BackgroundMode get backgroundMode => _backgroundMode;
+
+  @override
+  bool get backgroundEnabled => _backgroundEnabled;
+
+  @override
+  Future<void> setBackgroundMode(BackgroundMode mode) async {
+    await _ensureLoaded();
+    _backgroundMode = mode;
+    await _persistState();
+  }
+
+  @override
+  Future<void> setBackgroundEnabled(bool enabled) async {
+    await _ensureLoaded();
+    _backgroundEnabled = enabled;
+    await _persistState();
+  }
+
+  @override
+  Future<String> backgroundStateNote() async {
+    if (!_backgroundEnabled) return 'выключен';
+    final json = await _store.read('monitor');
+    if (json == null) return 'включён, прогонов ещё не было';
+    final state = MonitorState.fromJson(json);
+    final at = state.lastRun;
+    final when = at == null ? 'прогонов ещё не было' : 'последний прогон ${_timeLabel(at)}';
+    final error = state.lastError;
+    return error == null ? 'включён · $when' : '$when · сбой: $error';
+  }
+
   @override
   Future<List<BrokerPosition>> brokerPositions() async {
     if (!await hasBrokerKeys) return const [];
@@ -266,6 +314,11 @@ class LocalAnalysisRepository
         }
         final trading = state['trading'] as Map<String, dynamic>?;
         if (trading != null) _trading = TradingState.fromJson(trading);
+        final background = state['background'] as Map<String, dynamic>?;
+        if (background != null) {
+          _backgroundMode = BackgroundMode.parse(background['mode'] as String?);
+          _backgroundEnabled = background['enabled'] as bool? ?? false;
+        }
         _optimizedAt = DateTime.tryParse(state['optimized_at'] as String? ?? '');
         _optimizationNote = state['optimization_note'] as String?;
 
@@ -323,6 +376,10 @@ class LocalAnalysisRepository
           for (final entry in _params.entries) entry.key: entry.value.toJson(),
         },
         'trading': _trading.toJson(),
+        'background': {
+          'mode': _backgroundMode.name,
+          'enabled': _backgroundEnabled,
+        },
         'optimized_at': _optimizedAt?.toIso8601String(),
         'optimization_note': _optimizationNote,
         'backtests': {
@@ -1121,6 +1178,12 @@ class LocalAnalysisRepository
         ],
         risk: _risk,
         trading: await _tradingView(),
+        background: BackgroundView(
+          modeLabel: _backgroundMode.label,
+          persistent: _backgroundMode == BackgroundMode.persistent,
+          enabled: _backgroundEnabled,
+          stateNote: await backgroundStateNote(),
+        ),
       );
   }
 

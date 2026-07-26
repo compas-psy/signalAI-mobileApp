@@ -1,0 +1,241 @@
+import '../data/state_lock.dart';
+import '../domain/broker/broker.dart';
+import '../domain/ledger/signal_ledger.dart';
+import '../domain/models/digest.dart';
+import '../domain/models/signal.dart';
+
+/// То немногое, что фоновому циклу нужно от приложения.
+///
+/// Узкий интерфейс вместо прямой зависимости от репозитория: цикл проверяется
+/// обычными тестами, без Keystore, сети и нативного канала.
+abstract interface class MonitorTarget {
+  /// Журнал бумажных сделок.
+  SignalLedger get ledger;
+
+  /// Пересчёт идей. Он же сверяет журнал по свежим свечам — отдельной сверки
+  /// в цикле нет намеренно, иначе появилось бы два разных способа прожить
+  /// сделку вперёд.
+  Future<DailyDigest> fetchDigest({bool force});
+
+  /// Позиции, как их видит биржа. Пусто, если торгового доступа нет.
+  Future<List<BrokerPosition>> brokerPositions();
+}
+
+/// Одно уведомление: заголовок и текст.
+typedef MonitorNotice = ({String title, String body});
+
+/// Итог одного прогона.
+class CycleReport {
+  const CycleReport({
+    required this.notices,
+    required this.summary,
+    this.skipped = false,
+    this.error,
+  });
+
+  const CycleReport.skipped()
+      : notices = const [],
+        summary = 'Приложение открыто — считает оно',
+        skipped = true,
+        error = null;
+
+  final List<MonitorNotice> notices;
+
+  /// Строка для служебного уведомления постоянного режима.
+  final String summary;
+
+  /// Передний план держал блокировку — цикл ничего не делал.
+  final bool skipped;
+
+  /// Причина отказа, если прогон не удался.
+  final String? error;
+}
+
+/// Что фон уже отправлял — чтобы не присылать один и тот же стоп каждый час.
+class MonitorState {
+  MonitorState({
+    this.lastRun,
+    Set<String>? notifiedTrades,
+    Set<String>? notifiedSignals,
+    Set<String>? knownPositions,
+    this.lastError,
+  })  : notifiedTrades = notifiedTrades ?? {},
+        notifiedSignals = notifiedSignals ?? {},
+        knownPositions = knownPositions ?? {};
+
+  DateTime? lastRun;
+
+  /// Идентификаторы закрытых сделок, о которых уже сообщили.
+  final Set<String> notifiedTrades;
+
+  /// Идеи, о которых уже сообщили: символ и цена входа.
+  final Set<String> notifiedSignals;
+
+  /// Символы позиций, которые в прошлый раз были на бирже.
+  final Set<String> knownPositions;
+
+  String? lastError;
+
+  /// Ограничитель: журнал живёт годами, а множества — нет.
+  static const _maxRemembered = 300;
+
+  void _trim(Set<String> set) {
+    if (set.length <= _maxRemembered) return;
+    final excess = set.length - _maxRemembered;
+    set.removeAll(set.take(excess).toList());
+  }
+
+  Map<String, dynamic> toJson() => {
+        'last_run': lastRun?.toIso8601String(),
+        'notified_trades': notifiedTrades.toList(),
+        'notified_signals': notifiedSignals.toList(),
+        'known_positions': knownPositions.toList(),
+        'last_error': lastError,
+      };
+
+  factory MonitorState.fromJson(Map<String, dynamic> j) => MonitorState(
+        lastRun: DateTime.tryParse(j['last_run'] as String? ?? ''),
+        notifiedTrades: _strings(j['notified_trades']),
+        notifiedSignals: _strings(j['notified_signals']),
+        knownPositions: _strings(j['known_positions']),
+        lastError: j['last_error'] as String?,
+      );
+
+  static Set<String> _strings(Object? value) => {
+        for (final v in value as List<dynamic>? ?? const []) v as String,
+      };
+}
+
+/// Фоновый прогон: сопровождение сделок и поиск новых идей.
+///
+/// Что фон делает намеренно **не** делает: не отправляет ордера. Подтвердить
+/// сделку биометрией в фоне некому, а отправить без подтверждения — нарушить
+/// собственное правило. Поэтому здесь только расчёт и уведомления.
+class BackgroundCycle {
+  const BackgroundCycle({
+    required this.target,
+    required this.lock,
+    this.minPushScore = 75,
+  });
+
+  final MonitorTarget target;
+  final StateLock lock;
+
+  /// Порог оценки, ниже которого о новой идее не будят.
+  final int minPushScore;
+
+  Future<CycleReport> run({
+    required MonitorState state,
+    required DateTime now,
+  }) async {
+    if (await lock.heldByOther(StateLock.monitor, now: now)) {
+      return const CycleReport.skipped();
+    }
+
+    // Состояние журнала до пересчёта: по разнице видно, что закрылось.
+    final before = {
+      for (final t in target.ledger.trades) t.id: t.status,
+    };
+
+    final notices = <MonitorNotice>[];
+    String? error;
+    try {
+      await lock.heartbeat(StateLock.monitor);
+      // Пересчёт форсируем, только когда закрылся новый часовой бар: тот же
+      // каденс, что у переднего плана и у бэктеста.
+      final digest = await target.fetchDigest(force: _barClosed(state.lastRun, now));
+
+      notices.addAll(_closedTrades(before, state));
+      notices.addAll(_newSignals(digest, state));
+      notices.addAll(await _positions(state));
+    } on Object catch (e) {
+      // Фон обязан пережить любой отказ: сети может не быть вовсе, а сервис
+      // должен дожить до следующего часа и попробовать снова.
+      error = _short(e);
+    } finally {
+      await lock.release(StateLock.monitor);
+    }
+
+    state.lastRun = now;
+    state.lastError = error;
+    return CycleReport(notices: notices, summary: _summary(error), error: error);
+  }
+
+  /// Закрылся ли новый часовой бар с прошлого прогона.
+  bool _barClosed(DateTime? last, DateTime now) {
+    if (last == null) return true;
+    return DateTime(now.year, now.month, now.day, now.hour)
+        .isAfter(DateTime(last.year, last.month, last.day, last.hour));
+  }
+
+  List<MonitorNotice> _closedTrades(
+    Map<String, PaperStatus> before,
+    MonitorState state,
+  ) {
+    final notices = <MonitorNotice>[];
+    for (final trade in target.ledger.trades) {
+      if (trade.status != PaperStatus.closed) continue;
+      // Закрылась именно сейчас: раньше была живой, и мы о ней не сообщали.
+      final wasLive = before[trade.id] != PaperStatus.closed;
+      if (!wasLive || !state.notifiedTrades.add(trade.id)) continue;
+      final r = trade.resultR ?? 0;
+      notices.add((
+        title: '${trade.symbol}: сделка закрыта',
+        body: '${trade.outcome ?? '—'} · '
+            '${r >= 0 ? '+' : '−'}${r.abs().toStringAsFixed(2).replaceAll('.', ',')}R',
+      ));
+    }
+    state._trim(state.notifiedTrades);
+    return notices;
+  }
+
+  List<MonitorNotice> _newSignals(DailyDigest digest, MonitorState state) {
+    final notices = <MonitorNotice>[];
+    for (final signal in digest.signals) {
+      if (signal.score < minPushScore) continue;
+      // Ключ включает вход: та же идея с переставленным уровнем — новая идея.
+      final key = '${signal.symbol}@${signal.entry}';
+      if (!state.notifiedSignals.add(key)) continue;
+      notices.add(signalNotice(signal));
+    }
+    state._trim(state.notifiedSignals);
+    return notices;
+  }
+
+  Future<List<MonitorNotice>> _positions(MonitorState state) async {
+    final positions = await target.brokerPositions();
+    final open = {for (final p in positions) p.symbol};
+    final notices = <MonitorNotice>[
+      for (final symbol in state.knownPositions)
+        if (!open.contains(symbol))
+          (title: '$symbol: позиции на бирже больше нет', body: 'Проверьте историю сделок'),
+    ];
+    state.knownPositions
+      ..clear()
+      ..addAll(open);
+    return notices;
+  }
+
+  String _summary(String? error) {
+    if (error != null) return 'Последний прогон не удался: $error';
+    final live = target.ledger.openOrPending.length;
+    final total = target.ledger.totalR;
+    final r = '${total >= 0 ? '+' : '−'}'
+        '${total.abs().toStringAsFixed(1).replaceAll('.', ',')}R';
+    return live == 0 ? 'Открытых сделок нет · итог $r' : 'В работе: $live · итог $r';
+  }
+
+  static String _short(Object error) {
+    final text = error.toString();
+    return text.length > 120 ? '${text.substring(0, 117)}…' : text;
+  }
+}
+
+/// Уведомление о новой идее. Общее для фона и переднего плана, чтобы текст
+/// не разъезжался в зависимости от того, кто его отправил.
+MonitorNotice signalNotice(TradingSignal signal) => (
+      title: '${signal.symbol} · ${signal.direction.label} · ${signal.score}/100',
+      body: 'Вход ${signal.entry.toStringAsFixed(signal.priceDecimals)} · '
+          'SL ${signal.stopLoss.toStringAsFixed(signal.priceDecimals)} · '
+          'R:R ${signal.riskReward}. Открыть SignalAI, чтобы посмотреть разбор.',
+    );

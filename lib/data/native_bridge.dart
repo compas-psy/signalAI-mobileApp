@@ -31,6 +31,15 @@ class NativeBridge {
     }
   }
 
+  /// Запуск фонового контура. [mode] — `persistent` или `burst`.
+  Future<bool> monitorStart(String mode) => _bool('monitorStart', {'mode': mode});
+
+  /// Остановка фонового контура вместе с будильником.
+  Future<bool> monitorStop() => _bool('monitorStop');
+
+  /// Работает ли контур прямо сейчас.
+  Future<bool> monitorRunning() => _bool('monitorRunning');
+
   /// Доступно ли хранилище секретов Android Keystore.
   Future<bool> vaultAvailable() => _bool('vaultAvailable');
 

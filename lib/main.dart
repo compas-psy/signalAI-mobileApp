@@ -52,17 +52,38 @@ class SignalAiApp extends StatefulWidget {
   State<SignalAiApp> createState() => _SignalAiAppState();
 }
 
-class _SignalAiAppState extends State<SignalAiApp> {
+class _SignalAiAppState extends State<SignalAiApp> with WidgetsBindingObserver {
   late final AppController _controller = AppController(widget.repository);
+
+  /// Фоновый контур поднимается на уходе в фон и снимается на возврате.
+  ///
+  /// Так передний план и фон никогда не считают одновременно: пока экран
+  /// открыт, состояние пишет интерфейс, и это единственный писатель.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    switch (state) {
+      case AppLifecycleState.resumed:
+        _controller.onAppResumed();
+      case AppLifecycleState.paused:
+      case AppLifecycleState.detached:
+      case AppLifecycleState.hidden:
+        _controller.onAppPaused();
+      case AppLifecycleState.inactive:
+        // Шторка уведомлений или входящий звонок — приложение ещё живо.
+        break;
+    }
+  }
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _controller.load();
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _controller.dispose();
     super.dispose();
   }

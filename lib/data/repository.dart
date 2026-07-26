@@ -1,6 +1,7 @@
 import '../domain/broker/broker.dart';
 import '../domain/broker/trading_gate.dart';
 import '../domain/models/digest.dart';
+import '../monitor/background_mode.dart';
 import '../domain/models/portfolio.dart';
 import '../domain/models/settings.dart';
 import '../domain/models/strategy.dart';
@@ -82,6 +83,18 @@ abstract interface class TradingDesk {
 
   /// Позиции, как их видит биржа.
   Future<List<BrokerPosition>> brokerPositions();
+
+  /// Режим фоновой работы и включён ли контур.
+  BackgroundMode get backgroundMode;
+  bool get backgroundEnabled;
+
+  /// Смена режима. Контур перезапускается, если он был включён.
+  Future<void> setBackgroundMode(BackgroundMode mode);
+
+  Future<void> setBackgroundEnabled(bool enabled);
+
+  /// Итог последнего фонового прогона — для honest-подписи в настройках.
+  Future<String> backgroundStateNote();
 }
 
 abstract interface class SignalAiRepository {

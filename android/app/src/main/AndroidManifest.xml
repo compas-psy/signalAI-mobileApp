@@ -3,6 +3,16 @@
     <uses-permission android:name="android.permission.INTERNET"/>
     <!-- Пуш-уведомления о сигналах и критичных событиях (ТЗ §8). -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <!-- Фоновый контур: сопровождение сделок, пока приложение закрыто.
+         dataSync — тип, под который подходит периодическая синхронизация с
+         биржей. На Android 15+ система ограничивает такой сервис шестью
+         часами в сутки, поэтому рядом всегда стоит часовой будильник. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
+    <!-- Прогон не должен обрываться посреди сетевого запроса, если экран погас. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK"/>
+    <!-- Расписание контура восстанавливается после перезагрузки. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
     <application
         android:label="SignalAI"
         android:name="${applicationName}"
@@ -32,6 +42,23 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <service
+            android:name=".MonitorService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync"/>
+
+        <receiver
+            android:name=".MonitorAlarmReceiver"
+            android:exported="false"/>
+
+        <receiver
+            android:name=".MonitorBootReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED"/>
+            </intent-filter>
+        </receiver>
+
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data

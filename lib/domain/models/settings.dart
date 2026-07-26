@@ -170,6 +170,27 @@ class TradingView {
   bool get ready => enabled && !killSwitch && hasKeys;
 }
 
+/// Состояние фонового контура для настроек.
+class BackgroundView {
+  const BackgroundView({
+    required this.modeLabel,
+    required this.persistent,
+    required this.enabled,
+    required this.stateNote,
+  });
+
+  final String modeLabel;
+
+  /// Постоянный сервис, а не короткие пробуждения.
+  final bool persistent;
+
+  /// Включён ли фоновый контур вообще.
+  final bool enabled;
+
+  /// «работает · последний прогон 14:03» либо причина отказа.
+  final String stateNote;
+}
+
 class SettingsSnapshot {
   const SettingsSnapshot({
     required this.exchanges,
@@ -177,6 +198,7 @@ class SettingsSnapshot {
     required this.notifications,
     required this.risk,
     this.trading,
+    this.background,
   });
 
   final List<ExchangeAccount> exchanges;
@@ -187,12 +209,16 @@ class SettingsSnapshot {
   /// Торговый контур. null — режим без исполнения сделок (демо).
   final TradingView? trading;
 
+  /// Фоновый контур. null — режим без фоновой работы (демо).
+  final BackgroundView? background;
+
   SettingsSnapshot copyWith({
     List<ExchangeAccount>? exchanges,
     List<ToggleSetting>? channels,
     List<ToggleSetting>? notifications,
     RiskProfile? risk,
     TradingView? trading,
+    BackgroundView? background,
   }) =>
       SettingsSnapshot(
         exchanges: exchanges ?? this.exchanges,
@@ -200,5 +226,6 @@ class SettingsSnapshot {
         notifications: notifications ?? this.notifications,
         risk: risk ?? this.risk,
         trading: trading ?? this.trading,
+        background: background ?? this.background,
       );
 }

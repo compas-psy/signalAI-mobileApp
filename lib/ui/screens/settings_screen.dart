@@ -6,6 +6,7 @@ import '../../state/app_scope.dart';
 import '../../theme/tokens.dart';
 import '../../theme/typography.dart';
 import '../../domain/broker/broker.dart';
+import '../../monitor/background_mode.dart';
 import '../widgets/broker_keys_sheet.dart';
 import '../widgets/common.dart';
 import '../widgets/risk_edit_sheet.dart';
@@ -61,6 +62,10 @@ class SettingsScreen extends StatelessWidget {
               if (snapshot.trading != null) ...[
                 const SizedBox(height: 12),
                 _TradingCard(trading: snapshot.trading!),
+              ],
+              if (snapshot.background != null) ...[
+                const SizedBox(height: 12),
+                _BackgroundCard(background: snapshot.background!),
               ],
               const SizedBox(height: 12),
               _TogglesCard(
@@ -330,6 +335,74 @@ class _TradingCard extends StatelessWidget {
             value: trading.killSwitch,
             danger: true,
             onChanged: controller.setKillSwitch,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Фоновая работа: что происходит, пока приложение закрыто.
+///
+/// Ограничения платформы написаны прямо в карточке. Обещать «следит всегда»
+/// и молча замолкать через шесть часов — ровно тот обман, из-за которого
+/// приложению перестают доверять.
+class _BackgroundCard extends StatelessWidget {
+  const _BackgroundCard({required this.background});
+
+  final BackgroundView background;
+
+  @override
+  Widget build(BuildContext context) {
+    final controller = AppScope.read(context);
+    return SectionCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const SectionLabel('Фоновая работа'),
+          const SizedBox(height: 6),
+          _TradingSwitch(
+            title: 'Следить, пока приложение закрыто',
+            subtitle: 'Сопровождение открытых сделок и поиск новых идей раз в '
+                'час. Ордера в фоне не отправляются: подтвердить сделку там нечем',
+            value: background.enabled,
+            onChanged: controller.setBackgroundEnabled,
+          ),
+          const SizedBox(height: 10),
+          KeyValueRow(
+            name: 'Режим',
+            value: '${background.modeLabel} · сменить',
+            valueStyle: T.mono(12, color: C.accent),
+            onTap: () => controller.setBackgroundMode(
+              background.persistent ? BackgroundMode.burst : BackgroundMode.persistent,
+            ),
+          ),
+          KeyValueRow(
+            name: 'Состояние',
+            value: background.stateNote,
+            showDivider: false,
+            valueStyle: T.mono(
+              12,
+              color: background.stateNote.contains('сбой') ? C.red : C.muted,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            background.persistent
+                ? 'Постоянный режим держит в шторке служебную строку. На '
+                    'Android 15+ система останавливает такой сервис после шести '
+                    'часов в сутки — дальше контур продолжает часовыми '
+                    'пробуждениями сам.'
+                : 'Раз в час приложение просыпается на полминуты и снова '
+                    'засыпает. Служебная строка видна только на это время.',
+            style: T.body(10.5, color: C.muted, height: 1.4),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'Если Android усыпил приложение (на Samsung — «Спящие приложения» '
+            'в настройках батареи), фон не поднимется ни в одном режиме. '
+            'Исключите SignalAI из оптимизации.',
+            style: T.body(10.5, color: C.muted, height: 1.4),
           ),
         ],
       ),
