@@ -156,10 +156,15 @@ class OrderRequest {
     required this.entry,
     required this.stopLoss,
     required this.takeProfit,
+    this.stopEntry = false,
   });
 
   final String symbol;
   final bool long;
+
+  /// Вход стоп-заявкой по пробою: заявка активируется, когда цена проходит
+  /// уровень в сторону сделки, а не ждёт отката к нему.
+  final bool stopEntry;
 
   /// Объём в единицах контракта биржи.
   final double quantity;

@@ -94,6 +94,14 @@ class BybitBroker implements Broker {
       'takeProfit': _num(request.takeProfit),
       'tpslMode': 'Full',
       'positionIdx': 0,
+      // Стоп-вход: условная заявка активируется, когда цена проходит уровень
+      // в сторону сделки. Направление триггера — вверх для лонга (1), вниз
+      // для шорта (2), лимитная цена — тот же уровень.
+      if (request.stopEntry) ...{
+        'triggerPrice': _num(request.entry),
+        'triggerDirection': request.long ? 1 : 2,
+        'triggerBy': 'LastPrice',
+      },
     };
     try {
       final json = await _post('/v5/order/create', body);

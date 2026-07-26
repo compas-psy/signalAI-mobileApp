@@ -49,6 +49,7 @@ class PaperTrade {
     this.costs = TradingCosts.none,
     this.fillMargin = 0,
     this.breakevenAfterTp1 = false,
+    this.stopEntry = false,
   });
 
   final String id;
@@ -77,6 +78,9 @@ class PaperTrade {
   /// Хранится в самой сделке: правило могло смениться, а уже открытая сделка
   /// обязана проживаться так, как была открыта.
   final bool breakevenAfterTp1;
+
+  /// Вход стоп-заявкой по пробою — сторона исполнения лимитки обратная.
+  final bool stopEntry;
 
   PaperStatus status;
 
@@ -117,6 +121,7 @@ class PaperTrade {
       costs: costs,
       fillMargin: fillMargin,
       breakevenAfterTp1: breakevenAfterTp1,
+      stopEntry: stopEntry,
     );
 
     OpenPosition? position;
@@ -195,6 +200,7 @@ class PaperTrade {
         'costs': costs.toJson(),
         'fill_margin': fillMargin,
         'breakeven_after_tp1': breakevenAfterTp1,
+        'stop_entry': stopEntry,
       };
 
   factory PaperTrade.fromJson(Map<String, dynamic> j) => PaperTrade(
@@ -220,6 +226,7 @@ class PaperTrade {
         fillMargin: (j['fill_margin'] as num?)?.toDouble() ?? 0,
         // Старые записи жили без правила безубытка — оно к ним не применяется.
         breakevenAfterTp1: j['breakeven_after_tp1'] as bool? ?? false,
+        stopEntry: j['stop_entry'] as bool? ?? false,
       );
 }
 
@@ -302,6 +309,7 @@ class SignalLedger {
       costs: costs,
       fillMargin: fillMargin,
       breakevenAfterTp1: breakevenAfterTp1,
+      stopEntry: signal.entryIsStop,
     ));
     if (trades.length > maxTrades) trades.removeRange(0, trades.length - maxTrades);
   }

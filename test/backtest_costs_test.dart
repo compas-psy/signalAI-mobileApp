@@ -148,6 +148,51 @@ void main() {
     });
   });
 
+  group('Стоп-вход по пробою', () {
+    PendingOrder order({required bool stopEntry}) => PendingOrder(
+          long: true,
+          entry: 101,
+          stopLoss: 99,
+          takeProfits: const [(price: 103.8, share: 1.0)],
+          expiresAt: 10,
+          stopEntry: stopEntry,
+        );
+
+    test('лонг-лимитка и лонг-стоп исполняются с разных сторон уровня', () {
+      // Бар целиком НИЖЕ уровня: лимитка на откате наполнилась бы, стоп-вход
+      // не должен активироваться — цена не показала силу.
+      final below = _bar(0, high: 100.8, low: 100.2);
+      expect(order(stopEntry: false).crossedBy(below), isTrue);
+      expect(order(stopEntry: true).crossedBy(below), isFalse);
+
+      // Бар прошёл ВЫШЕ уровня: сила подтверждена — стоп-вход активен,
+      // лимитка на откате осталась бы неисполненной.
+      final above = _bar(1, high: 101.5, low: 101.1);
+      expect(order(stopEntry: true).crossedBy(above), isTrue);
+      expect(order(stopEntry: false).crossedBy(above), isFalse);
+    });
+
+    test('стоп-вход платит проскальзывание на входе, лимитка — нет', () {
+      final costs = TradingCosts(slippage: 0.2);
+      double entryCost(bool stopEntry) => OpenPosition(
+            order: PendingOrder(
+              long: true,
+              entry: 101,
+              stopLoss: 99,
+              takeProfits: const [(price: 103.8, share: 1.0)],
+              expiresAt: 10,
+              costs: costs,
+              stopEntry: stopEntry,
+            ),
+            openedAt: 0,
+            maxHoldBars: 120,
+          ).costR;
+
+      expect(entryCost(true), closeTo(0.1, 1e-9), reason: '0,2 пункта на риск 2');
+      expect(entryCost(false), 0);
+    });
+  });
+
   test('профиль издержек различается по рынку', () {
     final crypto = defaultCostsFor(cryptoSpec);
     final forts = defaultCostsFor(fortsSpec);

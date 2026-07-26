@@ -3,6 +3,7 @@ import 'package:signalai/domain/analysis/candle.dart';
 import 'package:signalai/domain/analysis/indicators.dart';
 import 'package:signalai/domain/analysis/instrument_spec.dart';
 import 'package:signalai/domain/analysis/factor_audit.dart';
+import 'package:signalai/domain/analysis/optimizer.dart';
 import 'package:signalai/domain/analysis/screener.dart';
 import 'package:signalai/domain/enums.dart';
 
@@ -254,6 +255,77 @@ void main() {
     expect(rejected.single.reason, contains('триггерной свечи'));
     expect(screener.evaluate(input(), bullishRegime), isNotNull,
         reason: 'без фильтра тот же кандидат проходит');
+  });
+
+  test('стоп-вход ставит уровень за пробойным баром, а не на ретесте', () {
+    const breaker = Screener(entryType: EntryType.stopBreak);
+    // После пробоя — мелкий откат и новый толчок: у стоп-входа есть свежая
+    // база, за которую ставится стоп.
+    final base = risingWithBreakout();
+    final top = base.last.close;
+    final extra = [top - 0.3, top - 0.6, top - 0.5, top - 0.2, top + 0.4, top + 0.2, top + 0.5];
+    final bars = [
+      ...base,
+      for (var i = 0; i < extra.length; i++)
+        bar(base.length + i, i == 0 ? top : extra[i - 1], extra[i]),
+    ];
+    // Шаг цены реалистичный: тик размером с ATR отодвинул бы вход за предел
+    // допустимой дистанции, чего с настоящими контрактами не бывает.
+    const fine = InstrumentSpec(
+      id: 'test',
+      symbol: 'TSTU6',
+      name: 'Тестовый фьючерс',
+      market: Market.forts,
+      priceDecimals: 0,
+      valuePerPoint: 1,
+      unitMultiplier: 1,
+      unitDecimals: 0,
+      unitName: 'конт.',
+      unitRiskSuffix: 'контракт',
+      tickSize: 0.01,
+    );
+    final probe = InstrumentInput(
+      spec: fine,
+      hourly: bars,
+      daily: dailyContext(),
+      lastPrice: bars.last.close,
+      changePercentLabel: '+0,84%',
+      changeUp: true,
+    );
+    final signal = breaker.evaluate(probe, bullishRegime)!.signal;
+
+    // Лонг: вход выше максимума последнего бара — сделка открывается только
+    // продолжением движения, а не откатом к уровню.
+    expect(signal.entryIsStop, isTrue);
+    expect(signal.entry, greaterThan(bars.last.high));
+    expect(signal.stopLoss, lessThan(signal.entry));
+    // Стоп за базой пробоя, а не за дальним свингом: риск остаётся в рамках.
+    expect(signal.entry - signal.stopLoss, lessThan(3));
+
+    final retest = screener.evaluate(input(), bullishRegime)!.signal;
+    expect(retest.entryIsStop, isFalse);
+  });
+
+  test('ресемпл 4H склеивает часовики свеча в свечу', () {
+    final hourly = [
+      for (var i = 0; i < 8; i++) bar(i, 100.0 + i, 101.0 + i),
+    ];
+    final fourH = resampleHours(hourly, 4);
+
+    expect(fourH, hasLength(2));
+    expect(fourH.first.open, hourly.first.open);
+    expect(fourH.first.close, hourly[3].close);
+    expect(fourH.first.high,
+        [for (final c in hourly.take(4)) c.high].reduce((a, b) => a > b ? a : b));
+    expect(fourH.first.low,
+        [for (final c in hourly.take(4)) c.low].reduce((a, b) => a < b ? a : b));
+    expect(fourH.last.close, hourly.last.close);
+  });
+
+  test('сетка подбора содержит структурные варианты входа', () {
+    expect(StrategyOptimizer.grid.any((p) => p.entryType == EntryType.stopBreak), isTrue);
+    expect(StrategyOptimizer.grid.any((p) => p.align4h), isTrue);
+    expect(StrategyOptimizer.grid.first, StrategyParams.defaults);
   });
 
   test('план ведения написан в самой идее', () {

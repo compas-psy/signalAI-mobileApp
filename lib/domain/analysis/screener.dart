@@ -201,6 +201,58 @@ class ScreenerResult {
   final List<ScoreComponent> components;
 }
 
+/// Способ входа в сделку.
+enum EntryType {
+  /// Лимитка на ретесте уровня: вход на откате.
+  limit,
+
+  /// Стоп-заявка за пробойным баром: вход по подтверждённой силе.
+  stopBreak;
+
+  static EntryType parse(String? v) =>
+      v == 'stop_break' ? EntryType.stopBreak : EntryType.limit;
+
+  String get id => this == EntryType.stopBreak ? 'stop_break' : 'limit';
+}
+
+/// Свести часовые свечи к старшему таймфрейму (кратному часу).
+///
+/// Живёт рядом со скринером: это его представление о структуре 4H, и второй
+/// потребитель у ресемпла не планируется. Границы — по кратности часа эпохи,
+/// как их рисует и биржа.
+List<Candle> resampleHours(List<Candle> hourly, int hours) {
+  if (hourly.isEmpty || hours <= 1) return hourly;
+  final result = <Candle>[];
+  Candle? current;
+  DateTime? bucket;
+  for (final c in hourly) {
+    final b = DateTime.utc(c.time.year, c.time.month, c.time.day, c.time.hour ~/ hours * hours);
+    if (bucket != b) {
+      if (current != null) result.add(current);
+      bucket = b;
+      current = Candle(
+        time: b,
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close,
+        volume: c.volume,
+      );
+    } else {
+      current = Candle(
+        time: b,
+        open: current!.open,
+        high: c.high > current.high ? c.high : current.high,
+        low: c.low < current.low ? c.low : current.low,
+        close: c.close,
+        volume: current.volume + c.volume,
+      );
+    }
+  }
+  if (current != null) result.add(current);
+  return result;
+}
+
 /// Детерминированный скринер первой ступени (ТЗ §5.1 и §5.3).
 ///
 /// Считает всё на устройстве по публичным данным: LLM-ступени здесь нет,
@@ -214,6 +266,8 @@ class Screener {
     this.takeProfitMultiples = defaultTakeProfitMultiples,
     this.takeProfitShares = defaultTakeProfitShares,
     this.requireTrigger = false,
+    this.entryType = EntryType.limit,
+    this.align4h = false,
   });
 
   /// Ниже этого SignalScore кандидат не показывается вовсе.
@@ -236,6 +290,16 @@ class Screener {
   /// а не руками: цена фильтра — меньше сделок, и платить её стоит только
   /// там, где out-of-sample данные показывают выигрыш.
   final bool requireTrigger;
+
+  /// Способ входа: лимитка на ретесте или стоп-заявка за пробойным баром.
+  final EntryType entryType;
+
+  /// Требовать, чтобы структура 4H не противоречила направлению сделки.
+  ///
+  /// Мультитаймфреймовое согласование: 1H даёт вход, 4H — контекст. Идея
+  /// лонга при падающей 4H-структуре — торговля против ближайшего старшего
+  /// потока; флэт 4H проходит.
+  final bool align4h;
 
   /// Доли фиксации по тейкам. Настраиваемы: walk-forward оптимизация может
   /// выбрать другой профиль фиксации.
@@ -324,10 +388,30 @@ class Screener {
       return null;
     }
 
-    // Вход — ретест сломанного уровня; если слома не было, ретест ближайшего
-    // экстремума по направлению сделки.
-    final entry = structure.breakLevel ??
-        (long ? structure.lastSwingHigh?.price : structure.lastSwingLow?.price);
+    // Согласование с 4H: вход 1H не должен идти против структуры ближайшего
+    // старшего таймфрейма. Флэт проходит — вето только на прямое противоречие.
+    if (align4h) {
+      final fourHourly = resampleHours(hourly, 4);
+      if (fourHourly.length >= 30) {
+        final trend4h = analyzeStructure(fourHourly).trend;
+        if (trend4h == (long ? StructureTrend.down : StructureTrend.up)) {
+          reject('структура 4H против направления');
+          return null;
+        }
+      }
+    }
+
+    // Вход зависит от типа заявки. Лимитка — ретест сломанного уровня (или
+    // ближайшего экстремума, если слома не было). Стоп-вход — пробой
+    // последнего бара: сделка открывается только продолжением движения.
+    final double? entry;
+    if (entryType == EntryType.stopBreak) {
+      final last = hourly.last;
+      entry = long ? last.high + spec.tick : last.low - spec.tick;
+    } else {
+      entry = structure.breakLevel ??
+          (long ? structure.lastSwingHigh?.price : structure.lastSwingLow?.price);
+    }
     if (entry == null) {
       reject('нет уровня входа');
       return null;
@@ -338,7 +422,18 @@ class Screener {
     }
 
     // Стоп — за противоположный экстремум с буфером в половину ATR.
-    final opposite = long ? structure.lastSwingLow?.price : structure.lastSwingHigh?.price;
+    // У стоп-входа экстремум свой: база пробоя (последние три бара), а не
+    // дальний свинг. Вход по силе со стопом за всей структурой раздувал бы
+    // риск в разы и убивал R:R — классика ставит стоп под пробойную базу.
+    final double? opposite;
+    if (entryType == EntryType.stopBreak) {
+      final base = hourly.sublist(hourly.length - 3);
+      opposite = long
+          ? base.map((c) => c.low).reduce(math.min)
+          : base.map((c) => c.high).reduce(math.max);
+    } else {
+      opposite = long ? structure.lastSwingLow?.price : structure.lastSwingHigh?.price;
+    }
     if (opposite == null) {
       reject('нет уровня для стопа');
       return null;
@@ -423,6 +518,7 @@ class Screener {
         changeUp: input.changeUp,
         // Порог пуша — 75 (ТЗ §5.3); ниже идея живёт в списке без уведомления.
         status: score >= 75 ? SignalStatus.pushed : SignalStatus.proposed,
+        entryIsStop: entryType == EntryType.stopBreak,
         invalidationPrice: stopLoss,
         correlationGroup: _correlationGroup(spec),
         chart: chart,

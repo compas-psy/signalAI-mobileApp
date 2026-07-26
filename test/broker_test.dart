@@ -115,6 +115,47 @@ void main() {
       expect(body['qty'], '0.5', reason: 'дробный объём не должен уйти экспонентой');
     });
 
+    test('стоп-вход уходит условной заявкой с триггером по направлению', () async {
+      final b = await broker(reply: {
+        'retCode': 0,
+        'result': {'orderId': 'ORD-3'},
+      });
+
+      await b.placeOrder(const OrderRequest(
+        symbol: 'BTCUSDT',
+        long: true,
+        quantity: 0.1,
+        entry: 61000,
+        stopLoss: 60000,
+        takeProfit: 63000,
+        stopEntry: true,
+      ));
+
+      final body = jsonDecode(captured.single.body) as Map<String, dynamic>;
+      expect(body['triggerPrice'], '61000');
+      expect(body['triggerDirection'], 1, reason: 'лонг активируется ростом цены');
+      expect(body['orderType'], 'Limit');
+    });
+
+    test('обычная лимитка условным триггером не обрастает', () async {
+      final b = await broker(reply: {
+        'retCode': 0,
+        'result': {'orderId': 'ORD-4'},
+      });
+
+      await b.placeOrder(const OrderRequest(
+        symbol: 'BTCUSDT',
+        long: true,
+        quantity: 0.1,
+        entry: 61000,
+        stopLoss: 60000,
+        takeProfit: 63000,
+      ));
+
+      final body = jsonDecode(captured.single.body) as Map<String, dynamic>;
+      expect(body.containsKey('triggerPrice'), isFalse);
+    });
+
     test('отказ биржи возвращается человеческой причиной, а не исключением', () async {
       final b = await broker(reply: {'retCode': 110007, 'retMsg': 'insufficient balance'});
 

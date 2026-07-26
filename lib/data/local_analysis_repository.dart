@@ -1495,6 +1495,7 @@ class LocalAnalysisRepository
       long: signal.direction.isLong,
       quantity: quantity,
       entry: signal.entry,
+      stopEntry: signal.entryIsStop,
       stopLoss: signal.stopLoss,
       takeProfit: signal.takeProfits.isEmpty
           ? signal.entry

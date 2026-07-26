@@ -212,6 +212,7 @@ class TradingSignal {
     this.correlationGroup,
     this.strategyId,
     this.chart,
+    this.entryIsStop = false,
   });
 
   final String id;
@@ -288,6 +289,10 @@ class TradingSignal {
   /// Реальные свечи и разметка для графика. null — графика нет (и рисовать
   /// вместо него муляж нельзя: виджет покажет честную заглушку).
   final SignalChart? chart;
+
+  /// Вход стоп-заявкой по пробою, а не лимиткой на откате. Решение скринера:
+  /// от него зависит и сторона исполнения в движке, и тип заявки на бирже.
+  final bool entryIsStop;
 
   /// Расстояние от входа до стопа в единицах цены — 1R.
   ///
@@ -370,6 +375,7 @@ class TradingSignal {
         invalidationPrice: (j['invalidation_price'] as num?)?.toDouble(),
         correlationGroup: j['correlation_group'] as String?,
         strategyId: j['strategy_id'] as String?,
+        entryIsStop: j['entry_is_stop'] as bool? ?? false,
         chart: j['chart'] == null
             ? null
             : SignalChart.fromJson(j['chart'] as Map<String, dynamic>),
@@ -407,5 +413,6 @@ class TradingSignal {
         'correlation_group': correlationGroup,
         'strategy_id': strategyId,
         'chart': chart?.toJson(),
+        'entry_is_stop': entryIsStop,
       };
 }

@@ -264,6 +264,7 @@ class Backtester {
         // Бэктест меряет стратегию с её правилом ведения: после TP1 стоп
         // остатка в безубытке — так же поведёт сделку и живой контур.
         breakevenAfterTp1: true,
+        stopEntry: signal.entryIsStop,
       );
     }
 

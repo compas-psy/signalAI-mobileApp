@@ -194,6 +194,15 @@ class TInvestBroker implements Broker {
 
   @override
   Future<OrderResult> placeOrder(OrderRequest request) async {
+    // Вход стоп-заявкой брокеру пока не отправляется: у Т-Инвестиций это
+    // отдельный тип (стоп-лимит), и его постановка вместе с защитным стопом
+    // не проверена на песочнице. Честный отказ лучше кривой заявки.
+    if (request.stopEntry) {
+      return const OrderResult.rejected(
+        'Вход стоп-заявкой для Т-Инвестиций ещё не реализован — '
+        'идея ведётся на бумаге',
+      );
+    }
     try {
       final account = await _account();
       final instrument = await _instrument(request.symbol);

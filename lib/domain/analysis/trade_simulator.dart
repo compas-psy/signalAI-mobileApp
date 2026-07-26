@@ -102,6 +102,7 @@ class PendingOrder {
     this.costs = TradingCosts.none,
     this.fillMargin = 0,
     this.breakevenAfterTp1 = false,
+    this.stopEntry = false,
   });
 
   final bool long;
@@ -127,11 +128,22 @@ class PendingOrder {
   /// проживаться по тем правилам, по которым были открыты.
   final bool breakevenAfterTp1;
 
+  /// Вход стоп-заявкой по пробою, а не лимиткой на откате.
+  ///
+  /// Меняет сторону исполнения: лонг открывается, когда цена прошла ВВЕРХ за
+  /// уровень, — покупается подтверждённая сила. Лимитка на ретесте страдает
+  /// обратным отбором: она гарантированно наполняется каждым движением,
+  /// которое прошивает уровень насквозь, и пропускает часть тех, что
+  /// разворачиваются, не дотянув до неё.
+  final bool stopEntry;
+
   double get risk => (entry - stopLoss).abs();
 
-  /// Прошла ли цена бара за лимитку.
-  bool crossedBy(Candle bar) =>
-      long ? bar.low <= entry - fillMargin : bar.high >= entry + fillMargin;
+  /// Прошла ли цена бара за уровень входа — с той стороны, с которой
+  /// исполняется заявка этого типа.
+  bool crossedBy(Candle bar) => stopEntry
+      ? (long ? bar.high >= entry + fillMargin : bar.low <= entry - fillMargin)
+      : (long ? bar.low <= entry - fillMargin : bar.high >= entry + fillMargin);
 }
 
 class OpenPosition {
@@ -142,6 +154,10 @@ class OpenPosition {
   }) : remainingShare = 1 {
     // Комиссия входа списывается сразу: позиция уже стоила денег.
     _charge(order.costs.fee(order.entry));
+    // Стоп-вход исполняется рынком после срабатывания триггера — против нас
+    // работает проскальзывание. Лимитка исполняется по своей цене, ей это
+    // не начисляется.
+    if (order.stopEntry) _charge(order.costs.slippage);
   }
 
   final PendingOrder order;

@@ -8,6 +8,8 @@ class StrategyParams {
     required this.maxEntryDistanceAtr,
     required this.takeProfitMultiples,
     this.requireTrigger = false,
+    this.entryType = EntryType.limit,
+    this.align4h = false,
   });
 
   final int minScore;
@@ -17,11 +19,19 @@ class StrategyParams {
   /// Требовать триггерную свечу у уровня — фильтр качества ретеста.
   final bool requireTrigger;
 
+  /// Способ входа: лимитка на ретесте или стоп-заявка за пробоем.
+  final EntryType entryType;
+
+  /// Согласование направления со структурой 4H.
+  final bool align4h;
+
   Screener buildScreener() => Screener(
         minScore: minScore,
         maxEntryDistanceAtr: maxEntryDistanceAtr,
         takeProfitMultiples: takeProfitMultiples,
         requireTrigger: requireTrigger,
+        entryType: entryType,
+        align4h: align4h,
       );
 
   Map<String, dynamic> toJson() => {
@@ -29,6 +39,8 @@ class StrategyParams {
         'max_entry_distance_atr': maxEntryDistanceAtr,
         'tp_multiples': takeProfitMultiples,
         'require_trigger': requireTrigger,
+        'entry_type': entryType.id,
+        'align_4h': align4h,
       };
 
   factory StrategyParams.fromJson(Map<String, dynamic> j) => StrategyParams(
@@ -38,6 +50,8 @@ class StrategyParams {
           for (final m in j['tp_multiples'] as List<dynamic>) (m as num).toDouble(),
         ],
         requireTrigger: j['require_trigger'] as bool? ?? false,
+        entryType: EntryType.parse(j['entry_type'] as String?),
+        align4h: j['align_4h'] as bool? ?? false,
       );
 
   static const defaults = StrategyParams(
@@ -49,7 +63,9 @@ class StrategyParams {
   String get label => 'score ≥ $minScore · вход ≤ '
       '${maxEntryDistanceAtr.toStringAsFixed(2).replaceAll('.', ',')}·ATR · TP '
       '${takeProfitMultiples.map((m) => m.toStringAsFixed(1).replaceAll('.', ',')).join('/')}R'
-      '${requireTrigger ? ' · вход по триггеру' : ''}';
+      '${requireTrigger ? ' · триггер' : ''}'
+      '${entryType == EntryType.stopBreak ? ' · вход по пробою' : ''}'
+      '${align4h ? ' · 4H согласована' : ''}';
 }
 
 /// Итог оптимизации: выбранные параметры и их out-of-sample качество.
@@ -105,22 +121,52 @@ class StrategyOptimizer {
   /// Сетка кандидатов. Дефолт всегда участвует — он бенчмарк.
   static const List<StrategyParams> grid = [
     StrategyParams.defaults,
+    // Числовые вариации порогов — узкая окрестность дефолта.
     StrategyParams(minScore: 55, maxEntryDistanceAtr: 0.5, takeProfitMultiples: [1.4, 2.2, 3.5]),
     StrategyParams(minScore: 65, maxEntryDistanceAtr: 0.5, takeProfitMultiples: [1.4, 2.2, 3.5]),
-    StrategyParams(minScore: 60, maxEntryDistanceAtr: 0.35, takeProfitMultiples: [1.4, 2.2, 3.5]),
-    StrategyParams(minScore: 60, maxEntryDistanceAtr: 0.7, takeProfitMultiples: [1.4, 2.2, 3.5]),
     StrategyParams(minScore: 60, maxEntryDistanceAtr: 0.5, takeProfitMultiples: [1.2, 2.0, 3.0]),
-    StrategyParams(minScore: 60, maxEntryDistanceAtr: 0.5, takeProfitMultiples: [1.8, 2.6, 4.2]),
-    StrategyParams(minScore: 65, maxEntryDistanceAtr: 0.35, takeProfitMultiples: [1.2, 2.0, 3.0]),
-    StrategyParams(minScore: 55, maxEntryDistanceAtr: 0.7, takeProfitMultiples: [1.8, 2.6, 4.2]),
-    // Триггерная ветка: те же пороги, но вход только при реакции цены на
-    // уровень. Меньше сделок — за это walk-forward и спросит с них качество.
+    // Фильтр качества ретеста: вход только при реакции цены на уровень.
     StrategyParams(
         minScore: 60, maxEntryDistanceAtr: 0.5, takeProfitMultiples: [1.4, 2.2, 3.5], requireTrigger: true),
+    // Структурные варианты. Числовые ручки дефолт не обыграли — значит, эдж
+    // ищется не в порогах, а в самом способе входа и в старшем контексте.
     StrategyParams(
-        minScore: 55, maxEntryDistanceAtr: 0.5, takeProfitMultiples: [1.4, 2.2, 3.5], requireTrigger: true),
+        minScore: 60,
+        maxEntryDistanceAtr: 0.5,
+        takeProfitMultiples: [1.4, 2.2, 3.5],
+        entryType: EntryType.stopBreak),
     StrategyParams(
-        minScore: 55, maxEntryDistanceAtr: 0.7, takeProfitMultiples: [1.2, 2.0, 3.0], requireTrigger: true),
+        minScore: 60,
+        maxEntryDistanceAtr: 0.5,
+        takeProfitMultiples: [1.4, 2.2, 3.5],
+        entryType: EntryType.stopBreak,
+        requireTrigger: true),
+    StrategyParams(
+        minScore: 60, maxEntryDistanceAtr: 0.5, takeProfitMultiples: [1.4, 2.2, 3.5], align4h: true),
+    StrategyParams(
+        minScore: 60,
+        maxEntryDistanceAtr: 0.5,
+        takeProfitMultiples: [1.4, 2.2, 3.5],
+        align4h: true,
+        entryType: EntryType.stopBreak),
+    StrategyParams(
+        minScore: 60,
+        maxEntryDistanceAtr: 0.5,
+        takeProfitMultiples: [1.4, 2.2, 3.5],
+        align4h: true,
+        requireTrigger: true),
+    StrategyParams(
+        minScore: 60,
+        maxEntryDistanceAtr: 0.5,
+        takeProfitMultiples: [1.2, 2.0, 3.0],
+        entryType: EntryType.stopBreak),
+    StrategyParams(
+        minScore: 55,
+        maxEntryDistanceAtr: 0.5,
+        takeProfitMultiples: [1.4, 2.2, 3.5],
+        align4h: true,
+        entryType: EntryType.stopBreak,
+        requireTrigger: true),
   ];
 
   /// Подбор. [screenerBuilder] подменяется в тестах.
