@@ -170,10 +170,20 @@ void main() {
       minScore: 65,
       maxEntryDistanceAtr: 0.35,
       takeProfitMultiples: [1.2, 2.0, 3.0],
+      requireTrigger: true,
     );
     final restored = StrategyParams.fromJson(params.toJson());
     expect(restored.minScore, 65);
     expect(restored.maxEntryDistanceAtr, 0.35);
     expect(restored.takeProfitMultiples, [1.2, 2.0, 3.0]);
+    expect(restored.requireTrigger, isTrue);
+  });
+
+  test('сетка подбора пробует вход по триггеру', () {
+    // Фильтр включается только данными: walk-forward обязан иметь его среди
+    // кандидатов, иначе решение принял бы разработчик, а не выборка.
+    expect(StrategyOptimizer.grid.where((p) => p.requireTrigger), isNotEmpty);
+    expect(StrategyOptimizer.grid.first, StrategyParams.defaults,
+        reason: 'дефолт остаётся бенчмарком');
   });
 }

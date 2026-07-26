@@ -7,22 +7,28 @@ class StrategyParams {
     required this.minScore,
     required this.maxEntryDistanceAtr,
     required this.takeProfitMultiples,
+    this.requireTrigger = false,
   });
 
   final int minScore;
   final double maxEntryDistanceAtr;
   final List<double> takeProfitMultiples;
 
+  /// Требовать триггерную свечу у уровня — фильтр качества ретеста.
+  final bool requireTrigger;
+
   Screener buildScreener() => Screener(
         minScore: minScore,
         maxEntryDistanceAtr: maxEntryDistanceAtr,
         takeProfitMultiples: takeProfitMultiples,
+        requireTrigger: requireTrigger,
       );
 
   Map<String, dynamic> toJson() => {
         'min_score': minScore,
         'max_entry_distance_atr': maxEntryDistanceAtr,
         'tp_multiples': takeProfitMultiples,
+        'require_trigger': requireTrigger,
       };
 
   factory StrategyParams.fromJson(Map<String, dynamic> j) => StrategyParams(
@@ -31,6 +37,7 @@ class StrategyParams {
         takeProfitMultiples: [
           for (final m in j['tp_multiples'] as List<dynamic>) (m as num).toDouble(),
         ],
+        requireTrigger: j['require_trigger'] as bool? ?? false,
       );
 
   static const defaults = StrategyParams(
@@ -41,7 +48,8 @@ class StrategyParams {
 
   String get label => 'score ≥ $minScore · вход ≤ '
       '${maxEntryDistanceAtr.toStringAsFixed(2).replaceAll('.', ',')}·ATR · TP '
-      '${takeProfitMultiples.map((m) => m.toStringAsFixed(1).replaceAll('.', ',')).join('/')}R';
+      '${takeProfitMultiples.map((m) => m.toStringAsFixed(1).replaceAll('.', ',')).join('/')}R'
+      '${requireTrigger ? ' · вход по триггеру' : ''}';
 }
 
 /// Итог оптимизации: выбранные параметры и их out-of-sample качество.
@@ -105,6 +113,14 @@ class StrategyOptimizer {
     StrategyParams(minScore: 60, maxEntryDistanceAtr: 0.5, takeProfitMultiples: [1.8, 2.6, 4.2]),
     StrategyParams(minScore: 65, maxEntryDistanceAtr: 0.35, takeProfitMultiples: [1.2, 2.0, 3.0]),
     StrategyParams(minScore: 55, maxEntryDistanceAtr: 0.7, takeProfitMultiples: [1.8, 2.6, 4.2]),
+    // Триггерная ветка: те же пороги, но вход только при реакции цены на
+    // уровень. Меньше сделок — за это walk-forward и спросит с них качество.
+    StrategyParams(
+        minScore: 60, maxEntryDistanceAtr: 0.5, takeProfitMultiples: [1.4, 2.2, 3.5], requireTrigger: true),
+    StrategyParams(
+        minScore: 55, maxEntryDistanceAtr: 0.5, takeProfitMultiples: [1.4, 2.2, 3.5], requireTrigger: true),
+    StrategyParams(
+        minScore: 55, maxEntryDistanceAtr: 0.7, takeProfitMultiples: [1.2, 2.0, 3.0], requireTrigger: true),
   ];
 
   /// Подбор. [screenerBuilder] подменяется в тестах.

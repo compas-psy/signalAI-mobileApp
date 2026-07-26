@@ -339,6 +339,14 @@ class _TradingCard extends StatelessWidget {
                 broker.live ? TradingMode.testnet : TradingMode.live,
               ),
             ),
+            if (broker.modeNote.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 2, bottom: 4),
+                child: Text(
+                  broker.modeNote,
+                  style: T.body(10.5, color: C.muted, height: 1.4),
+                ),
+              ),
             KeyValueRow(
               name: 'Ключи',
               // Три разных состояния, а не два: ключ может лежать в хранилище

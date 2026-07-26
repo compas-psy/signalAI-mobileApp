@@ -308,23 +308,21 @@ class LocalAnalysisRepository
   @override
   Future<void> setTradingMode(BrokerId broker, TradingMode mode) async {
     await _ensureLoaded();
-    if (mode == TradingMode.live) {
+    if (mode == TradingMode.live && broker == BrokerId.tinvest) {
       // Живой режим Т-Инвестиций закрыт сверх общего допуска: там защитный
       // стоп ставится отдельным запросом, и пока на песочнице не видно, что
       // он реально встаёт вместе с позицией, пускать туда деньги нельзя.
-      if (broker == BrokerId.tinvest) {
-        throw const FeatureUnavailableException(
-          'Живой режим Т-Инвестиций закрыт: защитный стоп там ставится '
-          'отдельной заявкой, и это ещё не проверено на песочнице. '
-          'Откроется, когда поведение подтвердится.',
-        );
-      }
-      if (!liveGate.allowed) {
-        throw FeatureUnavailableException(
-          'Живой режим пока закрыт: ${liveGate.reason}.',
-        );
-      }
+      throw const FeatureUnavailableException(
+        'Живой режим Т-Инвестиций закрыт: защитный стоп там ставится '
+        'отдельной заявкой, и это ещё не проверено на песочнице. '
+        'Откроется, когда поведение подтвердится.',
+      );
     }
+    // Переключение Bybit на живой счёт открыто и при закрытом допуске: это
+    // режим наблюдения — ключи проверяются, позиции видны, защита стопов
+    // работает. Допуск сторожит не режим, а отправку ордеров: проверка стоит
+    // в confirmSignal, в момент, когда деньги реально могут уйти. Владелец,
+    // которому недоступен testnet, иначе не смог бы подключить биржу вовсе.
     _trading = _trading.withMode(broker, mode);
     _brokers.remove(broker);
     await _persistState();
@@ -1433,6 +1431,16 @@ class LocalAnalysisRepository
       );
     }
     final mode = _trading.modeOf(brokerId);
+    // Допуск к живым деньгам проверяется здесь, а не при смене режима:
+    // живой счёт можно подключить и наблюдать, но ордер на него уйдёт
+    // только когда бумажная статистика заработала это право.
+    if (mode == TradingMode.live && !liveGate.allowed) {
+      throw FeatureUnavailableException(
+        'Живой счёт в режиме наблюдения: ордера закрыты, пока допуск не '
+        'открыт (${liveGate.reason}). Сделка может вестись на бумаге — '
+        'кнопкой в карточке.',
+      );
+    }
     if (!await hasBrokerKeys(brokerId)) {
       throw FeatureUnavailableException(
         'Ключи ${brokerId.title} для режима «${mode.labelFor(brokerId)}» не заданы.',
@@ -1981,12 +1989,11 @@ class LocalAnalysisRepository
     for (final id in BrokerId.values) {
       final mode = _trading.modeOf(id);
       // У Т-Инвестиций живой режим закрыт сверх общего допуска, пока
-      // постановка защитного стопа не подтверждена на песочнице.
-      final blocked = id == BrokerId.tinvest
-          ? 'защитный стоп ещё не проверен на песочнице'
-          : gate.allowed
-              ? ''
-              : gate.reason;
+      // постановка защитного стопа не подтверждена на песочнице. Bybit на
+      // живой счёт переключается всегда: допуск сторожит отправку ордеров,
+      // а не наблюдение за счётом.
+      final blocked =
+          id == BrokerId.tinvest ? 'защитный стоп ещё не проверен на песочнице' : '';
       final check = keyCheckOf(id);
       final hasKeys = await hasBrokerKeys(id);
       brokers.add(BrokerView(
@@ -1999,6 +2006,10 @@ class LocalAnalysisRepository
         liveBlockedReason: blocked,
         keyNote: check == null ? '' : '${_timeLabel(check.at)} · ${check.note}',
         keysAccepted: hasKeys && (check?.ok ?? false),
+        modeNote: mode == TradingMode.live && !gate.allowed
+            ? 'Наблюдение: счёт, позиции и защита стопов работают, ордера '
+                'закрыты до допуска (${gate.reason})'
+            : '',
       ));
     }
 

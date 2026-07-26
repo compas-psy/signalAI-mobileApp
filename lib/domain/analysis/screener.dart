@@ -213,6 +213,7 @@ class Screener {
     this.minDaysToExpiration = 3,
     this.takeProfitMultiples = defaultTakeProfitMultiples,
     this.takeProfitShares = defaultTakeProfitShares,
+    this.requireTrigger = false,
   });
 
   /// Ниже этого SignalScore кандидат не показывается вовсе.
@@ -226,6 +227,15 @@ class Screener {
 
   /// Фильтр близкой экспирации (ТЗ §5.4).
   final int minDaysToExpiration;
+
+  /// Требовать триггерную свечу (пин-бар, поглощение или внутренний бар в
+  /// сторону сделки) на последнем баре — без неё кандидат отбрасывается.
+  ///
+  /// Классический фильтр качества ретеста: лимитка в зоне без реакции цены
+  /// на уровень чаще прошивается насквозь. Включается walk-forward подбором,
+  /// а не руками: цена фильтра — меньше сделок, и платить её стоит только
+  /// там, где out-of-sample данные показывают выигрыш.
+  final bool requireTrigger;
 
   /// Доли фиксации по тейкам. Настраиваемы: walk-forward оптимизация может
   /// выбрать другой профиль фиксации.
@@ -356,6 +366,11 @@ class Screener {
       return null;
     }
 
+    if (requireTrigger && !_hasTrigger(hourly, long)) {
+      reject('нет триггерной свечи у уровня');
+      return null;
+    }
+
     final components = _withHistory(
       _score(input, structure, regime, direction, entry, atrHourly),
       factorHistory,
@@ -475,6 +490,15 @@ class Screener {
       StructureTrend.down => Direction.short,
       StructureTrend.flat => null,
     };
+  }
+
+  /// Есть ли на последнем баре реакция цены в сторону сделки.
+  bool _hasTrigger(List<Candle> hourly, bool long) {
+    final last = hourly.last;
+    final previous = hourly[hourly.length - 2];
+    return CandlePatterns.isPinBar(last, bullish: long) ||
+        CandlePatterns.isEngulfing(previous, last, bullish: long) ||
+        CandlePatterns.isInsideBar(previous, last);
   }
 
   /// Дописывает в блоки оценки их измеренную историю из аудита факторов.

@@ -63,11 +63,16 @@ class FakeVault extends SecureVault {
       null;
 }
 
-TradingSignal signal({String id = 'sig-1', String symbol = 'TSTU6'}) => TradingSignal(
+TradingSignal signal({
+  String id = 'sig-1',
+  String symbol = 'TSTU6',
+  Market market = Market.forts,
+}) =>
+    TradingSignal(
       id: id,
       symbol: symbol,
       name: 'Тест',
-      market: Market.forts,
+      market: market,
       direction: Direction.long,
       horizon: Horizon.swing,
       horizonLabel: '',
@@ -197,6 +202,47 @@ void main() {
       expect(bybit.keysAccepted, isFalse);
       expect(bybit.keyNote, isNotEmpty);
       expect(trading.ready, isFalse, reason: 'торговать этим ключом нельзя');
+    });
+  });
+
+  group('Живой счёт как наблюдение', () {
+    test('Bybit переключается на live при закрытом допуске', () async {
+      final repository =
+          LocalAnalysisRepository(store: LocalStore.inMemory(), vault: FakeVault());
+
+      await repository.setTradingMode(BrokerId.bybit, TradingMode.live);
+      expect(repository.tradingState.modeOf(BrokerId.bybit), TradingMode.live);
+    });
+
+    test('Т-Инвестиции на live не переключаются, пока стоп не проверен', () async {
+      final repository =
+          LocalAnalysisRepository(store: LocalStore.inMemory(), vault: FakeVault());
+
+      await expectLater(
+        repository.setTradingMode(BrokerId.tinvest, TradingMode.live),
+        throwsA(isA<FeatureUnavailableException>()),
+      );
+    });
+
+    test('ордер на живой счёт при закрытом допуске не уходит', () async {
+      final store = LocalStore.inMemory();
+      await seedDigest(store, [signal(market: Market.crypto, symbol: 'BTCUSDT')]);
+      final vault = FakeVault();
+      // Ключи лежат в живом слоте — дело не в них.
+      vault.stored['bybit.live.key'] = 'K';
+      vault.stored['bybit.live.secret'] = 'S';
+      final repository = LocalAnalysisRepository(store: store, vault: vault);
+      await repository.setTradingEnabled(true);
+      await repository.setTradingMode(BrokerId.bybit, TradingMode.live);
+
+      await expectLater(
+        repository.confirmSignal('sig-1'),
+        throwsA(isA<FeatureUnavailableException>().having(
+          (e) => e.message,
+          'message',
+          contains('наблюдения'),
+        )),
+      );
     });
   });
 

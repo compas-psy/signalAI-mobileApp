@@ -244,6 +244,18 @@ void main() {
         reason: 'семь сделок — не выборка');
   });
 
+  test('фильтр триггерной свечи отбрасывает вход без реакции цены', () {
+    // Пробойная свеча фикстуры — обычный импульс, не пин-бар и не поглощение.
+    // С фильтром такой ретест не торгуется, и причина видна в отбраковках.
+    const strict = Screener(requireTrigger: true);
+    final rejected = <RejectedCandidate>[];
+
+    expect(strict.evaluate(input(), bullishRegime, rejected: rejected), isNull);
+    expect(rejected.single.reason, contains('триггерной свечи'));
+    expect(screener.evaluate(input(), bullishRegime), isNotNull,
+        reason: 'без фильтра тот же кандидат проходит');
+  });
+
   test('план ведения написан в самой идее', () {
     final result = screener.evaluate(input(), bullishRegime);
     expect(result!.signal.note, contains('безубыток'));
