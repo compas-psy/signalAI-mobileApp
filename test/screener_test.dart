@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:signalai/domain/analysis/candle.dart';
 import 'package:signalai/domain/analysis/indicators.dart';
 import 'package:signalai/domain/analysis/instrument_spec.dart';
+import 'package:signalai/domain/analysis/factor_audit.dart';
 import 'package:signalai/domain/analysis/screener.dart';
 import 'package:signalai/domain/enums.dart';
 
@@ -190,16 +191,63 @@ void main() {
     expect(result.signal.score, (points / Screener.maxPoints * 100).round());
   });
 
-  test('идея против режима рынка теряет блок режима', () {
+  test('идея против режима рынка отбрасывается, а не штрафуется', () {
+    // Раньше контртрендовая идея теряла блок режима, но могла набрать порог
+    // на других блоках — и именно такие сделки тянули профит-фактор вниз.
+    // Свинг против старшего тренда — ставка на разворот; мы её не торгуем.
     const bearish = MarketRegime(
       indexTrend: StructureTrend.down,
       currencyTrend: StructureTrend.down,
       cryptoTrend: StructureTrend.down,
     );
-    final against = screener.evaluate(input(), bearish);
-    final along = screener.evaluate(input(), bullishRegime);
+    final rejected = <RejectedCandidate>[];
+    final against = screener.evaluate(input(), bearish, rejected: rejected);
 
-    expect(against?.signal.score ?? 0, lessThan(along!.signal.score));
+    expect(against, isNull);
+    expect(rejected.single.reason, contains('против'));
+    expect(screener.evaluate(input(), bullishRegime), isNotNull,
+        reason: 'по тренду идея остаётся');
+  });
+
+  test('нейтральный режим идею не отбрасывает', () {
+    final result = screener.evaluate(input(), MarketRegime.unknown);
+    expect(result, isNotNull, reason: 'во флэте у структуры 1H есть право голоса');
+  });
+
+  test('история фактора дописывается в обоснование', () {
+    const edges = [
+      FactorEdge(
+        factor: 'Структура · SMC',
+        withCount: 41,
+        withoutCount: 35,
+        withAvgR: 0.18,
+        withoutAvgR: -0.14,
+      ),
+      // Малой выборке слова не даются — это шум, а не знание.
+      FactorEdge(
+        factor: 'RSI(14)',
+        withCount: 4,
+        withoutCount: 3,
+        withAvgR: 2,
+        withoutAvgR: -2,
+      ),
+    ];
+    final result = screener.evaluate(input(), bullishRegime, factorHistory: edges);
+
+    final structure =
+        result!.signal.factors.firstWhere((f) => f.name == 'Структура · SMC');
+    expect(structure.text, contains('история: +0,32R/сделку'));
+    expect(structure.text, contains('41 сделок'));
+
+    final rsi = result.signal.factors.firstWhere((f) => f.name == 'RSI(14)');
+    expect(rsi.text, isNot(contains('история')),
+        reason: 'семь сделок — не выборка');
+  });
+
+  test('план ведения написан в самой идее', () {
+    final result = screener.evaluate(input(), bullishRegime);
+    expect(result!.signal.note, contains('безубыток'));
+    expect(result.signal.note, contains('50/30/20'));
   });
 
   test('фандинг и рост OI добавляют баллы', () {

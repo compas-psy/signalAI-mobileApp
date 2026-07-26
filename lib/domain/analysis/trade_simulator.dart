@@ -101,6 +101,7 @@ class PendingOrder {
     required this.expiresAt,
     this.costs = TradingCosts.none,
     this.fillMargin = 0,
+    this.breakevenAfterTp1 = false,
   });
 
   final bool long;
@@ -116,6 +117,15 @@ class PendingOrder {
   /// Насколько цена должна пройти за лимитный уровень, чтобы считать сделку
   /// исполненной. Обычно один шаг цены.
   final double fillMargin;
+
+  /// После первого тейка стоп остатка переносится на цену входа.
+  ///
+  /// Правило ведения, а не деталь исполнения: при винрейте свинга около 35%
+  /// именно сделки «взяла TP1 и доехала обратно до полного стопа» съедают
+  /// профит-фактор. Забрав 50% на TP1, остаток дальше рискует нулём, а не
+  /// полным R. По умолчанию выключено: уже записанные сделки журнала обязаны
+  /// проживаться по тем правилам, по которым были открыты.
+  final bool breakevenAfterTp1;
 
   double get risk => (entry - stopLoss).abs();
 
@@ -146,6 +156,16 @@ class OpenPosition {
   /// а не прятать внутри итога.
   double costR = 0;
 
+  /// С какого бара действует стоп в безубытке. null — ещё не действует.
+  ///
+  /// Активируется со следующего бара после TP1: внутри бара порядок движений
+  /// неизвестен, и закрывать остаток «по входу» тем же баром, где взят тейк,
+  /// значило бы выдумывать последовательность, которой могло не быть.
+  int? _breakevenFrom;
+
+  /// Остаток закрыт стопом в безубытке — для честной подписи итога.
+  bool stoppedAtBreakeven = false;
+
   /// Текущий незафиксированный результат позиции в R по цене [price].
   double unrealizedR(double price) {
     final risk = order.risk;
@@ -165,9 +185,12 @@ class OpenPosition {
     }
 
     // Худший случай первым: если бар задел и стоп, и тейк — считаем стоп.
-    final stopHit = long ? bar.low <= order.stopLoss : bar.high >= order.stopLoss;
+    final beActive = _breakevenFrom != null && index >= _breakevenFrom!;
+    final stopLevel = beActive ? order.entry : order.stopLoss;
+    final stopHit = long ? bar.low <= stopLevel : bar.high >= stopLevel;
     if (stopHit) {
-      final exit = long ? order.stopLoss - costs.slippage : order.stopLoss + costs.slippage;
+      final exit = long ? stopLevel - costs.slippage : stopLevel + costs.slippage;
+      stoppedAtBreakeven = beActive;
       _exitAt(exit, remainingShare, slippage: costs.slippage);
       return realizedR;
     }
@@ -180,6 +203,7 @@ class OpenPosition {
       if (!hit) break;
       _exitAt(tp.price, tp.share);
       nextTp++;
+      if (order.breakevenAfterTp1) _breakevenFrom ??= index + 1;
     }
     if (nextTp >= order.takeProfits.length || remainingShare <= 1e-9) {
       return realizedR;

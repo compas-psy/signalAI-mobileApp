@@ -261,6 +261,9 @@ class Backtester {
         expiresAt: i + orderTtlBars,
         costs: tradeCosts,
         fillMargin: fillMargin,
+        // Бэктест меряет стратегию с её правилом ведения: после TP1 стоп
+        // остатка в безубытке — так же поведёт сделку и живой контур.
+        breakevenAfterTp1: true,
       );
     }
 

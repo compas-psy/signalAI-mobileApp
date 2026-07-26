@@ -127,6 +127,43 @@ void main() {
     expect(ledger.trades, hasLength(1));
   });
 
+  test('после TP1 возврат к входу закрывается в безубыток с честной подписью', () {
+    final ledger = SignalLedger();
+    ledger.record(signal(), start, breakevenAfterTp1: true);
+    // Вход на 100, TP1 на 102,8 — затем откат к входу, но не до стопа 98.
+    ledger.reconcile({
+      'TSTU6': bars([100.0, 101.5, 103.0, 101.0, 99.8, 99.9]),
+    });
+
+    final trade = ledger.trades.single;
+    expect(trade.status, PaperStatus.closed);
+    expect(trade.outcome, 'TP1·БУ');
+    // Заработанное на TP1 осталось: 50% на 1,4R.
+    expect(trade.resultR, closeTo(0.7, 1e-9));
+  });
+
+  test('старые записи живут без правила безубытка', () {
+    final ledger = SignalLedger();
+    ledger.record(signal(), start); // как записывала прошлая версия
+    final restored = SignalLedger.fromJson(ledger.toJson());
+    ledger.reconcile({'TSTU6': bars([100.0, 101.5, 103.0, 101.0, 99.8, 97.5])});
+    restored.reconcile({'TSTU6': bars([100.0, 101.5, 103.0, 101.0, 99.8, 97.5])});
+
+    // Обе доехали до исходного стопа: +0,7R за TP1 и −0,5R остатком.
+    expect(ledger.trades.single.resultR, closeTo(0.2, 1e-9));
+    expect(restored.trades.single.resultR, closeTo(0.2, 1e-9));
+  });
+
+  test('правило безубытка переживает сериализацию', () {
+    final ledger = SignalLedger();
+    ledger.record(signal(), start, breakevenAfterTp1: true);
+    final restored = SignalLedger.fromJson(ledger.toJson());
+    restored.reconcile({'TSTU6': bars([100.0, 101.5, 103.0, 101.0, 99.8, 99.9])});
+
+    expect(restored.trades.single.outcome, 'TP1·БУ');
+    expect(restored.trades.single.resultR, closeTo(0.7, 1e-9));
+  });
+
   test('журнал переживает сериализацию', () {
     final ledger = SignalLedger();
     ledger.record(signal(), start);

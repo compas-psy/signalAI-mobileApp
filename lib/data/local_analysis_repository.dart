@@ -715,7 +715,12 @@ class LocalAnalysisRepository
       for (final input in inputs) {
         if (input == null) continue;
         hourlyBySymbol[input.spec.symbol] = input.hourly;
-        final result = fortsScreener.evaluate(input, regime, rejected: lastRejections);
+        final result = fortsScreener.evaluate(
+          input,
+          regime,
+          rejected: lastRejections,
+          factorHistory: _lastFactorEdges['forts'],
+        );
         if (result != null) results.add(result);
       }
     }
@@ -837,6 +842,7 @@ class LocalAnalysisRepository
           now,
           costs: spec == null ? TradingCosts.none : defaultCostsFor(spec),
           fillMargin: spec?.tick ?? 0,
+          breakevenAfterTp1: true,
         );
       }
       for (final r in lastRejections) {
@@ -1050,6 +1056,7 @@ class LocalAnalysisRepository
           ),
           regime,
           rejected: lastRejections,
+          factorHistory: _lastFactorEdges['crypto'],
         );
         if (result != null) results.add(result);
       } on Exception catch (e) {
@@ -1525,6 +1532,7 @@ class LocalAnalysisRepository
       DateTime.now(),
       costs: spec == null ? TradingCosts.none : defaultCostsFor(spec),
       fillMargin: spec?.tick ?? 0,
+      breakevenAfterTp1: true,
     );
     await _store.write('ledger', ledger.toJson());
     return 'Идея заведена на бумаге: лимитка ${_num(signal.entry)}, '

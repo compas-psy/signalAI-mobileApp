@@ -1,4 +1,5 @@
 import 'package:signalai/domain/analysis/candle.dart';
+import 'package:signalai/domain/analysis/factor_audit.dart';
 import 'package:signalai/domain/analysis/instrument_spec.dart';
 import 'package:signalai/domain/analysis/screener.dart';
 import 'package:signalai/domain/enums.dart';
@@ -29,6 +30,7 @@ class FakeScreener extends Screener {
     MarketRegime regime, {
     DateTime? now,
     List<RejectedCandidate>? rejected,
+    List<FactorEdge>? factorHistory,
   }) {
     if (input.hourly.last.time != fireAt) return null;
     final entry = input.lastPrice;

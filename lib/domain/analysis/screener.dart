@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import '../enums.dart';
 import '../models/signal.dart';
 import 'candle.dart';
+import 'factor_audit.dart';
 import 'indicators.dart';
 import 'instrument_spec.dart';
 
@@ -252,11 +253,17 @@ class Screener {
       weightStructure + weightLevel + weightPriceAction + weightRsi + weightVolume + weightRegime;
 
   /// Прогон по инструменту. Возвращает null, если кандидата нет.
+  ///
+  /// [factorHistory] — аудит факторов последнего бэктеста: измеренный вклад
+  /// каждого блока в R. Он дописывается в обоснование, чтобы владелец
+  /// подтверждал сделку, зная, сколько такой сетап приносил на самом деле,
+  /// а не только как он называется.
   ScreenerResult? evaluate(
     InstrumentInput input,
     MarketRegime regime, {
     DateTime? now,
     List<RejectedCandidate>? rejected,
+    List<FactorEdge>? factorHistory,
   }) {
     final spec = input.spec;
     void reject(String reason) =>
@@ -291,6 +298,21 @@ class Screener {
       return null;
     }
     final long = direction == Direction.long;
+
+    // Вето против режима рынка — жёсткое, а не штраф баллами. Раньше
+    // контртрендовая идея могла набрать порог на других блоках, и именно
+    // такие сделки при винрейте ~35% тянули профит-фактор ниже единицы:
+    // свинг против старшего тренда — ставка на разворот, а мы его не торгуем.
+    // Нейтральный режим проходит: в нём у структуры 1H есть право голоса.
+    final regimeTrend = regime.forMarket(spec.market);
+    if (regimeTrend == StructureTrend.up && !long) {
+      reject('шорт против растущего рынка');
+      return null;
+    }
+    if (regimeTrend == StructureTrend.down && long) {
+      reject('лонг против падающего рынка');
+      return null;
+    }
 
     // Вход — ретест сломанного уровня; если слома не было, ретест ближайшего
     // экстремума по направлению сделки.
@@ -334,7 +356,10 @@ class Screener {
       return null;
     }
 
-    final components = _score(input, structure, regime, direction, entry, atrHourly);
+    final components = _withHistory(
+      _score(input, structure, regime, direction, entry, atrHourly),
+      factorHistory,
+    );
     final points = components.fold<double>(0, (sum, c) => sum + c.points);
     final score = (points / maxPoints * 100).round();
     if (score < minScore) {
@@ -450,6 +475,36 @@ class Screener {
       StructureTrend.down => Direction.short,
       StructureTrend.flat => null,
     };
+  }
+
+  /// Дописывает в блоки оценки их измеренную историю из аудита факторов.
+  ///
+  /// Только значимые записи: разница средних на десятке сделок — шум, и
+  /// печатать её как знание было бы враньём. Баллы истории не меняют —
+  /// перекраивать веса по своему же бэктесту без walk-forward проверки
+  /// значит подгонять стратегию под прошлое.
+  List<ScoreComponent> _withHistory(
+    List<ScoreComponent> components,
+    List<FactorEdge>? history,
+  ) {
+    if (history == null || history.isEmpty) return components;
+    final byName = {for (final e in history) e.factor: e};
+    return [
+      for (final c in components)
+        () {
+          final edge = byName[c.name];
+          if (edge == null || !edge.significant) return c;
+          final sign = edge.edge >= 0 ? '+' : '−';
+          final value = edge.edge.abs().toStringAsFixed(2).replaceAll('.', ',');
+          return ScoreComponent(
+            name: c.name,
+            points: c.points,
+            maxPoints: c.maxPoints,
+            note: '${c.note} · история: $sign${value}R/сделку '
+                '(${edge.withCount} сделок с фактором)',
+          );
+        }(),
+    ];
   }
 
   List<ScoreComponent> _score(
@@ -641,6 +696,9 @@ class Screener {
     };
     return '$side от ретеста ${_fmt(entry)}: $breakText на 1H. '
         'Инвалидация — закрепление за стопом. '
+        'План ведения: фиксация ${takeProfitShares.join('/')}% по тейкам, '
+        'после TP1 стоп остатка в безубыток, выход по времени через 5 торговых '
+        'дней, если цели не достигнуты. '
         'Расчёт выполнен на устройстве по публичным данным биржи, без LLM-разбора.';
   }
 

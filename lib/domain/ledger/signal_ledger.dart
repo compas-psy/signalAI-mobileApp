@@ -48,6 +48,7 @@ class PaperTrade {
     this.tpsTaken = 0,
     this.costs = TradingCosts.none,
     this.fillMargin = 0,
+    this.breakevenAfterTp1 = false,
   });
 
   final String id;
@@ -70,6 +71,12 @@ class PaperTrade {
 
   /// Шаг цены: лимитка исполняется только при проходе за уровень.
   final double fillMargin;
+
+  /// Правило ведения на момент открытия: после TP1 стоп остатка в безубытке.
+  ///
+  /// Хранится в самой сделке: правило могло смениться, а уже открытая сделка
+  /// обязана проживаться так, как была открыта.
+  final bool breakevenAfterTp1;
 
   PaperStatus status;
 
@@ -109,6 +116,7 @@ class PaperTrade {
       expiresAt: orderTtlBars,
       costs: costs,
       fillMargin: fillMargin,
+      breakevenAfterTp1: breakevenAfterTp1,
     );
 
     OpenPosition? position;
@@ -156,13 +164,15 @@ class PaperTrade {
     tpsTaken = position.nextTp;
     outcome = position.remainingShare <= 1e-9 && position.nextTp >= tpPrices.length
         ? 'TP${tpPrices.length}'
-        : result <= -0.999
-            ? 'SL'
-            : position.nextTp > 0
-                ? 'TP${position.nextTp}·гор.'
-                : result < 0
-                    ? 'SL'
-                    : 'гор.';
+        : position.stoppedAtBreakeven
+            ? 'TP${position.nextTp}·БУ'
+            : result <= -0.999
+                ? 'SL'
+                : position.nextTp > 0
+                    ? 'TP${position.nextTp}·гор.'
+                    : result < 0
+                        ? 'SL'
+                        : 'гор.';
   }
 
   Map<String, dynamic> toJson() => {
@@ -184,6 +194,7 @@ class PaperTrade {
         'tps_taken': tpsTaken,
         'costs': costs.toJson(),
         'fill_margin': fillMargin,
+        'breakeven_after_tp1': breakevenAfterTp1,
       };
 
   factory PaperTrade.fromJson(Map<String, dynamic> j) => PaperTrade(
@@ -207,6 +218,8 @@ class PaperTrade {
             ? TradingCosts.none
             : TradingCosts.fromJson(j['costs'] as Map<String, dynamic>),
         fillMargin: (j['fill_margin'] as num?)?.toDouble() ?? 0,
+        // Старые записи жили без правила безубытка — оно к ним не применяется.
+        breakevenAfterTp1: j['breakeven_after_tp1'] as bool? ?? false,
       );
 }
 
@@ -268,6 +281,7 @@ class SignalLedger {
     DateTime now, {
     TradingCosts costs = TradingCosts.none,
     double fillMargin = 0,
+    bool breakevenAfterTp1 = false,
   }) {
     final alive = trades.any((t) =>
         t.symbol == signal.symbol &&
@@ -287,6 +301,7 @@ class SignalLedger {
       createdAt: now,
       costs: costs,
       fillMargin: fillMargin,
+      breakevenAfterTp1: breakevenAfterTp1,
     ));
     if (trades.length > maxTrades) trades.removeRange(0, trades.length - maxTrades);
   }

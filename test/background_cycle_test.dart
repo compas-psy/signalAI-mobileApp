@@ -114,7 +114,13 @@ TradingSignal signalOf(String symbol, {int score = 80, double entry = 100}) => T
       status: SignalStatus.proposed,
     );
 
-PaperTrade tradeOf(String symbol, {required PaperStatus status, double? resultR}) => PaperTrade(
+PaperTrade tradeOf(
+  String symbol, {
+  required PaperStatus status,
+  double? resultR,
+  bool breakeven = false,
+}) =>
+    PaperTrade(
       id: symbol,
       symbol: symbol,
       strategyId: 'crypto',
@@ -125,6 +131,7 @@ PaperTrade tradeOf(String symbol, {required PaperStatus status, double? resultR}
       tpShares: const [100],
       score: 80,
       createdAt: DateTime.utc(2026, 3, 10, 8),
+      breakevenAfterTp1: breakeven,
       status: status,
       resultR: resultR,
       outcome: status == PaperStatus.closed ? 'TP1' : null,
@@ -322,6 +329,21 @@ void main() {
       // Уровень решила стратегия при выдаче идеи — выдумывать нельзя.
       expect(target.stopRequests.single.price, 98);
       expect(report.notices.map((n) => n.title), contains(contains('защита восстановлена')));
+    });
+
+    test('после TP1 защита восстанавливается на безубытке, не на стопе', () async {
+      final trade = tradeOf('BTCUSDT', status: PaperStatus.open, breakeven: true)
+        ..tpsTaken = 1;
+      final target = FakeTarget(
+        ledger: SignalLedger(trades: [trade]),
+        nakedList: [naked('BTCUSDT')],
+      );
+      final cycle = BackgroundCycle(target: target, lock: freeLock());
+
+      await cycle.run(state: MonitorState(), now: now);
+
+      // Исходный стоп 98 после TP1 означал бы снова рисковать заработанным.
+      expect(target.stopRequests.single.price, 100);
     });
 
     test('защищённая позиция ничего не трогает', () async {

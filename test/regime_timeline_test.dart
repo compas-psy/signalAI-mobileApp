@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:signalai/domain/analysis/backtester.dart';
 import 'package:signalai/domain/analysis/indicators.dart';
+import 'package:signalai/domain/analysis/factor_audit.dart';
 import 'package:signalai/domain/analysis/screener.dart';
 import 'package:signalai/domain/analysis/trade_simulator.dart';
 
@@ -72,6 +73,7 @@ class _RegimeSpy extends Screener {
     MarketRegime regime, {
     DateTime? now,
     List<RejectedCandidate>? rejected,
+    List<FactorEdge>? factorHistory,
   }) {
     seen.add(regime.forMarket(input.spec.market));
     return null;

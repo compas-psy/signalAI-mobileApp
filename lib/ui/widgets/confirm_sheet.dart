@@ -150,9 +150,15 @@ class ConfirmSheet extends StatelessWidget {
                           const SizedBox(width: 8),
                           Expanded(
                             child: Text(
-                              'После подтверждения лимитка и OCO-связка '
-                              '(SL + ${signal.takeProfits.length} TP по $shares%) '
-                              'выставятся на бирже автоматически.',
+                              // План целиком до входа — подтверждать сделку
+                              // можно только понимая, как она будет вестись
+                              // и что её сломает.
+                              'На биржу уйдут лимитка ${fmtPrice(signal.entry, decimals)}, '
+                              'стоп ${fmtPrice(signal.stopLoss, decimals)} и цели '
+                              '($shares%). Ведение: после TP1 стоп остатка — в '
+                              'безубыток; выход по времени через 5 торговых дней, '
+                              'если цели не достигнуты. Идея ломается закреплением '
+                              'за стопом.',
                               style: T.body(11, color: C.textSecondary, height: 1.45),
                             ),
                           ),

@@ -294,9 +294,15 @@ class BackgroundCycle {
   }
 
   /// Уровень стопа, который решила стратегия по живой записи журнала.
+  ///
+  /// После первого тейка правило ведения переносит стоп в безубыток — и
+  /// восстанавливать защиту надо на этом уровне, а не на исходном: исходный
+  /// стоп после TP1 означал бы снова рисковать уже заработанным.
   double? _plannedStop(String symbol) {
     for (final trade in target.ledger.openOrPending) {
-      if (trade.symbol == symbol) return trade.stopLoss;
+      if (trade.symbol != symbol) continue;
+      final breakeven = trade.breakevenAfterTp1 && trade.tpsTaken > 0;
+      return breakeven ? trade.entry : trade.stopLoss;
     }
     return null;
   }

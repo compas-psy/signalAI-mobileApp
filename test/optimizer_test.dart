@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:signalai/domain/analysis/backtester.dart';
 import 'package:signalai/domain/analysis/candle.dart';
+import 'package:signalai/domain/analysis/factor_audit.dart';
 import 'package:signalai/domain/analysis/instrument_spec.dart';
 import 'package:signalai/domain/analysis/optimizer.dart';
 import 'package:signalai/domain/analysis/screener.dart';
@@ -22,6 +23,7 @@ class StubScreener extends Screener {
     MarketRegime regime, {
     DateTime? now,
     List<RejectedCandidate>? rejected,
+    List<FactorEdge>? factorHistory,
   }) {
     if (!fires) return null;
     final entry = input.lastPrice;
