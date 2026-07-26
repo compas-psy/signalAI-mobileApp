@@ -87,7 +87,7 @@ class StrategyOptimizer {
   const StrategyOptimizer({
     this.minTrainTrades = 8,
     this.minTestTrades = 4,
-    this.backtester = const Backtester(evaluateEveryBars: 6),
+    this.backtester = const Backtester(),
   });
 
   final int minTrainTrades;

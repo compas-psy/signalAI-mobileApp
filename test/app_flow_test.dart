@@ -13,8 +13,11 @@ void main() {
 
     await tester.pumpWidget(SignalAiApp(repository: DemoRepository()));
     // Демо-репозиторий отвечает с задержкой; график анимируется бесконечно,
-    // поэтому ждём фиксированными кадрами, а не pumpAndSettle.
+    // поэтому ждём фиксированными кадрами, а не pumpAndSettle. После дайджеста
+    // контроллер перечитывает «Сделки» — ждём и этот хвост, иначе его таймер
+    // переживает тест.
     await tester.pump(const Duration(milliseconds: 300));
+    await tester.pump(const Duration(milliseconds: 400));
   }
 
   /// Прокручивает текущий список до виджета: сначала пока он не будет

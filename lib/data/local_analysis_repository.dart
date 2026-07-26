@@ -5,6 +5,7 @@ import '../domain/analysis/instrument_spec.dart';
 import '../domain/analysis/optimizer.dart';
 import '../domain/analysis/screener.dart';
 import '../domain/enums.dart';
+import '../domain/ledger/signal_ledger.dart';
 import '../domain/models/digest.dart';
 import '../domain/models/portfolio.dart';
 import '../domain/models/settings.dart';
@@ -84,6 +85,10 @@ class LocalAnalysisRepository
   void _stage(String stage) => onProgress?.call(stage);
 
   bool _loaded = false;
+
+  /// Вечный журнал сигналов: форвард-статистика стратегии на реальных свечах.
+  final SignalLedger ledger = SignalLedger();
+
   DailyDigest? _cachedDigest;
   DateTime? _digestAt;
   DateTime? _optimizedAt;
@@ -141,6 +146,17 @@ class LocalAnalysisRepository
         }
       } on Exception {
         // Битое состояние не должно ломать запуск — работаем с дефолтами.
+      }
+    }
+
+    final storedLedger = await _store.read('ledger');
+    if (storedLedger != null) {
+      try {
+        final parsed = SignalLedger.fromJson(storedLedger);
+        ledger.trades.addAll(parsed.trades);
+        ledger.rejected.addAll(parsed.rejected);
+      } on Exception {
+        // Битый журнал не должен ломать запуск.
       }
     }
 
@@ -210,19 +226,23 @@ class LocalAnalysisRepository
     final regime = await _regime(selected);
     final results = <ScreenerResult>[];
 
+    // Часовики каждого инструмента прогона — ими же сверяется журнал сигналов.
+    final hourlyBySymbol = <String, List<Candle>>{};
+
     if (_strategyEnabled['forts'] ?? true) {
       final fortsScreener = _screenerFor('forts');
       for (final snapshot in selected.values) {
         _stage('Анализ ${snapshot.spec.symbol}…');
         final input = await _fortsInput(snapshot);
         if (input == null) continue;
+        hourlyBySymbol[snapshot.spec.symbol] = input.hourly;
         final result = fortsScreener.evaluate(input, regime, rejected: lastRejections);
         if (result != null) results.add(result);
       }
     }
 
     if (_strategyEnabled['crypto'] ?? true) {
-      results.addAll(await _cryptoResults(regime, usdRub));
+      results.addAll(await _cryptoResults(regime, usdRub, hourlyBySymbol));
     }
 
     results.sort((a, b) => b.signal.score.compareTo(a.signal.score));
@@ -238,6 +258,7 @@ class LocalAnalysisRepository
         lastRejections.add(RejectedCandidate(
           r.signal.symbol,
           'коррелирует с ${signals.firstWhere((s) => s.correlationGroup == group).symbol} — берём лучшую из группы',
+          price: r.signal.entry,
         ));
         continue;
       }
@@ -264,6 +285,17 @@ class LocalAnalysisRepository
       ],
     );
 
+    // Журнал: новые сигналы записываются, живые — проживаются вперёд по тем
+    // же свечам, отбраковки получают цену для форвард-проверки.
+    for (final signal in signals) {
+      ledger.record(signal, now);
+    }
+    for (final r in lastRejections) {
+      final price = r.price;
+      if (price != null) ledger.recordRejection(r.symbol, r.reason, price, now);
+    }
+    await _reconcileLedger(hourlyBySymbol);
+
     _cachedDigest = digest;
     _digestAt = now;
     await _store.write('digest', {
@@ -271,6 +303,28 @@ class LocalAnalysisRepository
       'digest': digest.toJson(),
     });
     return digest;
+  }
+
+  /// Сверка журнала: живым записям без свежих свечей (символ выпал из
+  /// вселенной) свечи дотягиваются отдельно.
+  Future<void> _reconcileLedger(Map<String, List<Candle>> hourlyBySymbol) async {
+    for (final trade in ledger.openOrPending) {
+      if (hourlyBySymbol.containsKey(trade.symbol)) continue;
+      try {
+        final crypto = trade.strategyId == 'crypto';
+        hourlyBySymbol[trade.symbol] = crypto
+            ? await _bybit.candles(trade.symbol, timeframe: Timeframe.h1)
+            : await _iss.candles(
+                trade.symbol,
+                timeframe: Timeframe.h1,
+                from: trade.createdAt.subtract(const Duration(days: 1)),
+              );
+      } on Exception {
+        continue; // нет свечей — сверим в следующий раз
+      }
+    }
+    ledger.reconcile(hourlyBySymbol);
+    await _store.write('ledger', ledger.toJson());
   }
 
   /// Ближний контракт по каждому корню: не ближе трёх дней до экспирации
@@ -299,7 +353,11 @@ class LocalAnalysisRepository
         final age = snapshot.ageAt(now);
         if (age != null && age > staleQuoteAfter) {
           lastRejections.add(
-            RejectedCandidate(symbol, 'котировка старше ${age.inMinutes} мин.'),
+            RejectedCandidate(
+              symbol,
+              'котировка старше ${age.inMinutes} мин.',
+              price: snapshot.lastPrice,
+            ),
           );
           continue;
         }
@@ -355,7 +413,11 @@ class LocalAnalysisRepository
     }
   }
 
-  Future<List<ScreenerResult>> _cryptoResults(MarketRegime regime, double usdRub) async {
+  Future<List<ScreenerResult>> _cryptoResults(
+    MarketRegime regime,
+    double usdRub,
+    Map<String, List<Candle>> hourlyBySymbol,
+  ) async {
     final results = <ScreenerResult>[];
     _stage('Bybit: тикеры…');
     final tickers = await _bybit.tickers(symbols: cryptoSymbols);
@@ -364,6 +426,7 @@ class LocalAnalysisRepository
       _stage('Анализ ${ticker.symbol}…');
       try {
         final hourly = await _bybit.candles(ticker.symbol, timeframe: Timeframe.h1);
+        hourlyBySymbol[ticker.symbol] = hourly;
         final daily = await _bybit.candles(ticker.symbol, timeframe: Timeframe.d1, limit: 120);
         final oiHistory = await _bybit.openInterestHistory(ticker.symbol);
         final oiChange = oiHistory.length < 24 || oiHistory.first == 0
@@ -462,10 +525,21 @@ class LocalAnalysisRepository
         'блок оценки и обычно не проходят порог.';
   }
 
+  /// Экран «Сделки» — форвард-статистика журнала сигналов.
+  ///
+  /// Это не бэктест: каждая строка — сигнал, записанный в момент выдачи и
+  /// прожитый вперёд по реальным свечам. Подделать эту статистику нельзя —
+  /// поэтому именно она отвечает на вопрос «стратегия вообще работает?».
   @override
-  Future<TradesSummary> fetchTrades() async => const TradesSummary(
-        equityTitle: 'Эквити · сделок нет',
-        equityChange: '—',
+  Future<TradesSummary> fetchTrades() async {
+    await _ensureLoaded();
+    final closed = ledger.closed;
+    final live = ledger.openOrPending;
+
+    if (closed.isEmpty && live.isEmpty) {
+      return const TradesSummary(
+        equityTitle: 'Эквити · журнал пуст',
+        equityChange: 'бумажная торговля',
         equityCurve: [],
         stats: [
           StatTile(value: '—', label: 'винрейт'),
@@ -476,6 +550,79 @@ class LocalAnalysisRepository
         positions: [],
         journal: [],
       );
+    }
+
+    final pf = ledger.profitFactor;
+    final total = ledger.totalR;
+    String r(double v) =>
+        '${v >= 0 ? '+' : '−'}${v.abs().toStringAsFixed(2).replaceAll('.', ',')}R';
+
+    final rejectedMove = ledger.rejectedAverageMove24h;
+    return TradesSummary(
+      equityTitle: 'Эквити · бумажная торговля (журнал сигналов)',
+      equityChange: closed.isEmpty ? 'сделок ещё нет' : r(total),
+      equityCurve: ledger.equityCurve,
+      stats: [
+        StatTile(
+          value: closed.isEmpty ? '—' : '${ledger.winRate.round()}%',
+          label: 'винрейт',
+        ),
+        StatTile(
+          value: closed.isEmpty ? '—' : r(ledger.averageR),
+          label: 'ср. сделка',
+          tone: ledger.averageR > 0 ? Tone.positive : Tone.negative,
+        ),
+        StatTile(
+          value: closed.isEmpty
+              ? '—'
+              : pf == null
+                  ? '∞'
+                  : pf.toStringAsFixed(1).replaceAll('.', ','),
+          label: 'профит-фактор',
+        ),
+        StatTile(
+          value: rejectedMove == null
+              ? '${closed.length}'
+              : '${closed.length} · отбр. ${rejectedMove >= 0 ? '+' : '−'}'
+                  '${rejectedMove.abs().toStringAsFixed(1).replaceAll('.', ',')}%',
+          label: rejectedMove == null ? 'сделок' : 'сделок · ход отбр./24ч',
+        ),
+      ],
+      positions: [
+        for (final t in live)
+          ActivePosition(
+            symbol: t.symbol,
+            direction: t.long ? Direction.long : Direction.short,
+            entryLabel: t.entry.toStringAsFixed(2).replaceAll('.', ','),
+            currentLabel: t.status == PaperStatus.pending ? 'лимитка' : 'в позиции',
+            pnlLabel: t.status == PaperStatus.pending
+                ? 'ждёт входа'
+                : r(t.unrealizedR ?? 0),
+            pnlPositive: (t.unrealizedR ?? 0) >= 0,
+            progressPercent: t.status == PaperStatus.pending
+                ? 0
+                : (t.tpsTaken * 100 ~/ (t.tpPrices.isEmpty ? 1 : t.tpPrices.length))
+                    .clamp(0, 100),
+            stage: t.status == PaperStatus.pending
+                ? 'бумажная · лимитка живёт 24 часа'
+                : 'бумажная · взято тейков: ${t.tpsTaken} из ${t.tpPrices.length}',
+          ),
+      ],
+      journal: [
+        for (final t in closed.reversed.take(30))
+          JournalEntry(
+            date: t.closedAt == null
+                ? ''
+                : '${t.closedAt!.day.toString().padLeft(2, '0')}.'
+                    '${t.closedAt!.month.toString().padLeft(2, '0')}',
+            symbol: t.symbol,
+            direction: t.long ? Direction.long : Direction.short,
+            outcome: t.outcome ?? '—',
+            rMultiple: t.resultR ?? 0,
+          ),
+      ],
+    );
+  }
 
   @override
   Future<StrategiesSnapshot> fetchStrategies() async {

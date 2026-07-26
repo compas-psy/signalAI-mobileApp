@@ -141,6 +141,8 @@ class AppController extends ChangeNotifier {
     try {
       _digest = await _repository.fetchDigest(force: force);
       _digestFetchedAt = DateTime.now();
+      // Журнал сигналов обновился вместе с дайджестом — перечитываем «Сделки».
+      _trades = await _repository.fetchTrades();
       await _notifyNewSignals(previous, _digest);
       _maybeScheduleOptimization();
     } catch (e) {
@@ -155,13 +157,22 @@ class AppController extends ChangeNotifier {
     }
   }
 
-  /// Часовой автопересчёт: смысл терминала — следить за рынком, а не
-  /// показывать утренний снимок весь день.
+  /// Автопересчёт по закрытию часового бара: смысл терминала — следить за
+  /// рынком, а не показывать утренний снимок весь день.
+  ///
+  /// Срабатывает в :01 после нового часа — тот же каденс, что у бэктеста
+  /// (оценка каждого закрытого бара): живой контур и прогон делают одно и
+  /// то же, иначе статистика прогона мерила бы другую стратегию.
   void _autoRefreshIfStale() {
     if (_digestLoading || _backtestRunning || _optimizing) return;
     final at = _digestFetchedAt;
     if (_digest == null || at == null) return;
-    if (DateTime.now().difference(at) < const Duration(minutes: 60)) return;
+    final now = DateTime.now();
+    final barClosed =
+        DateTime(now.year, now.month, now.day, now.hour)
+            .isAfter(DateTime(at.year, at.month, at.day, at.hour));
+    if (!barClosed || now.minute < 1) return;
+    if (now.difference(at) < const Duration(minutes: 5)) return;
     refreshDigest(force: true);
   }
 

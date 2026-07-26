@@ -90,11 +90,15 @@ class ScoreComponent {
 }
 
 /// Причина, по которой кандидат отброшен — попадает в лог, а не молча теряется.
+///
+/// [price] — цена инструмента на момент отбраковки: по ней журнал сигналов
+/// потом честно меряет, что было бы, если бы фильтр не сработал.
 class RejectedCandidate {
-  const RejectedCandidate(this.symbol, this.reason);
+  const RejectedCandidate(this.symbol, this.reason, {this.price});
 
   final String symbol;
   final String reason;
+  final double? price;
 }
 
 /// Результат работы скринера по инструменту.
@@ -164,7 +168,8 @@ class Screener {
     List<RejectedCandidate>? rejected,
   }) {
     final spec = input.spec;
-    void reject(String reason) => rejected?.add(RejectedCandidate(spec.symbol, reason));
+    void reject(String reason) =>
+        rejected?.add(RejectedCandidate(spec.symbol, reason, price: input.lastPrice));
 
     if (input.hourly.length < 60 || input.daily.length < 30) {
       reject('мало истории');

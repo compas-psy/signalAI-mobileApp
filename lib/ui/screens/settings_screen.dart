@@ -7,6 +7,7 @@ import '../../theme/tokens.dart';
 import '../../theme/typography.dart';
 import '../widgets/common.dart';
 import '../widgets/risk_edit_sheet.dart';
+import 'diagnostics_screen.dart';
 
 /// Экран «Настройки»: подключения, доставка сигналов, уведомления, риск (ТЗ §9).
 class SettingsScreen extends StatelessWidget {
@@ -69,6 +70,47 @@ class SettingsScreen extends StatelessWidget {
               ),
               const SizedBox(height: 12),
               _RiskCard(risk: snapshot.risk),
+              const SizedBox(height: 12),
+              // Доверие проверяется, а не декларируется: живой прогон
+              // источников данных с вердиктами по каждому полю.
+              SectionCard(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const SectionLabel('Прозрачность'),
+                    const SizedBox(height: 6),
+                    Text(
+                      'Диагностика гоняет MOEX ISS и Bybit вживую и сверяет '
+                      'разбор данных с реальностью биржи.',
+                      style: T.body(11, color: C.muted, height: 1.5),
+                    ),
+                    const SizedBox(height: 10),
+                    Pressable(
+                      onTap: () => Navigator.of(context).push(
+                        PageRouteBuilder<void>(
+                          pageBuilder: (context, animation, secondary) =>
+                              const DiagnosticsScreen(),
+                          transitionsBuilder: (context, animation, secondary, child) =>
+                              FadeTransition(opacity: animation, child: child),
+                        ),
+                      ),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(vertical: 10),
+                        decoration: BoxDecoration(
+                          border: Border.all(color: C.borderHover),
+                          borderRadius: BorderRadius.circular(R.inner),
+                        ),
+                        child: Center(
+                          child: Text(
+                            'Диагностика данных',
+                            style: T.body(12, weight: 800, color: C.accent),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             ],
           ),
         ),
