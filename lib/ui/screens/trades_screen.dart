@@ -4,6 +4,7 @@ import '../../core/format.dart';
 import '../../domain/models/portfolio.dart';
 import '../../theme/tokens.dart';
 import '../../theme/typography.dart';
+import '../layout.dart';
 import '../tone.dart';
 import '../widgets/common.dart';
 import '../widgets/segmented.dart';
@@ -24,24 +25,28 @@ class TradesScreen extends StatelessWidget {
             child: ListView(
               padding: const EdgeInsets.fromLTRB(S.screen, 12, S.screen, 90),
               children: [
-                _EquityCard(summary: summary),
-                if (summary.gate != null) ...[
-                  const SizedBox(height: 12),
-                  _GateCard(gate: summary.gate!),
-                ],
-                if (summary.exchange.isNotEmpty) ...[
-                  const SizedBox(height: 12),
-                  _ExchangeCard(rows: summary.exchange),
-                ],
+                CardGrid(
+                  children: [
+                    _EquityCard(summary: summary),
+                    if (summary.gate != null) _GateCard(gate: summary.gate!),
+                    if (summary.exchange.isNotEmpty)
+                      _ExchangeCard(rows: summary.exchange),
+                    if (summary.rejections.isNotEmpty)
+                      _RejectionsCard(rows: summary.rejections),
+                  ],
+                ),
                 const SizedBox(height: 12),
                 Padding(
                   padding: const EdgeInsets.fromLTRB(2, 4, 2, 0),
                   child: SectionLabel('Бумажные · ${summary.positions.length}'),
                 ),
-                for (final position in summary.positions) ...[
-                  const SizedBox(height: 12),
-                  _PositionCard(position: position),
-                ],
+                const SizedBox(height: 12),
+                CardGrid(
+                  children: [
+                    for (final position in summary.positions)
+                      _PositionCard(position: position),
+                  ],
+                ),
                 const SizedBox(height: 12),
                 const Padding(
                   padding: EdgeInsets.fromLTRB(2, 4, 2, 0),
@@ -57,10 +62,6 @@ class TradesScreen extends StatelessWidget {
                     ],
                   ),
                 ),
-                if (summary.rejections.isNotEmpty) ...[
-                  const SizedBox(height: 12),
-                  _RejectionsCard(rows: summary.rejections),
-                ],
               ],
             ),
           ),

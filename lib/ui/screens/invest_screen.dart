@@ -6,6 +6,7 @@ import '../../domain/enums.dart';
 import '../../state/app_scope.dart';
 import '../../theme/tokens.dart';
 import '../../theme/typography.dart';
+import '../layout.dart';
 import '../tone.dart';
 import '../widgets/common.dart';
 import '../widgets/confluence_ring.dart';
@@ -46,6 +47,8 @@ class InvestScreen extends StatelessWidget {
               : ListView(
                   padding: const EdgeInsets.fromLTRB(S.screen, 12, S.screen, 90),
                   children: [
+                    // Идеи идут во всю ширину: у карточки внутри график и
+                    // паспорт, в половине колонки они бы схлопнулись.
                     _StatusCard(digest: digest),
                     const SizedBox(height: 12),
                     if (digest.ideas.isEmpty) ...[
@@ -56,17 +59,16 @@ class InvestScreen extends StatelessWidget {
                       _IdeaCard(idea: idea),
                       const SizedBox(height: 12),
                     ],
-                    if (digest.watchlist.isNotEmpty) ...[
-                      _WatchlistCard(watchlist: digest.watchlist),
-                      const SizedBox(height: 12),
-                    ],
-                    _JournalCard(ledger: controller.investDesk?.investLedger),
-                    const SizedBox(height: 12),
-                    _BacktestCard(controller: controller),
-                    if (digest.rejections.isNotEmpty) ...[
-                      const SizedBox(height: 12),
-                      _RejectionsCard(rejections: digest.rejections),
-                    ],
+                    CardGrid(
+                      children: [
+                        if (digest.watchlist.isNotEmpty)
+                          _WatchlistCard(watchlist: digest.watchlist),
+                        _JournalCard(ledger: controller.investDesk?.investLedger),
+                        _BacktestCard(controller: controller),
+                        if (digest.rejections.isNotEmpty)
+                          _RejectionsCard(rejections: digest.rejections),
+                      ],
+                    ),
                   ],
                 ),
         ),

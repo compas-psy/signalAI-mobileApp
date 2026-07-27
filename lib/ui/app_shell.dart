@@ -120,7 +120,9 @@ class AppShell extends StatelessWidget {
       );
     }
     final screen = _screen(controller);
-    return pane.isCompact ? screen : ReadableColumn(child: screen);
+    return pane.isCompact
+        ? screen
+        : ReadableColumn(maxWidth: pane.contentWidth, child: screen);
   }
 
   Widget _screen(AppController controller) {

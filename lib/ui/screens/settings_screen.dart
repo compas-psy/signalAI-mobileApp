@@ -7,6 +7,7 @@ import '../../theme/tokens.dart';
 import '../../theme/typography.dart';
 import '../../domain/broker/broker.dart';
 import '../../monitor/background_mode.dart';
+import '../layout.dart';
 import '../widgets/broker_keys_sheet.dart';
 import '../widgets/common.dart';
 import '../widgets/risk_edit_sheet.dart';
@@ -30,6 +31,7 @@ class SettingsScreen extends StatelessWidget {
           child: ListView(
             padding: const EdgeInsets.fromLTRB(S.screen, 12, S.screen, 90),
             children: [
+              CardGrid(children: [
               // Источники данных и торговый доступ — принципиально разные
               // вещи, и смешивать их в одну секцию «Биржи» нечестно: активный
               // поток котировок не означает, что можно торговать.
@@ -45,8 +47,7 @@ class SettingsScreen extends StatelessWidget {
                 ),
                 // Торговый доступ живёт в «Торговом контуре» — вторая
                 // карточка с теми же площадками только дублировала бы его.
-                if (snapshot.exchanges.any((e) => !e.isDataSource)) ...[
-                  const SizedBox(height: 12),
+                if (snapshot.exchanges.any((e) => !e.isDataSource))
                   _ExchangesCard(
                     title: 'Торговый доступ',
                     exchanges: [
@@ -56,7 +57,6 @@ class SettingsScreen extends StatelessWidget {
                     connectedLabel: 'Подключено',
                     onConnect: controller.connectExchange,
                   ),
-                ],
               ] else
                 _ExchangesCard(
                   title: 'Биржи · API',
@@ -70,24 +70,17 @@ class SettingsScreen extends StatelessWidget {
               // экрана — бейдж, причина, подтверждение, допуск, две площадки с
               // ключами, два тумблера и кнопка в одном столбце.
               if (snapshot.trading != null) ...[
-                const SizedBox(height: 12),
                 _TradingStatusCard(trading: snapshot.trading!),
-                const SizedBox(height: 12),
                 _BrokersCard(trading: snapshot.trading!),
-                const SizedBox(height: 12),
                 _TradingControlsCard(trading: snapshot.trading!),
               ],
-              if (snapshot.background != null) ...[
-                const SizedBox(height: 12),
+              if (snapshot.background != null)
                 _BackgroundCard(background: snapshot.background!),
-              ],
-              const SizedBox(height: 12),
               _TogglesCard(
                 title: 'Доставка сигналов',
                 items: snapshot.channels,
                 onChanged: controller.toggleChannel,
               ),
-              const SizedBox(height: 12),
               _TogglesCard(
                 title: 'Уведомления',
                 items: snapshot.notifications,
@@ -96,9 +89,7 @@ class SettingsScreen extends StatelessWidget {
                 // пуш с явно помеченным примером идеи.
                 footer: _TestPushButton(onTap: controller.sendTestPush),
               ),
-              const SizedBox(height: 12),
               _RiskCard(risk: snapshot.risk),
-              const SizedBox(height: 12),
               // Доверие проверяется, а не декларируется: живой прогон
               // источников данных с вердиктами по каждому полю.
               SectionCard(
@@ -139,6 +130,7 @@ class SettingsScreen extends StatelessWidget {
                   ],
                 ),
               ),
+              ]),
             ],
           ),
         ),

@@ -4,6 +4,7 @@ import '../../domain/models/strategy.dart';
 import '../../state/app_scope.dart';
 import '../../theme/tokens.dart';
 import '../../theme/typography.dart';
+import '../layout.dart';
 import '../tone.dart';
 import '../widgets/common.dart';
 import '../widgets/segmented.dart';
@@ -39,33 +40,30 @@ class StrategiesScreen extends StatelessWidget {
           child: ListView(
             padding: const EdgeInsets.fromLTRB(S.screen, 12, S.screen, 90),
             children: [
-              for (final pack in snapshot.packs) ...[
-                _PackCard(
-                  pack: pack,
-                  onToggle: (value) => controller.toggleStrategy(pack.id, value),
-                ),
-                const SizedBox(height: 12),
-              ],
-              _ParamsCard(snapshot: snapshot),
-              const SizedBox(height: 12),
-              _BacktestCard(
-                backtest: snapshot.backtest,
-                running: backtestRunning,
-                optimizing: optimizing,
-                stage: backtestStage,
-                onRun: () => controller.runBacktest(
-                  snapshot.packs.isEmpty ? 's1' : snapshot.packs.first.id,
-                ),
-                onOptimize: controller.runOptimization,
+              CardGrid(
+                children: [
+                  for (final pack in snapshot.packs)
+                    _PackCard(
+                      pack: pack,
+                      onToggle: (value) => controller.toggleStrategy(pack.id, value),
+                    ),
+                  _BacktestCard(
+                    backtest: snapshot.backtest,
+                    running: backtestRunning,
+                    optimizing: optimizing,
+                    stage: backtestStage,
+                    onRun: () => controller.runBacktest(
+                      snapshot.packs.isEmpty ? 's1' : snapshot.packs.first.id,
+                    ),
+                    onOptimize: controller.runOptimization,
+                  ),
+                  _ParamsCard(snapshot: snapshot),
+                  if (snapshot.riskLimits != null)
+                    _RiskLimitsCard(limits: snapshot.riskLimits!),
+                  if (snapshot.factorEdges.isNotEmpty)
+                    _FactorEdgeCard(edges: snapshot.factorEdges),
+                ],
               ),
-              if (snapshot.riskLimits != null) ...[
-                const SizedBox(height: 12),
-                _RiskLimitsCard(limits: snapshot.riskLimits!),
-              ],
-              if (snapshot.factorEdges.isNotEmpty) ...[
-                const SizedBox(height: 12),
-                _FactorEdgeCard(edges: snapshot.factorEdges),
-              ],
             ],
           ),
         ),

@@ -31,6 +31,17 @@ enum Pane {
 
   /// Две колонки: слева список идей, справа разбор выбранной.
   bool get usesTwoPane => this == Pane.expanded;
+
+  /// Предел ширины содержимого раздела.
+  ///
+  /// На телефоне предела нет; на планшете колонка ограничена, иначе строка
+  /// растягивается на всю ширину и глаз теряет начало следующей. В альбоме
+  /// предел выше: там помещаются две колонки карточек.
+  double get contentWidth => switch (this) {
+        Pane.compact => double.infinity,
+        Pane.medium => 760,
+        Pane.expanded => 1160,
+      };
 }
 
 /// Максимальная ширина колонки с содержимым.
@@ -52,5 +63,59 @@ class ReadableColumn extends StatelessWidget {
           constraints: BoxConstraints(maxWidth: maxWidth),
           child: child,
         ),
+      );
+}
+
+/// Карточки раздела: одна колонка на телефоне, две — когда хватает ширины.
+///
+/// Разделы «Инвест», «Сделки», «Стратегии» и «Настройки» — это ленты карточек.
+/// На планшете лента в одну колонку оставляет половину экрана пустой, а сама
+/// становится вдвое длиннее, чем нужно. Порядок сохраняется по колонкам слева
+/// направо: первая карточка (статус раздела) всегда наверху слева.
+class CardGrid extends StatelessWidget {
+  const CardGrid({
+    super.key,
+    required this.children,
+    this.gap = 12,
+    this.breakpoint = 700,
+  });
+
+  final List<Widget> children;
+  final double gap;
+
+  /// Ширина, начиная с которой колонок становится две.
+  final double breakpoint;
+
+  @override
+  Widget build(BuildContext context) => LayoutBuilder(
+        builder: (context, constraints) {
+          if (constraints.maxWidth < breakpoint) return _column(children);
+
+          // Раскладка змейкой по строкам, а не «первая половина слева»:
+          // соседние по смыслу карточки остаются рядом по вертикали.
+          final left = <Widget>[];
+          final right = <Widget>[];
+          for (var i = 0; i < children.length; i++) {
+            (i.isEven ? left : right).add(children[i]);
+          }
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(child: _column(left)),
+              SizedBox(width: gap),
+              Expanded(child: _column(right)),
+            ],
+          );
+        },
+      );
+
+  Widget _column(List<Widget> items) => Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          for (var i = 0; i < items.length; i++) ...[
+            if (i > 0) SizedBox(height: gap),
+            items[i],
+          ],
+        ],
       );
 }
