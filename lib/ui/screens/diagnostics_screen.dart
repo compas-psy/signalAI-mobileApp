@@ -244,6 +244,48 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
       );
     });
 
+    await check('MOEX ISS: цепочка опционов', () async {
+      // Единственная проверка, которую нельзя было сделать при разработке:
+      // из среды сборки доступа к MOEX нет, а состав колонок опционной
+      // выдачи биржа меняет. Здесь видно, какие поля реально пришли.
+      const asset = 'SI';
+      final chain = await iss.optionsChain(asset);
+      if (chain.isEmpty) {
+        return const _CheckResult(
+          name: 'MOEX ISS: цепочка опционов',
+          ok: false,
+          details: [
+            'по SI не пришло ни одного контракта',
+            'выходной, нет серии либо изменился состав выдачи ISS',
+          ],
+        );
+      }
+      final withPrice = chain.where((c) => (c.last ?? c.theoretical ?? 0) > 0).length;
+      final withIv = chain.where((c) => (c.impliedVolatility ?? 0) > 0).length;
+      final withOi = chain.where((c) => c.openInterest > 0).length;
+      final strikes = {for (final c in chain) c.strike}.length;
+      final expiries = {for (final c in chain) c.expiration}.length;
+
+      return _CheckResult(
+        name: 'MOEX ISS: цепочка опционов',
+        // Цена обязательна: без неё конструкцию не собрать. IV и открытый
+        // интерес желательны — их отсутствие ухудшает оценку, но не ломает.
+        ok: withPrice > 0 && strikes > 3,
+        details: [
+          'контрактов по $asset: ${chain.length}',
+          'страйков: $strikes, серий: $expiries',
+          'с ценой: $withPrice',
+          withIv > 0
+              ? 'с волатильностью биржи: $withIv'
+              : 'ВОЛАТИЛЬНОСТЬ НЕ ПРИШЛА — считаем сами из цены',
+          withOi > 0
+              ? 'с открытым интересом: $withOi'
+              : 'ОТКРЫТЫЙ ИНТЕРЕС НЕ ПРИШЁЛ — ликвидность не проверить',
+          'пример: ${chain.first.secId} страйк ${chain.first.strike}',
+        ],
+      );
+    });
+
     await check('Bybit: тикеры и фандинг', () async {
       final tickers = await bybit.tickers(symbols: const ['BTCUSDT']);
       final btc = tickers.isEmpty ? null : tickers.first;
