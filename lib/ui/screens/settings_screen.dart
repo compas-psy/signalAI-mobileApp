@@ -28,7 +28,7 @@ class SettingsScreen extends StatelessWidget {
         const ScreenHeader(title: 'Настройки'),
         Expanded(
           child: ListView(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 90),
+            padding: const EdgeInsets.fromLTRB(S.screen, 12, S.screen, 90),
             children: [
               // Источники данных и торговый доступ — принципиально разные
               // вещи, и смешивать их в одну секцию «Биржи» нечестно: активный
@@ -64,9 +64,18 @@ class SettingsScreen extends StatelessWidget {
                   connectedLabel: 'Подключено',
                   onConnect: controller.connectExchange,
                 ),
+              // Торговый контур разложен на три карточки: состояние (можно ли
+              // торговать), площадки (чем) и управление (рубильники). Одним
+              // блоком это была самая важная и самая нечитаемая карточка
+              // экрана — бейдж, причина, подтверждение, допуск, две площадки с
+              // ключами, два тумблера и кнопка в одном столбце.
               if (snapshot.trading != null) ...[
                 const SizedBox(height: 12),
-                _TradingCard(trading: snapshot.trading!),
+                _TradingStatusCard(trading: snapshot.trading!),
+                const SizedBox(height: 12),
+                _BrokersCard(trading: snapshot.trading!),
+                const SizedBox(height: 12),
+                _TradingControlsCard(trading: snapshot.trading!),
               ],
               if (snapshot.background != null) ...[
                 const SizedBox(height: 12),
@@ -246,14 +255,19 @@ class _ExchangeRow extends StatelessWidget {
 /// Всё, от чего зависит, уйдёт ли ордер, собрано в одном месте и написано
 /// прямо. Приложение, которому доверяют счёт, не имеет права прятать это
 /// в подменю.
-class _TradingCard extends StatelessWidget {
-  const _TradingCard({required this.trading});
+/// Можно ли сейчас торговать — и если нет, почему.
+class _TradingStatusCard extends StatelessWidget {
+  const _TradingStatusCard({required this.trading});
 
   final TradingView trading;
 
   @override
   Widget build(BuildContext context) {
-    final controller = AppScope.read(context);
+    final color = trading.killSwitch
+        ? C.red
+        : trading.ready
+            ? C.green
+            : C.muted;
     return SectionCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -261,23 +275,16 @@ class _TradingCard extends StatelessWidget {
           Row(
             children: [
               const Expanded(child: SectionLabel('Торговый контур')),
-              Builder(builder: (_) {
-                final color = trading.killSwitch
-                    ? C.red
+              OutlineBadge(
+                label: trading.killSwitch
+                    ? 'ОСТАНОВЛЕН'
                     : trading.ready
-                        ? C.green
-                        : C.muted;
-                return OutlineBadge(
-                  label: trading.killSwitch
-                      ? 'ОСТАНОВЛЕН'
-                      : trading.ready
-                          ? 'ГОТОВ'
-                          : 'НЕ ГОТОВ',
-                  color: color,
-                  borderColor: color,
-                  fontWeight: 700,
-                );
-              }),
+                        ? 'ГОТОВ'
+                        : 'НЕ ГОТОВ',
+                color: color,
+                borderColor: color,
+                fontWeight: 700,
+              ),
             ],
           ),
           const SizedBox(height: 8),
@@ -303,7 +310,6 @@ class _TradingCard extends StatelessWidget {
               ),
             ),
 
-          // ── Общее для всех площадок ──────────────────────────────────
           KeyValueRow(
             name: 'Подтверждение сделки',
             value: trading.confirmMethod.label,
@@ -323,12 +329,34 @@ class _TradingCard extends StatelessWidget {
           KeyValueRow(
             name: 'Допуск к живым деньгам',
             value: trading.gateAllowed ? 'открыт' : 'закрыт',
+            showDivider: false,
             valueStyle: T.mono(12, color: trading.gateAllowed ? C.green : C.muted),
           ),
           Padding(
-            padding: const EdgeInsets.only(top: 2, bottom: 10),
+            padding: const EdgeInsets.only(top: 2),
             child: Text(trading.gateReason, style: T.body(11, color: C.muted, height: 1.4)),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Площадки: режим и ключи по каждой отдельно.
+class _BrokersCard extends StatelessWidget {
+  const _BrokersCard({required this.trading});
+
+  final TradingView trading;
+
+  @override
+  Widget build(BuildContext context) {
+    final controller = AppScope.read(context);
+    return SectionCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const SectionLabel('Площадки'),
+          const SizedBox(height: 4),
 
           // Каждая площадка со своим режимом и ключами: крипта может стоять
           // на testnet, пока российский счёт ещё в песочнице.
@@ -403,7 +431,27 @@ class _TradingCard extends StatelessWidget {
               ),
             const SizedBox(height: 4),
           ],
+        ],
+      ),
+    );
+  }
+}
 
+/// Рубильники контура и проверка его словами биржи.
+class _TradingControlsCard extends StatelessWidget {
+  const _TradingControlsCard({required this.trading});
+
+  final TradingView trading;
+
+  @override
+  Widget build(BuildContext context) {
+    final controller = AppScope.read(context);
+    return SectionCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const SectionLabel('Управление'),
+          const SizedBox(height: 10),
           _TradingSwitch(
             title: 'Отправлять ордера',
             subtitle: 'Каждая сделка подтверждается отдельно — молча ничего '

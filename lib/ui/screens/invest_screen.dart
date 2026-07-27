@@ -8,6 +8,9 @@ import '../../theme/tokens.dart';
 import '../../theme/typography.dart';
 import '../tone.dart';
 import '../widgets/common.dart';
+import '../widgets/confluence_ring.dart';
+import '../widgets/level_strip.dart';
+import '../widgets/segmented.dart';
 import '../widgets/trade_chart.dart';
 
 /// Раздел «Инвест»: среднесрочные идеи по акциям РФ (1–3 месяца, лонги).
@@ -26,12 +29,22 @@ class InvestScreen extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        const ScreenHeader(title: 'Инвест'),
+        const ScreenHeader(
+          title: 'Инвест',
+          trailing: OutlineBadge(
+            label: 'ЛОНГИ · 1–3 МЕС',
+            color: C.accent,
+            borderColor: C.accentBorder,
+            background: C.accentFaint,
+            fontWeight: 700,
+            padding: EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+          ),
+        ),
         Expanded(
           child: digest == null
               ? _Pending(controller: controller)
               : ListView(
-                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 90),
+                  padding: const EdgeInsets.fromLTRB(S.screen, 12, S.screen, 90),
                   children: [
                     _StatusCard(digest: digest),
                     const SizedBox(height: 12),
@@ -137,33 +150,50 @@ class _StatusCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              const Expanded(child: SectionLabel('Среднесрок · акции РФ')),
-              const OutlineBadge(
-                label: 'ЛОНГИ · 1–3 МЕС',
-                color: C.accent,
-                borderColor: C.accent,
-              ),
-            ],
+          if (digest.regimeNote.isNotEmpty) ...[
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  margin: const EdgeInsets.only(top: 5),
+                  width: 7,
+                  height: 7,
+                  decoration: BoxDecoration(
+                    color: digest.regimeBlocksLongs ? C.red : C.green,
+                    shape: BoxShape.circle,
+                  ),
+                ),
+                const SizedBox(width: 9),
+                Expanded(
+                  child: Text(
+                    digest.regimeNote,
+                    style: T.body(12,
+                        weight: 700,
+                        color: digest.regimeBlocksLongs ? C.red : C.green,
+                        height: 1.4),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+          ],
+          // Воронка отбора одной моношириной строкой: видно, где рынок
+          // кончился, без чтения абзаца.
+          InsetBox(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+            child: Text(
+              'TQBR ${digest.universeSize} → ликвидных ${digest.liquidSize} → '
+              'с историей ${digest.tradableSize} → идей ${digest.ideas.length}',
+              style: T.mono(11.5, weight: 600, color: C.textSecondary, height: 1.5),
+            ),
           ),
           const SizedBox(height: 8),
           Text(
-            'Пересчитано $when МСК · доска TQBR: ${digest.universeSize} бумаг → '
-            'ликвидных ${digest.liquidSize} → акций с историей ${digest.tradableSize}. '
-            'Пересчёт — ночью раз в день. Техника проверяется бэктестом; '
-            'фундаментальный паспорт — текущий срез Invest API, в отборе идей '
-            'не участвует. Исполнение — руками.',
+            'Пересчитано $when МСК · ночью раз в день. Техника проверяется '
+            'бэктестом; фундаментальный паспорт — текущий срез Invest API, в '
+            'отборе идей не участвует. Исполнение — руками.',
             style: T.body(11, color: C.muted, height: 1.5),
           ),
-          if (digest.regimeNote.isNotEmpty) ...[
-            const SizedBox(height: 6),
-            Text(
-              digest.regimeNote,
-              style: T.body(11.5,
-                  color: digest.regimeBlocksLongs ? C.red : C.green, height: 1.4),
-            ),
-          ],
           if (digest.passportNote.isNotEmpty) ...[
             const SizedBox(height: 6),
             Text('Паспорта: ${digest.passportNote}',
@@ -200,43 +230,60 @@ class _IdeaCard extends StatelessWidget {
     final signal = idea.signal;
     final decimals = signal.priceDecimals;
     String price(double v) => v.toStringAsFixed(decimals).replaceAll('.', ',');
+    // Апсайд до дальней цели — то, ради чего держат позицию месяцами.
+    final target = signal.takeProfits.isEmpty ? null : signal.takeProfits.last.price;
+    final upside = target == null || signal.entry <= 0
+        ? null
+        : (target - signal.entry) / signal.entry * 100;
+
     return SectionCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
+              ConfluenceRing(score: signal.score),
+              const SizedBox(width: 11),
               Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+                child: Row(
                   children: [
-                    Text(signal.symbol, style: T.jost(18)),
-                    Text(signal.name,
+                    Flexible(
+                      child: Text(
+                        signal.symbol,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: T.body(11, color: C.muted)),
+                        style: T.jost(17),
+                      ),
+                    ),
+                    const SizedBox(width: 7),
+                    DirectionBadge(
+                      label: signal.direction.label,
+                      color: directionColor(signal.direction),
+                      background: directionBackground(signal.direction),
+                    ),
                   ],
                 ),
               ),
+              const SizedBox(width: 8),
               Column(
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
-                  Text(signal.lastPrice, style: T.mono(14, weight: 700)),
+                  Text(signal.lastPrice, style: T.mono(13.5, weight: 600)),
                   Text(signal.changeLabel,
-                      style: T.mono(11,
-                          color: signal.changeUp ? C.green : C.red)),
+                      style: T.mono(11, color: signal.changeUp ? C.green : C.red)),
                 ],
-              ),
-              const SizedBox(width: 10),
-              OutlineBadge(
-                label: '${signal.score}/100',
-                color: C.accent,
-                borderColor: C.accent,
               ),
             ],
           ),
+          const SizedBox(height: 7),
+          Text(
+            '${signal.name} · до 60 торговых дней',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: T.body(11.5, color: C.muted),
+          ),
           const SizedBox(height: 10),
-          if (signal.chart != null)
+          if (signal.chart != null) ...[
             ClipRRect(
               borderRadius: BorderRadius.circular(R.inner),
               child: DecoratedBox(
@@ -247,54 +294,73 @@ class _IdeaCard extends StatelessWidget {
                 child: TradeChart(signal: signal),
               ),
             ),
-          const SizedBox(height: 10),
-          InsetBox(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-            radius: R.inner,
-            child: Column(
-              children: [
-                KeyValueRow(name: 'Вход · лимит', value: price(signal.entry)),
-                KeyValueRow(
-                  name: 'Стоп-лосс',
-                  value: price(signal.stopLoss),
-                  valueStyle: T.mono(12, weight: 600, color: C.red),
-                ),
-                KeyValueRow(
-                  name: signal.takeProfits.map((tp) => tp.label).join(' / '),
-                  value:
-                      signal.takeProfits.map((tp) => price(tp.price)).join(' / '),
-                  valueStyle: T.mono(12, weight: 600, color: C.green),
-                ),
-                KeyValueRow(name: 'R:R до TP2', value: signal.riskReward),
-                const KeyValueRow(
-                    name: 'Горизонт', value: 'до 60 торговых дней'),
-              ],
-            ),
+            const SizedBox(height: 10),
+          ],
+          LevelStrip(
+            entry: price(signal.entry),
+            stop: price(signal.stopLoss),
+            targets: [for (final tp in signal.takeProfits) price(tp.price)],
+            riskReward: '${signal.riskReward} R:R',
           ),
+          if (upside != null) ...[
+            const SizedBox(height: 8),
+            OutlineBadge(
+              label: 'потенциал ${upside >= 0 ? '+' : '−'}'
+                  '${upside.abs().toStringAsFixed(0)}% до дальней цели',
+              color: C.green,
+              borderColor: C.greenBorder,
+              background: C.greenFaint,
+              fontWeight: 700,
+              padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+            ),
+          ],
+          const SizedBox(height: 12),
+          Text(_lead(signal.note),
+              style: T.body(12, color: C.textSecondary, height: 1.5)),
           const SizedBox(height: 10),
-          Text('Почему эта идея', style: T.body(12, weight: 800)),
-          const SizedBox(height: 4),
-          Text(signal.note, style: T.body(11.5, color: C.textSecondary, height: 1.5)),
-          const SizedBox(height: 8),
           for (final factor in signal.factors)
             Padding(
-              padding: const EdgeInsets.only(top: 3),
-              child: Text('· ${factor.name}: ${factor.text}',
-                  style: T.body(10.5, color: C.muted, height: 1.4)),
+              padding: const EdgeInsets.only(top: 6),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  SizedBox(
+                    width: 108,
+                    child: Text(factor.name,
+                        style: T.body(11, weight: 700, height: 1.4)),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(factor.text,
+                        style: T.body(11, color: C.muted, height: 1.4)),
+                  ),
+                ],
+              ),
             ),
-          const SizedBox(height: 10),
-          _Passport(passport: idea.passport, lastPrice: signal.lastPrice),
+          const SizedBox(height: 12),
+          _Passport(passport: idea.passport),
         ],
       ),
     );
   }
 }
 
+/// Первое предложение обоснования: вывод крупно, подробности — ниже строками.
+String _lead(String note) {
+  final end = note.indexOf('. ');
+  return end < 0 ? note : note.substring(0, end + 1);
+}
+
+/// Фундаментальный паспорт: восемь показателей плитками 4×2.
+///
+/// Плитки, а не строки «ключ — значение»: восемь чисел в столбик читаются как
+/// текст, а сеткой — как приборная панель. «Хорошие» значения подсвечены
+/// зелёным, но подсветка ни на что не влияет: паспорт в ранжире не участвует
+/// и бэктестом не проверяется, о чём написано прямо в карточке.
 class _Passport extends StatelessWidget {
-  const _Passport({required this.passport, required this.lastPrice});
+  const _Passport({required this.passport});
 
   final FundamentalsPassport? passport;
-  final String lastPrice;
 
   @override
   Widget build(BuildContext context) {
@@ -310,14 +376,14 @@ class _Passport extends StatelessWidget {
         ? '—'
         : '${v.toStringAsFixed(digits).replaceAll('.', ',')}$suffix';
     String pct(double? v) => num(v, suffix: '%');
-    String cap(double? v) {
-      if (v == null) return '—';
-      if (v >= 1e12) return '${(v / 1e12).toStringAsFixed(1).replaceAll('.', ',')} трлн ₽';
-      return '${(v / 1e9).toStringAsFixed(0)} млрд ₽';
-    }
 
     final reportDate = p.nextReportDate;
     final daysToReport = reportDate?.difference(DateTime.now()).inDays;
+
+    // Пороги «хорошего» — общепринятые ориентиры российского рынка, не наши
+    // выдумки: дешёвая оценка, здоровый долг, ощутимый дивиденд.
+    Color good(double? v, bool Function(double) test) =>
+        v != null && test(v) ? C.green : C.text;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -328,45 +394,58 @@ class _Passport extends StatelessWidget {
             Text('срез, не ранжир', style: T.body(9.5, color: C.muted)),
           ],
         ),
-        const SizedBox(height: 6),
-        InsetBox(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-          radius: R.inner,
-          child: Column(
-            children: [
-              KeyValueRow(name: 'Капитализация', value: cap(p.marketCap)),
-              KeyValueRow(name: 'P/E · P/B', value: '${num(p.peTtm)} · ${num(p.pbTtm)}'),
-              KeyValueRow(name: 'EV/EBITDA', value: num(p.evToEbitda)),
-              KeyValueRow(name: 'ROE · маржа', value: '${pct(p.roe)} · ${pct(p.netMargin)}'),
-              KeyValueRow(name: 'Долг/EBITDA', value: num(p.debtToEbitda)),
-              KeyValueRow(
-                  name: 'Дивиденды (TTM · форвард)',
-                  value: '${pct(p.dividendYieldTtm)} · ${pct(p.forwardDividendYield)}'),
-              KeyValueRow(
-                  name: 'Рост выручки (1г · 5л)',
-                  value: '${pct(p.revenueGrowthOneYear)} · ${pct(p.revenueGrowthFiveYears)}'),
-              if (p.consensus != null || p.targetPrice != null)
-                KeyValueRow(
-                  name: 'Аналитики',
-                  value:
-                      '${_consensusLabel(p.consensus)} · цель ${num(p.targetPrice, digits: 2)}'
-                      '${p.buyCount == null ? '' : ' · ${p.buyCount}/${p.holdCount ?? 0}/${p.sellCount ?? 0}'}',
-                ),
-            ],
+        const SizedBox(height: 8),
+        MetricRow(tiles: [
+          MetricTile(label: 'P/E', value: num(p.peTtm), color: good(p.peTtm, (v) => v > 0 && v < 8)),
+          MetricTile(
+              label: 'EV/EBITDA',
+              value: num(p.evToEbitda),
+              color: good(p.evToEbitda, (v) => v > 0 && v < 5)),
+          MetricTile(label: 'ROE', value: pct(p.roe), color: good(p.roe, (v) => v >= 15)),
+          MetricTile(
+              label: 'Долг/EBITDA',
+              value: num(p.debtToEbitda),
+              color: good(p.debtToEbitda, (v) => v < 2)),
+        ]),
+        const SizedBox(height: 8),
+        MetricRow(tiles: [
+          MetricTile(
+              label: 'Див TTM',
+              value: pct(p.dividendYieldTtm),
+              color: good(p.dividendYieldTtm, (v) => v >= 8)),
+          MetricTile(
+              label: 'Див вперёд',
+              value: pct(p.forwardDividendYield),
+              color: good(p.forwardDividendYield, (v) => v >= 8)),
+          MetricTile(
+              label: 'Выручка г/г',
+              value: pct(p.revenueGrowthOneYear),
+              color: good(p.revenueGrowthOneYear, (v) => v >= 10)),
+          MetricTile(
+              label: 'Маржа',
+              value: pct(p.netMargin),
+              color: good(p.netMargin, (v) => v >= 15)),
+        ]),
+        if (p.consensus != null || p.targetPrice != null) ...[
+          const SizedBox(height: 8),
+          _PassportLine(
+            color: C.muted,
+            text: 'Аналитики: ${_consensusLabel(p.consensus)} · цель '
+                '${num(p.targetPrice, digits: 2)}'
+                '${p.buyCount == null ? '' : ' · покупать/держать/продавать '
+                    '${p.buyCount}/${p.holdCount ?? 0}/${p.sellCount ?? 0}'}',
           ),
-        ),
+        ],
         if (daysToReport != null && daysToReport <= 14)
-          Padding(
-            padding: const EdgeInsets.only(top: 6),
-            child: Text(
-              'Отчётность через $daysToReport дн. '
-              '(${reportDate!.day.toString().padLeft(2, '0')}.${reportDate.month.toString().padLeft(2, '0')}) — '
-              'гэп на публикации вероятен, учитывайте при входе.',
-              style: T.body(10.5, color: C.accent, height: 1.4),
-            ),
+          _PassportLine(
+            color: C.accent,
+            text: 'Отчётность через $daysToReport дн. '
+                '(${reportDate!.day.toString().padLeft(2, '0')}.'
+                '${reportDate.month.toString().padLeft(2, '0')}) — '
+                'гэп на публикации вероятен, учитывайте при входе.',
           ),
         Padding(
-          padding: const EdgeInsets.only(top: 6),
+          padding: const EdgeInsets.only(top: 8),
           child: Text(
             'Паспорт — текущий срез Invest API от '
             '${p.at.day.toString().padLeft(2, '0')}.${p.at.month.toString().padLeft(2, '0')}: '
@@ -386,6 +465,34 @@ class _Passport extends StatelessWidget {
         null => '—',
         _ => v,
       };
+}
+
+/// Строка под паспортом с цветной точкой важности слева.
+class _PassportLine extends StatelessWidget {
+  const _PassportLine({required this.text, required this.color});
+
+  final String text;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: const EdgeInsets.only(top: 7),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              margin: const EdgeInsets.only(top: 5),
+              width: 6,
+              height: 6,
+              decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(text, style: T.body(11, color: C.muted, height: 1.4)),
+            ),
+          ],
+        ),
+      );
 }
 
 class _JournalCard extends StatelessWidget {

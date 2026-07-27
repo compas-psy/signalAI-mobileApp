@@ -6,6 +6,7 @@ import '../../theme/tokens.dart';
 import '../../theme/typography.dart';
 import '../tone.dart';
 import '../widgets/common.dart';
+import '../widgets/segmented.dart';
 import '../widgets/sparkline.dart';
 
 /// Экран «Сделки»: эквити, статистика, активные позиции и журнал (ТЗ §9).
@@ -21,7 +22,7 @@ class TradesScreen extends StatelessWidget {
           const ScreenHeader(title: 'Сделки'),
           Expanded(
             child: ListView(
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 90),
+              padding: const EdgeInsets.fromLTRB(S.screen, 12, S.screen, 90),
               children: [
                 _EquityCard(summary: summary),
                 if (summary.gate != null) ...[
@@ -252,36 +253,16 @@ class _EquityCard extends StatelessWidget {
               child: Sparkline(values: summary.equityCurve, height: 64, color: C.green),
             ),
             const SizedBox(height: 8),
-            Row(
-              children: [
-                for (final stat in summary.stats) ...[
-                  Expanded(child: _StatBox(stat: stat)),
-                  if (stat != summary.stats.last) const SizedBox(width: 8),
-                ],
+            MetricRow(
+              tiles: [
+                for (final stat in summary.stats)
+                  MetricTile(
+                    label: stat.label,
+                    value: stat.value,
+                    color: toneColor(stat.tone),
+                  ),
               ],
             ),
-          ],
-        ),
-      );
-}
-
-class _StatBox extends StatelessWidget {
-  const _StatBox({required this.stat});
-
-  final StatTile stat;
-
-  @override
-  Widget build(BuildContext context) => InsetBox(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              stat.value,
-              maxLines: 1,
-              style: T.mono(13, weight: 600, color: toneColor(stat.tone)),
-            ),
-            const SizedBox(height: 2),
-            Text(stat.label, maxLines: 1, style: T.body(10, color: C.muted)),
           ],
         ),
       );

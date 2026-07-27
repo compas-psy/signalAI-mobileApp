@@ -6,6 +6,7 @@ import '../../theme/tokens.dart';
 import '../../theme/typography.dart';
 import '../tone.dart';
 import '../widgets/common.dart';
+import '../widgets/segmented.dart';
 import '../widgets/sparkline.dart';
 
 /// Экран «Стратегии»: пакеты, их параметры и бэктест (ТЗ §5.5).
@@ -36,7 +37,7 @@ class StrategiesScreen extends StatelessWidget {
         const ScreenHeader(title: 'Стратегии'),
         Expanded(
           child: ListView(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 90),
+            padding: const EdgeInsets.fromLTRB(S.screen, 12, S.screen, 90),
             children: [
               for (final pack in snapshot.packs) ...[
                 _PackCard(
@@ -284,28 +285,14 @@ class _BacktestCard extends StatelessWidget {
                 color: running ? C.dim : C.accent,
               ),
             ),
-            Row(
-              children: [
-                for (final stat in backtest.stats) ...[
-                  Expanded(
-                    child: InsetBox(
-                      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 8),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            stat.value,
-                            maxLines: 1,
-                            style: T.mono(12.5, weight: 600, color: toneColor(stat.tone)),
-                          ),
-                          const SizedBox(height: 2),
-                          Text(stat.label, maxLines: 1, style: T.body(9.5, color: C.muted)),
-                        ],
-                      ),
-                    ),
+            MetricRow(
+              tiles: [
+                for (final stat in backtest.stats)
+                  MetricTile(
+                    label: stat.label,
+                    value: stat.value,
+                    color: toneColor(stat.tone),
                   ),
-                  if (stat != backtest.stats.last) const SizedBox(width: 8),
-                ],
               ],
             ),
             const SizedBox(height: 11),

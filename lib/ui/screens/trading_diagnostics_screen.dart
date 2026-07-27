@@ -134,7 +134,7 @@ class _TradingDiagnosticsScreenState extends State<TradingDiagnosticsScreen> {
             ),
             Expanded(
               child: ListView(
-                padding: const EdgeInsets.all(16),
+                padding: const EdgeInsets.all(S.screen),
                 children: [
                   Text(
                     'Живой прогон торгового контура: хранилище ключей, способ '

@@ -379,7 +379,7 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
             ),
             Expanded(
               child: ListView(
-                padding: const EdgeInsets.all(16),
+                padding: const EdgeInsets.all(S.screen),
                 children: [
                   Text(
                     'Живой прогон MOEX ISS и Bybit: каждый чек показывает сырые '
