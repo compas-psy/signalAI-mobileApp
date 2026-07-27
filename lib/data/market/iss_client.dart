@@ -398,6 +398,34 @@ class IssClient {
     return OptionsChainResult(rows: result, reports: reports, note: note);
   }
 
+  /// Колонки доски опционов, которые читает разбор.
+  ///
+  /// Просить их поимённо обязательно. Без этого биржа отдаёт все ~40 колонок
+  /// доски, и на мобильной сети тело ответа не успевает прийти: соединение
+  /// рвётся на середине, а выглядит это как «биржа не ответила». Тот же приём
+  /// уже применён к снимку акций.
+  static const optionSecurityColumns =
+      'SECID,ASSETCODE,STRIKE,OPTIONTYPE,LASTTRADEDATE,MINSTEP,DECIMALS';
+  static const optionMarketColumns =
+      'SECID,LAST,THEORPRICE,IMPLIEDVOLATILITY,OPENPOSITION,NUMTRADES,BID,OFFER';
+
+  /// Адрес страницы доски опционов — один на приложение и на диагностику.
+  ///
+  /// Экран «Сырой ответ биржи» обязан спрашивать ровно тем же запросом, каким
+  /// спрашивает приложение: иначе диагностика проверяет не то, что ломается.
+  static String optionsUrl(
+    String assetCode, {
+    bool filtered = true,
+    int start = 0,
+    bool allColumns = false,
+  }) =>
+      '$_base/$_optionsPath/securities.json'
+      '?iss.meta=off&iss.only=securities,marketdata'
+      '${filtered ? '&assetcode=$assetCode' : ''}'
+      '${allColumns ? '' : '&securities.columns=$optionSecurityColumns'
+          '&marketdata.columns=$optionMarketColumns'}'
+      '&limit=$_snapshotPageSize&start=$start';
+
   /// Обход страниц доски опционов. [filtered] — добавлять ли `assetcode`.
   Future<_OptionsHarvest> _optionsPages(
     String assetCode, {
@@ -405,12 +433,8 @@ class IssClient {
     required DateTime deadline,
     required List<IssQueryReport> reports,
   }) async {
-    Uri page(int start) => Uri.parse(
-          '$_base/$_optionsPath/securities.json'
-          '?iss.meta=off&iss.only=securities,marketdata'
-          '${filtered ? '&assetcode=$assetCode' : ''}'
-          '&limit=$_snapshotPageSize&start=$start',
-        );
+    Uri page(int start) => Uri.parse(optionsUrl(assetCode,
+        filtered: filtered, start: start));
 
     final securities = <Map<String, Object?>>[];
     final marketRows = <Map<String, Object?>>[];
@@ -437,6 +461,11 @@ class IssClient {
       }
       final securitiesPage = issRows(json, 'securities');
       final marketPage = issRows(json, 'marketdata');
+      // Страница длиннее запрошенного `limit` означает, что биржа его не
+      // соблюдает: пришла вся доска целиком, и второй запрос вернёт то же
+      // самое. Раньше это выяснялось только после повторной закачки всей
+      // доски — дедупликацией по SECID.
+      final limitIgnored = securitiesPage.length > _snapshotPageSize;
       reports.add(IssQueryReport(
         url: uri,
         elapsed: DateTime.now().difference(began),
@@ -444,6 +473,7 @@ class IssClient {
           'securities': _blockShape(json, 'securities'),
           'marketdata': _blockShape(json, 'marketdata'),
         },
+        limitIgnored: limitIgnored,
       ));
       if (securitiesPage.isEmpty && marketPage.isEmpty) break;
 
@@ -461,6 +491,8 @@ class IssClient {
       marketRows.addAll(marketPage);
       matched += pageMatched;
 
+      // Вся доска уже в руках — дочитывать нечего.
+      if (limitIgnored) break;
       // Ранний выход при полном обходе: нужный актив уже прошли.
       if (!filtered && matched > 0 && pageMatched == 0) break;
       if (fresh == 0) break;
@@ -510,16 +542,16 @@ class IssClient {
   /// из них живо сегодня — вопрос к бирже, а не ко мне.
   static List<(String, Uri)> optionProbeUrls(String assetCode) => [
         (
-          'Доска опционов с фильтром по активу',
-          Uri.parse('$_base/$_optionsPath/securities.json'
-              '?iss.meta=off&iss.only=securities,marketdata'
-              '&assetcode=$assetCode&limit=$_snapshotPageSize'),
+          'Так спрашивает приложение: фильтр по активу, только нужные колонки',
+          Uri.parse(optionsUrl(assetCode)),
         ),
         (
-          'Доска опционов без фильтра, первая страница',
-          Uri.parse('$_base/$_optionsPath/securities.json'
-              '?iss.meta=off&iss.only=securities,marketdata'
-              '&limit=$_snapshotPageSize'),
+          'Без фильтра по активу, только нужные колонки',
+          Uri.parse(optionsUrl(assetCode, filtered: false)),
+        ),
+        (
+          'Все колонки — схема целиком, ответ большой и может оборваться',
+          Uri.parse(optionsUrl(assetCode, allColumns: true)),
         ),
         (
           'Опционная доска статистики',
@@ -797,6 +829,7 @@ class IssQueryReport {
     required this.elapsed,
     this.blocks = const {},
     this.error,
+    this.limitIgnored = false,
   });
 
   factory IssQueryReport.failed(Uri url, String error, {required Duration elapsed}) =>
@@ -811,6 +844,12 @@ class IssQueryReport {
 
   /// Причина, по которой ответа нет. null — ответ получен.
   final String? error;
+
+  /// Биржа прислала больше строк, чем просили в `limit`.
+  ///
+  /// Значит постраничный обход невозможен: пришла вся доска. Знать это важно
+  /// — иначе приложение молча качает её по второму разу.
+  final bool limitIgnored;
 
   bool get ok => error == null;
 

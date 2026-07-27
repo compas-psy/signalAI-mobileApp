@@ -333,6 +333,7 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
           report.ok
               ? '${report.url.path}: строк ${report.rows} '
                   'за ${report.elapsed.inMilliseconds} мс'
+                  '${report.limitIgnored ? ' · limit биржей не соблюдён' : ''}'
               : 'ОШИБКА ${report.url.path}: ${report.error}',
         for (final entry in (probe.reports.isEmpty
                 ? const <String, IssBlockShape>{}

@@ -222,7 +222,16 @@ class _ProbeCard extends StatelessWidget {
               'что ожидает разбор.',
               style: T.body(11.5, color: C.warning, height: 1.4),
             )
-          else
+          else ...[
+            if (report.limitIgnored)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Text(
+                  'Биржа прислала больше строк, чем просили в limit: '
+                  'постраничный обход тут не работает — приходит вся доска.',
+                  style: T.body(11, color: C.warning, height: 1.4),
+                ),
+              ),
             for (final entry in report.blocks.entries) ...[
               Row(
                 children: [
@@ -255,6 +264,7 @@ class _ProbeCard extends StatelessWidget {
                 ),
               const SizedBox(height: 8),
             ],
+          ],
         ],
       ),
     );

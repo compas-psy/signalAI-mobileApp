@@ -441,6 +441,36 @@ void main() {
       expect(http.requested.first.query, contains('assetcode=SI'));
     });
 
+    test('колонки запрашиваются поимённо', () async {
+      // Без этого биржа отдаёт все ~40 колонок доски, и на мобильной сети
+      // тело ответа не успевает прийти: соединение рвётся на середине, а
+      // выглядит это как «биржа не ответила». Владелец получил ровно такой
+      // ответ на экране сырых данных: 11,5 с и обрыв.
+      final http = FakeHttp([issOptions(const [])]);
+      await IssClient(http: http).optionsChain('SI', ttl: Duration.zero);
+
+      final query = http.requested.first.query;
+      expect(query, contains('securities.columns=SECID,ASSETCODE,STRIKE'));
+      expect(query, contains('marketdata.columns=SECID,LAST,THEORPRICE'));
+    });
+
+    test('доска не качается по второму разу, если limit не соблюдён', () async {
+      // Страница длиннее запрошенного limit означает, что пришла вся доска.
+      // Раньше это выяснялось только после повторной полной закачки —
+      // дедупликацией по SECID.
+      final board = [
+        for (var i = 0; i < 150; i++)
+          issOptionRow('SI${90000 + i}BC5', 'SI', 90000 + i.toDouble(), 'C'),
+      ];
+      final http = FakeHttp([issOptions(board), issOptions(board)]);
+      final result = await IssClient(http: http)
+          .optionsChainProbe('SI', ttl: Duration.zero);
+
+      expect(http.requested.length, 1, reason: 'вторая закачка бессмысленна');
+      expect(result.rows.length, 150);
+      expect(result.reports.single.limitIgnored, isTrue);
+    });
+
     test('фильтрованный ответ разбирается без обхода всей доски', () async {
       final http = FakeHttp([
         issOptions([
