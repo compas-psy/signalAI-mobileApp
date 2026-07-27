@@ -7,6 +7,7 @@ import '../../theme/tokens.dart';
 import '../../theme/typography.dart';
 import '../../domain/broker/broker.dart';
 import '../../monitor/background_mode.dart';
+import '../../state/navigation.dart';
 import '../layout.dart';
 import '../../data/native_bridge.dart';
 import '../widgets/broker_keys_sheet.dart';
@@ -18,9 +19,18 @@ import 'trading_diagnostics_screen.dart';
 
 /// Экран «Настройки»: подключения, доставка сигналов, уведомления, риск (ТЗ §9).
 class SettingsScreen extends StatelessWidget {
-  const SettingsScreen({super.key, required this.snapshot});
+  const SettingsScreen({super.key, required this.snapshot, this.pill = 0});
 
   final SettingsSnapshot snapshot;
+
+  /// Подраздел «Контроля»: риск и лимиты · интеграции · уведомления ·
+  /// безопасность. Одна длинная лента настроек и была той картой, по которой
+  /// невозможно быстро найти нужный рубильник.
+  final int pill;
+
+  /// Показывать ли карточки этого подраздела.
+  bool _show(ControlPill target) =>
+      pill.clamp(0, ControlPill.values.length - 1) == target.index;
 
   @override
   Widget build(BuildContext context) {
@@ -33,105 +43,101 @@ class SettingsScreen extends StatelessWidget {
             padding: const EdgeInsets.fromLTRB(S.screen, 12, S.screen, 90),
             children: [
               CardGrid(children: [
-              // Источники данных и торговый доступ — принципиально разные
-              // вещи, и смешивать их в одну секцию «Биржи» нечестно: активный
-              // поток котировок не означает, что можно торговать.
-              if (snapshot.exchanges.any((e) => e.isDataSource)) ...[
-                _ExchangesCard(
-                  title: 'Источники данных',
-                  exchanges: [
-                    for (final e in snapshot.exchanges)
-                      if (e.isDataSource) e,
-                  ],
-                  connectedLabel: 'Данные идут',
-                  onConnect: controller.connectExchange,
-                ),
-                // Торговый доступ живёт в «Торговом контуре» — вторая
-                // карточка с теми же площадками только дублировала бы его.
-                if (snapshot.exchanges.any((e) => !e.isDataSource))
+              // Риск и лимиты: можно ли торговать, чем и на каких правилах.
+              if (_show(ControlPill.risk)) ...[
+                if (snapshot.trading != null) ...[
+                  _TradingStatusCard(trading: snapshot.trading!),
+                  _TradingControlsCard(trading: snapshot.trading!),
+                ],
+                _RiskCard(risk: snapshot.risk),
+              ],
+
+              // Интеграции: источники данных и площадки исполнения.
+              if (_show(ControlPill.integrations)) ...[
+                if (snapshot.exchanges.any((e) => e.isDataSource))
                   _ExchangesCard(
-                    title: 'Торговый доступ',
+                    title: 'Источники данных',
                     exchanges: [
                       for (final e in snapshot.exchanges)
-                        if (!e.isDataSource) e,
+                        if (e.isDataSource) e,
                     ],
+                    connectedLabel: 'Данные идут',
+                    onConnect: controller.connectExchange,
+                  )
+                else
+                  _ExchangesCard(
+                    title: 'Биржи · API',
+                    exchanges: snapshot.exchanges,
                     connectedLabel: 'Подключено',
                     onConnect: controller.connectExchange,
                   ),
-              ] else
-                _ExchangesCard(
-                  title: 'Биржи · API',
-                  exchanges: snapshot.exchanges,
-                  connectedLabel: 'Подключено',
-                  onConnect: controller.connectExchange,
-                ),
-              // Торговый контур разложен на три карточки: состояние (можно ли
-              // торговать), площадки (чем) и управление (рубильники). Одним
-              // блоком это была самая важная и самая нечитаемая карточка
-              // экрана — бейдж, причина, подтверждение, допуск, две площадки с
-              // ключами, два тумблера и кнопка в одном столбце.
-              if (snapshot.trading != null) ...[
-                _TradingStatusCard(trading: snapshot.trading!),
-                _BrokersCard(trading: snapshot.trading!),
-                _TradingControlsCard(trading: snapshot.trading!),
+                if (snapshot.trading != null) _BrokersCard(trading: snapshot.trading!),
+                if (snapshot.background != null)
+                  _BackgroundCard(background: snapshot.background!),
               ],
-              if (snapshot.background != null)
-                _BackgroundCard(background: snapshot.background!),
-              _TogglesCard(
-                title: 'Доставка сигналов',
-                items: snapshot.channels,
-                onChanged: controller.toggleChannel,
-              ),
-              _TogglesCard(
-                title: 'Уведомления',
-                items: snapshot.notifications,
-                onChanged: controller.toggleNotification,
-                // Доставку можно проверить, не дожидаясь настоящего сигнала:
-                // пуш с явно помеченным примером идеи.
-                footer: _TestPushButton(onTap: controller.sendTestPush),
-              ),
-              _RiskCard(risk: snapshot.risk),
-              // Доверие проверяется, а не декларируется: живой прогон
-              // источников данных с вердиктами по каждому полю.
-              SectionCard(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const SectionLabel('Прозрачность'),
-                    const SizedBox(height: 6),
-                    Text(
-                      'Диагностика гоняет MOEX ISS и Bybit вживую и сверяет '
-                      'разбор данных с реальностью биржи.',
-                      style: T.body(11, color: C.muted, height: 1.5),
-                    ),
-                    const SizedBox(height: 10),
-                    Pressable(
-                      onTap: () => Navigator.of(context).push(
-                        PageRouteBuilder<void>(
-                          pageBuilder: (context, animation, secondary) =>
-                              const DiagnosticsScreen(),
-                          transitionsBuilder: (context, animation, secondary, child) =>
-                              FadeTransition(opacity: animation, child: child),
-                        ),
+
+              // Уведомления: расписание и доставка.
+              if (_show(ControlPill.notifications)) ...[
+                _TogglesCard(
+                  title: 'Доставка сигналов',
+                  items: snapshot.channels,
+                  onChanged: controller.toggleChannel,
+                ),
+                _TogglesCard(
+                  title: 'Уведомления',
+                  items: snapshot.notifications,
+                  onChanged: controller.toggleNotification,
+                  // Доставку можно проверить, не дожидаясь настоящего сигнала:
+                  // пуш с явно помеченным примером идеи.
+                  footer: _TestPushButton(onTap: controller.sendTestPush),
+                ),
+              ],
+
+              // Безопасность и прозрачность: чем проверяется доверие.
+              if (_show(ControlPill.security)) ...[
+                // Доверие проверяется, а не декларируется: живой прогон
+                // источников данных с вердиктами по каждому полю.
+                SectionCard(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const SectionLabel('Прозрачность'),
+                      const SizedBox(height: 6),
+                      Text(
+                        'Диагностика гоняет MOEX ISS и Bybit вживую и сверяет '
+                        'разбор данных с реальностью биржи.',
+                        style: T.body(11, color: C.muted, height: 1.5),
                       ),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(vertical: 10),
-                        decoration: BoxDecoration(
-                          border: Border.all(color: C.borderHover),
-                          borderRadius: BorderRadius.circular(R.inner),
+                      const SizedBox(height: 10),
+                      Pressable(
+                        onTap: () => Navigator.of(context).push(
+                          PageRouteBuilder<void>(
+                            pageBuilder: (context, animation, secondary) =>
+                                const DiagnosticsScreen(),
+                            transitionsBuilder:
+                                (context, animation, secondary, child) =>
+                                    FadeTransition(opacity: animation, child: child),
+                          ),
                         ),
-                        child: Center(
-                          child: Text(
-                            'Диагностика данных',
-                            style: T.body(12, weight: 800, color: C.accent),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(vertical: 10),
+                          decoration: BoxDecoration(
+                            border: Border.all(color: C.borderHover),
+                            borderRadius: BorderRadius.circular(R.inner),
+                          ),
+                          child: Center(
+                            child: Text(
+                              'Диагностика данных',
+                              style: T.body(12, weight: 800, color: C.accent),
+                            ),
                           ),
                         ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
-              ),
-              const _AboutCard(),
+                const _AboutCard(),
+              ],
               ]),
             ],
           ),

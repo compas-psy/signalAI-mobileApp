@@ -286,3 +286,41 @@ class BrokerException implements Exception {
   @override
   String toString() => message;
 }
+
+/// Операция счёта, как её отдаёт брокер.
+///
+/// Сырьё для книги капитала: не «что есть сейчас», а «как оно возникло».
+/// Разбор в события книги делает слой данных — здесь только то, что реально
+/// пришло от площадки, без интерпретации.
+class BrokerOperation {
+  const BrokerOperation({
+    required this.id,
+    required this.type,
+    required this.description,
+    required this.at,
+    required this.payment,
+    required this.currency,
+    this.price = 0,
+    this.quantity = 0,
+    this.instrument = '',
+  });
+
+  /// Идентификатор у брокера. По нему книга отбрасывает дубли импорта.
+  final String id;
+
+  /// Машинный тип: OPERATION_TYPE_BUY, OPERATION_TYPE_BROKER_FEE и так далее.
+  final String type;
+
+  /// Человеческое описание от брокера.
+  final String description;
+
+  final DateTime at;
+
+  /// Изменение денег на счёте со знаком.
+  final double payment;
+
+  final String currency;
+  final double price;
+  final double quantity;
+  final String instrument;
+}

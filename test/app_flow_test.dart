@@ -111,7 +111,7 @@ void main() {
     expect(find.text('Бэктест'.toUpperCase()), findsOneWidget);
     expect(find.text('Запустить бэктест'), findsOneWidget);
 
-    await goTo(tester, 'Контроль');
+    await goTo(tester, 'Контроль', 'Интеграции');
     expect(find.text('Биржи · API'.toUpperCase()), findsOneWidget);
     expect(find.text('Т-Инвестиции API'), findsOneWidget);
   });
@@ -134,7 +134,7 @@ void main() {
   testWidgets('Binance подключается из настроек', (tester) async {
     await pumpApp(tester);
 
-    await goTo(tester, 'Контроль');
+    await goTo(tester, 'Контроль', 'Интеграции');
 
     expect(find.text('Не подключено'), findsOneWidget);
     await tester.tap(find.text('Подключить'));

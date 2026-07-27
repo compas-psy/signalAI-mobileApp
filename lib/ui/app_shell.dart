@@ -196,7 +196,8 @@ class AppShell extends StatelessWidget {
             ),
           LabPill.screener => const InvestScreen(),
         },
-      AppSection.control => SettingsScreen(snapshot: controller.settings!),
+      AppSection.control =>
+        SettingsScreen(snapshot: controller.settings!, pill: controller.pill),
     };
   }
 

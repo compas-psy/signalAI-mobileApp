@@ -303,6 +303,50 @@ class TInvestBroker implements Broker {
     return result;
   }
 
+  /// Операции счёта за период — сырьё для книги капитала.
+  ///
+  /// Берётся `GetOperations`, а не портфель: портфель показывает, что есть
+  /// сейчас, а книге нужно, как оно возникло — каждая покупка, комиссия,
+  /// дивиденд и налог с их временем и суммой. Иначе восстановить, откуда
+  /// взялся текущий капитал, невозможно.
+  Future<List<BrokerOperation>> operations({required DateTime from, DateTime? to}) async {
+    final account = await _account();
+    final json = await _call(
+      _sandbox ? 'SandboxService' : 'OperationsService',
+      _sandbox ? 'GetSandboxOperations' : 'GetOperations',
+      {
+        'accountId': account,
+        'from': from.toUtc().toIso8601String(),
+        'to': (to ?? DateTime.now()).toUtc().toIso8601String(),
+        'state': 'OPERATION_STATE_EXECUTED',
+      },
+    );
+
+    final result = <BrokerOperation>[];
+    for (final item in json['operations'] as List<dynamic>? ?? const []) {
+      final row = item as Map<String, dynamic>;
+      final date = DateTime.tryParse(row['date'] as String? ?? '');
+      if (date == null) continue;
+      result.add(BrokerOperation(
+        id: row['id'] as String? ?? '',
+        type: row['operationType'] as String? ?? '',
+        description: row['type'] as String? ?? '',
+        at: date.toUtc(),
+        payment: quotationToDouble(row['payment']),
+        price: quotationToDouble(row['price']),
+        quantity: (row['quantity'] as num?)?.toDouble() ??
+            double.tryParse(row['quantity'] as String? ?? '') ??
+            0,
+        currency: (row['currency'] as String? ?? 'rub').toUpperCase(),
+        instrument: await _tickerOf(
+          row['instrumentUid'] as String?,
+          row['figi'] as String?,
+        ),
+      ));
+    }
+    return result;
+  }
+
   /// Тикер инструмента по его идентификатору.
   ///
   /// Сначала кэш: соответствие уже известно, если заявку ставило приложение.

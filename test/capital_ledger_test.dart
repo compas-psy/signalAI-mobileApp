@@ -1,6 +1,8 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:signalai/core/format.dart';
+import 'package:signalai/data/ledger/broker_import.dart';
 import 'package:signalai/data/ledger/ledger_store.dart';
+import 'package:signalai/domain/broker/broker.dart';
 import 'package:signalai/domain/ledger/ledger_event.dart';
 import 'package:signalai/domain/ledger/money.dart';
 import 'package:signalai/domain/ledger/projections.dart';
@@ -393,6 +395,88 @@ void main() {
       await store.append([event(type: LedgerEventType.deposit, cash: 1)]);
       final dump = await store.exportJsonl();
       expect(dump.split('\n').first, contains('"schema":${LedgerStore.schemaVersion}'));
+    });
+  });
+
+  group('Импорт выписки брокера', () {
+    BrokerOperation op(String type, num payment, {String id = 'op1', num qty = 0, num price = 0}) =>
+        BrokerOperation(
+          id: id,
+          type: type,
+          description: type,
+          at: DateTime.utc(2026, 4, 1),
+          payment: payment.toDouble(),
+          currency: 'RUB',
+          quantity: qty.toDouble(),
+          price: price.toDouble(),
+          instrument: 'SBER',
+        );
+
+    List<LedgerEvent> importOf(List<BrokerOperation> ops) => BrokerImport.fromOperations(
+          accountId: 'tinvest',
+          venue: 'tinvest',
+          operations: ops,
+        );
+
+    test('типы выписки раскладываются по смыслу, а не по остатку', () {
+      final events = importOf([
+        op('OPERATION_TYPE_BUY', -30000, id: 'a', qty: 100, price: 300),
+        op('OPERATION_TYPE_SELL', 32000, id: 'b', qty: 100, price: 320),
+        op('OPERATION_TYPE_BROKER_FEE', -45, id: 'c'),
+        op('OPERATION_TYPE_DIVIDEND', 8000, id: 'd'),
+        op('OPERATION_TYPE_TAX', -1040, id: 'e'),
+        op('OPERATION_TYPE_INPUT', 100000, id: 'f'),
+        op('OPERATION_TYPE_ACCRUING_VARMARGIN', 2400, id: 'g'),
+      ]);
+
+      expect(events.map((e) => e.type).toList(), [
+        LedgerEventType.buy,
+        LedgerEventType.sell,
+        LedgerEventType.fee,
+        LedgerEventType.dividend,
+        LedgerEventType.tax,
+        LedgerEventType.deposit,
+        LedgerEventType.variationMargin,
+      ]);
+    });
+
+    test('неизвестный тип не подгоняется под похожий', () {
+      // Молчаливое «всё остальное — комиссия» однажды превратит дивиденд в
+      // издержку и тихо занизит результат.
+      final events = importOf([op('OPERATION_TYPE_ПРИДУМАННЫЙ', 500, id: 'x')]);
+
+      expect(events.single.type, LedgerEventType.correction);
+      expect(events.single.note, contains('не разобрано'));
+      expect(BrokerImport.unresolved(events), 1);
+      // Деньги при этом всё равно учтены.
+      expect(events.single.cashImpact, rubles(500));
+    });
+
+    test('импорт помечен сверенным и хранит ссылку брокера', () {
+      final events = importOf([op('OPERATION_TYPE_BUY', -100, qty: 1, price: 100)]);
+      expect(events.single.source, LedgerSource.broker);
+      expect(events.single.reconcile, ReconcileStatus.matched);
+      expect(events.single.brokerRef, 'op1');
+      expect(events.single.id, 'tinvest:op1');
+    });
+
+    test('повторный импорт той же выписки не удваивает книгу', () async {
+      final store = LedgerStore.inMemory();
+      final events = importOf([
+        op('OPERATION_TYPE_INPUT', 100000, id: 'i1'),
+        op('OPERATION_TYPE_BUY', -30000, id: 'i2', qty: 100, price: 300),
+      ]);
+
+      expect(await store.append(events), 2);
+      expect(await store.append(events), 0);
+
+      final snap = const LedgerProjector().project(await store.load());
+      expect(snap.cashInBase(), rubles(70000));
+      expect(snap.contributed, rubles(100000));
+    });
+
+    test('идентификаторы площадок не пересекаются', () {
+      expect(BrokerImport.eventId('bybit', '1'), isNot(BrokerImport.eventId('tinvest', '1')));
     });
   });
 }

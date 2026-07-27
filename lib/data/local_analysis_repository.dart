@@ -23,6 +23,7 @@ import '../monitor/background_mode.dart';
 import '../domain/ledger/account.dart';
 import '../domain/ledger/ledger_event.dart';
 import '../domain/ledger/money.dart';
+import 'ledger/broker_import.dart';
 import 'ledger/capital_desk.dart';
 import 'broker/bybit_broker.dart';
 import 'broker/tinvest_broker.dart';
@@ -492,7 +493,34 @@ class LocalAnalysisRepository
             reconcile: ReconcileStatus.pending,
             note: 'режим ${mode.name}',
           ));
-        notes.add('$title — позиций ${positions.length}');
+        // Книга наполняется из выписки, а не из портфеля: портфель говорит,
+        // что есть сейчас, а книге нужно, как оно возникло. Повторный импорт
+        // безопасен — дубли отбрасываются по идентификатору операции.
+        var imported = 0;
+        if (id == BrokerId.tinvest) {
+          final broker = brokerOf(id);
+          if (broker is TInvestBroker) {
+            try {
+              final since = DateTime.now().subtract(const Duration(days: 370));
+              final operations = await broker.operations(from: since);
+              final events = BrokerImport.fromOperations(
+                accountId: id.name,
+                venue: id.name,
+                operations: operations,
+              );
+              imported = await _capital.record(events);
+              final unresolved = BrokerImport.unresolved(events);
+              if (unresolved > 0) {
+                notes.add('$title — не разобрано операций: $unresolved');
+              }
+            } on BrokerException {
+              notes.add('$title — выписка не пришла');
+            }
+          }
+        }
+
+        notes.add('$title — позиций ${positions.length}'
+            '${imported > 0 ? ', импортировано операций $imported' : ''}');
       } on BrokerException catch (e) {
         accounts
           ..removeWhere((a) => a.id == id.name)
