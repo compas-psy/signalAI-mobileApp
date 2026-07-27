@@ -1,12 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- То же для API 31+: облачная копия и перенос на новое устройство. -->
+<!-- То же для API 31+: облачная копия и перенос на новое устройство.
+     Только каталог signalai/ — секреты остаются за бортом по построению. -->
 <data-extraction-rules>
     <cloud-backup>
         <include domain="file" path="signalai/"/>
-        <exclude domain="sharedpref" path="signalai.vault.xml"/>
     </cloud-backup>
     <device-transfer>
         <include domain="file" path="signalai/"/>
-        <exclude domain="sharedpref" path="signalai.vault.xml"/>
     </device-transfer>
 </data-extraction-rules>
