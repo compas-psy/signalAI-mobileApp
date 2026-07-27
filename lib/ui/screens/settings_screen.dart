@@ -2,6 +2,7 @@ import 'package:flutter/widgets.dart';
 
 import '../../core/format.dart';
 import '../../domain/models/settings.dart';
+import '../../state/app_controller.dart';
 import '../../state/app_scope.dart';
 import '../../theme/tokens.dart';
 import '../../theme/typography.dart';
@@ -420,6 +421,10 @@ class _BrokersCard extends StatelessWidget {
                   ),
                 ),
               ),
+            // Ключ привязан к паре «площадка + режим». Если ключи есть, но не
+            // для выбранного режима, площадка выглядит как «ключей нет» — и
+            // молча пропадает из капитала. Пишем это прямым текстом.
+            ?_modeMismatchNote(controller, BrokerId.parse(broker.id)),
             // Общая причина уже написана выше в блоке «Допуск» — здесь только
             // то, что относится именно к этой площадке.
             if (!broker.liveAllowed && broker.liveBlockedReason != trading.gateReason)
@@ -433,6 +438,21 @@ class _BrokersCard extends StatelessWidget {
             const SizedBox(height: 4),
           ],
         ],
+      ),
+    );
+  }
+
+  /// Строка о расхождении режима и ключей. null — расхождения нет.
+  static Widget? _modeMismatchNote(AppController controller, BrokerId id) {
+    final venue = controller.venues.where((v) => v.id == id).firstOrNull;
+    if (venue == null || !venue.hasKeys || venue.modeMatches) return null;
+    return Padding(
+      padding: const EdgeInsets.only(top: 2, bottom: 4),
+      child: Text(
+        'Ключи заведены для режима ${venue.keyModes.map((m) => m.name).join(' и ')}, '
+        'а переключатель стоит на ${venue.mode.name}. Капитал и позиции '
+        'читаются ключом, который есть; заявки с этого режима не уйдут.',
+        style: T.body(10.5, color: C.warning, height: 1.4),
       ),
     );
   }

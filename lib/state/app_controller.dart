@@ -21,6 +21,7 @@ import '../domain/risk/portfolio_impact.dart';
 import '../domain/risk/risk_engine.dart';
 import 'navigation.dart';
 import '../domain/broker/broker.dart';
+import '../domain/broker/trading_diagnostics.dart';
 import '../domain/enums.dart';
 import '../domain/invest/invest_models.dart';
 import '../domain/models/digest.dart';
@@ -34,6 +35,55 @@ import '../monitor/background_mode.dart';
 
 /// Вкладки нижней навигации.
 enum AppTab { ideas, invest, trades, strategies, settings }
+
+/// Состояние площадки для экрана счетов.
+///
+/// Площадка перечисляется всегда, даже если ключей нет: строка с причиной
+/// честнее пустоты. Пустота на месте Bybit читается как «этой биржи в
+/// приложении нет», и владелец справедливо заключает, что приложение врёт.
+class VenueStatus {
+  const VenueStatus({
+    required this.id,
+    required this.mode,
+    required this.keyModes,
+    required this.readable,
+    required this.check,
+  });
+
+  final BrokerId id;
+
+  /// Режим, выбранный переключателем.
+  final TradingMode mode;
+
+  /// Режимы, для которых ключи реально лежат в хранилище.
+  final Set<TradingMode> keyModes;
+
+  /// Режим, которым площадку можно читать. null — читать нечем.
+  final TradingMode? readable;
+
+  /// Итог последней проверки ключа биржей.
+  final BrokerKeyCheck? check;
+
+  String get title => id.title;
+
+  bool get hasKeys => keyModes.isNotEmpty;
+
+  /// Совпадает ли режим переключателя с тем, чем читаем.
+  bool get modeMatches => readable == mode;
+
+  /// Почему площадка молчит. null — всё в порядке.
+  String? get problem {
+    if (!hasKeys) return 'ключи не заданы: «Контроль → Интеграции»';
+    if (!modeMatches) {
+      return 'переключатель стоит на ${mode.name}, а ключи есть только для '
+          '${keyModes.map((m) => m.name).join(' и ')} — читаем ими, '
+          'но заявки с этого режима не уйдут';
+    }
+    final check = this.check;
+    if (check != null && !check.ok) return 'биржа не приняла ключ: ${check.note}';
+    return null;
+  }
+}
 
 /// Состояние приложения: что показываем и что сейчас делает пользователь.
 ///
@@ -398,6 +448,14 @@ class AppController extends ChangeNotifier {
     if (_route.section == AppSection.today || _route.section == AppSection.capital) {
       refreshCapital();
     }
+    if (_route.section == AppSection.capital &&
+        _route.pill == CapitalPill.accounts.index) {
+      refreshVenues();
+    }
+    if (_route.section == AppSection.control &&
+        _route.pill == ControlPill.integrations.index) {
+      refreshVenues();
+    }
   }
 
   // ── Книга капитала ─────────────────────────────────────────────────────
@@ -721,6 +779,38 @@ class AppController extends ChangeNotifier {
     showToast(accountId == null
         ? 'Торговый счёт: первый с полным доступом'
         : 'Торговый счёт назначен');
+  }
+
+  // ── Площадки ───────────────────────────────────────────────────────────
+
+  List<VenueStatus> _venues = const [];
+
+  /// Состояние каждой площадки: режим, ключи, чем читаем и почему молчит.
+  ///
+  /// Экран счетов обязан перечислять все площадки, а не только те, что
+  /// ответили. Площадка без ключей — это строка с причиной; пустота на её
+  /// месте выглядит как «Bybit не существует», и владелец справедливо
+  /// считает, что приложение врёт.
+  List<VenueStatus> get venues => _venues;
+
+  Future<void> refreshVenues() async {
+    final desk = tradingDesk;
+    if (desk == null) return;
+    final result = <VenueStatus>[];
+    for (final id in BrokerId.values) {
+      final modes = await desk.brokerKeyModes(id);
+      final readable = await desk.readableMode(id);
+      final current = desk.tradingState.modeOf(id);
+      result.add(VenueStatus(
+        id: id,
+        mode: current,
+        keyModes: modes,
+        readable: readable,
+        check: desk is TradingProbe ? (desk as TradingProbe).keyCheckOf(id) : null,
+      ));
+    }
+    _venues = result;
+    notifyListeners();
   }
 
   /// Подпись о свежести данных для шапки раздела.

@@ -211,60 +211,164 @@ class _Accounts extends StatelessWidget {
   final CapitalState state;
   final AppController controller;
 
+  /// К какой площадке относится счёт книги. Ручные счета площадки не имеют.
+  static String? _venueOf(Account account) {
+    if (account.id.startsWith('tinvest')) return 'tinvest';
+    if (account.id.startsWith('bybit')) return 'bybit';
+    return null;
+  }
+
   @override
   Widget build(BuildContext context) {
     final cash = state.snapshot.cash;
+    final manual = [
+      for (final account in state.accounts)
+        if (_venueOf(account) == null) account,
+    ];
+
     return ListView(
       padding: _pad,
       children: [
-        if (state.accounts.isEmpty)
+        // Сначала площадки — все, включая те, что молчат. Раньше здесь были
+        // только счета, которые ответили, и Bybit без ключей просто исчезал.
+        for (final venue in controller.venues) ...[
+          _VenueCard(
+            venue: venue,
+            accounts: [
+              for (final account in state.accounts)
+                if (_venueOf(account) == venue.id.name) account,
+            ],
+            cash: cash,
+          ),
+          const SizedBox(height: 12),
+        ],
+        if (controller.venues.isEmpty)
           SectionCard(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('Счетов пока нет', style: T.body(13, weight: 700)),
-                const SizedBox(height: 6),
-                Text(
-                  'Счета площадок появляются после сверки в «Сегодня», '
-                  'остальные — банковский резерв, кошелёк — заводятся руками.',
-                  style: T.body(11.5, color: C.muted, height: 1.5),
-                ),
-              ],
+            child: Text(
+              'Площадки в этом режиме недоступны: учёт работает по книге, '
+              'которую наполняют руками.',
+              style: T.body(11.5, color: C.muted, height: 1.5),
             ),
-          )
-        else
+          ),
+        if (manual.isNotEmpty) ...[
+          const SectionLabel('Счета вне площадок'),
+          const SizedBox(height: 8),
           CardGrid(children: [
-            for (final account in state.accounts)
+            for (final account in manual)
               _AccountCard(
                 account: account,
                 balances: cash[account.id] ?? const {},
               ),
           ]),
-        const SizedBox(height: 12),
-        Pressable(
+          const SizedBox(height: 12),
+        ],
+        ActionButton(
+          label: controller.capitalLoading ? 'Сверяем…' : 'Сверить с площадками',
+          primary: true,
+          onTap: controller.capitalLoading
+              ? null
+              : () async {
+                  await controller.refreshCapital(sync: true);
+                  await controller.refreshVenues();
+                },
+        ),
+        if (controller.capitalNote != null) ...[
+          const SizedBox(height: 8),
+          Text(controller.capitalNote!,
+              style: T.mono(10, color: C.muted, height: 1.4)),
+        ],
+        const SizedBox(height: 8),
+        ActionButton(
+          label: 'Добавить счёт вручную',
+          dense: true,
           onTap: () => showAddAccountSheet(context, controller),
-          child: Container(
-            padding: const EdgeInsets.symmetric(vertical: 11),
-            decoration: BoxDecoration(
-              border: Border.all(color: C.borderHover),
-              borderRadius: BorderRadius.circular(R.inner),
-            ),
-            child: Center(
-              child: Text('Добавить счёт',
-                  style: T.body(12.5, weight: 800, color: C.accent)),
-            ),
-          ),
         ),
       ],
     );
   }
 }
 
+/// Площадка целиком: режим, ключи, её счета либо причина, почему их нет.
+class _VenueCard extends StatelessWidget {
+  const _VenueCard({
+    required this.venue,
+    required this.accounts,
+    required this.cash,
+  });
+
+  final VenueStatus venue;
+  final List<Account> accounts;
+  final Map<String, Map<String, Money>> cash;
+
+  @override
+  Widget build(BuildContext context) {
+    final problem = venue.problem;
+    return SectionCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 8,
+                height: 8,
+                decoration: BoxDecoration(
+                  color: problem == null
+                      ? C.green
+                      : (venue.hasKeys ? C.warning : C.faint),
+                  shape: BoxShape.circle,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(child: Text(venue.title, style: T.body(13.5, weight: 700))),
+              Text(
+                accounts.isEmpty ? 'счетов нет' : 'счетов ${accounts.length}',
+                style: T.mono(10.5, color: C.muted),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'режим ${venue.mode.name} · ключи: '
+            '${venue.hasKeys ? venue.keyModes.map((m) => m.name).join(', ') : 'нет'}',
+            style: T.mono(10.5, color: C.faint),
+          ),
+          if (problem != null) ...[
+            const SizedBox(height: 8),
+            InsetBox(
+              child: Text(problem,
+                  style: T.body(11, color: C.warning, height: 1.4)),
+            ),
+          ],
+          if (accounts.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            for (final account in accounts) ...[
+              _AccountCard(
+                account: account,
+                balances: cash[account.id] ?? const {},
+                nested: true,
+              ),
+              if (account != accounts.last) const SizedBox(height: 8),
+            ],
+          ],
+        ],
+      ),
+    );
+  }
+}
+
 class _AccountCard extends StatelessWidget {
-  const _AccountCard({required this.account, required this.balances});
+  const _AccountCard({
+    required this.account,
+    required this.balances,
+    this.nested = false,
+  });
 
   final Account account;
   final Map<String, Money> balances;
+
+  /// Карточка внутри карточки площадки: без второй рамки поверх первой.
+  final bool nested;
 
   @override
   Widget build(BuildContext context) {
@@ -275,8 +379,13 @@ class _AccountCard extends StatelessWidget {
       ReconcileStatus.pending => C.info,
       ReconcileStatus.manual => C.muted,
     };
-    return SectionCard(
-      child: Column(
+    final body = _body(status);
+    return nested
+        ? InsetBox(child: body)
+        : SectionCard(child: body);
+  }
+
+  Widget _body(Color status) => Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
@@ -353,9 +462,7 @@ class _AccountCard extends StatelessWidget {
             Text(account.note!, style: T.body(10.5, color: C.muted)),
           ],
         ],
-      ),
-    );
-  }
+      );
 
   static String _time(DateTime at) {
     final local = at.toLocal();

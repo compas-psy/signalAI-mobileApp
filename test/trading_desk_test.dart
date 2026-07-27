@@ -7,6 +7,7 @@ import 'package:signalai/domain/broker/broker.dart';
 import 'package:signalai/domain/enums.dart';
 import 'package:signalai/domain/models/digest.dart';
 import 'package:signalai/domain/models/signal.dart';
+import 'package:signalai/state/app_controller.dart';
 
 /// Хранилище ключей в памяти.
 ///
@@ -300,6 +301,55 @@ void main() {
         repository.confirmSignal('sig-1'),
         throwsA(isA<FeatureUnavailableException>()),
       );
+    });
+  });
+
+  group('Площадка на экране счетов', () {
+    test('без ключей площадка называет причину, а не исчезает', () {
+      const venue = VenueStatus(
+        id: BrokerId.bybit,
+        mode: TradingMode.testnet,
+        keyModes: {},
+        readable: null,
+        check: null,
+      );
+      expect(venue.hasKeys, isFalse);
+      expect(venue.problem, contains('ключи не заданы'));
+    });
+
+    test('расхождение режима объясняется прямым текстом', () {
+      const venue = VenueStatus(
+        id: BrokerId.bybit,
+        mode: TradingMode.testnet,
+        keyModes: {TradingMode.live},
+        readable: TradingMode.live,
+        check: null,
+      );
+      expect(venue.problem, contains('testnet'));
+      expect(venue.problem, contains('live'));
+      expect(venue.problem, contains('заявки'));
+    });
+
+    test('всё сходится — жалоб нет', () {
+      const venue = VenueStatus(
+        id: BrokerId.bybit,
+        mode: TradingMode.live,
+        keyModes: {TradingMode.live},
+        readable: TradingMode.live,
+        check: null,
+      );
+      expect(venue.problem, isNull);
+    });
+
+    test('отвергнутый биржей ключ не выдаётся за рабочий', () {
+      final venue = VenueStatus(
+        id: BrokerId.bybit,
+        mode: TradingMode.live,
+        keyModes: const {TradingMode.live},
+        readable: TradingMode.live,
+        check: BrokerKeyCheck(ok: false, note: 'ключ от другой площадки', at: DateTime.now()),
+      );
+      expect(venue.problem, contains('другой площадки'));
     });
   });
 
