@@ -5,7 +5,7 @@ import '../../theme/tokens.dart';
 import '../../theme/typography.dart';
 import 'vector_icon.dart';
 
-/// Нижняя навигация из макета: Идеи · Сделки · Стратегии · Настройки.
+/// Нижняя навигация: Идеи · Инвест · Сделки · Стратегии · Настройки.
 class BottomNav extends StatelessWidget {
   const BottomNav({
     super.key,
@@ -30,9 +30,9 @@ class BottomNav extends StatelessWidget {
         child: Row(
           children: [
             _item(AppTab.ideas, 'Идеи', Icons.navIdeas),
-            _item(AppTab.invest, 'Инвест', Icons.navStrategies(C.bg)),
+            _item(AppTab.invest, 'Инвест', Icons.navInvest),
             _item(AppTab.trades, 'Сделки', Icons.navTrades),
-            _item(AppTab.strategies, 'Стратегии', Icons.navStrategies(C.bg)),
+            _item(AppTab.strategies, 'Стратегии', Icons.navStrategies(C.navBg)),
             _item(AppTab.settings, 'Настройки', Icons.navSettings),
           ],
         ),

@@ -68,7 +68,11 @@ abstract final class T {
   }) =>
       _base('JetBrains Mono', size, weight, color, letterSpacing, height);
 
-  /// Прописной микро-заголовок секции: 11px / 700 / letter-spacing .12em.
+  /// Прописной микро-заголовок секции: 11px / 700 / letter-spacing .1em.
   static TextStyle sectionLabel({Color color = C.muted}) =>
-      body(11, weight: 700, color: color, letterSpacing: 11 * 0.12);
+      body(11, weight: 700, color: color, letterSpacing: 11 * 0.1);
+
+  /// Микро-подпись над числом: ВХОД / СТОП / ЦЕЛИ — 9.5px / 700, тусклая.
+  static TextStyle microLabel({Color color = C.faint}) =>
+      body(9.5, weight: 700, color: color, letterSpacing: 9.5 * 0.08);
 }

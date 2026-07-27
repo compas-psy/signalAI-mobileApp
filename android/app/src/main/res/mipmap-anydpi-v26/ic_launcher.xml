@@ -1,9 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Адаптивная иконка (Android 8+): фон логотипа плюс монограмма «ΛI».
+<!-- Адаптивная иконка (Android 8+): тёмная плашка плюс жёлтая молния.
      Слои раздельные, потому что launcher применяет к иконке маску и параллакс:
-     цельная картинка обрезалась бы по краям. Пиксели монограммы вырезаны из
-     assets/images/logo.jpg утилитой tool/GenerateLauncherIcons.java. -->
+     цельная картинка обрезалась бы по краям. Молния нарисована утилитой
+     tool/GenerateLauncherIcons.java тем же путём, что знак внутри приложения.
+     Монохромный слой (Android 13+) — та же молния: система берёт из неё альфу
+     и красит темой рабочего стола. -->
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
     <background android:drawable="@color/ic_launcher_background"/>
     <foreground android:drawable="@mipmap/ic_launcher_foreground"/>
+    <monochrome android:drawable="@mipmap/ic_launcher_foreground"/>
 </adaptive-icon>

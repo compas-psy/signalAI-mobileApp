@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Жёлтый логотипа SignalAI. -->
-    <color name="ic_launcher_background">#FCCF04</color>
+    <!-- Тёмная поверхность SignalAI (surfaceRaised): на ней светится молния. -->
+    <color name="ic_launcher_background">#17171C</color>
 </resources>

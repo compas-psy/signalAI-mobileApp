@@ -28,8 +28,8 @@ class SideNav extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Container(
-        width: extended ? 176 : 76,
-        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
+        width: extended ? 176 : 78,
+        padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 8),
         decoration: const BoxDecoration(
           color: C.navBg,
           border: Border(right: BorderSide(color: C.dividerSoft)),
@@ -38,25 +38,31 @@ class SideNav extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Padding(
-              padding: EdgeInsets.fromLTRB(extended ? 10 : 0, 8, 0, 16),
-              child: Text.rich(
-                TextSpan(
-                  text: extended ? 'Signal' : 'S',
-                  style: T.jost(extended ? 18 : 20),
-                  children: [
-                    TextSpan(
-                      text: extended ? 'AI' : 'AI',
-                      style: T.jost(extended ? 18 : 20, color: C.accent),
+              padding: EdgeInsets.fromLTRB(extended ? 8 : 0, 0, 0, 14),
+              child: Row(
+                mainAxisAlignment:
+                    extended ? MainAxisAlignment.start : MainAxisAlignment.center,
+                children: [
+                  const BrandMark(size: 36),
+                  if (extended) ...[
+                    const SizedBox(width: 9),
+                    Text.rich(
+                      TextSpan(
+                        text: 'Signal',
+                        style: T.jost(17),
+                        children: [
+                          TextSpan(text: 'AI', style: T.jost(17, color: C.accent)),
+                        ],
+                      ),
                     ),
                   ],
-                ),
-                textAlign: extended ? TextAlign.left : TextAlign.center,
+                ],
               ),
             ),
             _item(AppTab.ideas, 'Идеи', Icons.navIdeas),
-            _item(AppTab.invest, 'Инвест', Icons.navStrategies(C.bg)),
+            _item(AppTab.invest, 'Инвест', Icons.navInvest),
             _item(AppTab.trades, 'Сделки', Icons.navTrades),
-            _item(AppTab.strategies, 'Стратегии', Icons.navStrategies(C.bg)),
+            _item(AppTab.strategies, 'Стратегии', Icons.navStrategies(C.navBg)),
             _item(AppTab.settings, 'Настройки', Icons.navSettings),
           ],
         ),
@@ -71,11 +77,11 @@ class SideNav extends StatelessWidget {
         behavior: HitTestBehavior.opaque,
         onTap: () => onSelect(tab),
         child: Container(
-          constraints: const BoxConstraints(minHeight: 52),
-          padding: EdgeInsets.symmetric(horizontal: extended ? 10 : 0, vertical: 8),
+          constraints: const BoxConstraints(minHeight: 54),
+          padding: EdgeInsets.symmetric(horizontal: extended ? 10 : 0, vertical: 9),
           decoration: BoxDecoration(
             color: active ? C.accentFaint : null,
-            borderRadius: BorderRadius.circular(R.inner),
+            borderRadius: BorderRadius.circular(R.button),
           ),
           child: extended
               ? Row(
@@ -94,11 +100,11 @@ class SideNav extends StatelessWidget {
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     VectorIcon(icon, size: 20, color: color),
-                    const SizedBox(height: 3),
+                    const SizedBox(height: 4),
                     Text(label,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: T.body(9, weight: 700, color: color)),
+                        style: T.body(10, weight: 700, color: color)),
                   ],
                 ),
         ),

@@ -1,37 +1,44 @@
 import javax.imageio.ImageIO;
+import java.awt.BasicStroke;
 import java.awt.Color;
 import java.awt.Graphics2D;
 import java.awt.RenderingHints;
+import java.awt.geom.AffineTransform;
+import java.awt.geom.Path2D;
+import java.awt.geom.Rectangle2D;
+import java.awt.geom.RoundRectangle2D;
 import java.awt.image.BufferedImage;
 import java.io.File;
 
 /**
- * Генератор иконок запуска из логотипа {@code assets/images/logo.jpg}.
+ * Генератор иконок запуска: жёлтая молния на тёмной плашке.
  *
  * <p>Почему отдельная утилита, а не пакет вроде flutter_launcher_icons: в
  * проекте намеренно нет ни одной внешней зависимости pub, и ради иконок её
  * заводить не хочется. javax.imageio есть в любом JDK, а JDK и так нужен для
  * сборки Android.
  *
- * <p>Что делает. В логотипе «SignalAI» на иконке читаема только монограмма
- * «ΛI»: словесный знак на 48dp превращается в неразборчивую полоску. Поэтому
- * из логотипа вырезается именно монограмма — это его собственные пиксели, а не
- * придуманный заново знак, — и раскладывается по двум слоям адаптивной иконки:
- * фон — жёлтый логотипа, передний план — глиф с прозрачностью.
+ * <p>Что рисуется. Знак — только молния, без букв: словесный знак «SignalAI» на
+ * 48dp превращается в неразборчивую полоску, а монограмма «ΛI», которую
+ * вырезали из логотипа раньше, читалась как случайные засечки. Молния —
+ * единственная форма, которая держится на всех плотностях.
  *
- * <p>Прозрачность считается расклейкой по яркости: пиксель либо смесь жёлтого с
- * чёрным, либо смесь жёлтого с белым. Так края остаются сглаженными, без
- * жёлтой каймы вокруг глифа.
+ * <p>Геометрия совпадает с макетом (`design/SignalAI App v2.dc.html`, §3 ТЗ):
+ * путь задан в системе 48×48, фон #17171C, молния #FFD400. Тот же путь
+ * нарисован в приложении (`Icons.brandBolt`) — знак в шапке и знак на рабочем
+ * столе обязаны быть одним знаком.
  *
  * <p>Запуск: {@code java tool/GenerateLauncherIcons.java} из корня проекта.
  */
 public class GenerateLauncherIcons {
 
-  /** Фон логотипа. Он же — фоновый слой адаптивной иконки. */
-  static final Color BACKGROUND = new Color(0xFC, 0xCF, 0x04);
+  /** Фон плашки — тёмная поверхность, а не жёлтый: молния должна светиться. */
+  static final Color BACKGROUND = new Color(0x17, 0x17, 0x1C);
 
-  /** Монограмма «ΛI» в координатах logo.jpg (640×640). */
-  static final int CROP_X = 418, CROP_Y = 267, CROP_W = 119, CROP_H = 91;
+  static final Color BOLT = new Color(0xFF, 0xD4, 0x00);
+
+  /** Тонкая рамка плашки легаси-иконки: отделяет её от тёмных обоев. */
+  static final Color EDGE = new Color(0x2C, 0x2C, 0x34);
 
   /** Плотности: имя каталога → сторона легаси-иконки в пикселях. */
   static final Object[][] DENSITIES = {
@@ -39,21 +46,18 @@ public class GenerateLauncherIcons {
   };
 
   /**
-   * Доля ширины холста под глиф.
+   * Доля стороны холста под высоту молнии на адаптивной иконке.
    *
-   * <p>У адаптивной иконки маска съедает края: гарантированно видна только
-   * центральная зона, поэтому на 108dp-холсте глиф занимает 56%, а не всё поле.
+   * <p>У адаптивной иконки маска съедает края: на 108dp-холсте гарантированно
+   * видна центральная зона 66dp. 0,55 от 108 — это 59dp, с запасом внутри неё.
    */
-  static final double ADAPTIVE_SCALE = 0.56;
+  static final double ADAPTIVE_SCALE = 0.55;
 
-  /** У легаси-иконки маски нет, глиф может занимать больше. */
-  static final double LEGACY_SCALE = 0.72;
+  /** У легаси-иконки маски нет — молния занимает больше плашки. */
+  static final double LEGACY_SCALE = 0.62;
 
   public static void main(String[] args) throws Exception {
-    File logo = new File("assets/images/logo.jpg");
     File resDir = new File("android/app/src/main/res");
-    BufferedImage source = ImageIO.read(logo);
-    BufferedImage glyph = extractGlyph(source);
 
     for (Object[] density : DENSITIES) {
       String name = (String) density[0];
@@ -61,74 +65,67 @@ public class GenerateLauncherIcons {
       File dir = new File(resDir, "mipmap-" + name);
       dir.mkdirs();
 
-      write(legacyIcon(glyph, legacySize), new File(dir, "ic_launcher.png"));
+      write(legacyIcon(legacySize), new File(dir, "ic_launcher.png"));
       // Холст переднего плана адаптивной иконки — 108dp против 48dp легаси.
       int foregroundSize = legacySize * 108 / 48;
-      write(foreground(glyph, foregroundSize), new File(dir, "ic_launcher_foreground.png"));
+      write(foreground(foregroundSize), new File(dir, "ic_launcher_foreground.png"));
     }
-    System.out.println("Иконки перегенерированы из " + logo);
+    System.out.println("Иконки перерисованы: молния " + BOLT + " на " + BACKGROUND);
   }
 
-  /** Монограмма с альфой: жёлтый фон логотипа становится прозрачным. */
-  static BufferedImage extractGlyph(BufferedImage source) {
-    BufferedImage out = new BufferedImage(CROP_W, CROP_H, BufferedImage.TYPE_INT_ARGB);
-    double backgroundLuma = luma(BACKGROUND.getRed(), BACKGROUND.getGreen(), BACKGROUND.getBlue());
-
-    for (int y = 0; y < CROP_H; y++) {
-      for (int x = 0; x < CROP_W; x++) {
-        int p = source.getRGB(CROP_X + x, CROP_Y + y);
-        int r = (p >> 16) & 255, g = (p >> 8) & 255, b = p & 255;
-        double l = luma(r, g, b);
-
-        // Темнее фона — смесь с чёрным, светлее — с белым. Доля примеси и есть
-        // альфа: на чистом фоне она нулевая, в теле глифа единичная.
-        int colour;
-        double alpha;
-        if (l <= backgroundLuma) {
-          colour = 0x000000;
-          alpha = (backgroundLuma - l) / backgroundLuma;
-        } else {
-          colour = 0xFFFFFF;
-          alpha = (l - backgroundLuma) / (255 - backgroundLuma);
-        }
-        // JPEG шумит: почти прозрачное считаем фоном, почти непрозрачное —
-        // телом глифа, иначе по всей иконке остаётся серая рябь.
-        if (alpha < 0.06) alpha = 0;
-        if (alpha > 0.94) alpha = 1;
-        out.setRGB(x, y, ((int) Math.round(alpha * 255) << 24) | colour);
-      }
-    }
-    return out;
+  /** Молния макета в координатах 48×48. */
+  static Path2D bolt() {
+    Path2D.Double p = new Path2D.Double();
+    p.moveTo(26.6, 11.5);
+    p.lineTo(16.5, 27);
+    p.lineTo(23.4, 27);
+    p.lineTo(21.4, 36.5);
+    p.lineTo(31.5, 21.6);
+    p.lineTo(24.6, 21.6);
+    p.closePath();
+    return p;
   }
 
-  static double luma(int r, int g, int b) {
-    return 0.299 * r + 0.587 * g + 0.114 * b;
-  }
-
-  /** Квадратная иконка для launcher'ов до Android 8: глиф на жёлтом. */
-  static BufferedImage legacyIcon(BufferedImage glyph, int size) {
+  /** Квадратная иконка для launcher'ов до Android 8: молния на плашке. */
+  static BufferedImage legacyIcon(int size) {
     BufferedImage out = new BufferedImage(size, size, BufferedImage.TYPE_INT_ARGB);
     Graphics2D g = graphics(out);
+    double inset = size * 0.02;
+    RoundRectangle2D plate = new RoundRectangle2D.Double(
+        inset, inset, size - 2 * inset, size - 2 * inset, size * 0.27, size * 0.27);
     g.setColor(BACKGROUND);
-    g.fillRect(0, 0, size, size);
-    drawCentred(g, glyph, size, LEGACY_SCALE);
+    g.fill(plate);
+    g.setColor(EDGE);
+    g.setStroke(new BasicStroke((float) Math.max(1, size / 48.0)));
+    g.draw(plate);
+    drawBolt(g, size, LEGACY_SCALE);
     g.dispose();
     return out;
   }
 
-  /** Передний слой адаптивной иконки: только глиф, фон прозрачный. */
-  static BufferedImage foreground(BufferedImage glyph, int size) {
+  /** Передний слой адаптивной иконки: только молния, фон прозрачный. */
+  static BufferedImage foreground(int size) {
     BufferedImage out = new BufferedImage(size, size, BufferedImage.TYPE_INT_ARGB);
     Graphics2D g = graphics(out);
-    drawCentred(g, glyph, size, ADAPTIVE_SCALE);
+    drawBolt(g, size, ADAPTIVE_SCALE);
     g.dispose();
     return out;
   }
 
-  static void drawCentred(Graphics2D g, BufferedImage glyph, int canvas, double scale) {
-    int w = (int) Math.round(canvas * scale);
-    int h = (int) Math.round(w * (double) glyph.getHeight() / glyph.getWidth());
-    g.drawImage(glyph, (canvas - w) / 2, (canvas - h) / 2, w, h, null);
+  /** Молния по центру холста: высота — [scale] от стороны. */
+  static void drawBolt(Graphics2D g, int canvas, double scale) {
+    Path2D path = bolt();
+    Rectangle2D bounds = path.getBounds2D();
+    double k = canvas * scale / bounds.getHeight();
+
+    AffineTransform t = new AffineTransform();
+    t.translate(
+        (canvas - bounds.getWidth() * k) / 2 - bounds.getX() * k,
+        (canvas - bounds.getHeight() * k) / 2 - bounds.getY() * k);
+    t.scale(k, k);
+
+    g.setColor(BOLT);
+    g.fill(t.createTransformedShape(path));
   }
 
   static Graphics2D graphics(BufferedImage image) {
@@ -136,6 +133,7 @@ public class GenerateLauncherIcons {
     g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
     g.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
     g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+    g.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE);
     return g;
   }
 

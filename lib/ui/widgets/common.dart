@@ -3,12 +3,12 @@ import 'package:flutter/widgets.dart';
 import '../../theme/tokens.dart';
 import '../../theme/typography.dart';
 
-/// Карточка-контейнер: #16161A, рамка #26262C, скругление 16.
+/// Карточка-контейнер: #141419, рамка #1F1F26, скругление 18.
 class SectionCard extends StatelessWidget {
   const SectionCard({
     super.key,
     required this.child,
-    this.padding = const EdgeInsets.fromLTRB(14, 12, 14, 12),
+    this.padding = const EdgeInsets.fromLTRB(15, 13, 15, 13),
     this.margin,
     this.clip = false,
   });
@@ -220,19 +220,27 @@ class _PressableState extends State<Pressable> {
 
 /// Липкая шапка экрана с заголовком (Сделки / Стратегии / Настройки).
 class ScreenHeader extends StatelessWidget {
-  const ScreenHeader({super.key, required this.title});
+  const ScreenHeader({super.key, required this.title, this.trailing});
 
   final String title;
+
+  /// Бейдж режима раздела справа от заголовка («ЛОНГИ · 1–3 МЕС»).
+  final Widget? trailing;
 
   @override
   Widget build(BuildContext context) => Container(
         width: double.infinity,
-        padding: const EdgeInsets.fromLTRB(16, 14, 16, 10),
+        padding: const EdgeInsets.fromLTRB(S.screen, 14, S.screen, 10),
         decoration: const BoxDecoration(
           color: C.headerBg,
           border: Border(bottom: BorderSide(color: C.dividerSoft)),
         ),
-        child: Text(title, style: T.jost(22)),
+        child: Row(
+          children: [
+            Expanded(child: Text(title, style: T.jost(23))),
+            ?trailing,
+          ],
+        ),
       );
 }
 

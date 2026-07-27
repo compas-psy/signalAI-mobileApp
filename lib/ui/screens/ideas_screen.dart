@@ -9,6 +9,7 @@ import '../../theme/typography.dart';
 import '../tone.dart';
 import '../widgets/common.dart';
 import '../widgets/confluence_ring.dart';
+import '../widgets/level_strip.dart';
 import '../widgets/vector_icon.dart';
 
 /// Экран «Идеи» — утренний дайджест (ТЗ §4: анализ в 10:10 МСК).
@@ -31,7 +32,7 @@ class IdeasScreen extends StatelessWidget {
                 _RegimeCard(digest: digest),
                 _EventsCard(events: digest.events),
                 Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 18, 16, 8),
+                  padding: const EdgeInsets.fromLTRB(S.screen, 18, S.screen, 8),
                   child: Row(
                     crossAxisAlignment: CrossAxisAlignment.baseline,
                     textBaseline: TextBaseline.alphabetic,
@@ -45,7 +46,7 @@ class IdeasScreen extends StatelessWidget {
                   ),
                 ),
                 Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 90),
+                  padding: const EdgeInsets.fromLTRB(S.screen, 0, S.screen, 90),
                   child: Column(
                     children: [
                       if (digest.signals.isEmpty)
@@ -74,38 +75,34 @@ class _Header extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Container(
-        padding: const EdgeInsets.fromLTRB(16, 12, 16, 10),
+        padding: const EdgeInsets.fromLTRB(S.screen, 12, S.screen, 10),
         decoration: const BoxDecoration(
           color: C.headerBg,
           border: Border(bottom: BorderSide(color: C.dividerSoft)),
         ),
         child: Row(
           children: [
-            ClipRRect(
-              borderRadius: BorderRadius.circular(8),
-              child: Image.asset('assets/images/logo.jpg', width: 28, height: 28),
-            ),
+            const BrandMark(size: 30),
             const SizedBox(width: 10),
             Text.rich(
               TextSpan(
                 text: 'Signal',
-                style: T.jost(20),
-                children: [TextSpan(text: 'AI', style: T.jost(20, color: C.accent))],
+                style: T.jost(19),
+                children: [TextSpan(text: 'AI', style: T.jost(19, color: C.accent))],
               ),
             ),
             const Spacer(),
             SizedBox(
-              width: 36,
-              height: 36,
+              width: 38,
+              height: 38,
               child: Stack(
                 children: [
                   Container(
-                    width: 36,
-                    height: 36,
-                    decoration: BoxDecoration(
+                    width: 38,
+                    height: 38,
+                    decoration: const BoxDecoration(
                       color: C.card,
                       shape: BoxShape.circle,
-                      border: Border.all(color: C.border),
                     ),
                     child: const Center(
                       child: VectorIcon(Icons.bell, size: 17, color: C.textSecondary),
@@ -138,7 +135,7 @@ class _DigestTitle extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Padding(
-        padding: const EdgeInsets.fromLTRB(16, 14, 16, 8),
+        padding: const EdgeInsets.fromLTRB(S.screen, 14, S.screen, 8),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -146,7 +143,7 @@ class _DigestTitle extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(digest.title, style: T.jost(22)),
+                  Text(digest.title, style: T.jost(23)),
                   const SizedBox(height: 2),
                   Text(digest.subtitle, style: T.body(12, color: C.muted)),
                 ],
@@ -176,7 +173,7 @@ class _RegimeCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => SectionCard(
-        margin: const EdgeInsets.fromLTRB(16, 6, 16, 0),
+        margin: const EdgeInsets.fromLTRB(S.screen, 6, S.screen, 0),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -224,7 +221,7 @@ class _EventsCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => SectionCard(
-        margin: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+        margin: const EdgeInsets.fromLTRB(S.screen, 10, S.screen, 0),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -269,7 +266,7 @@ class _StaleBanner extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Container(
-        margin: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+        margin: const EdgeInsets.fromLTRB(S.screen, 8, S.screen, 0),
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
         decoration: BoxDecoration(
           color: const Color(0x1AFFD400),
@@ -403,6 +400,15 @@ class IdeaCard extends StatelessWidget {
     final controller = AppScope.read(context);
     final working = signal.status.isWorking;
 
+    final decimals = signal.priceDecimals;
+    // Сетап одной строкой: то же, что раньше было россыпью чипов, но читается
+    // слева направо как фраза и не отнимает у карточки третью строку.
+    final setup = [
+      if (signal.chips.isNotEmpty) signal.chips.join(' + '),
+      signal.market.label,
+      signal.horizonLabel,
+    ].join(' · ');
+
     return Pressable(
       onTap: () => controller.openSignal(signal.id),
       child: SectionCard(
@@ -415,41 +421,31 @@ class IdeaCard extends StatelessWidget {
                 ConfluenceRing(score: signal.score),
                 const SizedBox(width: 11),
                 Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+                  child: Row(
                     children: [
-                      Row(
-                        children: [
-                          Flexible(
-                            child: Text(
-                              signal.symbol,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: T.jost(16),
-                            ),
-                          ),
-                          const SizedBox(width: 7),
-                          DirectionBadge(
-                            label: signal.direction.label,
-                            color: directionColor(signal.direction),
-                            background: directionBackground(signal.direction),
-                          ),
-                          const SizedBox(width: 7),
-                          OutlineBadge(
-                            label: signal.status.label,
-                            color: working ? C.accent : C.muted,
-                            borderColor:
-                                working ? const Color(0x66FFD400) : C.border,
-                          ),
-                        ],
+                      Flexible(
+                        child: Text(
+                          signal.symbol,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: T.jost(17),
+                        ),
                       ),
-                      const SizedBox(height: 2),
-                      Text(
-                        '${signal.name} · ${signal.market.label} · ${signal.horizonLabel}',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: T.body(11, color: C.muted),
+                      const SizedBox(width: 7),
+                      DirectionBadge(
+                        label: signal.direction.label,
+                        color: directionColor(signal.direction),
+                        background: directionBackground(signal.direction),
                       ),
+                      if (working) ...[
+                        const SizedBox(width: 7),
+                        Text(
+                          '● ${signal.status.label}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: T.body(10, weight: 700, color: C.accent),
+                        ),
+                      ],
                     ],
                   ),
                 ),
@@ -457,7 +453,7 @@ class IdeaCard extends StatelessWidget {
                 Column(
                   crossAxisAlignment: CrossAxisAlignment.end,
                   children: [
-                    Text(signal.lastPrice, style: T.mono(13, weight: 600)),
+                    Text(signal.lastPrice, style: T.mono(13.5, weight: 600)),
                     Text(
                       signal.changeLabel,
                       style: T.mono(11, color: signal.changeUp ? C.green : C.red),
@@ -466,84 +462,25 @@ class IdeaCard extends StatelessWidget {
                 ),
               ],
             ),
-            const SizedBox(height: 11),
-            _PriceStrip(signal: signal),
-            const SizedBox(height: 9),
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.center,
-              children: [
-                Expanded(
-                  child: Wrap(
-                    spacing: 5,
-                    runSpacing: 5,
-                    children: [for (final chip in signal.chips) TagChip(chip)],
-                  ),
-                ),
-                const SizedBox(width: 5),
-                OutlineBadge(
-                  label: 'R:R ${signal.riskReward}',
-                  color: C.accent,
-                  borderColor: C.accentBorder,
-                  background: C.accentFaint,
-                  fontWeight: 700,
-                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-/// Полоска «Вход / SL / TP» внутри карточки идеи.
-class _PriceStrip extends StatelessWidget {
-  const _PriceStrip({required this.signal});
-
-  final TradingSignal signal;
-
-  @override
-  Widget build(BuildContext context) {
-    final decimals = signal.priceDecimals;
-    return InsetBox(
-      padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 8),
-      child: Row(
-        children: [
-          _pair('Вход ', fmtPrice(signal.entry, decimals), C.accent),
-          const SizedBox(width: 12),
-          _pair('SL ', fmtPrice(signal.stopLoss, decimals), C.red),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Text.rich(
-              TextSpan(
-                text: 'TP ',
-                style: T.mono(11, color: C.muted),
-                children: [
-                  TextSpan(
-                    text: signal.takeProfits
-                        .map((tp) => fmtPrice(tp.price, decimals))
-                        .join(' / '),
-                    style: T.mono(11, weight: 600, color: C.green),
-                  ),
-                ],
-              ),
+            const SizedBox(height: 7),
+            Text(
+              setup,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
+              style: T.body(11.5, color: C.muted),
             ),
-          ),
-        ],
+            const SizedBox(height: 10),
+            LevelStrip(
+              entry: fmtPrice(signal.entry, decimals),
+              stop: fmtPrice(signal.stopLoss, decimals),
+              targets: [
+                for (final tp in signal.takeProfits) fmtPrice(tp.price, decimals),
+              ],
+              riskReward: '${signal.riskReward} R:R',
+            ),
+          ],
+        ),
       ),
     );
   }
-
-  Widget _pair(String label, String value, Color color) => Text.rich(
-        TextSpan(
-          text: label,
-          style: T.mono(11, color: C.muted),
-          children: [
-            TextSpan(text: value, style: T.mono(11, weight: 600, color: color)),
-          ],
-        ),
-      );
 }

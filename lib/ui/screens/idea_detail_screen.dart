@@ -9,11 +9,16 @@ import '../../theme/tokens.dart';
 import '../../theme/typography.dart';
 import '../tone.dart';
 import '../widgets/common.dart';
+import '../widgets/segmented.dart';
 import '../widgets/trade_chart.dart';
 import '../widgets/vector_icon.dart';
 
 /// Карточка идеи: график, уровни, обоснование, смарт-риск и подтверждение.
-class IdeaDetailScreen extends StatelessWidget {
+///
+/// Разбор разложен на три сегмента — «План», «Факторы», «События». Раньше всё
+/// это была одна лента карточек, и человек листал мимо того, что ему сейчас не
+/// нужно: перед отправкой ордера важен план, а не история фактора.
+class IdeaDetailScreen extends StatefulWidget {
   const IdeaDetailScreen({
     super.key,
     required this.signal,
@@ -29,19 +34,35 @@ class IdeaDetailScreen extends StatelessWidget {
   final bool showBack;
 
   @override
+  State<IdeaDetailScreen> createState() => _IdeaDetailScreenState();
+}
+
+class _IdeaDetailScreenState extends State<IdeaDetailScreen> {
+  int _tab = 0;
+
+  @override
+  void didUpdateWidget(IdeaDetailScreen old) {
+    super.didUpdateWidget(old);
+    // На планшете вторая колонка не пересоздаётся при выборе другой идеи —
+    // сегмент должен вернуться к плану, а не показывать факторы прошлой.
+    if (old.signal.id != widget.signal.id) _tab = 0;
+  }
+
+  @override
   Widget build(BuildContext context) {
     final controller = AppScope.read(context);
+    final signal = widget.signal;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         _DetailHeader(
           signal: signal,
           onBack: controller.back,
-          showBack: showBack,
+          showBack: widget.showBack,
         ),
         Expanded(
           child: ListView(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 96),
+            padding: const EdgeInsets.fromLTRB(S.screen, 12, S.screen, 96),
             children: [
               ClipRRect(
                 borderRadius: BorderRadius.circular(R.inner),
@@ -54,15 +75,33 @@ class IdeaDetailScreen extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 12),
+              // Короткий вывод крупно — почему сделка вообще есть. Подробности
+              // (инвалидация, план ведения, происхождение расчёта) ушли в
+              // сегмент «План»: перед глазами остаётся одна фраза.
+              Text(
+                _lead(signal.note),
+                style: T.body(12.5, color: C.textSecondary, height: 1.5),
+              ),
+              const SizedBox(height: 12),
               _LevelsRow(signal: signal),
               const SizedBox(height: 12),
-              _TakeProfitsCard(signal: signal),
+              SegmentedControl(
+                items: const ['План', 'Факторы', 'События'],
+                index: _tab,
+                onSelect: (i) => setState(() => _tab = i),
+              ),
               const SizedBox(height: 12),
-              _ReasoningCard(signal: signal),
-              const SizedBox(height: 12),
-              _SmartRiskCard(signal: signal, risk: risk),
-              const SizedBox(height: 12),
-              _SignalEventsCard(events: signal.events),
+              ...switch (_tab) {
+                0 => [
+                    _TakeProfitsCard(signal: signal),
+                    const SizedBox(height: 12),
+                    _SmartRiskCard(signal: signal, risk: widget.risk),
+                    const SizedBox(height: 12),
+                    _ManagementCard(signal: signal),
+                  ],
+                1 => [_FactorsCard(signal: signal)],
+                _ => [_SignalEventsCard(events: signal.events)],
+              },
               const SizedBox(height: 12),
               if (controller.paperAvailable) ...[
                 _PaperCard(signal: signal),
@@ -127,6 +166,74 @@ class IdeaDetailScreen extends StatelessWidget {
       ],
     );
   }
+}
+
+/// Первое предложение обоснования — вывод, а не весь абзац.
+///
+/// Скринер пишет обоснование целиком: сетап, инвалидация, план ведения,
+/// происхождение расчёта. Наверху нужен только сетап; остальное дословно
+/// показано в сегменте «План», ничего не теряется.
+String _lead(String note) {
+  final end = note.indexOf('. ');
+  return end < 0 ? note : note.substring(0, end + 1);
+}
+
+/// Хвост обоснования: всё, кроме первого предложения.
+String _tail(String note) {
+  final end = note.indexOf('. ');
+  return end < 0 ? '' : note.substring(end + 2);
+}
+
+/// План ведения сделки — дословно то, что записал скринер.
+class _ManagementCard extends StatelessWidget {
+  const _ManagementCard({required this.signal});
+
+  final TradingSignal signal;
+
+  @override
+  Widget build(BuildContext context) {
+    final tail = _tail(signal.note);
+    if (tail.isEmpty) return const SizedBox.shrink();
+    return SectionCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const SectionLabel('План ведения'),
+          const SizedBox(height: 8),
+          Text(tail, style: T.body(12, color: C.textSecondary, height: 1.55)),
+        ],
+      ),
+    );
+  }
+}
+
+/// Шесть блоков оценки: имя, сила 1–3 делениями, одна строка объяснения.
+class _FactorsCard extends StatelessWidget {
+  const _FactorsCard({required this.signal});
+
+  final TradingSignal signal;
+
+  @override
+  Widget build(BuildContext context) => SectionCard(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Expanded(child: SectionLabel('Из чего собрана оценка')),
+                Text(
+                  'конфлюэнс ${signal.score}/100',
+                  style: T.body(11, weight: 700, color: C.accent),
+                ),
+              ],
+            ),
+            for (final factor in signal.factors) ...[
+              const SizedBox(height: 11),
+              _FactorRow(factor: factor),
+            ],
+          ],
+        ),
+      );
 }
 
 /// Ведение идеи на бумаге — отдельно от отправки на биржу.
@@ -243,6 +350,11 @@ class _DetailHeader extends StatelessWidget {
                         color: directionColor(signal.direction),
                         background: directionBackground(signal.direction),
                       ),
+                      const SizedBox(width: 8),
+                      Text(
+                        '${signal.score}/100',
+                        style: T.mono(12, weight: 600, color: C.accent),
+                      ),
                     ],
                   ),
                   Text(
@@ -276,63 +388,25 @@ class _LevelsRow extends StatelessWidget {
   final TradingSignal signal;
 
   @override
-  Widget build(BuildContext context) => Row(
-        children: [
-          Expanded(
-            child: _LevelCard(
-              label: 'Вход · лимит',
-              value: fmtPrice(signal.entry, signal.priceDecimals),
-              color: C.accent,
-            ),
+  Widget build(BuildContext context) => MetricRow(
+        tiles: [
+          MetricTile(
+            // Вход бывает лимитным (ретест зоны) и стоповым (пробой) — подпись
+            // обязана это различать, иначе ордер уйдёт не тот.
+            label: signal.entryIsStop ? 'Вход · стоп' : 'Вход · лимит',
+            value: fmtPrice(signal.entry, signal.priceDecimals),
+            color: C.accent,
           ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: _LevelCard(
-              label: 'Стоп-лосс',
-              value: fmtPrice(signal.stopLoss, signal.priceDecimals),
-              color: C.red,
-            ),
+          MetricTile(
+            label: 'Стоп-лосс',
+            value: fmtPrice(signal.stopLoss, signal.priceDecimals),
+            color: C.red,
           ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: _LevelCard(
-              label: 'R:R до TP2',
-              value: signal.riskReward,
-              color: C.text,
-            ),
+          MetricTile(
+            label: 'R:R до TP2',
+            value: signal.riskReward,
           ),
         ],
-      );
-}
-
-class _LevelCard extends StatelessWidget {
-  const _LevelCard({required this.label, required this.value, required this.color});
-
-  final String label;
-  final String value;
-  final Color color;
-
-  @override
-  Widget build(BuildContext context) => Container(
-        padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 9),
-        decoration: BoxDecoration(
-          color: C.card,
-          border: Border.all(color: C.border),
-          borderRadius: BorderRadius.circular(R.inner),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(label, style: T.body(10, color: C.muted)),
-            const SizedBox(height: 2),
-            Text(
-              value,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: T.mono(14, weight: 600, color: color),
-            ),
-          ],
-        ),
       );
 }
 
@@ -376,84 +450,28 @@ class _TakeProfitsCard extends StatelessWidget {
       );
 }
 
-class _ReasoningCard extends StatelessWidget {
-  const _ReasoningCard({required this.signal});
-
-  final TradingSignal signal;
-
-  @override
-  Widget build(BuildContext context) => SectionCard(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                const Expanded(child: SectionLabel('Почему это сделка')),
-                Text(
-                  'конфлюэнс ${signal.score}/100',
-                  style: T.body(11, weight: 700, color: C.accent),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Text(signal.note, style: T.body(12, color: C.textSecondary, height: 1.55)),
-            const SizedBox(height: 10),
-            for (final factor in signal.factors) ...[
-              _FactorRow(factor: factor),
-              if (factor != signal.factors.last) const SizedBox(height: 9),
-            ],
-          ],
-        ),
-      );
-}
-
 class _FactorRow extends StatelessWidget {
   const _FactorRow({required this.factor});
 
   final SignalFactor factor;
 
   @override
-  Widget build(BuildContext context) {
-    // Вес фактора: 3 — сильный, 2 — средний, 1 — фоновый.
-    final color = switch (factor.weight) {
-      3 => C.accent,
-      2 => const Color(0xFFB9A03E),
-      _ => C.dim,
-    };
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.baseline,
-          textBaseline: TextBaseline.alphabetic,
-          children: [
-            Expanded(child: Text(factor.name, style: T.body(12, weight: 700))),
-            const SizedBox(width: 8),
-            Container(
-              width: 52,
-              height: 4,
-              decoration: BoxDecoration(
-                color: C.border,
-                borderRadius: BorderRadius.circular(2),
-              ),
-              child: FractionallySizedBox(
-                alignment: Alignment.centerLeft,
-                widthFactor: (factor.fillPercent / 100).clamp(0, 1),
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    color: color,
-                    borderRadius: BorderRadius.circular(2),
-                  ),
-                ),
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 2),
-        Text(factor.text, style: T.body(11, color: C.muted, height: 1.45)),
-      ],
-    );
-  }
+  Widget build(BuildContext context) => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.baseline,
+            textBaseline: TextBaseline.alphabetic,
+            children: [
+              Expanded(child: Text(factor.name, style: T.body(12, weight: 700))),
+              const SizedBox(width: 8),
+              StrengthBar(strength: factor.weight),
+            ],
+          ),
+          const SizedBox(height: 3),
+          Text(factor.text, style: T.body(11, color: C.muted, height: 1.45)),
+        ],
+      );
 }
 
 /// Смарт-риск: сколько рублей на сделку и какой объём это даёт (ТЗ §6.2).
@@ -476,86 +494,37 @@ class _SmartRiskCard extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 10),
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Expanded(
-                  child: InsetBox(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text('Риск на сделку', style: T.body(10, color: C.muted)),
-                        const SizedBox(height: 2),
-                        Text('${fmt(risk.riskRub, 0)} ₽', style: T.mono(13, weight: 600)),
-                        const SizedBox(height: 1),
-                        Text(
-                          '${riskPercentLabel(risk.riskPercent)} от ${fmt(risk.deposit, 0)} ₽',
-                          style: T.body(10, color: C.muted),
-                        ),
-                      ],
-                    ),
-                  ),
+            MetricRow(
+              tiles: [
+                MetricTile(
+                  label: 'Риск на сделку',
+                  value: '${fmt(risk.riskRub, 0)} ₽',
+                  hint: '${riskPercentLabel(risk.riskPercent)} от ${fmt(risk.deposit, 0)} ₽',
                 ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: InsetBox(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text('Объём позиции', style: T.body(10, color: C.muted)),
-                        const SizedBox(height: 2),
-                        Text(
-                          PositionSizing.quantityLabel(signal, risk),
-                          style: T.mono(13, weight: 600, color: C.accent),
-                        ),
-                        const SizedBox(height: 1),
-                        Text(signal.unitRiskLabel, style: T.body(10, color: C.muted)),
-                      ],
-                    ),
-                  ),
+                MetricTile(
+                  label: 'Объём позиции',
+                  value: PositionSizing.quantityLabel(signal, risk),
+                  color: C.accent,
+                  hint: signal.unitRiskLabel,
                 ),
               ],
             ),
             const SizedBox(height: 8),
             // Потенциал сделки в деньгах: сколько принесут все тейки с их
             // долями и сколько заберёт стоп — при рассчитанном объёме.
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Expanded(
-                  child: InsetBox(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text('Потенциальная прибыль', style: T.body(10, color: C.muted)),
-                        const SizedBox(height: 2),
-                        Text(
-                          '+${fmt(PositionSizing.potentialProfitRub(signal, risk), 0)} ₽',
-                          style: T.mono(13, weight: 600, color: C.green),
-                        ),
-                        const SizedBox(height: 1),
-                        Text('все тейки с долями объёма', style: T.body(10, color: C.muted)),
-                      ],
-                    ),
-                  ),
+            MetricRow(
+              tiles: [
+                MetricTile(
+                  label: 'Прибыль по целям',
+                  value: '+${fmt(PositionSizing.potentialProfitRub(signal, risk), 0)} ₽',
+                  color: C.green,
+                  hint: 'все тейки с долями объёма',
                 ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: InsetBox(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text('Потенциальный убыток', style: T.body(10, color: C.muted)),
-                        const SizedBox(height: 2),
-                        Text(
-                          '−${fmt(PositionSizing.potentialLossRub(signal, risk), 0)} ₽',
-                          style: T.mono(13, weight: 600, color: C.red),
-                        ),
-                        const SizedBox(height: 1),
-                        Text('если сработает стоп-лосс', style: T.body(10, color: C.muted)),
-                      ],
-                    ),
-                  ),
+                MetricTile(
+                  label: 'Убыток по стопу',
+                  value: '−${fmt(PositionSizing.potentialLossRub(signal, risk), 0)} ₽',
+                  color: C.red,
+                  hint: 'если сработает стоп-лосс',
                 ),
               ],
             ),

@@ -3,22 +3,24 @@ import 'package:flutter/widgets.dart';
 /// Дизайн-токены SignalAI.
 ///
 /// Значения взяты один-в-один из макета Claude Design
-/// (`design/SignalAI App.dc.html`). Палитра построена от логотипа:
-/// жёлтый #FFD400 на почти чёрном фоне.
+/// (`design/SignalAI App v2.dc.html`). Палитра построена от логотипа:
+/// жёлтый #FFD400 на почти чёрном фоне. Глубина задаётся только цветом
+/// поверхностей — теней в макете нет.
 abstract final class C {
   // Поверхности
   static const bg = Color(0xFF0B0B0D); // фон экрана
   static const bgPreview = Color(0xFF0E0E10); // фон превью-обвязки макета
-  static const card = Color(0xFF16161A); // карточка
+  static const card = Color(0xFF141419); // карточка (surface)
   static const inset = Color(0xFF101014); // вложенный блок / фон графика
   static const chip = Color(0xFF1C1C22); // чип, hover-состояние
-  static const sheet = Color(0xFF17171C); // модальный шит
+  static const sheet = Color(0xFF17171C); // модальный шит (surfaceRaised)
+  static const segmentActive = Color(0xFF1F1F27); // активный сегмент
   static const navBg = Color(0xFF0D0D10); // таб-бар (rgba(13,13,16,.97))
   static const headerBg = Color(0xFF0B0B0D); // липкий хедер (rgba(11,11,13,.92))
 
   // Границы
-  static const border = Color(0xFF26262C);
-  static const divider = Color(0xFF1D1D24);
+  static const border = Color(0xFF1F1F26);
+  static const divider = Color(0xFF1C1C23);
   static const dividerSoft = Color(0xFF1B1B20);
   static const borderStrong = Color(0xFF2C2C34);
   static const borderHover = Color(0xFF3A3A42);
@@ -28,10 +30,11 @@ abstract final class C {
   // Текст
   static const text = Color(0xFFF2F2EF);
   static const textSoft = Color(0xFFE5E5EA);
-  static const textSecondary = Color(0xFFC9C9D1);
-  static const muted = Color(0xFF8E8E98);
+  static const textSecondary = Color(0xFFA9A9B2); // пояснения под заголовком
+  static const muted = Color(0xFF8B8B96);
+  static const faint = Color(0xFF6B6B75); // микро-подписи ВХОД/СТОП/ЦЕЛИ
   static const dim = Color(0xFF5A5A64);
-  static const navInactive = Color(0xFF6B6B75);
+  static const navInactive = faint;
   static const axis = Color(0xFF4E4E58); // подписи шкалы графика
   static const grid = Color(0xFF1B1B22); // сетка графика
 
@@ -62,12 +65,19 @@ abstract final class C {
 
 /// Радиусы скруглений из макета.
 abstract final class R {
-  static const card = 16.0;
-  static const inner = 12.0;
-  static const inset = 10.0;
-  static const chip = 6.0;
-  static const chipLg = 8.0;
+  static const card = 18.0;
+  static const inner = 13.0;
+  static const inset = 11.0;
+  static const chip = 7.0;
+  static const chipLg = 9.0;
   static const button = 14.0;
   static const sheet = 22.0;
   static const pill = 99.0;
+}
+
+/// Отступы макета: экранные поля 18, внутри карточек 13–15, gap 10–12.
+abstract final class S {
+  static const screen = 18.0;
+  static const cardPad = 14.0;
+  static const gap = 10.0;
 }
