@@ -9,6 +9,7 @@ import 'screens/capital_screen.dart';
 import 'screens/idea_detail_screen.dart';
 import 'screens/today_screen.dart';
 import 'screens/ideas_screen.dart';
+import 'screens/options_screen.dart';
 import 'screens/invest_screen.dart';
 import 'screens/settings_screen.dart';
 import 'screens/strategies_screen.dart';
@@ -175,15 +176,7 @@ class AppShell extends StatelessWidget {
               ? _DigestPending(controller: controller)
               : IdeasScreen(digest: controller.digest!),
           TradingPill.positions => TradesScreen(summary: controller.trades!),
-          // Опционы и журнал пока живут внутри «Позиций»: рисовать пустой
-          // раздел с выдуманной кривой выплат — ровно то, чего этот продукт
-          // не делает.
-          TradingPill.options => const _NotYet(
-              title: 'Опционы',
-              text: 'Раздел появится, когда приложение сможет забрать реальную '
-                  'цепочку опционов и греки у Т-Инвестиций. Рисовать диаграмму '
-                  'выплат по выдуманным премиям — обман, а не заглушка.',
-            ),
+          TradingPill.options => const OptionsScreen(),
           TradingPill.journal => TradesScreen(summary: controller.trades!),
         },
       AppSection.lab => switch (LabPill
@@ -242,37 +235,6 @@ class AppShell extends StatelessWidget {
       ),
     );
   }
-}
-
-/// Раздел, которого пока нет — с причиной, а не пустым экраном.
-class _NotYet extends StatelessWidget {
-  const _NotYet({required this.title, required this.text});
-
-  final String title;
-  final String text;
-
-  @override
-  Widget build(BuildContext context) => ListView(
-        padding: const EdgeInsets.fromLTRB(S.screen, 12, S.screen, 90),
-        children: [
-          Container(
-            padding: const EdgeInsets.fromLTRB(15, 14, 15, 15),
-            decoration: BoxDecoration(
-              color: C.card,
-              border: Border.all(color: C.border),
-              borderRadius: BorderRadius.circular(R.card),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(title, style: T.jost(17)),
-                const SizedBox(height: 6),
-                Text(text, style: T.body(11.5, color: C.muted, height: 1.5)),
-              ],
-            ),
-          ),
-        ],
-      );
 }
 
 /// Правая колонка планшета, пока идея не выбрана.

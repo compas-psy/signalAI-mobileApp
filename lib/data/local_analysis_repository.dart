@@ -23,6 +23,8 @@ import '../monitor/background_mode.dart';
 import '../domain/ledger/account.dart';
 import '../domain/ledger/ledger_event.dart';
 import '../domain/ledger/money.dart';
+import '../domain/options/black76.dart';
+import '../domain/options/structures.dart';
 import 'ledger/broker_import.dart';
 import 'ledger/capital_desk.dart';
 import 'broker/bybit_broker.dart';
@@ -468,6 +470,45 @@ class LocalAnalysisRepository
     await _persistState();
     final broker = _brokers[BrokerId.tinvest];
     if (broker is TInvestBroker) broker.tradingAccountId = accountId;
+  }
+
+  // ── Опционы ────────────────────────────────────────────────────────────
+
+  /// Цепочка опционов на фьючерс базового актива.
+  ///
+  /// Данные публичные (ISS), поэтому раздел работает и без торговых ключей:
+  /// анализировать конструкцию можно, не подключая брокера.
+  Future<List<OptionContract>> optionChain(String assetCode) async {
+    final rows = await _iss.optionsChain(assetCode);
+    return [
+      for (final row in rows)
+        OptionContract(
+          secId: row.secId,
+          assetCode: row.assetCode,
+          strike: row.strike,
+          kind: OptionKind.parse(row.optionType),
+          expiration: row.expiration,
+          last: row.last,
+          theoretical: row.theoretical,
+          impliedVolatility: row.impliedVolatility,
+          openInterest: row.openInterest,
+          trades: row.trades,
+          bid: row.bid,
+          ask: row.ask,
+          priceStep: row.priceStep,
+          priceDecimals: row.priceDecimals,
+        ),
+    ];
+  }
+
+  /// Цена ближайшего фьючерса на этот актив — база для расчёта конструкций.
+  Future<double?> underlyingPrice(String assetCode) async {
+    final snapshot = await _iss.fortsSnapshot();
+    final code = assetCode.toUpperCase();
+    for (final item in snapshot) {
+      if (item.spec.symbol.toUpperCase().startsWith(code)) return item.lastPrice;
+    }
+    return null;
   }
 
   // ── Книга капитала ─────────────────────────────────────────────────────

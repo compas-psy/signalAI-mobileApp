@@ -195,6 +195,7 @@ class IssClient {
   static const _sharesPath = 'engines/stock/markets/shares/boards/TQBR';
   static const _sharesMarketPath = 'engines/stock/markets/shares';
   static const _indexPath = 'engines/stock/markets/index';
+  static const _optionsPath = 'engines/futures/markets/options';
 
   /// Снимок всей основной доски акций (TQBR): «весь рынок» раздела «Инвест».
   ///
@@ -284,6 +285,100 @@ class IssClient {
     }
     return result;
   }
+
+  /// Цепочка опционов на фьючерс: страйки, цены, волатильность, интерес.
+  ///
+  /// Источник — публичный ISS, а не брокер: там уже есть теоретическая цена,
+  /// подразумеваемая волатильность и открытый интерес по каждому страйку.
+  /// Именно эти три числа и нужны, чтобы выбирать конструкцию, и брать их у
+  /// брокера, который их не считает, значило бы считать самим по худшим
+  /// данным.
+  ///
+  /// [assetCode] — код базового актива: Si, RI, BR, GOLD.
+  ///
+  /// Колонки читаются по именам из ответа: биржа меняет состав выдачи, и
+  /// жёсткий порядок полей однажды превратит страйк в объём. Чего в ответе
+  /// нет — остаётся null, и раздел честно скажет, каких данных не хватает.
+  Future<List<OptionRow>> optionsChain(
+    String assetCode, {
+    Duration ttl = const Duration(minutes: 10),
+  }) async {
+    final key = assetCode.toUpperCase();
+    final cached = _optionsCache[key];
+    final at = _optionsAt[key];
+    if (cached != null && at != null && DateTime.now().difference(at) < ttl) {
+      return cached;
+    }
+
+    Uri page(int start) => Uri.parse(
+          '$_base/$_optionsPath/securities.json'
+          '?iss.meta=off&iss.only=securities,marketdata'
+          '&limit=$_snapshotPageSize&start=$start',
+        );
+
+    final securities = <Map<String, Object?>>[];
+    final marketRows = <Map<String, Object?>>[];
+    final seen = <String>{};
+    for (var start = 0, guard = 0; guard < _maxPages; guard++) {
+      final json = await _http.get(page(start));
+      final securitiesPage = issRows(json, 'securities');
+      final marketPage = issRows(json, 'marketdata');
+      if (securitiesPage.isEmpty && marketPage.isEmpty) break;
+
+      var fresh = 0;
+      for (final row in securitiesPage) {
+        final secId = row['SECID'] as String?;
+        if (secId == null || !seen.add(secId)) continue;
+        securities.add(row);
+        fresh++;
+      }
+      marketRows.addAll(marketPage);
+      if (securitiesPage.isEmpty || fresh == 0) break;
+      if (securitiesPage.length < _snapshotPageSize) break;
+      start += securitiesPage.length;
+    }
+
+    final market = {
+      for (final row in marketRows) row['SECID'] as String? ?? '': row,
+    };
+
+    final result = <OptionRow>[];
+    for (final row in securities) {
+      final secId = row['SECID'] as String?;
+      final asset = (row['ASSETCODE'] as String? ?? '').toUpperCase();
+      if (secId == null || asset != key) continue;
+      final strike = _toDouble(row['STRIKE']);
+      if (strike == null || strike <= 0) continue;
+      final md = market[secId];
+
+      result.add(OptionRow(
+        secId: secId,
+        assetCode: asset,
+        strike: strike,
+        optionType: (row['OPTIONTYPE'] as String? ?? 'C'),
+        expiration: DateTime.tryParse(
+              (row['LASTTRADEDATE'] as String? ?? '').replaceAll(' ', 'T'),
+            ) ??
+            DateTime.now(),
+        last: _toDouble(md?['LAST']),
+        theoretical: _toDouble(md?['THEORPRICE']),
+        impliedVolatility: _toDouble(md?['IMPLIEDVOLATILITY']),
+        openInterest: (_toDouble(md?['OPENPOSITION']) ?? 0).toInt(),
+        trades: (_toDouble(md?['NUMTRADES']) ?? 0).toInt(),
+        bid: _toDouble(md?['BID']),
+        ask: _toDouble(md?['OFFER']),
+        priceStep: _toDouble(row['MINSTEP']) ?? 1,
+        priceDecimals: (_toDouble(row['DECIMALS']) ?? 0).toInt(),
+      ));
+    }
+
+    _optionsCache[key] = result;
+    _optionsAt[key] = DateTime.now();
+    return result;
+  }
+
+  final Map<String, List<OptionRow>> _optionsCache = {};
+  final Map<String, DateTime> _optionsAt = {};
 
   /// Дневные свечи акции — инкрементально через хранилище.
   ///
@@ -499,4 +594,47 @@ class IssClient {
       };
 
   void close() => _http.close();
+}
+
+
+/// Строка цепочки опционов, как её отдал ISS.
+///
+/// Слой данных, а не домена: здесь ровно то, что пришло от биржи, без
+/// интерпретации. Отсутствующие поля остаются null — это честнее нуля,
+/// который в расчётах неотличим от настоящего значения.
+class OptionRow {
+  const OptionRow({
+    required this.secId,
+    required this.assetCode,
+    required this.strike,
+    required this.optionType,
+    required this.expiration,
+    this.last,
+    this.theoretical,
+    this.impliedVolatility,
+    this.openInterest = 0,
+    this.trades = 0,
+    this.bid,
+    this.ask,
+    this.priceStep = 1,
+    this.priceDecimals = 0,
+  });
+
+  final String secId;
+  final String assetCode;
+  final double strike;
+
+  /// 'C' или 'P' в выдаче биржи.
+  final String optionType;
+
+  final DateTime expiration;
+  final double? last;
+  final double? theoretical;
+  final double? impliedVolatility;
+  final int openInterest;
+  final int trades;
+  final double? bid;
+  final double? ask;
+  final double priceStep;
+  final int priceDecimals;
 }

@@ -11,6 +11,8 @@ import '../data/repository.dart';
 import '../domain/ledger/account.dart';
 import '../domain/ledger/ledger_event.dart';
 import '../domain/ledger/money.dart';
+import '../domain/options/structure_builder.dart';
+import '../domain/options/structures.dart';
 import '../domain/risk/portfolio_impact.dart';
 import '../domain/risk/risk_engine.dart';
 import 'navigation.dart';
@@ -515,6 +517,81 @@ class AppController extends ChangeNotifier {
               s.correlationGroup == signal.correlationGroup) ??
           false,
     );
+  }
+
+  // ── Опционы ────────────────────────────────────────────────────────────
+
+  /// Базовые активы, по которым приложение умеет собирать конструкции.
+  ///
+  /// Список короткий сознательно: это самые ликвидные серии FORTS. На
+  /// неликвидном страйке можно войти и не выйти, и предлагать такие
+  /// конструкции — медвежья услуга.
+  static const optionAssets = ['SI', 'RI', 'BR', 'GOLD', 'CNY'];
+
+  String _optionAsset = optionAssets.first;
+  List<OptionContract> _optionChain = const [];
+  List<OptionStructure> _structures = const [];
+  double? _optionFuturesPrice;
+  double? _optionVolatility;
+  bool _optionsLoading = false;
+  String? _optionsError;
+
+  String get optionAsset => _optionAsset;
+  List<OptionContract> get optionChain => _optionChain;
+  List<OptionStructure> get structures => _structures;
+  double? get optionFuturesPrice => _optionFuturesPrice;
+  double? get optionVolatility => _optionVolatility;
+  bool get optionsLoading => _optionsLoading;
+  String? get optionsError => _optionsError;
+
+  /// Читает цепочку опционов и собирает конструкции с ограниченным риском.
+  Future<void> loadOptionChain({String? asset}) async {
+    final repository = _repository;
+    if (repository is! LocalAnalysisRepository) {
+      _optionsError = 'Цепочка опционов доступна только в автономном расчёте';
+      notifyListeners();
+      return;
+    }
+    if (_optionsLoading) return;
+    _optionAsset = (asset ?? _optionAsset).toUpperCase();
+    _optionsLoading = true;
+    _optionsError = null;
+    notifyListeners();
+
+    try {
+      final chain = await repository.optionChain(_optionAsset);
+      final futures = await repository.underlyingPrice(_optionAsset);
+      _optionChain = chain;
+      _optionFuturesPrice = futures;
+
+      if (chain.isEmpty || futures == null) {
+        _structures = const [];
+        _optionVolatility = null;
+      } else {
+        final now = DateTime.now();
+        _optionVolatility =
+            StructureBuilder.seriesVolatility(chain, futures, now) ?? 0.3;
+        // Позиция в базовом активе решает, доступны ли покрытый колл и
+        // защитный пут: без неё это голая продажа, которой здесь нет.
+        final lots = _unprotected
+                .where((p) => p.symbol.toUpperCase().startsWith(_optionAsset))
+                .fold<double>(0, (sum, p) => sum + (p.long ? p.quantity : -p.quantity))
+                .round();
+        _structures = StructureBuilder.build(
+          chain: chain,
+          futuresPrice: futures,
+          at: now,
+          underlyingLots: lots > 0 ? lots : 0,
+        );
+      }
+    } catch (e) {
+      _optionsError = _errorText(e);
+      _optionChain = const [];
+      _structures = const [];
+    } finally {
+      _optionsLoading = false;
+      notifyListeners();
+    }
   }
 
   // ── Счета Т-Инвестиций ─────────────────────────────────────────────────
