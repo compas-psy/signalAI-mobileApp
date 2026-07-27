@@ -13,6 +13,8 @@ import 'screens/trades_screen.dart';
 import 'widgets/confirm_sheet.dart';
 import 'widgets/toast.dart';
 import 'widgets/bottom_nav.dart';
+import 'widgets/side_nav.dart';
+import 'layout.dart';
 
 /// Каркас приложения: активный экран, нижняя навигация, шит подтверждения
 /// и тост — ровно та же композиция, что в макете.
@@ -33,31 +35,92 @@ class AppShell extends StatelessWidget {
     return ColoredBox(
       color: C.bg,
       child: SafeArea(
-        child: Stack(
-          children: [
-            Column(
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final pane = Pane.of(constraints.maxWidth);
+            return Stack(
               children: [
-                Expanded(child: _screen(controller)),
-                if (!controller.sheetOpen)
-                  BottomNav(
-                    current: controller.tab,
-                    detailOpen: controller.isDetailOpen,
-                    onSelect: controller.goTab,
+                _body(controller, pane),
+                if (controller.sheetOpen) _sheet(controller, pane),
+                if (controller.toast != null)
+                  Positioned(
+                    top: 10,
+                    left: 14,
+                    right: 14,
+                    child: Center(
+                      child: ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 560),
+                        child: AppToast(message: controller.toast!),
+                      ),
+                    ),
                   ),
               ],
-            ),
-            if (controller.sheetOpen) _sheet(controller),
-            if (controller.toast != null)
-              Positioned(
-                top: 10,
-                left: 14,
-                right: 14,
-                child: AppToast(message: controller.toast!),
-              ),
-          ],
+            );
+          },
         ),
       ),
     );
+  }
+
+  /// Каркас под ширину экрана: телефон — нижняя панель, планшет — боковая
+  /// колонка, широкий планшет — ещё и две колонки содержимого.
+  Widget _body(AppController controller, Pane pane) {
+    if (!pane.usesSideNav) {
+      return Column(
+        children: [
+          Expanded(child: _content(controller, pane)),
+          if (!controller.sheetOpen)
+            BottomNav(
+              current: controller.tab,
+              detailOpen: controller.isDetailOpen,
+              onSelect: controller.goTab,
+            ),
+        ],
+      );
+    }
+    return Row(
+      children: [
+        SideNav(
+          current: controller.tab,
+          detailOpen: controller.isDetailOpen,
+          onSelect: controller.goTab,
+          extended: pane == Pane.expanded,
+        ),
+        Expanded(child: _content(controller, pane)),
+      ],
+    );
+  }
+
+  /// Содержимое: на широком экране «Идеи» и разбор стоят рядом, остальные
+  /// разделы — колонкой ограниченной ширины, чтобы строки оставались читаемыми.
+  Widget _content(AppController controller, Pane pane) {
+    if (pane.usesTwoPane && controller.tab == AppTab.ideas) {
+      final signal = controller.currentSignal;
+      final risk = controller.risk;
+      return Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          SizedBox(
+            width: 400,
+            child: controller.digest == null
+                ? _DigestPending(controller: controller)
+                : IdeasScreen(digest: controller.digest!),
+          ),
+          const VerticalDivider(),
+          Expanded(
+            child: signal == null || risk == null
+                ? const _PickIdea()
+                : IdeaDetailScreen(
+                    signal: signal,
+                    risk: risk,
+                    showBack: false,
+                  ),
+          ),
+        ],
+      );
+    }
+    final screen = _screen(controller);
+    return pane.isCompact ? screen : ReadableColumn(child: screen);
   }
 
   Widget _screen(AppController controller) {
@@ -84,7 +147,7 @@ class AppShell extends StatelessWidget {
     };
   }
 
-  Widget _sheet(AppController controller) {
+  Widget _sheet(AppController controller, Pane pane) {
     final signal = controller.currentSignal;
     final risk = controller.risk;
     if (signal == null || risk == null) return const SizedBox.shrink();
@@ -98,16 +161,57 @@ class AppShell extends StatelessWidget {
           opacity: t,
           child: Transform.translate(offset: Offset(0, 40 * (1 - t)), child: child),
         ),
-        child: ConfirmSheet(
-          signal: signal,
-          risk: risk,
-          busy: controller.confirming,
-          onExecute: controller.confirmCurrentSignal,
-          onClose: controller.closeSheet,
-        ),
+        child: pane.isCompact
+            ? ConfirmSheet(
+                signal: signal,
+                risk: risk,
+                busy: controller.confirming,
+                onExecute: controller.confirmCurrentSignal,
+                onClose: controller.closeSheet,
+              )
+            // На планшете шит во всю ширину читался бы как строка длиной в
+            // экран: ограничиваем и центрируем, поведение прежнее.
+            : Center(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 560),
+                  child: ConfirmSheet(
+                    signal: signal,
+                    risk: risk,
+                    busy: controller.confirming,
+                    onExecute: controller.confirmCurrentSignal,
+                    onClose: controller.closeSheet,
+                  ),
+                ),
+              ),
       ),
     );
   }
+}
+
+/// Правая колонка планшета, пока идея не выбрана.
+class _PickIdea extends StatelessWidget {
+  const _PickIdea();
+
+  @override
+  Widget build(BuildContext context) => Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Text(
+            'Выберите идею слева — разбор откроется здесь.',
+            textAlign: TextAlign.center,
+            style: T.body(13, color: C.muted, height: 1.5),
+          ),
+        ),
+      );
+}
+
+/// Разделитель колонок планшета.
+class VerticalDivider extends StatelessWidget {
+  const VerticalDivider({super.key});
+
+  @override
+  Widget build(BuildContext context) =>
+      Container(width: 1, color: C.dividerSoft);
 }
 
 /// Вкладка «Идеи», пока дайджест ещё считается или расчёт упал.

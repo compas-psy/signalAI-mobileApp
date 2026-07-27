@@ -14,10 +14,19 @@ import '../widgets/vector_icon.dart';
 
 /// Карточка идеи: график, уровни, обоснование, смарт-риск и подтверждение.
 class IdeaDetailScreen extends StatelessWidget {
-  const IdeaDetailScreen({super.key, required this.signal, required this.risk});
+  const IdeaDetailScreen({
+    super.key,
+    required this.signal,
+    required this.risk,
+    this.showBack = true,
+  });
 
   final TradingSignal signal;
   final RiskProfile risk;
+
+  /// Кнопка «назад» не нужна во второй колонке планшета: список идей никуда
+  /// не пропадал, он слева.
+  final bool showBack;
 
   @override
   Widget build(BuildContext context) {
@@ -25,7 +34,11 @@ class IdeaDetailScreen extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _DetailHeader(signal: signal, onBack: controller.back),
+        _DetailHeader(
+          signal: signal,
+          onBack: controller.back,
+          showBack: showBack,
+        ),
         Expanded(
           child: ListView(
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 96),
@@ -173,10 +186,15 @@ class _PaperCard extends StatelessWidget {
 }
 
 class _DetailHeader extends StatelessWidget {
-  const _DetailHeader({required this.signal, required this.onBack});
+  const _DetailHeader({
+    required this.signal,
+    required this.onBack,
+    this.showBack = true,
+  });
 
   final TradingSignal signal;
   final VoidCallback onBack;
+  final bool showBack;
 
   @override
   Widget build(BuildContext context) => Container(
@@ -187,22 +205,24 @@ class _DetailHeader extends StatelessWidget {
         ),
         child: Row(
           children: [
-            Pressable(
-              onTap: onBack,
-              child: Container(
-                width: 36,
-                height: 36,
-                decoration: BoxDecoration(
-                  color: C.card,
-                  shape: BoxShape.circle,
-                  border: Border.all(color: C.border),
-                ),
-                child: const Center(
-                  child: VectorIcon(Icons.chevronLeft, size: 18, color: C.text),
+            if (showBack) ...[
+              Pressable(
+                onTap: onBack,
+                child: Container(
+                  width: 36,
+                  height: 36,
+                  decoration: BoxDecoration(
+                    color: C.card,
+                    shape: BoxShape.circle,
+                    border: Border.all(color: C.border),
+                  ),
+                  child: const Center(
+                    child: VectorIcon(Icons.chevronLeft, size: 18, color: C.text),
+                  ),
                 ),
               ),
-            ),
-            const SizedBox(width: 10),
+              const SizedBox(width: 10),
+            ],
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,

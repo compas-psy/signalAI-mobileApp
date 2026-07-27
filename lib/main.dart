@@ -21,10 +21,14 @@ void main() {
       systemNavigationBarIconBrightness: Brightness.light,
     ),
   );
-  // Терминал сигналов — только портретная ориентация.
+  // Ориентация свободная: на планшете альбом — основной режим работы, и
+  // блокировать его значит отдать половину экрана. Разметка сама выбирает
+  // каркас по ширине (см. lib/ui/layout.dart).
   SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,
     DeviceOrientation.portraitDown,
+    DeviceOrientation.landscapeLeft,
+    DeviceOrientation.landscapeRight,
   ]);
 
   // Режим сборки:
