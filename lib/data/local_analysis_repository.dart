@@ -199,7 +199,10 @@ class LocalAnalysisRepository
             mode: mode,
             token: () => vault.apiKey(exchange: id.name, mode: mode.name),
             instrumentCache: _instruments,
-          ),
+          )
+          // Выбранный торговый счёт переживает пересоздание брокера: иначе
+          // после смены режима заявка ушла бы с первого попавшегося счёта.
+          ..tradingAccountId = _trading.tinvestAccountId,
       };
 
   /// Брокер площадки в её текущем режиме.
@@ -443,6 +446,30 @@ class LocalAnalysisRepository
     return result;
   }
 
+  /// Счета Т-Инвестиций, видимые токеном.
+  ///
+  /// Нужны настройкам: владелец выбирает, с какого счёта приложение имеет
+  /// право торговать. Остальные читаются для капитала и не торгуют.
+  Future<List<TInvestAccount>> tinvestAccounts() async {
+    if (!await hasBrokerKeys(BrokerId.tinvest)) return const [];
+    final broker = brokerOf(BrokerId.tinvest);
+    if (broker is! TInvestBroker) return const [];
+    try {
+      return await broker.accounts(force: true);
+    } on BrokerException {
+      return const [];
+    }
+  }
+
+  /// Назначает торговый счёт Т-Инвестиций.
+  Future<void> setTinvestAccount(String? accountId) async {
+    await _ensureLoaded();
+    _trading = _trading.copyWith(tinvestAccountId: accountId);
+    await _persistState();
+    final broker = _brokers[BrokerId.tinvest];
+    if (broker is TInvestBroker) broker.tradingAccountId = accountId;
+  }
+
   // ── Книга капитала ─────────────────────────────────────────────────────
 
   /// Синхронизация книги с площадками.
@@ -451,7 +478,7 @@ class LocalAnalysisRepository
   /// сверки. Иначе любой сбой площадки — пустой ответ, устаревший кэш,
   /// частичная выдача — молча стирал бы историю владельца. Здесь снимок
   /// делает три вещи: обновляет карточки счетов, кладёт последние цены для
-  /// переоценки позиций и сообщает, сходится ли книга с брокером.
+  /// переоценки позиций и наполняет книгу выписками.
   @override
   Future<String> syncCapital() async {
     await _capital.load();
@@ -460,82 +487,135 @@ class LocalAnalysisRepository
     final notes = <String>[];
     var marked = 0;
 
-    for (final id in BrokerId.values) {
-      final title = id == BrokerId.bybit ? 'Bybit' : 'Т-Инвестиции';
-      if (!await hasBrokerKeys(id)) {
-        notes.add('$title — ключей нет');
-        continue;
-      }
-      final mode = _trading.modeOf(id);
-      try {
-        final positions = await brokerOf(id).positions();
-        for (final position in positions) {
-          // Цена входа — не котировка, но это честная цена сделки, а не
-          // выдуманное число: пока нет рыночной, позиция считается по ней.
-          _capital.mark(
-            position.symbol,
-            Money.of(position.entryPrice, Currency.rub),
-          );
-          marked++;
-        }
-        accounts
-          ..removeWhere((a) => a.id == id.name)
-          ..add(Account(
-            id: id.name,
-            title: title,
-            kind: id == BrokerId.bybit ? AccountKind.crypto : AccountKind.broker,
-            currency: id == BrokerId.bybit ? Currency.usdt : Currency.rub,
-            venue: title,
-            // Ключ без права вывода — не ограничение, а требование: с правом
-            // вывода взлом устройства выносит деньги.
-            permissions: const ApiPermissions(read: true, trade: true),
-            syncedAt: DateTime.now().toUtc(),
-            reconcile: ReconcileStatus.pending,
-            note: 'режим ${mode.name}',
-          ));
-        // Книга наполняется из выписки, а не из портфеля: портфель говорит,
-        // что есть сейчас, а книге нужно, как оно возникло. Повторный импорт
-        // безопасен — дубли отбрасываются по идентификатору операции.
-        var imported = 0;
-        if (id == BrokerId.tinvest) {
-          final broker = brokerOf(id);
-          if (broker is TInvestBroker) {
+    void upsert(Account account) {
+      accounts
+        ..removeWhere((a) => a.id == account.id)
+        ..add(account);
+    }
+
+    // ── Т-Инвестиции: все счета токена ────────────────────────────────────
+    //
+    // Токен привязан к пользователю, а не к счёту: GetAccounts возвращает и
+    // фьючерсный счёт, и тот, где лежит основной капитал. Раньше приложение
+    // брало первый попавшийся — и половина капитала была невидима.
+    if (await hasBrokerKeys(BrokerId.tinvest)) {
+      final broker = brokerOf(BrokerId.tinvest);
+      if (broker is TInvestBroker) {
+        broker.tradingAccountId = _trading.tinvestAccountId;
+        try {
+          final list = await broker.accounts(force: true);
+          notes.add('Т-Инвестиции — счетов ${list.length}');
+
+          for (final account in list) {
+            final id = 'tinvest:${account.id}';
+            var imported = 0;
+            var positionCount = 0;
+            var failure = '';
+
             try {
+              final positions = await broker.positions(accountId: account.id);
+              positionCount = positions.length;
+              for (final position in positions) {
+                // Цена входа — не котировка, но это честная цена сделки, а не
+                // выдуманное число: пока нет рыночной, позиция считается по ней.
+                _capital.mark(
+                  position.symbol,
+                  Money.of(position.entryPrice, Currency.rub),
+                );
+                marked++;
+              }
+            } on BrokerException catch (e) {
+              failure = e.message;
+            }
+
+            try {
+              // Книга наполняется выпиской, а не портфелем: портфель говорит,
+              // что есть сейчас, а книге нужно, как оно возникло. Повторный
+              // импорт безопасен — дубли отбрасываются по номеру операции.
               final since = DateTime.now().subtract(const Duration(days: 370));
-              final operations = await broker.operations(from: since);
+              final operations =
+                  await broker.operations(from: since, accountId: account.id);
               final events = BrokerImport.fromOperations(
-                accountId: id.name,
-                venue: id.name,
+                accountId: id,
+                venue: 'tinvest',
                 operations: operations,
               );
               imported = await _capital.record(events);
               final unresolved = BrokerImport.unresolved(events);
               if (unresolved > 0) {
-                notes.add('$title — не разобрано операций: $unresolved');
+                notes.add('${account.title} — не разобрано операций: $unresolved');
               }
-            } on BrokerException {
-              notes.add('$title — выписка не пришла');
+            } on BrokerException catch (e) {
+              failure = failure.isEmpty ? e.message : failure;
             }
-          }
-        }
 
-        notes.add('$title — позиций ${positions.length}'
-            '${imported > 0 ? ', импортировано операций $imported' : ''}');
-      } on BrokerException catch (e) {
-        accounts
-          ..removeWhere((a) => a.id == id.name)
-          ..add(Account(
-            id: id.name,
-            title: title,
-            kind: id == BrokerId.bybit ? AccountKind.crypto : AccountKind.broker,
-            currency: id == BrokerId.bybit ? Currency.usdt : Currency.rub,
-            venue: title,
-            permissions: const ApiPermissions(read: true, trade: true),
-            reconcile: ReconcileStatus.stale,
-            note: e.message,
-          ));
-        notes.add('$title — не ответил');
+            upsert(Account(
+              id: id,
+              title: account.title,
+              kind: account.isIis ? AccountKind.iis : AccountKind.broker,
+              currency: Currency.rub,
+              venue: 'Т-Инвестиции',
+              // Права берутся у брокера, а не заявляются нами: read-only счёт
+              // должен выглядеть read-only, даже если токен полный.
+              permissions: ApiPermissions(read: true, trade: account.tradable),
+              syncedAt: DateTime.now().toUtc(),
+              reconcile: failure.isEmpty
+                  ? ReconcileStatus.pending
+                  : ReconcileStatus.stale,
+              note: failure.isEmpty
+                  ? [
+                      if (account.tradable) 'торговый' else 'только чтение',
+                      if (positionCount > 0) 'позиций $positionCount',
+                      if (imported > 0) 'операций +$imported',
+                    ].join(' · ')
+                  : failure,
+            ));
+          }
+        } on BrokerException catch (e) {
+          notes.add('Т-Инвестиции — ${e.message}');
+        }
       }
+    } else {
+      notes.add('Т-Инвестиции — ключей нет');
+    }
+
+    // ── Bybit ─────────────────────────────────────────────────────────────
+    if (await hasBrokerKeys(BrokerId.bybit)) {
+      final broker = brokerOf(BrokerId.bybit);
+      try {
+        final positions = await broker.positions();
+        for (final position in positions) {
+          _capital.mark(position.symbol, Money.of(position.entryPrice, Currency.rub));
+          marked++;
+        }
+        upsert(Account(
+          id: 'bybit',
+          title: 'Bybit',
+          kind: AccountKind.crypto,
+          currency: Currency.usdt,
+          venue: 'Bybit',
+          permissions: const ApiPermissions(read: true, trade: true),
+          syncedAt: DateTime.now().toUtc(),
+          reconcile: ReconcileStatus.pending,
+          note: 'режим ${_trading.modeOf(BrokerId.bybit).name} · '
+              'позиций ${positions.length}',
+        ));
+        notes.add('Bybit — позиций ${positions.length}');
+      } on BrokerException catch (e) {
+        upsert(Account(
+          id: 'bybit',
+          title: 'Bybit',
+          kind: AccountKind.crypto,
+          currency: Currency.usdt,
+          venue: 'Bybit',
+          permissions: const ApiPermissions(read: true, trade: true),
+          reconcile: ReconcileStatus.stale,
+          note: e.message,
+        ));
+        notes.add('Bybit — не ответил');
+      }
+    } else {
+      notes.add('Bybit — ключей нет');
     }
 
     await _capital.saveAccounts(accounts);

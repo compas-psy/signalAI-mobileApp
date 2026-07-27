@@ -72,6 +72,7 @@ class SettingsScreen extends StatelessWidget {
                     onConnect: controller.connectExchange,
                   ),
                 if (snapshot.trading != null) _BrokersCard(trading: snapshot.trading!),
+                const _TinvestAccountsCard(),
                 if (snapshot.background != null)
                   _BackgroundCard(background: snapshot.background!),
               ],
@@ -819,4 +820,121 @@ class _AboutCardState extends State<_AboutCard> {
           ],
         ),
       );
+}
+
+
+/// Счета Т-Инвестиций и выбор торгового.
+///
+/// Токен Invest API привязан к пользователю, а не к счёту: он видит и
+/// фьючерсный счёт, и тот, где лежит основной капитал. Все они читаются для
+/// книги, но торговать приложение имеет право только с одного — выбранного
+/// здесь. Заявка, ушедшая не с того счёта, ломает и учёт, и налоги.
+class _TinvestAccountsCard extends StatefulWidget {
+  const _TinvestAccountsCard();
+
+  @override
+  State<_TinvestAccountsCard> createState() => _TinvestAccountsCardState();
+}
+
+class _TinvestAccountsCardState extends State<_TinvestAccountsCard> {
+  bool _asked = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final controller = AppScope.of(context);
+    final accounts = controller.tinvestAccounts;
+    final selected = controller.tinvestTradingAccount;
+
+    return SectionCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const SectionLabel('Счета Т-Инвестиций'),
+          const SizedBox(height: 6),
+          if (accounts.isEmpty)
+            Text(
+              _asked
+                  ? 'Счета не пришли: токен не задан или брокер не ответил.'
+                  : 'Один токен видит все ваши счета — и фьючерсный, и тот, где '
+                      'лежит основной капитал. Капитал считается по всем, '
+                      'торговля — только с выбранного.',
+              style: T.body(11.5, color: C.muted, height: 1.5),
+            )
+          else
+            for (final account in accounts) ...[
+              Pressable(
+                onTap: account.tradable
+                    ? () => controller.setTinvestAccount(account.id)
+                    : null,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(vertical: 9),
+                  decoration: const BoxDecoration(
+                    border: Border(bottom: BorderSide(color: C.divider)),
+                  ),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 8,
+                        height: 8,
+                        decoration: BoxDecoration(
+                          color: account.id == selected
+                              ? C.accent
+                              : account.tradable
+                                  ? C.borderHover
+                                  : C.info,
+                          shape: BoxShape.circle,
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(account.title,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: T.body(12.5, weight: 700)),
+                            Text(
+                              account.tradable
+                                  ? 'полный доступ'
+                                  : 'только чтение — капитал считаем, не торгуем',
+                              style: T.body(10.5, color: C.muted),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        account.id == selected ? 'ТОРГОВЫЙ' : '',
+                        style: T.body(9.5, weight: 800, color: C.accent),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          const SizedBox(height: 10),
+          Pressable(
+            onTap: () {
+              setState(() => _asked = true);
+              controller.refreshTinvestAccounts();
+            },
+            child: Container(
+              padding: const EdgeInsets.symmetric(vertical: 10),
+              decoration: BoxDecoration(
+                border: Border.all(color: C.borderHover),
+                borderRadius: BorderRadius.circular(R.inner),
+              ),
+              child: Center(
+                child: Text(
+                  accounts.isEmpty ? 'Показать счета' : 'Обновить список',
+                  style: T.body(12, weight: 800, color: C.accent),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }

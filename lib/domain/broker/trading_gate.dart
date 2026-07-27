@@ -84,6 +84,7 @@ class TradingState {
     Map<BrokerId, TradingMode>? modes,
     this.enabled = false,
     this.killSwitch = false,
+    this.tinvestAccountId,
   }) : _modes = modes ?? const {};
 
   final Map<BrokerId, TradingMode> _modes;
@@ -97,6 +98,13 @@ class TradingState {
   /// возвращает в исходное, не выключатель.
   final bool killSwitch;
 
+  /// Счёт Т-Инвестиций, с которого уходят заявки.
+  ///
+  /// Токен видит все счета владельца, но торговать приложение имеет право
+  /// только с одного — выбранного осознанно. null — первый с полным
+  /// доступом; остальные счета читаются для капитала и не торгуют.
+  final String? tinvestAccountId;
+
   /// Режим площадки. По умолчанию тренировочный — живой режим включается
   /// только осознанно и только через допуск.
   TradingMode modeOf(BrokerId broker) => _modes[broker] ?? TradingMode.testnet;
@@ -106,22 +114,30 @@ class TradingState {
   /// Есть ли хоть одна площадка на живых деньгах.
   bool get anyLive => BrokerId.values.any((b) => modeOf(b) == TradingMode.live);
 
-  TradingState copyWith({bool? enabled, bool? killSwitch}) => TradingState(
+  TradingState copyWith({
+    bool? enabled,
+    bool? killSwitch,
+    String? tinvestAccountId,
+  }) =>
+      TradingState(
         modes: _modes,
         enabled: enabled ?? this.enabled,
         killSwitch: killSwitch ?? this.killSwitch,
+        tinvestAccountId: tinvestAccountId ?? this.tinvestAccountId,
       );
 
   TradingState withMode(BrokerId broker, TradingMode mode) => TradingState(
         modes: {..._modes, broker: mode},
         enabled: enabled,
         killSwitch: killSwitch,
+        tinvestAccountId: tinvestAccountId,
       );
 
   Map<String, dynamic> toJson() => {
         'modes': {for (final e in _modes.entries) e.key.name: e.value.name},
         'enabled': enabled,
         'kill_switch': killSwitch,
+        if (tinvestAccountId != null) 'tinvest_account': tinvestAccountId,
       };
 
   factory TradingState.fromJson(Map<String, dynamic> j) {
@@ -140,6 +156,7 @@ class TradingState {
       modes: modes,
       enabled: j['enabled'] as bool? ?? false,
       killSwitch: j['kill_switch'] as bool? ?? false,
+      tinvestAccountId: j['tinvest_account'] as String?,
     );
   }
 }

@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import '../data/api/api_client.dart';
+import '../data/broker/tinvest_broker.dart';
 import '../data/local_analysis_repository.dart';
 import '../data/native_bridge.dart';
 import '../data/ledger/capital_desk.dart';
@@ -514,6 +515,36 @@ class AppController extends ChangeNotifier {
               s.correlationGroup == signal.correlationGroup) ??
           false,
     );
+  }
+
+  // ── Счета Т-Инвестиций ─────────────────────────────────────────────────
+
+  List<TInvestAccount> _tinvestAccounts = const [];
+
+  /// Счета, видимые токеном Т-Инвестиций.
+  List<TInvestAccount> get tinvestAccounts => _tinvestAccounts;
+
+  /// Счёт, с которого разрешено торговать. null — первый с полным доступом.
+  String? get tinvestTradingAccount =>
+      tradingDesk?.tradingState.tinvestAccountId;
+
+  /// Спрашивает у брокера список счетов.
+  Future<void> refreshTinvestAccounts() async {
+    final repository = _repository;
+    if (repository is! LocalAnalysisRepository) return;
+    _tinvestAccounts = await repository.tinvestAccounts();
+    notifyListeners();
+  }
+
+  /// Назначает торговый счёт. Остальные остаются на чтение.
+  Future<void> setTinvestAccount(String? accountId) async {
+    final repository = _repository;
+    if (repository is! LocalAnalysisRepository) return;
+    await repository.setTinvestAccount(accountId);
+    await _reloadSettings();
+    showToast(accountId == null
+        ? 'Торговый счёт: первый с полным доступом'
+        : 'Торговый счёт назначен');
   }
 
   /// Подпись о свежести данных для шапки раздела.

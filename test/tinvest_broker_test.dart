@@ -203,6 +203,114 @@ void main() {
       expect(await b.checkAccess(), contains('ACC-NEW'));
     });
 
+    test('видны все счета токена, а не первый попавшийся', () async {
+      // Токен Invest API привязан к пользователю: GetAccounts возвращает и
+      // фьючерсный счёт, и тот, где лежит основной капитал. Раньше приложение
+      // брало accounts.first — и половина капитала была невидима.
+      final b = await broker(replies: {
+        'GetSandboxAccounts': {
+          'accounts': [
+            {
+              'id': 'ACC-FUT',
+              'name': 'Фьючерсы',
+              'type': 'ACCOUNT_TYPE_TINKOFF',
+              'status': 'ACCOUNT_STATUS_OPEN',
+              'accessLevel': 'ACCOUNT_ACCESS_LEVEL_FULL_ACCESS',
+            },
+            {
+              'id': 'ACC-MAIN',
+              'name': 'Основной',
+              'type': 'ACCOUNT_TYPE_TINKOFF',
+              'status': 'ACCOUNT_STATUS_OPEN',
+              'accessLevel': 'ACCOUNT_ACCESS_LEVEL_READ_ONLY',
+            },
+            {
+              'id': 'ACC-IIS',
+              'name': '',
+              'type': 'ACCOUNT_TYPE_TINKOFF_IIS',
+              'status': 'ACCOUNT_STATUS_OPEN',
+              'accessLevel': 'ACCOUNT_ACCESS_LEVEL_FULL_ACCESS',
+            },
+          ],
+        },
+      });
+
+      final accounts = await b.accounts();
+      expect(accounts.map((a) => a.id), ['ACC-FUT', 'ACC-MAIN', 'ACC-IIS']);
+      expect(accounts[1].tradable, isFalse, reason: 'счёт только на чтение');
+      expect(accounts[2].isIis, isTrue);
+      expect(accounts[2].title, 'ИИС', reason: 'имя пустое — подписываем типом');
+    });
+
+    test('торгуем только с выбранного счёта', () async {
+      final replies = okReplies()
+        ..['GetSandboxAccounts'] = {
+          'accounts': [
+            {
+              'id': 'ACC-FUT',
+              'name': 'Фьючерсы',
+              'status': 'ACCOUNT_STATUS_OPEN',
+              'accessLevel': 'ACCOUNT_ACCESS_LEVEL_FULL_ACCESS',
+            },
+            {
+              'id': 'ACC-MAIN',
+              'name': 'Основной',
+              'status': 'ACCOUNT_STATUS_OPEN',
+              'accessLevel': 'ACCOUNT_ACCESS_LEVEL_READ_ONLY',
+            },
+          ],
+        };
+      final b = await broker(replies: replies);
+      b.tradingAccountId = 'ACC-FUT';
+
+      await b.placeOrder(request);
+      expect(gateway.bodyOf('PostSandboxOrder')['accountId'], 'ACC-FUT');
+    });
+
+    test('заявка со счёта только для чтения не уходит', () async {
+      // Это защита, а не удобство: заявка не с того счёта ломает и учёт, и
+      // налоги — отказать до отправки дешевле, чем разбирать последствия.
+      final replies = okReplies()
+        ..['GetSandboxAccounts'] = {
+          'accounts': [
+            {
+              'id': 'ACC-MAIN',
+              'name': 'Основной',
+              'status': 'ACCOUNT_STATUS_OPEN',
+              'accessLevel': 'ACCOUNT_ACCESS_LEVEL_READ_ONLY',
+            },
+          ],
+        };
+      final b = await broker(replies: replies);
+      b.tradingAccountId = 'ACC-MAIN';
+
+      final result = await b.placeOrder(request);
+      expect(result.accepted, isFalse);
+      expect(result.message, contains('только на чтение'));
+      expect(gateway.methods, isNot(contains('PostSandboxOrder')));
+    });
+
+    test('несуществующий счёт называется прямо', () async {
+      final b = await broker();
+      b.tradingAccountId = 'ACC-ЧУЖОЙ';
+
+      final result = await b.placeOrder(request);
+      expect(result.message, contains('недоступен'));
+    });
+
+    test('выписка и позиции берутся по указанному счёту', () async {
+      final replies = okReplies()
+        ..['GetSandboxOperations'] = {'operations': const []}
+        ..['GetSandboxPortfolio'] = {'positions': const []};
+      final b = await broker(replies: replies);
+
+      await b.operations(from: DateTime.utc(2026, 1, 1), accountId: 'ACC-MAIN');
+      expect(gateway.bodyOf('GetSandboxOperations')['accountId'], 'ACC-MAIN');
+
+      await b.positions(accountId: 'ACC-MAIN');
+      expect(gateway.bodyOf('GetSandboxPortfolio')['accountId'], 'ACC-MAIN');
+    });
+
     test('в песочнице без счетов он открывается сам', () async {
       final b = await broker(replies: {
         'GetSandboxAccounts': const <String, dynamic>{},

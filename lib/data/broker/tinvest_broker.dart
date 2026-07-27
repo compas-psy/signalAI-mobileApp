@@ -44,6 +44,68 @@ int _int(Object? value) => switch (value) {
       _ => 0,
     };
 
+/// Счёт у Т-Инвестиций.
+///
+/// Токен Invest API привязан к пользователю, а не к счёту: `GetAccounts`
+/// возвращает все открытые счета вместе с уровнем доступа. Поэтому «токен
+/// сделан под фьючерсный счёт» — это про права, а не про видимость: основной
+/// брокерский счёт тем же токеном виден, и капитал по нему считается.
+class TInvestAccount {
+  const TInvestAccount({
+    required this.id,
+    required this.name,
+    required this.type,
+    required this.accessLevel,
+    this.status = '',
+    this.openedAt,
+  });
+
+  final String id;
+  final String name;
+
+  /// ACCOUNT_TYPE_TINKOFF, ACCOUNT_TYPE_TINKOFF_IIS, ACCOUNT_TYPE_INVEST_BOX.
+  final String type;
+
+  /// ACCOUNT_ACCESS_LEVEL_FULL_ACCESS / READ_ONLY / NO_ACCESS.
+  final String accessLevel;
+
+  /// ACCOUNT_STATUS_OPEN / NEW / CLOSED.
+  final String status;
+
+  /// Закрытый счёт: в выдаче он есть, но ни торговать, ни считать по нему
+  /// нечего.
+  bool get closed => status.endsWith('CLOSED');
+
+  final DateTime? openedAt;
+
+  /// Можно ли отправлять заявки с этого счёта.
+  ///
+  /// Запрещаем только там, где брокер прямо сказал «только чтение».
+  /// Отсутствие поля — это «не знаю», а не «нельзя»: песочница и старые
+  /// ответы его не возвращают, и трактовать молчание как запрет значит
+  /// сломать торговлю на ровном месте. Настоящий запрет приходит от биржи
+  /// отказом на заявку, и он честнее нашей догадки.
+  bool get tradable => !accessLevel.endsWith('READ_ONLY');
+
+  /// Индивидуальный инвестиционный счёт: другой налоговый режим, и в
+  /// интерфейсе он не должен выглядеть как обычный брокерский.
+  bool get isIis => type.contains('IIS');
+
+  /// Человеческая подпись: имя счёта у брокера может быть пустым.
+  String get title => name.trim().isEmpty
+      ? (isIis ? 'ИИС' : 'Брокерский счёт')
+      : name.trim();
+
+  static TInvestAccount fromJson(Map<String, dynamic> json) => TInvestAccount(
+        id: json['id'] as String? ?? '',
+        name: json['name'] as String? ?? '',
+        type: json['type'] as String? ?? '',
+        accessLevel: json['accessLevel'] as String? ?? '',
+        status: json['status'] as String? ?? '',
+        openedAt: DateTime.tryParse(json['openedDate'] as String? ?? ''),
+      );
+}
+
 /// Разрешённый инструмент срочного рынка.
 class TInvestInstrument {
   const TInvestInstrument({
@@ -121,8 +183,14 @@ class TInvestBroker implements Broker {
 
   static const _ns = 'tinkoff.public.invest.api.contract.v1';
 
-  /// Номер счёта, на котором работаем. Определяется при проверке доступа.
-  String? _accountId;
+  /// Все счета токена. Кэшируется список, а не один счёт: раньше здесь
+  /// хранился `accounts.first`, и основной капитал владельца приложение
+  /// просто не видело.
+  List<TInvestAccount>? _accounts;
+
+  /// Счёт, с которого разрешено торговать. Задаётся снаружи (настройками);
+  /// null — берётся первый с полным доступом.
+  String? tradingAccountId;
 
   @override
   Future<bool> get isReady async {
@@ -136,35 +204,82 @@ class TInvestBroker implements Broker {
 
   @override
   Future<String> checkAccess() async {
-    final account = await _account();
-    return 'Токен принят · счёт $account'
+    final list = await accounts();
+    final trading = await _account();
+    final tradable = list.where((a) => a.tradable).length;
+    return 'Токен принят · счетов ${list.length}'
+        '${tradable < list.length ? ' (торговых $tradable)' : ''}'
+        ' · торгуем со счёта $trading'
         '${_sandbox ? ' (песочница)' : ''}';
   }
 
-  /// Счёт для работы. В песочнице при отсутствии счёта открывается новый.
-  Future<String> _account() async {
-    final known = _accountId;
-    if (known != null) return known;
+  /// Все счета токена. Закрытые отбрасываются: торговать на них нельзя, а в
+  /// капитале они дали бы нули.
+  ///
+  /// В песочнице при отсутствии счёта открывается новый — иначе тренировочный
+  /// режим невозможно начать.
+  Future<List<TInvestAccount>> accounts({bool force = false}) async {
+    final known = _accounts;
+    if (known != null && !force) return known;
 
     final service = _sandbox ? 'SandboxService' : 'UsersService';
     final method = _sandbox ? 'GetSandboxAccounts' : 'GetAccounts';
     final json = await _call(service, method, const {});
-    final accounts = (json['accounts'] as List<dynamic>? ?? const [])
-        .cast<Map<String, dynamic>>()
-        // Закрытые счета в выдаче есть, торговать на них нельзя.
-        .where((a) => (a['status'] as String? ?? '') != 'ACCOUNT_STATUS_CLOSED')
+    final list = [
+      for (final item in json['accounts'] as List<dynamic>? ?? const [])
+        TInvestAccount.fromJson(item as Map<String, dynamic>),
+    ]
+        // Закрытые счета в выдаче есть; счёт без доступа токен видит, но
+        // прочитать не может — оба в капитале дали бы пустые строки.
+        .where((a) =>
+            a.id.isNotEmpty && !a.closed && !a.accessLevel.endsWith('NO_ACCESS'))
         .toList();
 
-    if (accounts.isEmpty) {
+    if (list.isEmpty) {
       if (!_sandbox) {
         throw const BrokerException('У токена нет доступных счетов');
       }
       final opened = await _call('SandboxService', 'OpenSandboxAccount', const {});
       final id = opened['accountId'] as String?;
       if (id == null) throw const BrokerException('Не удалось открыть счёт песочницы');
-      return _accountId = id;
+      return _accounts = [
+        TInvestAccount(
+          id: id,
+          name: 'Песочница',
+          type: 'ACCOUNT_TYPE_TINKOFF',
+          accessLevel: 'ACCOUNT_ACCESS_LEVEL_FULL_ACCESS',
+        ),
+      ];
     }
-    return _accountId = accounts.first['id'] as String;
+    return _accounts = list;
+  }
+
+  /// Счёт, с которого уходят заявки.
+  ///
+  /// Только он: остальные счета читаются, но не торгуют. Это защита, а не
+  /// удобство — заявка, ушедшая не с того счёта, ломает и учёт, и налоги.
+  Future<String> _account() async {
+    final list = await accounts();
+    final chosen = tradingAccountId;
+    if (chosen != null) {
+      final match = list.where((a) => a.id == chosen).firstOrNull;
+      if (match == null) {
+        throw BrokerException('Счёт $chosen токену недоступен');
+      }
+      if (!match.tradable) {
+        throw BrokerException(
+          'Счёт ${match.title} доступен только на чтение — торговать с него нельзя',
+        );
+      }
+      return match.id;
+    }
+    final tradable = list.where((a) => a.tradable).firstOrNull;
+    if (tradable == null) {
+      throw const BrokerException(
+        'У токена нет счёта с полным доступом: он выдан только на чтение',
+      );
+    }
+    return tradable.id;
   }
 
   /// Тикер → инструмент срочного рынка.
@@ -268,8 +383,8 @@ class TInvestBroker implements Broker {
   }
 
   @override
-  Future<List<BrokerPosition>> positions() async {
-    final account = await _account();
+  Future<List<BrokerPosition>> positions({String? accountId}) async {
+    final account = accountId ?? await _account();
     // Портфель, а не GetPositions: только он отдаёт среднюю цену входа и
     // плавающий результат. Без них блок «На бирже» показывал бы нули.
     final json = await _call(
@@ -303,14 +418,51 @@ class TInvestBroker implements Broker {
     return result;
   }
 
+  /// Денежные остатки счёта по валютам.
+  ///
+  /// Нужны книге отдельно от позиций: капитал — это не только бумаги, и
+  /// свободный рубль на счёте владельца ничем не хуже акции.
+  Future<Map<String, double>> cashBalances(String accountId) async {
+    final json = await _call(
+      _sandbox ? 'SandboxService' : 'OperationsService',
+      _sandbox ? 'GetSandboxPortfolio' : 'GetPortfolio',
+      {'accountId': accountId},
+    );
+    final result = <String, double>{};
+    // Т-Инвестиции отдают деньги двумя способами: агрегатом totalAmountCurrencies
+    // и позициями типа currency. Берём позиции — в них видно каждую валюту
+    // отдельно, а агрегат уже пересчитан в рубли по своему курсу.
+    for (final item in json['positions'] as List<dynamic>? ?? const []) {
+      final row = item as Map<String, dynamic>;
+      if ((row['instrumentType'] as String? ?? '') != 'currency') continue;
+      final code = (row['figi'] as String? ?? '').toLowerCase().contains('usd')
+          ? 'USD'
+          : 'RUB';
+      final quantity = quotationToDouble(row['quantity']);
+      result[code] = (result[code] ?? 0) + quantity;
+    }
+    if (result.isEmpty) {
+      final total = json['totalAmountCurrencies'];
+      if (total is Map<String, dynamic>) {
+        final code = (total['currency'] as String? ?? 'rub').toUpperCase();
+        result[code] = quotationToDouble(total);
+      }
+    }
+    return result;
+  }
+
   /// Операции счёта за период — сырьё для книги капитала.
   ///
   /// Берётся `GetOperations`, а не портфель: портфель показывает, что есть
   /// сейчас, а книге нужно, как оно возникло — каждая покупка, комиссия,
   /// дивиденд и налог с их временем и суммой. Иначе восстановить, откуда
   /// взялся текущий капитал, невозможно.
-  Future<List<BrokerOperation>> operations({required DateTime from, DateTime? to}) async {
-    final account = await _account();
+  Future<List<BrokerOperation>> operations({
+    required DateTime from,
+    DateTime? to,
+    String? accountId,
+  }) async {
+    final account = accountId ?? await _account();
     final json = await _call(
       _sandbox ? 'SandboxService' : 'OperationsService',
       _sandbox ? 'GetSandboxOperations' : 'GetOperations',
