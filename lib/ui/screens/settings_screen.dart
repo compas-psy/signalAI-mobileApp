@@ -43,16 +43,20 @@ class SettingsScreen extends StatelessWidget {
                   connectedLabel: 'Данные идут',
                   onConnect: controller.connectExchange,
                 ),
-                const SizedBox(height: 12),
-                _ExchangesCard(
-                  title: 'Торговый доступ',
-                  exchanges: [
-                    for (final e in snapshot.exchanges)
-                      if (!e.isDataSource) e,
-                  ],
-                  connectedLabel: 'Подключено',
-                  onConnect: controller.connectExchange,
-                ),
+                // Торговый доступ живёт в «Торговом контуре» — вторая
+                // карточка с теми же площадками только дублировала бы его.
+                if (snapshot.exchanges.any((e) => !e.isDataSource)) ...[
+                  const SizedBox(height: 12),
+                  _ExchangesCard(
+                    title: 'Торговый доступ',
+                    exchanges: [
+                      for (final e in snapshot.exchanges)
+                        if (!e.isDataSource) e,
+                    ],
+                    connectedLabel: 'Подключено',
+                    onConnect: controller.connectExchange,
+                  ),
+                ],
               ] else
                 _ExchangesCard(
                   title: 'Биржи · API',

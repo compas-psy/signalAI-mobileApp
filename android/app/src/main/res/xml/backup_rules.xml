@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Автобэкап Android (до API 30): журнал сделок и настройки переживают
+     переустановку через резервную копию Google. Торговые секреты сюда не
+     попадают: они в Android Keystore, который не бэкапится по построению,
+     а их зашифрованные обёртки исключены явно — копия без ключа расшифровки
+     бесполезна и только путала бы восстановлением «ключи есть, но не работают». -->
+<full-backup-content>
+    <include domain="file" path="signalai/"/>
+    <exclude domain="sharedpref" path="signalai.vault.xml"/>
+</full-backup-content>

@@ -1337,22 +1337,10 @@ class LocalAnalysisRepository
             accentHex: 0xFFF7A600,
             isDataSource: true,
           ),
-          ExchangeAccount(
-            id: 'tinvest',
-            abbr: 'T',
-            name: 'Т-Инвестиции API',
-            subtitle: 'Срочный рынок MOEX · песочница · токен в разделе ниже',
-            connected: false,
-            accentHex: 0xFF8E8E98,
-          ),
-          ExchangeAccount(
-            id: 'bybit-trade',
-            abbr: 'B',
-            name: 'Bybit · торговый доступ',
-            subtitle: 'Перпетуалы USDT · testnet · ключи в разделе ниже',
-            connected: false,
-            accentHex: 0xFF8E8E98,
-          ),
+          // Торговый доступ здесь намеренно не перечисляется: у него есть
+          // собственная карточка «Торговый контур» с режимами, ключами и
+          // проверками. Вторая витрина с кнопками «Подключить», которые
+          // никуда не ведут, только запутывала.
         ],
         channels: [
           ToggleSetting(
