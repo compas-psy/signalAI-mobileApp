@@ -24,6 +24,7 @@ import '../domain/ledger/account.dart';
 import '../domain/ledger/ledger_event.dart';
 import '../domain/ledger/money.dart';
 import '../domain/options/black76.dart';
+import '../domain/portfolio/allocation.dart';
 import '../domain/portfolio/package_backtest.dart';
 import '../domain/portfolio/package_plan.dart';
 import '../domain/options/structures.dart';
@@ -557,6 +558,68 @@ class LocalAnalysisRepository
     }
 
     return PackageSimulator.run(plan: plan, series: series);
+  }
+
+  /// Котировки прокси-инструментов пакета: цена штуки и размер лота.
+  ///
+  /// Без них пакет остаётся процентами, которые в терминал не выставляются.
+  /// Инструмент, по которому цены нет, не подменяется похожим и не считается
+  /// по нулю — строка разбора честно скажет, что количества нет.
+  Future<Map<String, InstrumentQuote>> packageQuotes(PackagePlan plan) async {
+    final symbols = {for (final t in plan.targets) t.assetClass.proxy};
+    final quotes = <String, InstrumentQuote>{};
+
+    final moex = {
+      for (final t in plan.targets)
+        if (!t.assetClass.onCrypto) t.assetClass.proxy,
+    };
+    if (moex.isNotEmpty) {
+      try {
+        for (final share in await _iss.sharesSnapshot()) {
+          final symbol = share.spec.symbol.toUpperCase();
+          if (!moex.contains(symbol)) continue;
+          if (share.lastPrice <= 0) continue;
+          quotes[symbol] = InstrumentQuote(
+            symbol: symbol,
+            price: Money.of(share.lastPrice, Currency.rub),
+            lotSize: share.lotSize,
+          );
+        }
+      } on Exception {
+        // Снимок не пришёл — разбор скажет, что цен нет.
+      }
+    }
+
+    if (symbols.contains('BTCUSDT')) {
+      try {
+        final tickers = await _bybit.tickers(symbols: const ['BTCUSDT']);
+        if (tickers.isNotEmpty && tickers.first.lastPrice > 0) {
+          quotes['BTCUSDT'] = InstrumentQuote(
+            symbol: 'BTCUSDT',
+            price: Money.of(tickers.first.lastPrice, Currency.usdt),
+            venue: 'Bybit',
+          );
+        }
+      } on Exception {
+        // То же самое: молчание лучше выдуманной цены.
+      }
+    }
+
+    return quotes;
+  }
+
+  /// Сколько штук каждого прокси-инструмента уже есть по книге.
+  Future<Map<String, double>> packageHoldings(PackagePlan plan) async {
+    final wanted = {for (final t in plan.targets) t.assetClass.proxy};
+    final snapshot = (await _capital.state()).snapshot;
+    final result = <String, double>{};
+    for (final position in snapshot.positions) {
+      final symbol = position.instrument.toUpperCase();
+      if (!wanted.contains(symbol)) continue;
+      // Один инструмент может лежать на нескольких счетах — складываем.
+      result[symbol] = (result[symbol] ?? 0) + position.quantity.asDouble;
+    }
+    return result;
   }
 
   // ── Опционы ────────────────────────────────────────────────────────────

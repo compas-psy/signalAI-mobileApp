@@ -7,20 +7,31 @@ import '../ledger/money.dart';
 /// словами. «30% в облигациях» без указания, чем именно, — это не план, а
 /// пожелание.
 enum AssetClass {
-  bonds('Облигации', 'RGBITR', ['OFZ', 'корпоративные']),
-  stocks('Акции', 'IMOEX', ['SBER', 'LKOH', 'GAZP']),
-  moneyMarket('Денежный рынок', 'LQDT', ['LQDT']),
-  futures('Фьючерсы', 'IMOEX', ['SiZ5', 'RIZ5']),
-  crypto('Крипта', 'BTCUSDT', ['BTC', 'ETH']);
+  bonds('Облигации', 'RGBITR', 'SBGB', ['SBGB', 'OBLG', 'SBRB']),
+  stocks('Акции', 'IMOEX', 'TMOS', ['TMOS', 'EQMX', 'SBMX']),
+  moneyMarket('Денежный рынок', 'LQDT', 'LQDT', ['LQDT', 'AKMM']),
+  futures('Фьючерсы', 'IMOEX', 'MXI', ['MXI', 'MIX']),
+  crypto('Крипта', 'BTCUSDT', 'BTCUSDT', ['BTCUSDT', 'ETHUSDT']);
 
-  const AssetClass(this.label, this.benchmark, this.examples);
+  const AssetClass(this.label, this.benchmark, this.proxy, this.examples);
 
   final String label;
 
   /// Серия, по которой считается историческая доходность класса.
   final String benchmark;
 
+  /// Инструмент, которым класс покупается на самом деле.
+  ///
+  /// Без него пакет — пожелание, а не план: «30% в облигациях» нельзя
+  /// выставить в терминале. Фонд выбран как исполнимый одним походом:
+  /// ликвиден, торгуется целыми лотами, доступен на брокерском счёте.
+  final String proxy;
+
+  /// Чем ещё можно закрыть класс, если основной инструмент недоступен.
   final List<String> examples;
+
+  /// Где инструмент торгуется.
+  bool get onCrypto => this == AssetClass.crypto;
 
   /// Контур, к которому класс относится по умолчанию.
   Contour get contour => switch (this) {

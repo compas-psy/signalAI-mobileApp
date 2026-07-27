@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:signalai/domain/analysis/candle.dart';
 import 'package:signalai/domain/ledger/money.dart';
+import 'package:signalai/domain/portfolio/allocation.dart';
 import 'package:signalai/domain/portfolio/package_backtest.dart';
 import 'package:signalai/domain/portfolio/package_plan.dart';
 import 'package:signalai/domain/portfolio/rebalance.dart';
@@ -182,6 +183,162 @@ void main() {
       expect(positions.first.actualPercent, closeTo(75, 1e-9));
       expect(positions.first.drift, closeTo(15, 1e-9));
       expect(positions.first.outOfBand, isTrue);
+    });
+  });
+
+  group('Разбор пакета до инструментов', () {
+    final plan = PackagePlan(
+      id: 'alloc',
+      title: 'Разбор',
+      thesis: '',
+      horizonYears: 5,
+      invalidation: '',
+      targets: const [
+        PackageTarget(assetClass: AssetClass.stocks, weightPercent: 60),
+        PackageTarget(assetClass: AssetClass.bonds, weightPercent: 40),
+      ],
+    );
+
+    test('у каждого класса есть исполнимый инструмент', () {
+      // «30% в облигациях» без указания, чем именно, — пожелание, а не план:
+      // в терминал такое не выставляется.
+      for (final assetClass in AssetClass.values) {
+        expect(assetClass.proxy, isNotEmpty, reason: assetClass.label);
+      }
+    });
+
+    test('целевые суммы превращаются в лоты и штуки', () {
+      final allocation = TargetAllocation.of(
+        plan: plan,
+        total: rub(1000000),
+        quotes: {
+          'TMOS': InstrumentQuote(symbol: 'TMOS', price: rub(7.5), lotSize: 10),
+          'SBGB': InstrumentQuote(symbol: 'SBGB', price: rub(11.2), lotSize: 1),
+        },
+      );
+
+      final stocks =
+          allocation.lines.firstWhere((l) => l.assetClass == AssetClass.stocks);
+      // 600 000 / (7,5 × 10) = 8000 лотов ⇒ 80 000 паёв.
+      expect(stocks.lots, 8000);
+      expect(stocks.units, 80000);
+      expect(stocks.plannedValue, rub(600000));
+
+      final bonds =
+          allocation.lines.firstWhere((l) => l.assetClass == AssetClass.bonds);
+      // 400 000 / 11,2 = 35 714,28 ⇒ 35 714 штук, округление вниз.
+      expect(bonds.lots, 35714);
+      expect(bonds.plannedValue, rub(35714 * 11.2));
+    });
+
+    test('остаток, не легший в целые лоты, назван, а не потерян', () {
+      // Если остаток «размазать», сумма строк не сойдётся с капиталом — и
+      // доверие к разбору кончится на первом же сложении.
+      final allocation = TargetAllocation.of(
+        plan: plan,
+        total: rub(1000000),
+        quotes: {
+          'TMOS': InstrumentQuote(symbol: 'TMOS', price: rub(7.5), lotSize: 10),
+          'SBGB': InstrumentQuote(symbol: 'SBGB', price: rub(11.2), lotSize: 1),
+        },
+      );
+
+      expect(allocation.planned + allocation.residual, allocation.total);
+      expect(allocation.residual.isNegative, isFalse);
+    });
+
+    test('без цены количество не выдумывается', () {
+      final allocation = TargetAllocation.of(
+        plan: plan,
+        total: rub(1000000),
+        quotes: {
+          'TMOS': InstrumentQuote(symbol: 'TMOS', price: rub(7.5), lotSize: 10),
+        },
+      );
+
+      final bonds =
+          allocation.lines.firstWhere((l) => l.assetClass == AssetClass.bonds);
+      expect(bonds.lots, isNull);
+      expect(bonds.reason, contains('цены'));
+      expect(allocation.unpriced.length, 1);
+    });
+
+    test('чужая валюта требует курса, а не молчаливого сложения', () {
+      // Сложить рубли с USDT «как есть» — тот же дефект, что и double
+      // для денег: ошибка не видна, пока не станет дорогой.
+      final crypto = PackagePlan(
+        id: 'crypto',
+        title: '',
+        thesis: '',
+        horizonYears: 1,
+        invalidation: '',
+        targets: const [
+          PackageTarget(assetClass: AssetClass.crypto, weightPercent: 100),
+        ],
+      );
+      final allocation = TargetAllocation.of(
+        plan: crypto,
+        total: rub(1000000),
+        quotes: {
+          'BTCUSDT': InstrumentQuote(
+            symbol: 'BTCUSDT',
+            price: Money.of(90000, Currency.usdt),
+            venue: 'Bybit',
+          ),
+        },
+      );
+
+      expect(allocation.lines.single.lots, isNull);
+      expect(allocation.lines.single.reason, contains('курс'));
+    });
+
+    test('неполный лот не превращается в заявку на ноль', () {
+      final allocation = TargetAllocation.of(
+        plan: plan,
+        total: rub(1000),
+        quotes: {
+          'TMOS': InstrumentQuote(symbol: 'TMOS', price: rub(700), lotSize: 10),
+        },
+      );
+
+      final stocks =
+          allocation.lines.firstWhere((l) => l.assetClass == AssetClass.stocks);
+      expect(stocks.lots, isNull);
+      expect(stocks.reason, contains('один лот'));
+    });
+
+    test('уже купленное вычитается: докупить надо разницу', () {
+      final allocation = TargetAllocation.of(
+        plan: plan,
+        total: rub(1000000),
+        quotes: {
+          'TMOS': InstrumentQuote(symbol: 'TMOS', price: rub(7.5), lotSize: 10),
+        },
+        holdings: const {'TMOS': 30000},
+      );
+
+      final stocks =
+          allocation.lines.firstWhere((l) => l.assetClass == AssetClass.stocks);
+      expect(stocks.actualUnits, 30000);
+      expect(stocks.deltaUnits, 50000);
+      expect(stocks.deltaValue, rub(50000 * 7.5));
+      expect(stocks.buy, isTrue);
+    });
+
+    test('перебор даёт продажу, а не отрицательную покупку', () {
+      final allocation = TargetAllocation.of(
+        plan: plan,
+        total: rub(1000000),
+        quotes: {
+          'TMOS': InstrumentQuote(symbol: 'TMOS', price: rub(7.5), lotSize: 10),
+        },
+        holdings: const {'TMOS': 100000},
+      );
+
+      final stocks =
+          allocation.lines.firstWhere((l) => l.assetClass == AssetClass.stocks);
+      expect(stocks.deltaUnits, -20000);
+      expect(stocks.buy, isFalse);
     });
   });
 

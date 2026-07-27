@@ -42,6 +42,8 @@ abstract final class Icons {
 
   static const chevronLeft = IconSpec(paths: ['M15 18l-6-6 6-6']);
 
+  static const chevronRight = IconSpec(paths: ['M9 18l6-6-6-6']);
+
   static const shield = IconSpec(
     paths: ['M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6l8-4z'],
   );

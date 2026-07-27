@@ -6,7 +6,6 @@ import '../../domain/ledger/account.dart';
 import '../../domain/ledger/ledger_event.dart';
 import '../../domain/ledger/money.dart';
 import '../../domain/portfolio/package_plan.dart';
-import '../../domain/portfolio/rebalance.dart';
 import '../../state/app_controller.dart';
 import '../../state/app_scope.dart';
 import '../../state/navigation.dart';
@@ -15,6 +14,9 @@ import '../../theme/typography.dart';
 import '../layout.dart';
 import '../widgets/common.dart';
 import '../widgets/operation_sheet.dart';
+import '../widgets/package_widgets.dart';
+import '../widgets/vector_icon.dart';
+import 'package_detail_screen.dart';
 import '../widgets/segmented.dart';
 
 /// Раздел «Капитал»: обзор, счета, пакеты, книга операций, аналитика.
@@ -519,236 +521,91 @@ class _PackagePlanCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final history = controller.packageHistory(plan.id);
-    final loading = controller.packageLoading(plan.id);
-    final rebalance = controller.rebalance(plan);
 
-    return SectionCard(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Expanded(child: Text(plan.title, style: T.jost(17))),
-              OutlineBadge(
-                label: '${plan.horizonYears} ЛЕТ',
-                color: C.info,
-                borderColor: C.infoBorder,
-                background: C.infoFaint,
-                fontWeight: 800,
-              ),
-            ],
-          ),
-          const SizedBox(height: 6),
-          Text(plan.thesis, style: T.body(11.5, color: C.muted, height: 1.5)),
-          const SizedBox(height: 12),
-          _CompositionBar(plan: plan),
-          const SizedBox(height: 10),
-          for (final target in plan.targets)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 6),
-              child: Row(
-                children: [
-                  Container(
-                    width: 8,
-                    height: 8,
-                    decoration: BoxDecoration(
-                      color: _classColor(target.assetClass),
-                      borderRadius: BorderRadius.circular(2),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(target.assetClass.label,
-                        style: T.body(11.5, color: C.textSecondary)),
-                  ),
-                  Text(
-                    '${target.weightPercent.round()}% '
-                    '±${target.bandPercent.round()}',
-                    style: T.mono(11, weight: 600),
-                  ),
-                ],
-              ),
-            ),
-          const SizedBox(height: 10),
-          if (history != null && !history.isEmpty) ...[
-            MetricRow(tiles: [
-              MetricTile(
-                label: 'Годовых',
-                value: '${history.cagr >= 0 ? '+' : '−'}'
-                    '${history.cagr.abs().toStringAsFixed(1).replaceAll('.', ',')}%',
-                color: history.cagr >= 0 ? C.green : C.red,
-                hint: 'за ${history.years} г.',
-              ),
-              MetricTile(
-                label: 'Просадка',
-                value: '${history.maxDrawdown.toStringAsFixed(0)}%',
-                color: C.red,
-                hint: 'максимальная',
-              ),
-              MetricTile(
-                label: 'Худший год',
-                value: '${history.worstYearReturn.toStringAsFixed(0)}%',
-                color: C.red,
-                hint: '${history.worstYear}',
-              ),
-            ]),
-            if (history.stress.isNotEmpty) ...[
-              const SizedBox(height: 8),
-              Text(
-                'Стресс: ${history.stress.entries.map((e) => '${e.key} '
-                    '${e.value >= 0 ? '+' : '−'}'
-                    '${e.value.abs().toStringAsFixed(0)}%').join(' · ')}',
-                style: T.mono(11, color: C.warning),
-              ),
-            ],
-            if (history.missing.isNotEmpty) ...[
-              const SizedBox(height: 6),
-              Text(
-                'Без истории: ${history.missing.join(', ')} — вес '
-                'перераспределён по остальным классам',
-                style: T.body(10.5, color: C.warning, height: 1.4),
-              ),
-            ],
-            const SizedBox(height: 6),
-            Text(
-              'История, не прогноз: так этот состав вёл себя с '
-              '${history.from.year} по ${history.to.year} год при '
-              'ежеквартальной ребалансировке. Будущее он не обещает.',
-              style: T.body(10, color: C.faint, height: 1.4),
-            ),
-          ] else
-            Pressable(
-              onTap: loading ? null : () => controller.loadPackageHistory(plan),
-              child: Container(
-                padding: const EdgeInsets.symmetric(vertical: 10),
-                decoration: BoxDecoration(
-                  border: Border.all(color: C.borderHover),
-                  borderRadius: BorderRadius.circular(R.inner),
-                ),
-                child: Center(
-                  child: Text(
-                    loading ? 'Считаем историю…' : 'Посчитать историю пакета',
-                    style: T.body(12, weight: 800, color: C.accent),
-                  ),
-                ),
-              ),
-            ),
-          if (rebalance != null) ...[
-            const SizedBox(height: 12),
-            _RebalanceBlock(plan: rebalance),
-          ],
-          const SizedBox(height: 10),
-          Text('Замысел сломан, если: ${plan.invalidation}',
-              style: T.body(10.5, color: C.faint, height: 1.4)),
-        ],
+    // Карточка — это анонс, а не сам пакет. Разбор до штук и денег живёт на
+    // отдельном экране: раньше карточка не открывалась вовсе, и состав
+    // пакета негде было увидеть.
+    return Pressable(
+      onTap: () => Navigator.of(context).push(
+        PageRouteBuilder<void>(
+          pageBuilder: (_, _, _) => PackageDetailScreen(plan: plan),
+          transitionsBuilder: (_, animation, _, child) =>
+              FadeTransition(opacity: animation, child: child),
+        ),
       ),
-    );
-  }
-}
-
-Color _classColor(AssetClass assetClass) => switch (assetClass) {
-      AssetClass.bonds => C.info,
-      AssetClass.stocks => C.green,
-      AssetClass.moneyMarket => C.muted,
-      AssetClass.futures => C.tactical,
-      AssetClass.crypto => C.accent,
-    };
-
-/// Полоса целевого состава пакета.
-class _CompositionBar extends StatelessWidget {
-  const _CompositionBar({required this.plan});
-
-  final PackagePlan plan;
-
-  @override
-  Widget build(BuildContext context) => ClipRRect(
-        borderRadius: BorderRadius.circular(5),
-        child: SizedBox(
-          height: 10,
-          child: Row(
-            children: [
-              for (final target in plan.targets)
-                Expanded(
-                  flex: (target.weightPercent * 10).round().clamp(1, 100000),
-                  child: ColoredBox(color: _classColor(target.assetClass)),
-                ),
-            ],
-          ),
-        ),
-      );
-}
-
-/// Предложение по ребалансировке: конкретные заявки, а не «надо бы».
-class _RebalanceBlock extends StatelessWidget {
-  const _RebalanceBlock({required this.plan});
-
-  final RebalancePlan plan;
-
-  @override
-  Widget build(BuildContext context) => Container(
-        padding: const EdgeInsets.fromLTRB(12, 10, 12, 11),
-        decoration: BoxDecoration(
-          color: C.inset,
-          borderRadius: BorderRadius.circular(R.inset),
-        ),
+      child: SectionCard(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const SectionLabel('Ребалансировка'),
-            const SizedBox(height: 8),
-            if (plan.isEmpty)
-              Text(
-                'Заявок нет — веса внутри полос. Торговать по мелкому '
-                'отклонению значит платить комиссию за иллюзию порядка.',
-                style: T.body(11, color: C.muted, height: 1.45),
-              )
-            else
-              for (final order in plan.orders) ...[
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+            Row(
+              children: [
+                Expanded(child: Text(plan.title, style: T.jost(17))),
+                OutlineBadge(
+                  label: '${plan.horizonYears} ЛЕТ',
+                  color: C.info,
+                  borderColor: C.infoBorder,
+                  background: C.infoFaint,
+                  fontWeight: 800,
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Text(plan.thesis,
+                maxLines: 3,
+                overflow: TextOverflow.ellipsis,
+                style: T.body(11.5, color: C.muted, height: 1.5)),
+            const SizedBox(height: 12),
+            CompositionBar(plan: plan),
+            const SizedBox(height: 10),
+            for (final target in plan.targets)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: Row(
                   children: [
                     Container(
-                      margin: const EdgeInsets.only(top: 4),
-                      width: 7,
-                      height: 7,
+                      width: 8,
+                      height: 8,
                       decoration: BoxDecoration(
-                        color: order.buy ? C.green : C.red,
-                        shape: BoxShape.circle,
-                      ),
-                    ),
-                    const SizedBox(width: 9),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            '${order.buy ? 'Купить' : 'Продать'} '
-                            '${order.assetClass.label}'
-                            '${order.lots == null ? '' : ' · ${order.lots} лот.'}',
-                            style: T.body(11.5, weight: 700),
-                          ),
-                          Text(order.reason,
-                              style: T.body(10.5, color: C.muted, height: 1.35)),
-                        ],
+                        color: classColor(target.assetClass),
+                        borderRadius: BorderRadius.circular(2),
                       ),
                     ),
                     const SizedBox(width: 8),
-                    Text(fmtMoney(order.amount),
-                        style: T.mono(11.5,
-                            weight: 600, color: order.buy ? C.green : C.red)),
+                    Expanded(
+                      child: Text(
+                        '${target.assetClass.label} · ${target.assetClass.proxy}',
+                        style: T.body(11.5, color: C.textSecondary),
+                      ),
+                    ),
+                    Text(
+                      '${target.weightPercent.round()}% '
+                      '±${target.bandPercent.round()}',
+                      style: T.mono(11, weight: 600),
+                    ),
                   ],
                 ),
-                const SizedBox(height: 8),
-              ],
-            for (final note in plan.skipped)
-              Padding(
-                padding: const EdgeInsets.only(top: 2),
-                child: Text('· $note',
-                    style: T.body(10, color: C.faint, height: 1.4)),
               ),
+            const SizedBox(height: 4),
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    history == null || history.isEmpty
+                        ? 'Открыть: состав в штуках и деньгах, история, заявки'
+                        : 'Годовых ${history.cagr >= 0 ? '+' : '−'}'
+                            '${history.cagr.abs().toStringAsFixed(1).replaceAll('.', ',')}%'
+                            ' · просадка ${history.maxDrawdown.toStringAsFixed(0)}%',
+                    style: T.body(11, color: C.accent, height: 1.4),
+                  ),
+                ),
+                const VectorIcon(Icons.chevronRight, size: 14, color: C.accent),
+              ],
+            ),
           ],
         ),
-      );
+      ),
+    );
+  }
 }
 
 /// Книга операций: список с фильтрами и ручной ввод.

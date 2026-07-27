@@ -13,6 +13,7 @@ import '../domain/ledger/account.dart';
 import '../domain/ledger/ledger_event.dart';
 import '../domain/ledger/money.dart';
 import '../domain/options/structure_builder.dart';
+import '../domain/portfolio/allocation.dart';
 import '../domain/portfolio/package_backtest.dart';
 import '../domain/portfolio/package_plan.dart';
 import '../domain/portfolio/rebalance.dart';
@@ -648,6 +649,41 @@ class AppController extends ChangeNotifier {
       total: state.totalEquity,
     );
   }
+
+  final Map<String, TargetAllocation> _allocations = {};
+
+  /// Разбор пакета до инструментов: сколько чего в штуках и в деньгах.
+  TargetAllocation? allocation(String id) => _allocations[id];
+
+  /// Считает разбор пакета по живым ценам инструментов.
+  ///
+  /// Проценты в терминал не выставляются — владельцу нужен список «купить N
+  /// штук такого-то на M рублей». Цены берутся с MOEX и Bybit; инструмент,
+  /// по которому цены нет, не подменяется похожим.
+  Future<void> loadAllocation(PackagePlan plan) async {
+    final repository = _repository;
+    final state = _capital;
+    if (repository is! LocalAnalysisRepository || state == null) return;
+    if (!_packageLoading.add('alloc:${plan.id}')) return;
+    notifyListeners();
+    try {
+      final quotes = await repository.packageQuotes(plan);
+      final holdings = await repository.packageHoldings(plan);
+      _allocations[plan.id] = TargetAllocation.of(
+        plan: plan,
+        total: state.totalEquity,
+        quotes: quotes,
+        holdings: holdings,
+      );
+    } catch (e) {
+      showToast('Цены инструментов не пришли: ${_errorText(e)}');
+    } finally {
+      _packageLoading.remove('alloc:${plan.id}');
+      notifyListeners();
+    }
+  }
+
+  bool allocationLoading(String id) => _packageLoading.contains('alloc:$id');
 
   // ── Опционы ────────────────────────────────────────────────────────────
 
