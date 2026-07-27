@@ -193,6 +193,8 @@ class IssClient {
   CandleStore? store;
 
   static const _sharesPath = 'engines/stock/markets/shares/boards/TQBR';
+  static const _sharesMarketPath = 'engines/stock/markets/shares';
+  static const _indexPath = 'engines/stock/markets/index';
 
   /// Снимок всей основной доски акций (TQBR): «весь рынок» раздела «Инвест».
   ///
@@ -283,18 +285,38 @@ class IssClient {
     return result;
   }
 
-  /// Дневные свечи акции с основной доски — инкрементально через хранилище.
-  Future<List<Candle>> shareCandles(String secId, {required DateTime from}) async {
+  /// Дневные свечи акции — инкрементально через хранилище.
+  ///
+  /// Путь рыночного уровня, без доски: биржа переводит бумаги между досками
+  /// (фонды денежного рынка переехали на основную в 2026-м), и запрос,
+  /// привязанный к доске, отдаёт историю только с момента переезда. Для
+  /// анализа нужна вся жизнь инструмента, а не последние 36 баров.
+  Future<List<Candle>> shareCandles(String secId, {required DateTime from}) =>
+      _dailyCandles(secId, from: from, path: _sharesMarketPath, prefix: 'stock');
+
+  /// Дневные свечи индекса (IMOEX и другие) — тот же кэш, другой рынок.
+  ///
+  /// Индекс, а не фьючерс на него: у фьючерса история рвётся на каждой
+  /// экспирации, и структура «режима рынка» считалась бы по склейке разных
+  /// серий. Индекс непрерывен с самого начала торгов.
+  Future<List<Candle>> indexCandles(String secId, {required DateTime from}) =>
+      _dailyCandles(secId, from: from, path: _indexPath, prefix: 'index');
+
+  Future<List<Candle>> _dailyCandles(
+    String secId, {
+    required DateTime from,
+    required String path,
+    required String prefix,
+  }) async {
     const interval = 24; // код дневки у ISS
     final candleStore = store;
     if (candleStore == null) {
-      return _fetchCandles(secId, interval, from, path: _sharesPath);
+      return _fetchCandles(secId, interval, from, path: path);
     }
-    final key = CandleStore.keyFor('stock:$secId', '$interval');
+    final key = CandleStore.keyFor('$prefix:$secId', '$interval');
     final known = await candleStore.load(key);
     final since = candleStore.incrementalStart(known, from);
-    final fresh =
-        await _fetchCandles(secId, interval, since ?? from, path: _sharesPath);
+    final fresh = await _fetchCandles(secId, interval, since ?? from, path: path);
     final merged = await candleStore.merge(key, fresh, coveredFrom: from);
     return [for (final c in merged) if (!c.time.isBefore(from)) c];
   }

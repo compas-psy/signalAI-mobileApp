@@ -222,6 +222,38 @@ void main() {
     });
   });
 
+  group('Отсев фондов по поведению', () {
+    // Медианный дневной размах: у фонда денежного рынка его практически нет,
+    // у акции он больше процента. Порог 0,5% разделяет их с запасом.
+    double medianRange(List<Candle> daily) {
+      final ranges = <double>[];
+      for (final c in daily) {
+        if (c.close <= 0) continue;
+        ranges.add((c.high - c.low) / c.close * 100);
+      }
+      ranges.sort();
+      return ranges[ranges.length ~/ 2];
+    }
+
+    test('фонд денежного рынка не проходит порог, акция проходит', () {
+      final fund = [
+        for (var i = 0; i < 60; i++)
+          Candle(
+            time: DateTime.utc(2026, 1, 5).add(Duration(days: i)),
+            open: 1.5,
+            high: 1.5003,
+            low: 1.4998,
+            close: 1.5001,
+            volume: 1e9,
+          ),
+      ];
+      final stock = [for (var i = 0; i < 60; i++) day(i, 280.0 + i)];
+
+      expect(medianRange(fund), lessThan(0.5));
+      expect(medianRange(stock), greaterThan(0.5));
+    });
+  });
+
   group('Дневной скринер', () {
     test('идея по акции получает подпись 1D на графике', () {
       const daySreener = Screener(timeframeLabel: '1D');

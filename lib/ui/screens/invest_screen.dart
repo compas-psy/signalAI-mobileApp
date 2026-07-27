@@ -35,17 +35,16 @@ class InvestScreen extends StatelessWidget {
                   children: [
                     _StatusCard(digest: digest),
                     const SizedBox(height: 12),
-                    if (digest.ideas.isEmpty)
-                      SectionCard(
-                        child: Text(
-                          'Сегодня идей нет: ни одна бумага не прошла фильтры. '
-                          'Это нормальное состояние — раздел не обязан выдавать '
-                          'пять идей каждый день, он обязан не выдавать плохие.',
-                          style: T.body(12, color: C.muted, height: 1.5),
-                        ),
-                      ),
+                    if (digest.ideas.isEmpty) ...[
+                      _EmptyCard(digest: digest),
+                      const SizedBox(height: 12),
+                    ],
                     for (final idea in digest.ideas) ...[
                       _IdeaCard(idea: idea),
+                      const SizedBox(height: 12),
+                    ],
+                    if (digest.watchlist.isNotEmpty) ...[
+                      _WatchlistCard(watchlist: digest.watchlist),
                       const SizedBox(height: 12),
                     ],
                     _JournalCard(ledger: controller.investDesk?.investLedger),
@@ -150,12 +149,21 @@ class _StatusCard extends StatelessWidget {
           ),
           const SizedBox(height: 8),
           Text(
-            'Пересчитано $when МСК · доска TQBR: ${digest.universeSize} бумаг, '
-            'ликвидных ${digest.liquidSize}. Пересчёт — ночью раз в день. '
-            'Техника проверяется бэктестом; фундаментальный паспорт — текущий '
-            'срез Invest API, в отборе идей не участвует. Исполнение — руками.',
+            'Пересчитано $when МСК · доска TQBR: ${digest.universeSize} бумаг → '
+            'ликвидных ${digest.liquidSize} → акций с историей ${digest.tradableSize}. '
+            'Пересчёт — ночью раз в день. Техника проверяется бэктестом; '
+            'фундаментальный паспорт — текущий срез Invest API, в отборе идей '
+            'не участвует. Исполнение — руками.',
             style: T.body(11, color: C.muted, height: 1.5),
           ),
+          if (digest.regimeNote.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Text(
+              digest.regimeNote,
+              style: T.body(11.5,
+                  color: digest.regimeBlocksLongs ? C.red : C.green, height: 1.4),
+            ),
+          ],
           if (digest.passportNote.isNotEmpty) ...[
             const SizedBox(height: 6),
             Text('Паспорта: ${digest.passportNote}',
@@ -544,25 +552,138 @@ class _BacktestCard extends StatelessWidget {
 class _RejectionsCard extends StatelessWidget {
   const _RejectionsCard({required this.rejections});
 
-  final List<String> rejections;
+  final List<RejectionGroup> rejections;
+
+  @override
+  Widget build(BuildContext context) {
+    final total = rejections.fold<int>(0, (sum, g) => sum + g.count);
+    return SectionCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const SectionLabel('Где отсеялся рынок'),
+          const SizedBox(height: 6),
+          Text(
+            'Сводка по причинам: $total бумаг не дошли до выдачи. Это карта '
+            'работы скринера — видно, что именно его остановило, а не список '
+            'из трёхсот строк.',
+            style: T.body(10.5, color: C.muted, height: 1.4),
+          ),
+          const SizedBox(height: 8),
+          for (final group in rejections)
+            Container(
+              padding: const EdgeInsets.symmetric(vertical: 7),
+              decoration: const BoxDecoration(
+                border: Border(bottom: BorderSide(color: C.divider)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(group.reason,
+                            style: T.body(11.5, weight: 700, height: 1.3)),
+                      ),
+                      const SizedBox(width: 10),
+                      Text('${group.count}', style: T.mono(13, weight: 800)),
+                    ],
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    group.examples.join(' · ') +
+                        (group.count > group.examples.length ? ' …' : ''),
+                    style: T.mono(10, color: C.muted, height: 1.4),
+                  ),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Почему выдача пуста — с причиной, а не «фильтры не пройдены».
+class _EmptyCard extends StatelessWidget {
+  const _EmptyCard({required this.digest});
+
+  final InvestDigest digest;
 
   @override
   Widget build(BuildContext context) => SectionCard(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const SectionLabel('Отбраковано'),
+            const SectionLabel('Идей сегодня нет'),
             const SizedBox(height: 6),
             Text(
-              'Причины, по которым бумаги не попали в выдачу, — видно, что '
-              'скринер работал, а не выдал заготовку.',
+              digest.regimeBlocksLongs
+                  ? 'Индекс МосБиржи в нисходящей структуре. Лонг-стратегия по '
+                      'акциям в таком рынке идей не выдаёт — это её правило, а '
+                      'не сбой: покупать в падающем рынке значит платить за '
+                      'чужой тренд. Кандидаты, которых остановил только режим, '
+                      'ниже — в листе ожидания.'
+                  : 'Ни одна бумага не набрала проходной сетап. Раздел не обязан '
+                      'выдавать пять идей каждый день — он обязан не выдавать '
+                      'плохие. Что именно отсеялось, видно в сводке ниже.',
+              style: T.body(12, color: C.muted, height: 1.5),
+            ),
+          ],
+        ),
+      );
+}
+
+/// Лист ожидания: сетап есть, мешает рынок. Не рекомендация к покупке.
+class _WatchlistCard extends StatelessWidget {
+  const _WatchlistCard({required this.watchlist});
+
+  final List<InvestIdea> watchlist;
+
+  @override
+  Widget build(BuildContext context) => SectionCard(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const SectionLabel('Лист ожидания'),
+            const SizedBox(height: 6),
+            Text(
+              'У этих бумаг сетап собран, но вход закрыт режимом рынка. Это не '
+              'рекомендация: покупать против индекса стратегия не станет. '
+              'Список показывает, кто первым попадёт в выдачу, когда структура '
+              'индекса развернётся.',
               style: T.body(10.5, color: C.muted, height: 1.4),
             ),
-            const SizedBox(height: 6),
-            for (final r in rejections)
-              Padding(
-                padding: const EdgeInsets.only(top: 3),
-                child: Text('· $r', style: T.mono(10, color: C.muted, height: 1.4)),
+            const SizedBox(height: 8),
+            for (final idea in watchlist)
+              Container(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                decoration: const BoxDecoration(
+                  border: Border(bottom: BorderSide(color: C.divider)),
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(idea.signal.symbol, style: T.mono(12.5, weight: 700)),
+                          Text(idea.signal.name,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: T.body(10.5, color: C.muted)),
+                        ],
+                      ),
+                    ),
+                    Text(
+                      'вход ${idea.signal.entry.toStringAsFixed(idea.signal.priceDecimals).replaceAll('.', ',')}',
+                      style: T.mono(11, color: C.muted),
+                    ),
+                    const SizedBox(width: 10),
+                    Text('${idea.signal.score}/100',
+                        style: T.mono(12, weight: 700, color: C.accent)),
+                  ],
+                ),
               ),
           ],
         ),

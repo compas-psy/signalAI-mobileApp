@@ -1591,6 +1591,16 @@ class LocalAnalysisRepository
   /// отбраковывается с причиной, а не пропадает молча.
   static const investMinTurnover = 50e6;
 
+  /// Минимальный медианный дневной размах, % — граница между акцией и фондом.
+  ///
+  /// У фондов денежного рынка размах около 0,02%, у облигационных — десятые
+  /// доли; у самой спокойной голубой фишки — больше процента. Порог 0,5%
+  /// отсекает первых и не может задеть вторых.
+  static const investMinRangePercent = 0.5;
+
+  /// Эталон режима рынка акций.
+  static const _investBenchmark = 'IMOEX';
+
   static const investTopIdeas = 5;
 
   /// Глубина дневной истории: ~3 года на бэктест и структуру.
@@ -1662,26 +1672,21 @@ class LocalAnalysisRepository
   Future<InvestDigest> _computeInvestDigest() async {
     _stage('Доска акций TQBR…');
     final shares = await _iss.sharesSnapshot();
-    final rejections = <String>[];
+    final rejected = <RejectedCandidate>[];
 
-    final liquid = <ShareSnapshot>[];
-    for (final share in shares) {
-      if (share.turnover < investMinTurnover) {
-        // Неликвид в лог не пишем поимённо — их сотни; итог честно виден
-        // числами «вселенная / прошло фильтр».
-        continue;
-      }
-      liquid.add(share);
-    }
-    liquid.sort((a, b) => b.turnover.compareTo(a.turnover));
+    final liquid = [
+      for (final share in shares)
+        // Неликвид поимённо не логируем — их сотни; итог виден числами
+        // «доска / ликвидных» в шапке раздела.
+        if (share.turnover >= investMinTurnover) share,
+    ]..sort((a, b) => b.turnover.compareTo(a.turnover));
 
     final regime = await _investRegime();
+    final regimeTrend = regime.forMarket(Market.moex);
     final screener = _screenerFor('stocks');
     final from = DateTime.now().subtract(const Duration(days: _investHistoryDays));
 
-    final rejected = <RejectedCandidate>[];
     final dailyBySymbol = <String, List<Candle>>{};
-    final results = <ScreenerResult>[];
     final inputs = await _mapLimited<ShareSnapshot, InstrumentInput?>(
       liquid,
       (share) async {
@@ -1691,6 +1696,19 @@ class LocalAnalysisRepository
           if (daily.length < 260) {
             rejected.add(RejectedCandidate(share.spec.symbol,
                 'мало дневной истории: ${daily.length} баров'));
+            return null;
+          }
+          // Отсев фондов: денежный рынок и облигационные БПИФы стоят на доске
+          // рядом с акциями, но у них нет волатильности — торговать по
+          // структуре там нечего. Отличаем поведением, а не строкой
+          // справочника: код типа инструмента биржа меняет, а физика — нет.
+          final range = _medianRangePercent(daily);
+          if (range < investMinRangePercent) {
+            rejected.add(RejectedCandidate(
+              share.spec.symbol,
+              'не акция: дневной размах '
+              '${range.toStringAsFixed(2).replaceAll('.', ',')}% — это фонд',
+            ));
             return null;
           }
           dailyBySymbol[share.spec.symbol] = daily;
@@ -1709,15 +1727,30 @@ class LocalAnalysisRepository
       },
     );
 
-    for (final input in inputs) {
-      if (input == null) continue;
+    final tradable = [for (final i in inputs) ?i];
+    final results = <ScreenerResult>[];
+    final waiting = <ScreenerResult>[];
+    for (final input in tradable) {
+      final scratch = <RejectedCandidate>[];
       final result = screener.evaluate(
         input,
         regime,
-        rejected: rejected,
+        rejected: scratch,
         factorHistory: _lastFactorEdges['stocks'],
       );
-      if (result == null) continue;
+      if (result == null) {
+        // Вето по режиму — не то же самое, что «плохая бумага»: сетап есть,
+        // мешает рынок. Такие кандидаты уходят в лист ожидания, чтобы работа
+        // системы была видна и в нисходящем рынке.
+        if (scratch.any((r) => r.reason.contains('против'))) {
+          final neutral = screener.evaluate(input, MarketRegime.unknown);
+          if (neutral != null && neutral.signal.direction.isLong) {
+            waiting.add(neutral);
+          }
+        }
+        rejected.addAll(scratch);
+        continue;
+      }
       if (!result.signal.direction.isLong) {
         // Решение владельца: шорт акций на 1–3 месяца не торгуем — платная
         // маржиналка съедает эдж, шорт-экспозиция есть через фьючерсы.
@@ -1729,6 +1762,7 @@ class LocalAnalysisRepository
     }
 
     results.sort((a, b) => b.signal.score.compareTo(a.signal.score));
+    waiting.sort((a, b) => b.signal.score.compareTo(a.signal.score));
     final top = results.take(investTopIdeas).toList();
 
     // Паспорта — только для показанных идей: гонять Invest API по всей доске
@@ -1740,16 +1774,18 @@ class LocalAnalysisRepository
       ideas.add(InvestIdea(signal: result.signal, passport: passport));
     }
 
-    rejections.addAll([
-      for (final r in rejected.take(30)) '${r.symbol} — ${r.reason}',
-    ]);
-
     final digest = InvestDigest(
       at: IssClient.mskNow(),
       universeSize: shares.length,
       liquidSize: liquid.length,
+      tradableSize: tradable.length,
       ideas: ideas,
-      rejections: rejections,
+      watchlist: [
+        for (final r in waiting.take(investTopIdeas)) InvestIdea(signal: r.signal),
+      ],
+      rejections: _groupRejections(rejected),
+      regimeNote: _investRegimeNote(regimeTrend),
+      regimeBlocksLongs: regimeTrend == StructureTrend.down,
       passportNote: ideas.any((i) => i.passport != null)
           ? ''
           : (fundamentals.lastError ?? ''),
@@ -1794,6 +1830,53 @@ class LocalAnalysisRepository
     return digest;
   }
 
+  /// Медианный дневной размах в процентах — по последним 60 барам.
+  ///
+  /// Медиана, а не среднее: одна дивидендная отсечка или день IPO не должны
+  /// решать, акция это или фонд.
+  static double _medianRangePercent(List<Candle> daily) {
+    final tail = daily.length <= 60 ? daily : daily.sublist(daily.length - 60);
+    final ranges = <double>[];
+    for (final c in tail) {
+      if (c.close <= 0) continue;
+      ranges.add((c.high - c.low) / c.close * 100);
+    }
+    if (ranges.isEmpty) return 0;
+    ranges.sort();
+    return ranges[ranges.length ~/ 2];
+  }
+
+  /// Сводка отбраковки: по причине, со счётчиком и примерами.
+  ///
+  /// Причины с числами внутри («мало истории: 36 баров») схлопываются в одну
+  /// группу — иначе каждая бумага давала бы свою строку, и сводка снова
+  /// превратилась бы в свалку.
+  static List<RejectionGroup> _groupRejections(List<RejectedCandidate> rejected) {
+    final byReason = <String, List<String>>{};
+    for (final r in rejected) {
+      final key = r.reason.split(':').first.trim();
+      byReason.putIfAbsent(key, () => []).add(r.symbol);
+    }
+    final groups = [
+      for (final entry in byReason.entries)
+        RejectionGroup(
+          reason: entry.key,
+          count: entry.value.length,
+          examples: entry.value.take(6).toList(),
+        ),
+    ]..sort((a, b) => b.count.compareTo(a.count));
+    return groups;
+  }
+
+  static String _investRegimeNote(StructureTrend trend) => switch (trend) {
+        StructureTrend.up => 'Индекс МосБиржи: восходящая структура — '
+            'лонг-идеи разрешены',
+        StructureTrend.down => 'Индекс МосБиржи: нисходящая структура — '
+            'лонг-идеи по акциям не выдаются',
+        StructureTrend.flat => 'Индекс МосБиржи: структура во флэте — '
+            'лонг-идеи разрешены, решает структура самой бумаги',
+      };
+
   InstrumentSpec? _investSpec(List<ShareSnapshot> shares, String symbol) {
     for (final share in shares) {
       if (share.spec.symbol == symbol) return share.spec;
@@ -1801,33 +1884,24 @@ class LocalAnalysisRepository
     return null;
   }
 
-  /// Режим рынка для акций: дневная структура фьючерса на индекс МосБиржи.
+  /// Режим рынка для акций: дневная структура индекса МосБиржи.
+  ///
+  /// Именно индекс, а не фьючерс на него: у фьючерса история рвётся на каждой
+  /// экспирации, и «структура» считалась бы по склейке разных серий.
   Future<MarketRegime> _investRegime() async {
     try {
-      final snapshots = await _iss.fortsSnapshot();
-      FortsSnapshot? mx;
-      for (final s in snapshots) {
-        final name = s.spec.name.toUpperCase();
-        if (!name.startsWith('MIX-') && !name.startsWith('MX-')) continue;
-        if (mx == null || s.turnover > mx.turnover) mx = s;
-      }
-      if (mx == null) return MarketRegime.unknown;
-      final daily = await _iss.candles(
-        mx.spec.symbol,
-        timeframe: Timeframe.d1,
-        from: DateTime.now().subtract(const Duration(days: 200)),
-        cache: true,
+      final daily = await _iss.indexCandles(
+        _investBenchmark,
+        from: DateTime.now().subtract(const Duration(days: 400)),
       );
       if (daily.length < 20) return MarketRegime.unknown;
-      final trend = analyzeStructure(daily).trend;
       return MarketRegime(
-        indexTrend: trend,
+        indexTrend: analyzeStructure(daily).trend,
         currencyTrend: StructureTrend.flat,
         cryptoTrend: StructureTrend.flat,
       );
     } on Exception {
-      // Режим неизвестен — идеи проходят без вето, и это видно по нейтральной
-      // оценке блока режима.
+      // Режим неизвестен — идеи проходят без вето, и это видно в подписи.
       return MarketRegime.unknown;
     }
   }
@@ -1940,19 +2014,9 @@ class LocalAnalysisRepository
 
   Future<RegimeTimeline> _investRegimeTimeline() async {
     try {
-      final snapshots = await _iss.fortsSnapshot();
-      FortsSnapshot? mx;
-      for (final s in snapshots) {
-        final name = s.spec.name.toUpperCase();
-        if (!name.startsWith('MIX-') && !name.startsWith('MX-')) continue;
-        if (mx == null || s.turnover > mx.turnover) mx = s;
-      }
-      if (mx == null) return RegimeTimeline.empty;
-      final daily = await _iss.candles(
-        mx.spec.symbol,
-        timeframe: Timeframe.d1,
+      final daily = await _iss.indexCandles(
+        _investBenchmark,
         from: DateTime.now().subtract(const Duration(days: _investHistoryDays)),
-        cache: true,
       );
       return RegimeTimeline.build(index: daily);
     } on Exception {

@@ -133,14 +133,48 @@ class InvestIdea {
       );
 }
 
+/// Отбраковка, сгруппированная по причине: сколько бумаг и кто именно.
+///
+/// Список из трёхсот строк «мало истории» ничего не объясняет — он выглядит
+/// как свалка. Сводка по причинам показывает, ГДЕ система отсекла рынок, и
+/// это единственная форма, в которой отбраковка полезна.
+class RejectionGroup {
+  const RejectionGroup({
+    required this.reason,
+    required this.count,
+    required this.examples,
+  });
+
+  final String reason;
+  final int count;
+
+  /// Несколько тикеров для примера — остальные за счётчиком.
+  final List<String> examples;
+
+  Map<String, dynamic> toJson() =>
+      {'reason': reason, 'count': count, 'examples': examples};
+
+  factory RejectionGroup.fromJson(Map<String, dynamic> j) => RejectionGroup(
+        reason: j['reason'] as String? ?? '',
+        count: (j['count'] as num?)?.toInt() ?? 0,
+        examples: [
+          for (final e in j['examples'] as List<dynamic>? ?? const []) e as String,
+        ],
+      );
+}
+
 /// Выдача раздела «Инвест» за один ночной пересчёт.
 class InvestDigest {
   const InvestDigest({
     required this.at,
     required this.universeSize,
     required this.liquidSize,
+    required this.tradableSize,
     required this.ideas,
     required this.rejections,
+    this.watchlist = const [],
+    this.regimeNote = '',
+    this.regimeBlocksLongs = false,
     this.passportNote = '',
   });
 
@@ -151,10 +185,26 @@ class InvestDigest {
   final int universeSize;
   final int liquidSize;
 
+  /// Сколько осталось после отсева фондов и инструментов без волатильности —
+  /// то есть сколько настоящих акций реально анализировалось.
+  final int tradableSize;
+
   final List<InvestIdea> ideas;
 
+  /// Кандидаты, которых остановило только вето по режиму рынка.
+  ///
+  /// Не рекомендация: это лист ожидания. Он показывает работу системы в
+  /// нисходящем рынке, когда идей нет и быть не должно.
+  final List<InvestIdea> watchlist;
+
+  /// Состояние режима рынка словами: «индекс МосБиржи — нисходящая структура».
+  final String regimeNote;
+
+  /// Режим запрещает лонги — главная причина пустой выдачи, если она пуста.
+  final bool regimeBlocksLongs;
+
   /// Причины отбраковки — видно, что скринер работал, а не выдал заготовку.
-  final List<String> rejections;
+  final List<RejectionGroup> rejections;
 
   /// Причина отсутствия паспортов, если их нет («нет токена Т-Инвестиций»).
   final String passportNote;
@@ -163,8 +213,12 @@ class InvestDigest {
         'at': at.toIso8601String(),
         'universe': universeSize,
         'liquid': liquidSize,
+        'tradable': tradableSize,
         'ideas': [for (final i in ideas) i.toJson()],
-        'rejections': rejections,
+        'watchlist': [for (final i in watchlist) i.toJson()],
+        'rejections': [for (final r in rejections) r.toJson()],
+        'regime_note': regimeNote,
+        'regime_blocks_longs': regimeBlocksLongs,
         'passport_note': passportNote,
       };
 
@@ -172,13 +226,21 @@ class InvestDigest {
         at: DateTime.tryParse(j['at'] as String? ?? '') ?? DateTime(2000),
         universeSize: (j['universe'] as num?)?.toInt() ?? 0,
         liquidSize: (j['liquid'] as num?)?.toInt() ?? 0,
+        tradableSize: (j['tradable'] as num?)?.toInt() ?? 0,
         ideas: [
           for (final i in j['ideas'] as List<dynamic>? ?? const [])
             InvestIdea.fromJson(i as Map<String, dynamic>),
         ],
-        rejections: [
-          for (final r in j['rejections'] as List<dynamic>? ?? const []) r as String,
+        watchlist: [
+          for (final i in j['watchlist'] as List<dynamic>? ?? const [])
+            InvestIdea.fromJson(i as Map<String, dynamic>),
         ],
+        rejections: [
+          for (final r in j['rejections'] as List<dynamic>? ?? const [])
+            RejectionGroup.fromJson(r as Map<String, dynamic>),
+        ],
+        regimeNote: j['regime_note'] as String? ?? '',
+        regimeBlocksLongs: j['regime_blocks_longs'] as bool? ?? false,
         passportNote: j['passport_note'] as String? ?? '',
       );
 }
