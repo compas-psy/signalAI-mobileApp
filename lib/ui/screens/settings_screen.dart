@@ -494,8 +494,6 @@ class _TradingControlsCard extends StatelessWidget {
           // словами биржи: что она отвечает на наш ключ и что видит на счёте.
           Pressable(
             onTap: () {
-              // Контур берётся здесь, пока AppScope ещё виден: новый маршрут
-              // встаёт выше него в дереве, и оттуда контроллера не достать.
               final desk = controller.tradingDesk;
               if (desk == null) return;
               Navigator.of(context).push(

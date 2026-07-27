@@ -1,7 +1,10 @@
+import 'dart:async';
+
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:signalai/data/mock/demo_repository.dart';
 import 'package:signalai/main.dart';
+import 'package:signalai/state/app_scope.dart';
 
 void main() {
   /// Экран телефона из макета — 412×892.
@@ -43,6 +46,66 @@ void main() {
     await tester.ensureVisible(target);
     await tester.pump(const Duration(milliseconds: 120));
   }
+
+  group('Пушнутый маршрут', () {
+    /// Открывает новый маршрут поверх приложения и отдаёт его контекст.
+    ///
+    /// Ровно тот путь, которым открываются диагностика, сырой ответ биржи и
+    /// разбор пакета: `Navigator.push` от корневого навигатора.
+    Future<BuildContext> pushRoute(WidgetTester tester) async {
+      late BuildContext pushed;
+      final navigator = tester.state<NavigatorState>(find.byType(Navigator).first);
+      unawaited(navigator.push(PageRouteBuilder<void>(
+        pageBuilder: (context, _, _) {
+          pushed = context;
+          return const SizedBox.shrink();
+        },
+      )));
+      await tester.pump(const Duration(milliseconds: 400));
+      return pushed;
+    }
+
+    testWidgets('видит AppScope, а не серый прямоугольник', (tester) async {
+      // AppScope жил внутри `home:`, то есть под корневым Navigator: маршрут
+      // вставал рядом с ним, контроллер оттуда не доставался. В релизе assert
+      // вырезан, срабатывал null-check — и Flutter рисовал ErrorWidget, то
+      // есть пустое серое окно. Так «пропал» разбор пакета.
+      await pumpApp(tester);
+      final context = await pushRoute(tester);
+
+      expect(AppScope.read(context), isNotNull);
+    });
+
+    testWidgets('текст без жёлтого подчёркивания', (tester) async {
+      // MaterialApp подставляет тексту вне Material свой «ошибочный» стиль.
+      // Наши стили задают цвет и размер, но не decoration — поэтому от него
+      // наследовалось ровно жёлтое двойное подчёркивание на всём экране.
+      await pumpApp(tester);
+      final context = await pushRoute(tester);
+
+      expect(
+        DefaultTextStyle.of(context).style.decoration,
+        isNot(TextDecoration.underline),
+      );
+    });
+  });
+
+  testWidgets('AppScope без предка объясняет себя, а не падает null-check',
+      (tester) async {
+    await tester.pumpWidget(Builder(
+      builder: (context) {
+        expect(
+          () => AppScope.read(context),
+          throwsA(isA<FlutterError>().having(
+            (e) => e.message,
+            'message',
+            contains('AppScope не найден'),
+          )),
+        );
+        return const SizedBox.shrink();
+      },
+    ));
+  });
 
   testWidgets('дайджест показывает режим рынка и пять идей', (tester) async {
     await pumpApp(tester);

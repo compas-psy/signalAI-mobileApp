@@ -92,27 +92,51 @@ class _SignalAiAppState extends State<SignalAiApp> with WidgetsBindingObserver {
     super.dispose();
   }
 
+  /// Тема собирается один раз.
+  ///
+  /// [AppScope] стоит над [MaterialApp], то есть каждое уведомление
+  /// контроллера пересобирает приложение целиком. Готовая тема снимает
+  /// главную аллокацию этой пересборки.
+  static final _theme = ThemeData(
+    brightness: Brightness.dark,
+    scaffoldBackgroundColor: C.bg,
+    fontFamily: 'Manrope',
+    colorScheme: const ColorScheme.dark(
+      primary: C.accent,
+      surface: C.card,
+      onPrimary: C.onAccent,
+    ),
+    textSelectionTheme: const TextSelectionThemeData(
+      cursorColor: C.accent,
+      selectionColor: Color(0x40FFD400),
+    ),
+  );
+
+  // AppScope стоит НАД MaterialApp сознательно.
+  //
+  // Раньше он жил внутри `home:`, то есть под корневым Navigator. Маршрут,
+  // открытый через Navigator.push, встаёт рядом с `home`, а не под ним —
+  // и контроллера оттуда не видно. В релизе это не ошибка на экране, а
+  // серый прямоугольник: assert вырезан, срабатывает null-check, Flutter
+  // рисует ErrorWidget. Ровно так «пропал» разбор пакета.
   @override
-  Widget build(BuildContext context) => MaterialApp(
-        title: 'SignalAI',
-        debugShowCheckedModeBanner: false,
-        theme: ThemeData(
-          brightness: Brightness.dark,
-          scaffoldBackgroundColor: C.bg,
-          fontFamily: 'Manrope',
-          colorScheme: const ColorScheme.dark(
-            primary: C.accent,
-            surface: C.card,
-            onPrimary: C.onAccent,
+  Widget build(BuildContext context) => AppScope(
+        controller: _controller,
+        child: MaterialApp(
+          title: 'SignalAI',
+          debugShowCheckedModeBanner: false,
+          theme: _theme,
+          // builder оборачивает сам Navigator, поэтому предок Material
+          // появляется у всех маршрутов сразу — и у нынешних, и у будущих.
+          // Без него MaterialApp подставляет тексту вне Material свой
+          // «ошибочный» стиль, от которого наследуется жёлтое двойное
+          // подчёркивание: наши стили задают цвет и размер, но не decoration.
+          // MaterialType.transparency не рисует ни фона, ни чернил.
+          builder: (context, child) => Material(
+            type: MaterialType.transparency,
+            child: child ?? const SizedBox.shrink(),
           ),
-          textSelectionTheme: const TextSelectionThemeData(
-            cursorColor: C.accent,
-            selectionColor: Color(0x40FFD400),
-          ),
-        ),
-        home: AppScope(
-          controller: _controller,
-          child: const Scaffold(
+          home: const Scaffold(
             backgroundColor: C.bg,
             body: AppShell(),
           ),
