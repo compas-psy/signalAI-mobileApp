@@ -4,6 +4,7 @@ import '../../core/format.dart';
 import '../../domain/models/settings.dart';
 import '../../domain/models/signal.dart';
 import '../../domain/position_sizing.dart';
+import '../../domain/risk/portfolio_impact.dart';
 import '../../theme/tokens.dart';
 import '../../theme/typography.dart';
 import '../tone.dart';
@@ -20,6 +21,7 @@ class ConfirmSheet extends StatelessWidget {
     required this.signal,
     required this.risk,
     required this.onExecute,
+    this.impact,
     required this.onClose,
     required this.busy,
   });
@@ -27,6 +29,10 @@ class ConfirmSheet extends StatelessWidget {
   final TradingSignal signal;
   final RiskProfile risk;
   final VoidCallback onExecute;
+
+  /// Что сделка сделает с портфелем: открытый риск, число сделок, корреляция.
+  /// null — считать не из чего (нет книги и профиля риска).
+  final PortfolioImpact? impact;
   final VoidCallback onClose;
   final bool busy;
 
@@ -135,6 +141,10 @@ class ConfirmSheet extends StatelessWidget {
                         ],
                       ),
                     ),
+                    if (impact != null) ...[
+                      const SizedBox(height: 12),
+                      _RiskChecks(impact: impact!),
+                    ],
                     const SizedBox(height: 12),
                     Container(
                       padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 9),
@@ -226,4 +236,73 @@ class _SheetRow {
   final String name;
   final String value;
   final Color color;
+}
+
+
+/// Риск-проверки перед отправкой: что сделка сделает с портфелем.
+///
+/// Показываются всегда, а не только при нарушении: увидеть «открытый риск
+/// станет 4,2% из 6%» до отправки — это и есть управление капиталом, а
+/// разбираться постфактум поздно.
+class _RiskChecks extends StatelessWidget {
+  const _RiskChecks({required this.impact});
+
+  final PortfolioImpact impact;
+
+  @override
+  Widget build(BuildContext context) => Container(
+        padding: const EdgeInsets.fromLTRB(12, 10, 12, 11),
+        decoration: BoxDecoration(
+          color: C.inset,
+          borderRadius: BorderRadius.circular(R.inset),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const SectionLabel('Влияние на портфель'),
+            const SizedBox(height: 8),
+            for (final check in impact.checks) ...[
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    margin: const EdgeInsets.only(top: 5),
+                    width: 7,
+                    height: 7,
+                    decoration: BoxDecoration(
+                      color: switch (check.verdict) {
+                        RiskVerdict.ok => C.green,
+                        RiskVerdict.warning => C.warning,
+                        RiskVerdict.blocking => C.red,
+                      },
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                  const SizedBox(width: 9),
+                  Expanded(
+                    child: Text.rich(
+                      TextSpan(
+                        text: '${check.name}: ',
+                        style: T.body(11.5, weight: 700),
+                        children: [
+                          TextSpan(
+                            text: check.detail,
+                            style: T.body(11.5, weight: 400, color: C.muted),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 7),
+            ],
+            Text(
+              'Позиция появится в книге только после подтверждения исполнения '
+              'брокером — заявка сама по себе капитал не меняет.',
+              style: T.body(10, color: C.faint, height: 1.4),
+            ),
+          ],
+        ),
+      );
 }

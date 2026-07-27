@@ -10,6 +10,8 @@ import '../data/repository.dart';
 import '../domain/ledger/account.dart';
 import '../domain/ledger/ledger_event.dart';
 import '../domain/ledger/money.dart';
+import '../domain/risk/portfolio_impact.dart';
+import '../domain/risk/risk_engine.dart';
 import 'navigation.dart';
 import '../domain/broker/broker.dart';
 import '../domain/enums.dart';
@@ -472,6 +474,48 @@ class AppController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Влияние текущей идеи на портфель — для шита подтверждения.
+  ///
+  /// Считается из книги и открытых позиций, а не из допущений: одна и та же
+  /// сделка приемлема на пустом счёте и недопустима, когда риск уже у лимита.
+  PortfolioImpact? get currentImpact {
+    final signal = currentSignal;
+    final profile = risk;
+    if (signal == null || profile == null) return null;
+
+    final state = _capital;
+    final equity = state == null || state.isEmpty
+        ? Money.of(profile.deposit, Currency.rub)
+        : state.totalEquity;
+    final perTrade = Money.of(profile.riskRub, Currency.rub);
+
+    // Открытый риск считаем по числу уже работающих идей: точный расчёт по
+    // расстоянию до стопа требует стопов у всех позиций, а их у брокера может
+    // не быть — и это отдельная проблема, которую видно в очереди решений.
+    final working = (_digest?.signals ?? const <TradingSignal>[])
+        .where((s) => s.status.isWorking)
+        .length;
+    final openRisk = perTrade.scaleBy(working.toDouble());
+
+    const limits = RiskLimits();
+    return PortfolioImpact.compute(
+      riskPerTrade: perTrade,
+      openRisk: openRisk,
+      equity: equity,
+      // Предел открытого риска: столько же процентов капитала, сколько
+      // допускает риск на сделку, умноженное на число одновременных сделок.
+      limitPercent: profile.riskPercent * limits.maxConcurrent,
+      openPositions: working,
+      maxPositions: limits.maxConcurrent,
+      correlated: _digest?.signals.any((s) =>
+              s.id != signal.id &&
+              s.status.isWorking &&
+              s.correlationGroup != null &&
+              s.correlationGroup == signal.correlationGroup) ??
+          false,
+    );
+  }
+
   /// Подпись о свежести данных для шапки раздела.
   ///
   /// Число без времени, к которому оно относится, ничего не стоит: котировки
@@ -703,6 +747,10 @@ class AppController extends ChangeNotifier {
       _applySignalStatus(signal.id, SignalStatus.working);
       _sheetOpen = false;
       showToast('Ордер отправлен · OCO SL + TP выставлены');
+      // Заявка — ещё не позиция. В книгу сделка попадёт исполнением, которое
+      // придёт в выписке брокера, поэтому здесь запускается сверка, а не
+      // запись «на всякий случай»: капитал не должен меняться от намерения.
+      unawaited(refreshCapital(sync: true));
     } catch (e) {
       _sheetOpen = false;
       showToast(_errorText(e));

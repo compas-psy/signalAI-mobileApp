@@ -219,6 +219,7 @@ class AppShell extends StatelessWidget {
             ? ConfirmSheet(
                 signal: signal,
                 risk: risk,
+                impact: controller.currentImpact,
                 busy: controller.confirming,
                 onExecute: controller.confirmCurrentSignal,
                 onClose: controller.closeSheet,
@@ -231,6 +232,7 @@ class AppShell extends StatelessWidget {
                   child: ConfirmSheet(
                     signal: signal,
                     risk: risk,
+                    impact: controller.currentImpact,
                     busy: controller.confirming,
                     onExecute: controller.confirmCurrentSignal,
                     onClose: controller.closeSheet,
