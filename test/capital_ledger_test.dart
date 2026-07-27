@@ -475,6 +475,71 @@ void main() {
       expect(snap.contributed, rubles(100000));
     });
 
+    test('журнал Bybit раскладывается по своей таблице типов', () {
+      // У Bybit не выписка, а журнал изменений баланса: сделка деривативом
+      // не покупает «бумагу», результат приходит вармаржой.
+      final events = BrokerImport.fromOperations(
+        accountId: 'bybit',
+        venue: 'bybit',
+        operations: [
+          BrokerOperation(
+            id: 'b1',
+            type: 'TRADE',
+            description: 'TRADE Buy',
+            at: DateTime.utc(2026, 4, 1),
+            payment: 128.5,
+            currency: 'USDT',
+            instrument: 'BTCUSDT',
+          ),
+          BrokerOperation(
+            id: 'b2',
+            type: 'SETTLEMENT',
+            description: 'фандинг',
+            at: DateTime.utc(2026, 4, 1, 8),
+            payment: -3.2,
+            currency: 'USDT',
+            instrument: 'BTCUSDT',
+          ),
+          BrokerOperation(
+            id: 'b3',
+            type: 'TRANSFER_IN',
+            description: 'пополнение',
+            at: DateTime.utc(2026, 4, 2),
+            payment: 500,
+            currency: 'USDT',
+          ),
+        ],
+      );
+
+      expect(events.map((e) => e.type).toList(), [
+        LedgerEventType.variationMargin,
+        LedgerEventType.funding,
+        LedgerEventType.deposit,
+      ]);
+      expect(events.first.id, 'bybit:b1');
+      expect(events.first.cashImpact.currency.code, 'USDT');
+    });
+
+    test('словарь одной площадки не применяется к другой', () {
+      // OPERATION_TYPE_BUY — тип Т-Инвестиций; в журнале Bybit его быть не
+      // может, и подставлять чужую таблицу нельзя.
+      final events = BrokerImport.fromOperations(
+        accountId: 'bybit',
+        venue: 'bybit',
+        operations: [
+          BrokerOperation(
+            id: 'x',
+            type: 'OPERATION_TYPE_BUY',
+            description: 'чужой тип',
+            at: DateTime.utc(2026, 4, 1),
+            payment: -100,
+            currency: 'USDT',
+          ),
+        ],
+      );
+      expect(events.single.type, LedgerEventType.correction);
+    });
+
     test('идентификаторы площадок не пересекаются', () {
       expect(BrokerImport.eventId('bybit', '1'), isNot(BrokerImport.eventId('tinvest', '1')));
     });

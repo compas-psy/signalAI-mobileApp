@@ -585,9 +585,44 @@ class LocalAnalysisRepository
       try {
         final positions = await broker.positions();
         for (final position in positions) {
-          _capital.mark(position.symbol, Money.of(position.entryPrice, Currency.rub));
+          // Крипта котируется в USDT: класть её цену рублями значило бы
+          // складывать разные валюты под видом одной.
+          _capital.mark(position.symbol, Money.of(position.entryPrice, Currency.usdt));
           marked++;
         }
+
+        var imported = 0;
+        var equity = '';
+        if (broker is BybitBroker) {
+          try {
+            final wallet = await broker.wallet();
+            if (!wallet.isEmpty) {
+              equity = 'капитал ${wallet.equity.toStringAsFixed(2)} USDT';
+            }
+          } on BrokerException {
+            // Кошелёк не ответил — позиции уже показаны, а капитал по этому
+            // счёту останется тем, что посчитан из книги.
+          }
+          try {
+            // Журнал биржа хранит ограниченное время, поэтому импорт
+            // инкрементальный: за 180 дней, а дубли книга отбросит сама.
+            final since = DateTime.now().subtract(const Duration(days: 180));
+            final log = await broker.transactionLog(from: since);
+            final events = BrokerImport.fromOperations(
+              accountId: 'bybit',
+              venue: 'bybit',
+              operations: log,
+            );
+            imported = await _capital.record(events);
+            final unresolved = BrokerImport.unresolved(events);
+            if (unresolved > 0) {
+              notes.add('Bybit — не разобрано операций: $unresolved');
+            }
+          } on BrokerException {
+            notes.add('Bybit — журнал операций не пришёл');
+          }
+        }
+
         upsert(Account(
           id: 'bybit',
           title: 'Bybit',
@@ -597,10 +632,15 @@ class LocalAnalysisRepository
           permissions: const ApiPermissions(read: true, trade: true),
           syncedAt: DateTime.now().toUtc(),
           reconcile: ReconcileStatus.pending,
-          note: 'режим ${_trading.modeOf(BrokerId.bybit).name} · '
-              'позиций ${positions.length}',
+          note: [
+            'режим ${_trading.modeOf(BrokerId.bybit).name}',
+            if (positions.isNotEmpty) 'позиций ${positions.length}',
+            if (imported > 0) 'операций +$imported',
+            if (equity.isNotEmpty) equity,
+          ].join(' · '),
         ));
-        notes.add('Bybit — позиций ${positions.length}');
+        notes.add('Bybit — позиций ${positions.length}'
+            '${imported > 0 ? ', импортировано операций $imported' : ''}');
       } on BrokerException catch (e) {
         upsert(Account(
           id: 'bybit',

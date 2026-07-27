@@ -78,6 +78,88 @@ class BybitBroker implements Broker {
     return 'Ключ принят · капитал ${equity ?? '—'} USDT';
   }
 
+  /// Остатки кошелька: капитал, свободное и монеты.
+  ///
+  /// Тот же запрос, что и в [checkAccess], но с данными наружу: книге нужен
+  /// не факт «ключ принят», а сколько на счёте лежит.
+  Future<BybitWallet> wallet() async {
+    final json = await _get('/v5/account/wallet-balance', {'accountType': 'UNIFIED'});
+    final list = (json['result']?['list'] as List<dynamic>? ?? const []);
+    if (list.isEmpty) {
+      return const BybitWallet(equity: 0, available: 0, coins: {});
+    }
+    final account = list.first as Map<String, dynamic>;
+    final coins = <String, double>{};
+    for (final item in account['coin'] as List<dynamic>? ?? const []) {
+      final row = item as Map<String, dynamic>;
+      final code = row['coin'] as String? ?? '';
+      final amount = _toDouble(row['walletBalance']) ?? 0;
+      if (code.isEmpty || amount == 0) continue;
+      coins[code] = amount;
+    }
+    return BybitWallet(
+      equity: _toDouble(account['totalEquity']) ?? 0,
+      available: _toDouble(account['totalAvailableBalance']) ?? 0,
+      coins: coins,
+    );
+  }
+
+  /// Журнал операций счёта — сырьё для книги капитала.
+  ///
+  /// У Bybit нет «выписки» в привычном виде: есть журнал изменений баланса,
+  /// где каждая строка — сделка, фандинг, комиссия или перевод. Это и есть
+  /// то, из чего восстанавливается капитал.
+  ///
+  /// Биржа отдаёт страницами по курсору и хранит журнал ограниченное время —
+  /// поэтому импорт инкрементальный, а не «за всю историю».
+  Future<List<BrokerOperation>> transactionLog({
+    required DateTime from,
+    int maxPages = 10,
+  }) async {
+    final result = <BrokerOperation>[];
+    String? cursor;
+
+    for (var page = 0; page < maxPages; page++) {
+      final json = await _get('/v5/account/transaction-log', {
+        'accountType': 'UNIFIED',
+        'category': 'linear',
+        'startTime': from.toUtc().millisecondsSinceEpoch.toString(),
+        'limit': '50',
+        if (cursor != null && cursor.isNotEmpty) 'cursor': cursor,
+      });
+      final data = json['result'] as Map<String, dynamic>?;
+      final list = data?['list'] as List<dynamic>? ?? const [];
+      for (final item in list) {
+        final row = item as Map<String, dynamic>;
+        final millis = int.tryParse(row['transactionTime'] as String? ?? '');
+        if (millis == null) continue;
+        // Идентификатор строки биржа не даёт: собираем из времени, типа и
+        // инструмента. Повтор той же строки даст тот же ключ, и книга
+        // отбросит дубль — ровно то, что нужно при повторном импорте.
+        final type = row['type'] as String? ?? '';
+        final symbol = row['symbol'] as String? ?? '';
+        final change = _toDouble(row['change']) ?? 0;
+        result.add(BrokerOperation(
+          id: '$millis-$type-$symbol-${row['cashFlow'] ?? ''}-${row['fee'] ?? ''}',
+          type: type,
+          description: (row['side'] as String? ?? '').isEmpty
+              ? type
+              : '$type ${row['side']}',
+          at: DateTime.fromMillisecondsSinceEpoch(millis, isUtc: true),
+          // change — итоговое изменение баланса строки: сделка минус комиссия.
+          payment: change,
+          currency: row['currency'] as String? ?? 'USDT',
+          price: _toDouble(row['tradePrice']) ?? 0,
+          quantity: _toDouble(row['qty']) ?? 0,
+          instrument: symbol,
+        ));
+      }
+      cursor = data?['nextPageCursor'] as String?;
+      if (cursor == null || cursor.isEmpty || list.isEmpty) break;
+    }
+    return result;
+  }
+
   @override
   Future<OrderResult> placeOrder(OrderRequest request) async {
     final body = <String, dynamic>{
@@ -307,4 +389,25 @@ class BybitBroker implements Broker {
       };
 
   void close() => _client.close(force: true);
+}
+
+
+/// Остатки кошелька Bybit.
+class BybitWallet {
+  const BybitWallet({
+    required this.equity,
+    required this.available,
+    required this.coins,
+  });
+
+  /// Совокупный капитал счёта в USDT.
+  final double equity;
+
+  /// Свободное под новые позиции.
+  final double available;
+
+  /// Остатки по монетам: код → количество.
+  final Map<String, double> coins;
+
+  bool get isEmpty => equity == 0 && coins.isEmpty;
 }

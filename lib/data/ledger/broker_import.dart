@@ -20,6 +20,9 @@ abstract final class BrokerImport {
   static String eventId(String venue, String operationId) => '$venue:$operationId';
 
   /// Превращает операции счёта в записи книги.
+  ///
+  /// [venue] задаёт и префикс идентификатора, и таблицу типов: у площадок
+  /// разные словари, и подставлять один под другой нельзя.
   static List<LedgerEvent> fromOperations({
     required String accountId,
     required String venue,
@@ -30,7 +33,7 @@ abstract final class BrokerImport {
       if (op.id.isEmpty) continue;
       final currency = Currency.parse(op.currency);
       final cash = Money.of(op.payment, currency);
-      final type = _typeOf(op.type);
+      final type = venue == 'bybit' ? _bybitTypeOf(op.type) : _typeOf(op.type);
 
       result.add(LedgerEvent(
         id: eventId(venue, op.id),
@@ -97,6 +100,24 @@ abstract final class BrokerImport {
         'OPERATION_TYPE_OVERNIGHT' || 'OPERATION_TYPE_INTEREST' =>
           LedgerEventType.interest,
         // Тип неизвестен — деньги учитываем, смысл не выдумываем.
+        _ => LedgerEventType.correction,
+      };
+
+  /// Соответствие типов журнала Bybit типам книги.
+  ///
+  /// У биржи это не выписка, а журнал изменений баланса: строка TRADE — это
+  /// исполнение вместе с комиссией, SETTLEMENT — фандинг бессрочного
+  /// контракта, TRANSFER_* — движение между кошельками, а не прибыль.
+  static LedgerEventType _bybitTypeOf(String raw) => switch (raw.toUpperCase()) {
+        // Сделка деривативом не меняет лоты «бумаги»: результат приходит
+        // изменением баланса, поэтому это вармаржа, а не покупка актива.
+        'TRADE' || 'DELIVERY' || 'LIQUIDATION' || 'BUST_TRADE' || 'SETTLEMENT_PNL' =>
+          LedgerEventType.variationMargin,
+        'SETTLEMENT' || 'FUNDING' || 'FUNDING_FEE' => LedgerEventType.funding,
+        'TRANSFER_IN' => LedgerEventType.deposit,
+        'TRANSFER_OUT' => LedgerEventType.withdrawal,
+        'INTEREST' => LedgerEventType.interest,
+        'FEE' || 'TRADE_FEE' || 'COMMISSION' => LedgerEventType.fee,
         _ => LedgerEventType.correction,
       };
 
