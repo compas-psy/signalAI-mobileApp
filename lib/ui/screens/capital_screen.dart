@@ -5,6 +5,8 @@ import '../../data/ledger/capital_desk.dart';
 import '../../domain/ledger/account.dart';
 import '../../domain/ledger/ledger_event.dart';
 import '../../domain/ledger/money.dart';
+import '../../domain/portfolio/package_plan.dart';
+import '../../domain/portfolio/rebalance.dart';
 import '../../state/app_controller.dart';
 import '../../state/app_scope.dart';
 import '../../state/navigation.dart';
@@ -369,78 +371,273 @@ class _Packages extends StatelessWidget {
   final CapitalState state;
 
   @override
-  Widget build(BuildContext context) => ListView(
-        padding: _pad,
-        children: [
-          SectionCard(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const SectionLabel('Пакеты капитала'),
-                const SizedBox(height: 6),
-                Text(
-                  state.packages.isEmpty
-                      ? 'Пакетов пока нет. Пакет — это целевая корзина поверх '
-                          'книги: горизонт, состав и правило, при котором '
-                          'замысел считается сломанным. Он не отдельный счёт, '
-                          'поэтому доли всегда сходятся с позициями.'
-                      : 'Фактические веса считаются из книги, целевые задаются '
-                          'пакетом. Ожидаемая доходность не показывается, пока '
-                          'её нечем подтвердить: прогноз без источника — '
-                          'выдуманное число.',
-                  style: T.body(11.5, color: C.muted, height: 1.5),
-                ),
-              ],
-            ),
+  Widget build(BuildContext context) {
+    final controller = AppScope.of(context);
+    return ListView(
+      padding: _pad,
+      children: [
+        SectionCard(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const SectionLabel('Пакеты капитала'),
+              const SizedBox(height: 6),
+              Text(
+                'Пакет — целевая корзина поверх книги, а не отдельный счёт: '
+                'горизонт, состав с полосами допуска и правило, при котором '
+                'замысел считается сломанным. Фактические веса считаются из '
+                'книги, доходность — историческая симуляция на реальных '
+                'данных, а не прогноз.',
+                style: T.body(11.5, color: C.muted, height: 1.5),
+              ),
+            ],
           ),
+        ),
+        const SizedBox(height: 12),
+        for (final plan in controller.packagePlans) ...[
+          _PackagePlanCard(plan: plan, controller: controller),
           const SizedBox(height: 12),
-          for (final package in state.packages) ...[
-            _PackageCard(package: package, state: state),
-            const SizedBox(height: 12),
-          ],
         ],
+      ],
+    );
+  }
+}
+
+class _PackagePlanCard extends StatelessWidget {
+  const _PackagePlanCard({required this.plan, required this.controller});
+
+  final PackagePlan plan;
+  final AppController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final history = controller.packageHistory(plan.id);
+    final loading = controller.packageLoading(plan.id);
+    final rebalance = controller.rebalance(plan);
+
+    return SectionCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(child: Text(plan.title, style: T.jost(17))),
+              OutlineBadge(
+                label: '${plan.horizonYears} ЛЕТ',
+                color: C.info,
+                borderColor: C.infoBorder,
+                background: C.infoFaint,
+                fontWeight: 800,
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(plan.thesis, style: T.body(11.5, color: C.muted, height: 1.5)),
+          const SizedBox(height: 12),
+          _CompositionBar(plan: plan),
+          const SizedBox(height: 10),
+          for (final target in plan.targets)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: Row(
+                children: [
+                  Container(
+                    width: 8,
+                    height: 8,
+                    decoration: BoxDecoration(
+                      color: _classColor(target.assetClass),
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(target.assetClass.label,
+                        style: T.body(11.5, color: C.textSecondary)),
+                  ),
+                  Text(
+                    '${target.weightPercent.round()}% '
+                    '±${target.bandPercent.round()}',
+                    style: T.mono(11, weight: 600),
+                  ),
+                ],
+              ),
+            ),
+          const SizedBox(height: 10),
+          if (history != null && !history.isEmpty) ...[
+            MetricRow(tiles: [
+              MetricTile(
+                label: 'Годовых',
+                value: '${history.cagr >= 0 ? '+' : '−'}'
+                    '${history.cagr.abs().toStringAsFixed(1).replaceAll('.', ',')}%',
+                color: history.cagr >= 0 ? C.green : C.red,
+                hint: 'за ${history.years} г.',
+              ),
+              MetricTile(
+                label: 'Просадка',
+                value: '${history.maxDrawdown.toStringAsFixed(0)}%',
+                color: C.red,
+                hint: 'максимальная',
+              ),
+              MetricTile(
+                label: 'Худший год',
+                value: '${history.worstYearReturn.toStringAsFixed(0)}%',
+                color: C.red,
+                hint: '${history.worstYear}',
+              ),
+            ]),
+            if (history.stress.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Text(
+                'Стресс: ${history.stress.entries.map((e) => '${e.key} '
+                    '${e.value >= 0 ? '+' : '−'}'
+                    '${e.value.abs().toStringAsFixed(0)}%').join(' · ')}',
+                style: T.mono(11, color: C.warning),
+              ),
+            ],
+            if (history.missing.isNotEmpty) ...[
+              const SizedBox(height: 6),
+              Text(
+                'Без истории: ${history.missing.join(', ')} — вес '
+                'перераспределён по остальным классам',
+                style: T.body(10.5, color: C.warning, height: 1.4),
+              ),
+            ],
+            const SizedBox(height: 6),
+            Text(
+              'История, не прогноз: так этот состав вёл себя с '
+              '${history.from.year} по ${history.to.year} год при '
+              'ежеквартальной ребалансировке. Будущее он не обещает.',
+              style: T.body(10, color: C.faint, height: 1.4),
+            ),
+          ] else
+            Pressable(
+              onTap: loading ? null : () => controller.loadPackageHistory(plan),
+              child: Container(
+                padding: const EdgeInsets.symmetric(vertical: 10),
+                decoration: BoxDecoration(
+                  border: Border.all(color: C.borderHover),
+                  borderRadius: BorderRadius.circular(R.inner),
+                ),
+                child: Center(
+                  child: Text(
+                    loading ? 'Считаем историю…' : 'Посчитать историю пакета',
+                    style: T.body(12, weight: 800, color: C.accent),
+                  ),
+                ),
+              ),
+            ),
+          if (rebalance != null) ...[
+            const SizedBox(height: 12),
+            _RebalanceBlock(plan: rebalance),
+          ],
+          const SizedBox(height: 10),
+          Text('Замысел сломан, если: ${plan.invalidation}',
+              style: T.body(10.5, color: C.faint, height: 1.4)),
+        ],
+      ),
+    );
+  }
+}
+
+Color _classColor(AssetClass assetClass) => switch (assetClass) {
+      AssetClass.bonds => C.info,
+      AssetClass.stocks => C.green,
+      AssetClass.moneyMarket => C.muted,
+      AssetClass.futures => C.tactical,
+      AssetClass.crypto => C.accent,
+    };
+
+/// Полоса целевого состава пакета.
+class _CompositionBar extends StatelessWidget {
+  const _CompositionBar({required this.plan});
+
+  final PackagePlan plan;
+
+  @override
+  Widget build(BuildContext context) => ClipRRect(
+        borderRadius: BorderRadius.circular(5),
+        child: SizedBox(
+          height: 10,
+          child: Row(
+            children: [
+              for (final target in plan.targets)
+                Expanded(
+                  flex: (target.weightPercent * 10).round().clamp(1, 100000),
+                  child: ColoredBox(color: _classColor(target.assetClass)),
+                ),
+            ],
+          ),
+        ),
       );
 }
 
-class _PackageCard extends StatelessWidget {
-  const _PackageCard({required this.package, required this.state});
+/// Предложение по ребалансировке: конкретные заявки, а не «надо бы».
+class _RebalanceBlock extends StatelessWidget {
+  const _RebalanceBlock({required this.plan});
 
-  final CapitalPackage package;
-  final CapitalState state;
+  final RebalancePlan plan;
 
   @override
   Widget build(BuildContext context) => Container(
+        padding: const EdgeInsets.fromLTRB(12, 10, 12, 11),
         decoration: BoxDecoration(
-          color: C.card,
-          border: Border.all(color: package.isCurrent ? C.accentBorder : C.border),
-          borderRadius: BorderRadius.circular(R.card),
+          color: C.inset,
+          borderRadius: BorderRadius.circular(R.inset),
         ),
-        padding: const EdgeInsets.fromLTRB(15, 13, 15, 13),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
-              children: [
-                Expanded(child: Text(package.title, style: T.jost(16))),
-                if (package.isCurrent)
-                  const OutlineBadge(
-                    label: 'ТЕКУЩИЙ',
-                    color: C.info,
-                    borderColor: C.infoBorder,
-                    background: C.infoFaint,
-                    fontWeight: 800,
-                  ),
+            const SectionLabel('Ребалансировка'),
+            const SizedBox(height: 8),
+            if (plan.isEmpty)
+              Text(
+                'Заявок нет — веса внутри полос. Торговать по мелкому '
+                'отклонению значит платить комиссию за иллюзию порядка.',
+                style: T.body(11, color: C.muted, height: 1.45),
+              )
+            else
+              for (final order in plan.orders) ...[
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Container(
+                      margin: const EdgeInsets.only(top: 4),
+                      width: 7,
+                      height: 7,
+                      decoration: BoxDecoration(
+                        color: order.buy ? C.green : C.red,
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                    const SizedBox(width: 9),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '${order.buy ? 'Купить' : 'Продать'} '
+                            '${order.assetClass.label}'
+                            '${order.lots == null ? '' : ' · ${order.lots} лот.'}',
+                            style: T.body(11.5, weight: 700),
+                          ),
+                          Text(order.reason,
+                              style: T.body(10.5, color: C.muted, height: 1.35)),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(fmtMoney(order.amount),
+                        style: T.mono(11.5,
+                            weight: 600, color: order.buy ? C.green : C.red)),
+                  ],
+                ),
+                const SizedBox(height: 8),
               ],
-            ),
-            const SizedBox(height: 6),
-            Text(package.thesis, style: T.body(11.5, color: C.muted, height: 1.5)),
-            const SizedBox(height: 10),
-            for (final slice in package.composition)
-              KeyValueRow(
-                name: slice.assetClass,
-                value: '${slice.weightPercent.round()}%',
-                showDivider: slice != package.composition.last,
-                valueStyle: T.mono(11.5, weight: 600),
+            for (final note in plan.skipped)
+              Padding(
+                padding: const EdgeInsets.only(top: 2),
+                child: Text('· $note',
+                    style: T.body(10, color: C.faint, height: 1.4)),
               ),
           ],
         ),

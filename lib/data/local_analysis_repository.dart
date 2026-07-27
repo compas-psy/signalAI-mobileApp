@@ -24,6 +24,8 @@ import '../domain/ledger/account.dart';
 import '../domain/ledger/ledger_event.dart';
 import '../domain/ledger/money.dart';
 import '../domain/options/black76.dart';
+import '../domain/portfolio/package_backtest.dart';
+import '../domain/portfolio/package_plan.dart';
 import '../domain/options/structures.dart';
 import 'ledger/broker_import.dart';
 import 'ledger/capital_desk.dart';
@@ -470,6 +472,44 @@ class LocalAnalysisRepository
     await _persistState();
     final broker = _brokers[BrokerId.tinvest];
     if (broker is TInvestBroker) broker.tradingAccountId = accountId;
+  }
+
+  // ── Пакеты капитала ────────────────────────────────────────────────────
+
+  /// Историческая симуляция пакета по реальным сериям MOEX и Bybit.
+  ///
+  /// Это история, а не прогноз: считается, как заданный состав вёл себя
+  /// раньше. Ряды берутся те же, что использует анализ, — индекс акций,
+  /// индекс облигаций, фонд денежного рынка и биткоин.
+  Future<PackageBacktest> simulatePackage(
+    PackagePlan plan, {
+    int years = 5,
+  }) async {
+    final from = DateTime.now().subtract(Duration(days: 365 * years));
+    final series = <AssetClass, List<Candle>>{};
+
+    for (final target in plan.targets) {
+      final asset = target.assetClass;
+      if (series.containsKey(asset)) continue;
+      try {
+        final candles = switch (asset) {
+          AssetClass.stocks || AssetClass.futures =>
+            await _iss.indexCandles('IMOEX', from: from),
+          // Индекс полной доходности ОФЗ: он учитывает купоны, а «просто цена
+          // облигации» занижает результат класса на всю купонную доходность.
+          AssetClass.bonds => await _iss.indexCandles('RGBITR', from: from),
+          AssetClass.moneyMarket => await _iss.shareCandles('LQDT', from: from),
+          AssetClass.crypto =>
+            await _bybit.candles('BTCUSDT', timeframe: Timeframe.d1, limit: 1000),
+        };
+        if (candles.isNotEmpty) series[asset] = candles;
+      } on Exception {
+        // Ряд не пришёл — класс попадёт в «нет истории», и симуляция скажет
+        // об этом, а не посчитает молча по остальным.
+      }
+    }
+
+    return PackageSimulator.run(plan: plan, series: series);
   }
 
   // ── Опционы ────────────────────────────────────────────────────────────

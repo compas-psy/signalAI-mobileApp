@@ -12,6 +12,9 @@ import '../domain/ledger/account.dart';
 import '../domain/ledger/ledger_event.dart';
 import '../domain/ledger/money.dart';
 import '../domain/options/structure_builder.dart';
+import '../domain/portfolio/package_backtest.dart';
+import '../domain/portfolio/package_plan.dart';
+import '../domain/portfolio/rebalance.dart';
 import '../domain/options/structures.dart';
 import '../domain/risk/portfolio_impact.dart';
 import '../domain/risk/risk_engine.dart';
@@ -516,6 +519,67 @@ class AppController extends ChangeNotifier {
               s.correlationGroup != null &&
               s.correlationGroup == signal.correlationGroup) ??
           false,
+    );
+  }
+
+  // ── Пакеты капитала ────────────────────────────────────────────────────
+
+  final Map<String, PackageBacktest> _packageHistory = {};
+  final Set<String> _packageLoading = {};
+
+  /// Замыслы пакетов.
+  List<PackagePlan> get packagePlans => PackagePlan.defaults();
+
+  /// Историческая симуляция пакета. null — ещё не считали.
+  PackageBacktest? packageHistory(String id) => _packageHistory[id];
+
+  bool packageLoading(String id) => _packageLoading.contains(id);
+
+  /// Считает историю пакета по реальным сериям.
+  Future<void> loadPackageHistory(PackagePlan plan) async {
+    final repository = _repository;
+    if (repository is! LocalAnalysisRepository) return;
+    if (!_packageLoading.add(plan.id)) return;
+    notifyListeners();
+    try {
+      _packageHistory[plan.id] = await repository.simulatePackage(plan);
+    } catch (e) {
+      showToast('История пакета не посчиталась: ${_errorText(e)}');
+    } finally {
+      _packageLoading.remove(plan.id);
+      notifyListeners();
+    }
+  }
+
+  /// Фактические веса пакета из книги и предложение по ребалансировке.
+  ///
+  /// Веса считаются по контурам: позиция принадлежит классу через контур,
+  /// заданный при записи операции. Это не догадка по тикеру, а то, что
+  /// владелец сам указал.
+  RebalancePlan? rebalance(PackagePlan plan) {
+    final state = _capital;
+    if (state == null || state.isEmpty) return null;
+
+    final byContour = <Contour, Money>{
+      for (final slice in state.allocation()) slice.contour: slice.value,
+    };
+    final values = <AssetClass, Money>{};
+    for (final target in plan.targets) {
+      final contour = target.assetClass.contour;
+      final share = plan.targets
+          .where((t) => t.assetClass.contour == contour)
+          .fold(0.0, (sum, t) => sum + t.weightPercent);
+      final total = byContour[contour] ?? Money.zero(state.base);
+      // Внутри контура делим пропорционально целевым весам: точнее книга
+      // сейчас не знает, и придумывать разбивку по тикерам нельзя.
+      values[target.assetClass] =
+          share <= 0 ? Money.zero(state.base) : total.scaleBy(target.weightPercent / share);
+    }
+
+    return Rebalancer.plan(
+      plan: plan,
+      values: values,
+      total: state.totalEquity,
     );
   }
 
