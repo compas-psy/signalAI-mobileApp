@@ -218,6 +218,59 @@ class _PressableState extends State<Pressable> {
   }
 }
 
+/// Кнопка действия: заливка для главного действия экрана, контур — для
+/// остальных. Собрана в одном месте специально: пока каждый экран рисовал
+/// свой контейнер, высота и радиус кнопок разъезжались от экрана к экрану.
+class ActionButton extends StatelessWidget {
+  const ActionButton({
+    super.key,
+    required this.label,
+    required this.onTap,
+    this.primary = false,
+    this.color = C.accent,
+    this.dense = false,
+  });
+
+  final String label;
+  final VoidCallback? onTap;
+
+  /// Главное действие экрана — заливка. На экране оно должно быть одно.
+  final bool primary;
+
+  final Color color;
+
+  /// Уменьшенная высота для кнопок внутри карточек.
+  final bool dense;
+
+  @override
+  Widget build(BuildContext context) {
+    final enabled = onTap != null;
+    final foreground = primary
+        ? C.onAccent
+        : (enabled ? color : C.faint);
+    return Pressable(
+      onTap: onTap,
+      child: Container(
+        padding: EdgeInsets.symmetric(vertical: dense ? 9 : 11),
+        decoration: BoxDecoration(
+          color: primary ? (enabled ? color : C.inset) : null,
+          border: primary
+              ? null
+              : Border.all(color: enabled ? C.borderHover : C.border),
+          borderRadius: BorderRadius.circular(primary ? R.button : R.inner),
+        ),
+        child: Center(
+          child: Text(
+            label,
+            textAlign: TextAlign.center,
+            style: T.body(dense ? 12 : 13, weight: 800, color: foreground),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 /// Липкая шапка экрана с заголовком (Сделки / Стратегии / Настройки).
 class ScreenHeader extends StatelessWidget {
   const ScreenHeader({super.key, required this.title, this.trailing});

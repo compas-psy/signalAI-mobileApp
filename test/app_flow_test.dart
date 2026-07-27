@@ -96,6 +96,17 @@ void main() {
     );
   });
 
+  testWidgets('сверка с площадками доступна и без книги', (tester) async {
+    // Замкнутый круг, из-за которого на устройстве нечем было начать: блок
+    // здоровья данных с единственной кнопкой сверки рисовался только при
+    // непустой книге, а наполнить книгу можно было только этой кнопкой.
+    await pumpApp(tester);
+
+    await scrollTo(tester, find.text('Сверить с площадками'));
+    expect(find.text('Здоровье данных'.toUpperCase()), findsOneWidget);
+    expect(find.text('Сверить с площадками'), findsWidgets);
+  });
+
   testWidgets('разделы и подразделы переключаются', (tester) async {
     await pumpApp(tester);
 

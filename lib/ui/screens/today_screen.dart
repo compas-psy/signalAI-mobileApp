@@ -29,6 +29,8 @@ class TodayScreen extends StatelessWidget {
     final controller = AppScope.of(context);
     final state = controller.capital;
 
+    final hasBook = state != null && !state.isEmpty;
+
     return ListView(
       padding: const EdgeInsets.fromLTRB(S.screen, 12, S.screen, 90),
       children: [
@@ -43,13 +45,18 @@ class TodayScreen extends StatelessWidget {
         ],
         const SizedBox(height: 12),
         _DecisionsCard(decisions: controller.decisions),
-        if (state != null && !state.isEmpty) ...[
-          const SizedBox(height: 12),
+        const SizedBox(height: 12),
+        // Здоровье данных и сверка показываются всегда, включая пустую книгу.
+        // Пока этот блок висел на условии «книга не пуста», получался
+        // замкнутый круг: наполнить книгу можно было только кнопкой, которая
+        // появлялась после наполнения.
+        if (hasBook)
           CardGrid(children: [
             _ResultCard(state: state),
             _HealthCard(state: state, controller: controller),
-          ]),
-        ],
+          ])
+        else
+          _HealthCard(state: state, controller: controller),
       ],
     );
   }
@@ -405,19 +412,32 @@ class _ResultBar extends StatelessWidget {
 }
 
 /// Здоровье данных: сходится ли книга и когда её последний раз сверяли.
+///
+/// [state] может быть `null` — книга ещё читается или режим без учёта. Даже
+/// тогда карточка нужна: в ней живёт единственная кнопка сверки.
 class _HealthCard extends StatelessWidget {
   const _HealthCard({required this.state, required this.controller});
 
-  final CapitalState state;
+  final CapitalState? state;
   final AppController controller;
 
   @override
-  Widget build(BuildContext context) => SectionCard(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const SectionLabel('Здоровье данных'),
-            const SizedBox(height: 8),
+  Widget build(BuildContext context) {
+    final state = this.state;
+    return SectionCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const SectionLabel('Здоровье данных'),
+          const SizedBox(height: 8),
+          if (state == null)
+            _HealthRow(
+              ok: false,
+              text: controller.capitalLoading
+                  ? 'Читаем книгу с диска'
+                  : 'Книга ещё не прочитана',
+            )
+          else ...[
             _HealthRow(
               ok: state.persistent,
               text: state.persistent
@@ -431,41 +451,34 @@ class _HealthCard extends StatelessWidget {
                   : 'Расхождений: ${state.snapshot.mismatches}',
             ),
             _HealthRow(
-              ok: true,
-              text: 'Операций в книге: ${state.snapshot.eventCount}',
+              ok: !state.isEmpty,
+              text: state.isEmpty
+                  ? 'Книга пуста: сверка с площадками наполнит её выпиской'
+                  : 'Операций в книге: ${state.snapshot.eventCount}',
             ),
-            _HealthRow(
-              ok: controller.riskMode.allowsOpening,
-              text: 'Риск-движок: ${controller.riskMode.label} — '
-                  '${controller.riskMode.hint}',
-            ),
-            const SizedBox(height: 10),
-            Pressable(
-              onTap: controller.capitalLoading
-                  ? null
-                  : () => controller.refreshCapital(sync: true),
-              child: Container(
-                padding: const EdgeInsets.symmetric(vertical: 10),
-                decoration: BoxDecoration(
-                  border: Border.all(color: C.borderHover),
-                  borderRadius: BorderRadius.circular(R.inner),
-                ),
-                child: Center(
-                  child: Text(
-                    controller.capitalLoading ? 'Сверяем…' : 'Сверить с площадками',
-                    style: T.body(12, weight: 800, color: C.accent),
-                  ),
-                ),
-              ),
-            ),
-            if (controller.capitalNote != null) ...[
-              const SizedBox(height: 6),
-              Text(controller.capitalNote!,
-                  style: T.mono(10, color: C.muted, height: 1.4)),
-            ],
           ],
-        ),
-      );
+          _HealthRow(
+            ok: controller.riskMode.allowsOpening,
+            text: 'Риск-движок: ${controller.riskMode.label} — '
+                '${controller.riskMode.hint}',
+          ),
+          const SizedBox(height: 10),
+          ActionButton(
+            label: controller.capitalLoading ? 'Сверяем…' : 'Сверить с площадками',
+            dense: true,
+            onTap: controller.capitalLoading
+                ? null
+                : () => controller.refreshCapital(sync: true),
+          ),
+          if (controller.capitalNote != null) ...[
+            const SizedBox(height: 8),
+            Text(controller.capitalNote!,
+                style: T.mono(10, color: C.muted, height: 1.4)),
+          ],
+        ],
+      ),
+    );
+  }
 }
 
 class _HealthRow extends StatelessWidget {
@@ -540,28 +553,29 @@ class _EmptyBook extends StatelessWidget {
             Text('Книга пуста', style: T.jost(17)),
             const SizedBox(height: 6),
             Text(
-              'Капитал считается из операций, а не вводится числом. Начните с '
-              'начального остатка счёта — дальше сделки и комиссии подтянутся '
-              'с площадок, а банковский резерв и переводы вносятся руками.',
+              'Капитал считается из операций, а не вводится числом. Самый '
+              'быстрый путь — сверка: приложение заберёт с площадок выписку, '
+              'счета и позиции. Банковский резерв и переводы вносятся руками.',
               style: T.body(11.5, color: C.muted, height: 1.5),
             ),
             const SizedBox(height: 12),
-            Pressable(
+            ActionButton(
+              label: controller.capitalLoading
+                  ? 'Сверяем…'
+                  : 'Сверить с площадками',
+              primary: true,
+              onTap: controller.capitalLoading
+                  ? null
+                  : () => controller.refreshCapital(sync: true),
+            ),
+            const SizedBox(height: 8),
+            ActionButton(
+              label: 'Открыть книгу операций',
+              dense: true,
               onTap: () {
                 controller.goSection(AppSection.capital);
                 controller.goPill(CapitalPill.book.index);
               },
-              child: Container(
-                padding: const EdgeInsets.symmetric(vertical: 11),
-                decoration: BoxDecoration(
-                  color: C.accent,
-                  borderRadius: BorderRadius.circular(R.button),
-                ),
-                child: Center(
-                  child: Text('Открыть книгу операций',
-                      style: T.body(13, weight: 800, color: C.onAccent)),
-                ),
-              ),
             ),
           ],
         ),

@@ -161,7 +161,14 @@ class LocalAnalysisRepository
 
   void _stage(String stage) => onProgress?.call(stage);
 
-  bool _loaded = false;
+  /// Загрузка состояния с диска — один раз на процесс, но **дожидаются её
+  /// все**. Раньше здесь стоял флаг `_loaded`, который взводился до первого
+  /// `await`: запуск читает журнал, стратегии и настройки параллельно
+  /// (`Future.wait` в контроллере), и второй с третьим видели «уже загружено»,
+  /// хотя с диска ещё ничего не пришло. Настройки собирались из дефолтов, а
+  /// первая же запись состояния возвращала эти дефолты на диск — отсюда и
+  /// «режим площадки всегда сбрасывается на тестнет».
+  Future<void>? _loading;
 
   /// Вечный журнал сигналов: форвард-статистика стратегии на реальных свечах.
   @override
@@ -221,8 +228,45 @@ class LocalAnalysisRepository
   GateVerdict get liveGate => _gate.evaluate(ledger);
 
   @override
-  Future<bool> hasBrokerKeys(BrokerId id) =>
-      vault.hasKeys(exchange: id.name, mode: _trading.modeOf(id).name);
+  Future<bool> hasBrokerKeys(BrokerId id) async {
+    await _ensureLoaded();
+    return vault.hasKeys(exchange: id.name, mode: _trading.modeOf(id).name);
+  }
+
+  @override
+  Future<Set<TradingMode>> brokerKeyModes(BrokerId id) async {
+    final result = <TradingMode>{};
+    for (final mode in TradingMode.values) {
+      if (await vault.hasKeys(exchange: id.name, mode: mode.name)) {
+        result.add(mode);
+      }
+    }
+    return result;
+  }
+
+  @override
+  Future<TradingMode?> readableMode(BrokerId id) async {
+    await _ensureLoaded();
+    final modes = await brokerKeyModes(id);
+    if (modes.isEmpty) return null;
+    final current = _trading.modeOf(id);
+    return modes.contains(current) ? current : modes.first;
+  }
+
+  /// Брокер площадки в режиме, которым её можно читать.
+  ///
+  /// Возвращает null, если ключей нет ни для одного режима. Для чтения
+  /// капитала это правильный компромисс: увидеть остатки живого счёта
+  /// ключом live, когда переключатель стоит на testnet, безопасно — запросы
+  /// только читающие. Для отправки заявок компромисса нет.
+  Future<(Broker, TradingMode)?> _readableBroker(BrokerId id) async {
+    final mode = await readableMode(id);
+    if (mode == null) return null;
+    // Текущий режим отдаём тем же экземпляром — у него живёт выбранный
+    // торговый счёт и кэш инструментов.
+    if (mode == _trading.modeOf(id)) return (brokerOf(id), mode);
+    return (_brokerFor(id, mode), mode);
+  }
 
   @override
   Future<String> saveBrokerKeys({
@@ -438,11 +482,13 @@ class LocalAnalysisRepository
 
   @override
   Future<List<BrokerPosition>> brokerPositions() async {
+    await _ensureLoaded();
     final result = <BrokerPosition>[];
     for (final id in BrokerId.values) {
-      if (!await hasBrokerKeys(id)) continue;
+      final readable = await _readableBroker(id);
+      if (readable == null) continue;
       try {
-        result.addAll(await brokerOf(id).positions());
+        result.addAll(await readable.$1.positions());
       } on BrokerException {
         // Недоступная площадка не должна прятать позиции остальных.
       }
@@ -455,8 +501,9 @@ class LocalAnalysisRepository
   /// Нужны настройкам: владелец выбирает, с какого счёта приложение имеет
   /// право торговать. Остальные читаются для капитала и не торгуют.
   Future<List<TInvestAccount>> tinvestAccounts() async {
-    if (!await hasBrokerKeys(BrokerId.tinvest)) return const [];
-    final broker = brokerOf(BrokerId.tinvest);
+    final readable = await _readableBroker(BrokerId.tinvest);
+    if (readable == null) return const [];
+    final broker = readable.$1;
     if (broker is! TInvestBroker) return const [];
     try {
       return await broker.accounts(force: true);
@@ -562,11 +609,19 @@ class LocalAnalysisRepository
   /// переоценки позиций и наполняет книгу выписками.
   @override
   Future<String> syncCapital() async {
+    await _ensureLoaded();
     await _capital.load();
 
     final accounts = <Account>[..._capital.accounts];
     final notes = <String>[];
     var marked = 0;
+
+    /// Подпись режима для карточки счёта: если читаем не тем режимом, что
+    /// выбран переключателем, об этом должно быть написано, а не угадано.
+    String modeNote(BrokerId id, TradingMode used) => used == _trading.modeOf(id)
+        ? 'режим ${used.name}'
+        : 'читаем ключом ${used.name}: для режима '
+            '${_trading.modeOf(id).name} ключей нет';
 
     void upsert(Account account) {
       accounts
@@ -579,8 +634,12 @@ class LocalAnalysisRepository
     // Токен привязан к пользователю, а не к счёту: GetAccounts возвращает и
     // фьючерсный счёт, и тот, где лежит основной капитал. Раньше приложение
     // брало первый попавшийся — и половина капитала была невидима.
-    if (await hasBrokerKeys(BrokerId.tinvest)) {
-      final broker = brokerOf(BrokerId.tinvest);
+    final tinvest = await _readableBroker(BrokerId.tinvest);
+    if (tinvest != null) {
+      final (broker, tinvestMode) = tinvest;
+      if (tinvestMode != _trading.modeOf(BrokerId.tinvest)) {
+        notes.add(modeNote(BrokerId.tinvest, tinvestMode));
+      }
       if (broker is TInvestBroker) {
         broker.tradingAccountId = _trading.tinvestAccountId;
         try {
@@ -661,8 +720,9 @@ class LocalAnalysisRepository
     }
 
     // ── Bybit ─────────────────────────────────────────────────────────────
-    if (await hasBrokerKeys(BrokerId.bybit)) {
-      final broker = brokerOf(BrokerId.bybit);
+    final bybit = await _readableBroker(BrokerId.bybit);
+    if (bybit != null) {
+      final (broker, bybitMode) = bybit;
       try {
         final positions = await broker.positions();
         for (final position in positions) {
@@ -714,7 +774,7 @@ class LocalAnalysisRepository
           syncedAt: DateTime.now().toUtc(),
           reconcile: ReconcileStatus.pending,
           note: [
-            'режим ${_trading.modeOf(BrokerId.bybit).name}',
+            modeNote(BrokerId.bybit, bybitMode),
             if (positions.isNotEmpty) 'позиций ${positions.length}',
             if (imported > 0) 'операций +$imported',
             if (equity.isNotEmpty) equity,
@@ -731,7 +791,7 @@ class LocalAnalysisRepository
           venue: 'Bybit',
           permissions: const ApiPermissions(read: true, trade: true),
           reconcile: ReconcileStatus.stale,
-          note: e.message,
+          note: '${modeNote(BrokerId.bybit, bybitMode)} · ${e.message}',
         ));
         notes.add('Bybit — не ответил');
       }
@@ -746,11 +806,13 @@ class LocalAnalysisRepository
 
   @override
   Future<List<BrokerPosition>> unprotectedPositions() async {
+    await _ensureLoaded();
     final result = <BrokerPosition>[];
     for (final id in BrokerId.values) {
-      if (!await hasBrokerKeys(id)) continue;
+      final readable = await _readableBroker(id);
+      if (readable == null) continue;
       try {
-        result.addAll(await brokerOf(id).unprotectedPositions());
+        result.addAll(await readable.$1.unprotectedPositions());
       } on BrokerException {
         // Недоступная площадка не должна прятать голые позиции остальных.
       }
@@ -807,10 +869,9 @@ class LocalAnalysisRepository
   String? _optimizationNote;
 
   /// Ленивая загрузка сохранённого состояния — один раз на процесс.
-  Future<void> _ensureLoaded() async {
-    if (_loaded) return;
-    _loaded = true;
+  Future<void> _ensureLoaded() => _loading ??= _loadState();
 
+  Future<void> _loadState() async {
     final state = await _store.read('state');
     if (state != null) {
       try {
@@ -908,33 +969,40 @@ class LocalAnalysisRepository
     }
   }
 
-  Future<void> _persistState() => _store.write('state', {
-        'risk': {'deposit': _risk.deposit, 'risk_percent': _risk.riskPercent},
-        'strategy_enabled': _strategyEnabled,
-        'channels': _channels,
-        'notifications': _notifications,
-        'params': {
-          for (final entry in _params.entries) entry.key: entry.value.toJson(),
-        },
-        'trading': _trading.toJson(),
-        'key_checks': {
-          for (final entry in _keyChecks.entries) entry.key: entry.value.toJson(),
-        },
-        'background': {
-          'mode': _backgroundMode.name,
-          'enabled': _backgroundEnabled,
-        },
-        'optimized_at': _optimizedAt?.toIso8601String(),
-        'optimization_note': _optimizationNote,
-        'backtests': {
-          for (final entry in _lastBacktests.entries)
-            entry.key: entry.value.toJson(),
-        },
-        'factor_edges': {
-          for (final entry in _lastFactorEdges.entries)
-            entry.key: [for (final e in entry.value) e.toJson()],
-        },
-      });
+  /// Записать состояние можно только после того, как оно прочитано: иначе
+  /// дефолты в памяти затирают сохранённое на диске. Путей записи много
+  /// (бэктест, оптимизация, проверка ключа), и следить за каждым по отдельности
+  /// — способ однажды пропустить один.
+  Future<void> _persistState() async {
+    await _ensureLoaded();
+    await _store.write('state', {
+      'risk': {'deposit': _risk.deposit, 'risk_percent': _risk.riskPercent},
+      'strategy_enabled': _strategyEnabled,
+      'channels': _channels,
+      'notifications': _notifications,
+      'params': {
+        for (final entry in _params.entries) entry.key: entry.value.toJson(),
+      },
+      'trading': _trading.toJson(),
+      'key_checks': {
+        for (final entry in _keyChecks.entries) entry.key: entry.value.toJson(),
+      },
+      'background': {
+        'mode': _backgroundMode.name,
+        'enabled': _backgroundEnabled,
+      },
+      'optimized_at': _optimizedAt?.toIso8601String(),
+      'optimization_note': _optimizationNote,
+      'backtests': {
+        for (final entry in _lastBacktests.entries)
+          entry.key: entry.value.toJson(),
+      },
+      'factor_edges': {
+        for (final entry in _lastFactorEdges.entries)
+          entry.key: [for (final e in entry.value) e.toJson()],
+      },
+    });
+  }
 
   // Подписи политики риска собираются из тех же чисел, которые применяет
   // [RiskEngine]: раньше это были декоративные строки, и написанное в

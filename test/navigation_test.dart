@@ -1,7 +1,15 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:signalai/data/broker/secure_vault.dart';
+import 'package:signalai/data/local_analysis_repository.dart';
+import 'package:signalai/data/local_store.dart';
+import 'package:signalai/state/app_controller.dart';
 import 'package:signalai/state/navigation.dart';
 
 void main() {
+  // Книга спрашивает у платформы каталог для файла — без инициализации
+  // биндинга канал недоступен и чтение падает ещё до диска.
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   group('Разделы версии 3', () {
     test('у «Сегодня» подразделов нет — это один ответ, а не меню', () {
       expect(AppSection.today.pills, isEmpty);
@@ -48,6 +56,27 @@ void main() {
 
     test('неизвестный маршрут ведёт на «Сегодня», а не падает', () {
       expect(AppRoute.fromLegacy('что-то своё'), const AppRoute(AppSection.today));
+    });
+  });
+
+  group('Холодный старт', () {
+    test('книга читается без единого перехода между разделами', () async {
+      // Приложение стартует уже на «Сегодня», и подгрузка данных висела
+      // только на переходах: раздел, с которого всё начинается, оставался
+      // единственным неинициализированным.
+      final repository = LocalAnalysisRepository(
+        store: LocalStore.inMemory(),
+        vault: const SecureVault(),
+      );
+      final controller = AppController(repository);
+      addTearDown(controller.dispose);
+
+      expect(controller.capital, isNull);
+      await controller.load();
+      // Дайджест в тесте не считается (сети нет) — важно, что состояние
+      // капитала при этом всё равно прочитано.
+      expect(controller.capital, isNotNull,
+          reason: 'на «Сегодня» нечего показывать без книги');
     });
   });
 

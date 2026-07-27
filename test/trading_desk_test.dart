@@ -205,6 +205,104 @@ void main() {
     });
   });
 
+  group('Состояние площадок переживает запуск', () {
+    test('параллельное чтение при старте не сбрасывает режим на тестнет', () async {
+      // Владелец сообщил: «в приложении всегда сбрасывается на тестнет».
+      // Причина была здесь: запуск читает журнал, стратегии и настройки
+      // одновременно, и загрузка состояния взводила флаг «загружено» до
+      // первого await — второй и третий вызовы работали с дефолтами.
+      final store = LocalStore.inMemory();
+      final vault = FakeVault();
+      final first = LocalAnalysisRepository(store: store, vault: vault);
+      await first.setTradingMode(BrokerId.bybit, TradingMode.live);
+
+      final second = LocalAnalysisRepository(store: store, vault: vault);
+      await Future.wait([
+        second.fetchTrades(),
+        second.fetchStrategies(),
+        second.fetchSettings(),
+      ]);
+
+      expect(second.tradingState.modeOf(BrokerId.bybit), TradingMode.live);
+    });
+
+    test('запись состояния не опережает его чтение', () async {
+      // Любая запись до загрузки вернула бы на диск дефолты. Путей записи
+      // много — бэктест, оптимизация, проверка ключа, — поэтому защита стоит
+      // в самой записи, а не в каждом вызывающем.
+      final store = LocalStore.inMemory();
+      final vault = FakeVault();
+      final first = LocalAnalysisRepository(store: store, vault: vault);
+      await first.setTradingMode(BrokerId.bybit, TradingMode.live);
+
+      final second = LocalAnalysisRepository(store: store, vault: vault);
+      // Первое обращение к репозиторию — пишущее.
+      await second.setBackgroundEnabled(true);
+
+      final third = LocalAnalysisRepository(store: store, vault: vault);
+      await third.fetchSettings();
+      expect(third.tradingState.modeOf(BrokerId.bybit), TradingMode.live);
+    });
+  });
+
+  group('Ключи и режим площадки', () {
+    test('ключ живого режима виден, даже когда переключатель на тестнете',
+        () async {
+      final vault = FakeVault();
+      vault.stored['bybit.live.key'] = 'K';
+      vault.stored['bybit.live.secret'] = 'S';
+      final repository =
+          LocalAnalysisRepository(store: LocalStore.inMemory(), vault: vault);
+
+      // Текущий режим — testnet: ключей для него нет.
+      expect(await repository.hasBrokerKeys(BrokerId.bybit), isFalse);
+      // Но площадку есть чем читать, и приложение обязано это знать: иначе
+      // Bybit молча пропадает из капитала.
+      expect(await repository.brokerKeyModes(BrokerId.bybit),
+          {TradingMode.live});
+      expect(await repository.readableMode(BrokerId.bybit), TradingMode.live);
+    });
+
+    test('текущий режим имеет приоритет, когда ключи есть для обоих', () async {
+      final vault = FakeVault();
+      for (final mode in ['live', 'testnet']) {
+        vault.stored['bybit.$mode.key'] = 'K';
+        vault.stored['bybit.$mode.secret'] = 'S';
+      }
+      final repository =
+          LocalAnalysisRepository(store: LocalStore.inMemory(), vault: vault);
+
+      expect(await repository.readableMode(BrokerId.bybit), TradingMode.testnet);
+      await repository.setTradingMode(BrokerId.bybit, TradingMode.live);
+      expect(await repository.readableMode(BrokerId.bybit), TradingMode.live);
+    });
+
+    test('без ключей вовсе площадка нечитаема', () async {
+      final repository =
+          LocalAnalysisRepository(store: LocalStore.inMemory(), vault: FakeVault());
+      expect(await repository.readableMode(BrokerId.bybit), isNull);
+      expect(await repository.brokerKeyModes(BrokerId.bybit), isEmpty);
+    });
+
+    test('послабление режима не распространяется на отправку ордера', () async {
+      // Читать живой счёт ключом live при переключателе на testnet безопасно.
+      // Отправлять туда заявку — нет: ошибка режима в исполнении это деньги.
+      final store = LocalStore.inMemory();
+      await seedDigest(store, [signal(market: Market.crypto, symbol: 'BTCUSDT')]);
+      final vault = FakeVault();
+      vault.stored['bybit.live.key'] = 'K';
+      vault.stored['bybit.live.secret'] = 'S';
+      final repository = LocalAnalysisRepository(store: store, vault: vault);
+      await repository.setTradingEnabled(true);
+
+      // Режим остаётся тренировочным — ключей для него нет.
+      await expectLater(
+        repository.confirmSignal('sig-1'),
+        throwsA(isA<FeatureUnavailableException>()),
+      );
+    });
+  });
+
   group('Живой счёт как наблюдение', () {
     test('Bybit переключается на live при закрытом допуске', () async {
       final repository =
