@@ -79,6 +79,9 @@ class SettingsScreen extends StatelessWidget {
                 title: 'Уведомления',
                 items: snapshot.notifications,
                 onChanged: controller.toggleNotification,
+                // Доставку можно проверить, не дожидаясь настоящего сигнала:
+                // пуш с явно помеченным примером идеи.
+                footer: _TestPushButton(onTap: controller.sendTestPush),
               ),
               const SizedBox(height: 12),
               _RiskCard(risk: snapshot.risk),
@@ -562,11 +565,15 @@ class _TogglesCard extends StatelessWidget {
     required this.title,
     required this.items,
     required this.onChanged,
+    this.footer,
   });
 
   final String title;
   final List<ToggleSetting> items;
   final void Function(String id, bool enabled) onChanged;
+
+  /// Дополнительный элемент под тумблерами — например, кнопка проверки.
+  final Widget? footer;
 
   @override
   Widget build(BuildContext context) => SectionCard(
@@ -604,7 +611,38 @@ class _TogglesCard extends StatelessWidget {
                   ],
                 ),
               ),
+            if (footer != null)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 10),
+                child: footer,
+              ),
           ],
+        ),
+      );
+}
+
+/// Кнопка тестового пуша: пример идеи в шторке уведомлений.
+class _TestPushButton extends StatelessWidget {
+  const _TestPushButton({required this.onTap});
+
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) => Pressable(
+        onTap: onTap,
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(vertical: 10),
+          decoration: BoxDecoration(
+            border: Border.all(color: C.borderHover),
+            borderRadius: BorderRadius.circular(R.inner),
+          ),
+          child: Center(
+            child: Text(
+              'Отправить тестовый пуш',
+              style: T.body(12, weight: 800, color: C.accent),
+            ),
+          ),
         ),
       );
 }

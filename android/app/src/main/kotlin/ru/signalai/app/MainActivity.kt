@@ -34,6 +34,19 @@ class MainActivity : FlutterActivity() {
                         result.success(Notifications.hasPermission(this))
                     }
 
+                    // Системный экран уведомлений приложения. Нужен, когда
+                    // разрешение отклонено дважды: Android больше не покажет
+                    // диалог, и единственный путь — включить руками там.
+                    "notificationSettings" -> {
+                        val intent = android.content.Intent(
+                            android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS,
+                        )
+                            .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, packageName)
+                            .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                        startActivity(intent)
+                        result.success(true)
+                    }
+
                     "biometricsAvailable" -> result.success(biometrics.isAvailable())
 
                     // Не «да/нет», а чем именно: владелец должен видеть, что

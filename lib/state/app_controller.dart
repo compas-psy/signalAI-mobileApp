@@ -567,7 +567,12 @@ class AppController extends ChangeNotifier {
     if (id == 'push' && enabled) {
       final granted = await _bridge.requestNotificationPermission();
       if (!granted) {
-        showToast('Разрешите уведомления SignalAI в настройках Android');
+        // Диалог мог и не показаться: после двух отказов Android молчит.
+        // Тогда единственный путь — системный экран уведомлений приложения,
+        // и мы открываем его сами, а не отправляем искать.
+        showToast('Включите уведомления SignalAI на открывшемся экране '
+            'и вернитесь в приложение');
+        await _bridge.openNotificationSettings();
       }
     }
     _settings = snapshot.copyWith(
@@ -583,6 +588,30 @@ class AppController extends ChangeNotifier {
       showToast(_errorText(e));
       notifyListeners();
     }
+  }
+
+  /// Тестовый пуш с примером идеи — проверить доставку, не дожидаясь сигнала.
+  ///
+  /// Пример помечен явно: уведомление, которое можно перепутать с реальной
+  /// идеей, опаснее отсутствия уведомлений.
+  Future<void> sendTestPush() async {
+    final granted = await _bridge.requestNotificationPermission();
+    if (!granted) {
+      showToast('Уведомления запрещены системой — включите их на '
+          'открывшемся экране и повторите');
+      await _bridge.openNotificationSettings();
+      return;
+    }
+    final delivered = await _bridge.notify(
+      id: 990,
+      title: 'ТЕСТ · BTCUSDT · Лонг · 87/100',
+      body: 'Так выглядит пуш о новой идее: вход 60 120 · SL 58 940 · '
+          'R:R 2,2. Это пример, не сигнал.',
+    );
+    showToast(delivered
+        ? 'Тестовый пуш отправлен — смотрите шторку уведомлений'
+        : 'Система не показала уведомление: проверьте разрешение и '
+            'режим «Не беспокоить»');
   }
 
   Future<void> toggleNotification(String id, bool enabled) async {

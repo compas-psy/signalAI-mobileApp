@@ -70,6 +70,10 @@ class NativeBridge {
   /// Чем именно подтверждается сделка: `biometrics`, `credential` или `none`.
   Future<String?> confirmMethod() => _string('confirmMethod');
 
+  /// Системный экран уведомлений приложения — когда диалог разрешения
+  /// Android больше не показывает.
+  Future<bool> openNotificationSettings() => _bool('notificationSettings');
+
   /// Диалог подтверждения. false — отказ, отмена или ошибка: при любом
   /// сомнении ордер не уходит.
   Future<bool> biometricConfirm({required String title, String subtitle = ''}) =>

@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:signalai/data/local_analysis_repository.dart';
 import 'package:signalai/data/local_store.dart';
+import 'package:signalai/data/native_bridge.dart';
 
 void main() {
   test('LocalStore: запись и чтение через диск', () async {
@@ -25,6 +26,29 @@ void main() {
     File('${dir.path}/state.json').writeAsStringSync('{оборванный json');
     final store = LocalStore(directory: dir);
     expect(await store.read('state'), isNull);
+  });
+
+  test('сбой каталога при старте не превращается в вечную амнезию', () async {
+    final dir = Directory.systemTemp.createTempSync('signalai_store');
+    addTearDown(() => dir.deleteSync(recursive: true));
+
+    // Мост, который падает на первых вызовах — как канал на холодном старте.
+    final bridge = _FlakyBridge(dir.path, failures: 2);
+    final store = LocalStore(bridge: bridge);
+
+    // Пока каталога нет, запись живёт в памяти — и не теряется.
+    await store.write('state', {'a': 1});
+    expect(await store.persistent, isFalse);
+
+    // Канал ожил: следующая запись уходит на диск вместе с накопленным.
+    await store.write('ledger', {'b': 2});
+    expect(await store.persistent, isTrue);
+
+    // «Перезапуск»: новый экземпляр с рабочим мостом читает всё с диска.
+    final reopened = LocalStore(bridge: _FlakyBridge(dir.path, failures: 0));
+    expect(await reopened.read('state'), {'a': 1},
+        reason: 'записанное до появления диска не выбрасывается');
+    expect(await reopened.read('ledger'), {'b': 2});
   });
 
   test('настройки переживают перезапуск: риск, тумблеры, стратегии', () async {
@@ -55,4 +79,22 @@ void main() {
       isFalse,
     );
   });
+}
+
+
+/// Мост, у которого первые [failures] запросов каталога падают.
+class _FlakyBridge extends NativeBridge {
+  _FlakyBridge(this.path, {required this.failures});
+
+  final String path;
+  int failures;
+
+  @override
+  Future<String?> filesDir() async {
+    if (failures > 0) {
+      failures--;
+      return null;
+    }
+    return path;
+  }
 }

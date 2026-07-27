@@ -30,19 +30,38 @@ class LocalStore {
 
   Future<Directory?> _dir() async {
     if (_resolved) return _directory;
-    _resolved = true;
-    if (_directory != null) return _directory;
+    // Неудача НЕ кэшируется. Раньше первый же сбой канала — гонка на
+    // холодном старте, движок ещё не поднял мост — навсегда переводил
+    // хранилище в память: настройки, журнал сделок и состояние торговли
+    // выглядели затёртыми, а всё записанное за сессию умирало с процессом.
+    // Каталог приложения не меняется, поэтому право запомнить есть только
+    // у успеха.
     final path = await _bridge.filesDir();
-    if (path != null) {
-      _directory = Directory('$path/signalai');
+    if (path == null) return _directory;
+    final directory = Directory('$path/signalai');
+    try {
+      directory.createSync(recursive: true);
+    } on FileSystemException {
+      return _directory;
+    }
+    _directory = directory;
+    _resolved = true;
+    // Всё, что успело записаться в память до появления диска, — самое свежее
+    // состояние. Доносим его до файлов, а не выбрасываем.
+    for (final entry in _memory.entries) {
       try {
-        _directory!.createSync(recursive: true);
-      } on FileSystemException {
-        _directory = null;
+        _file(directory, entry.key).writeAsStringSync(jsonEncode(entry.value));
+      } on Exception {
+        // Не донесли — прочитается старая версия с диска, это уже честно.
       }
     }
+    _memory.clear();
     return _directory;
   }
+
+  /// Пишет ли хранилище на диск. false — данные этой сессии не переживут
+  /// перезапуск, и об этом нужно говорить, а не молчать.
+  Future<bool> get persistent async => await _dir() != null;
 
   File _file(Directory dir, String name) => File('${dir.path}/$name.json');
 
