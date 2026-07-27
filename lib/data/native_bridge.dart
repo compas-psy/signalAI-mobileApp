@@ -20,6 +20,17 @@ class NativeBridge {
     }
   }
 
+  /// Версия установленной сборки: «1.0.0 (12)». null — спросить не у кого.
+  Future<String?> appVersion() async {
+    try {
+      return await _channel.invokeMethod<String>('appVersion');
+    } on PlatformException {
+      return null;
+    } on MissingPluginException {
+      return null;
+    }
+  }
+
   /// Запрос разрешения на уведомления (Android 13+). true — разрешено.
   Future<bool> requestNotificationPermission() async {
     try {

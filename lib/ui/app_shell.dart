@@ -12,6 +12,7 @@ import 'screens/strategies_screen.dart';
 import 'screens/trades_screen.dart';
 import 'widgets/confirm_sheet.dart';
 import 'widgets/toast.dart';
+import 'widgets/vector_icon.dart';
 import 'widgets/bottom_nav.dart';
 import 'widgets/side_nav.dart';
 import 'layout.dart';
@@ -49,7 +50,7 @@ class AppShell extends StatelessWidget {
                     right: 14,
                     child: Center(
                       child: ConstrainedBox(
-                        constraints: const BoxConstraints(maxWidth: 560),
+                        constraints: const BoxConstraints(maxWidth: 440),
                         child: AppToast(message: controller.toast!),
                       ),
                     ),
@@ -175,7 +176,7 @@ class AppShell extends StatelessWidget {
             // экран: ограничиваем и центрируем, поведение прежнее.
             : Center(
                 child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 560),
+                  constraints: const BoxConstraints(maxWidth: 440),
                   child: ConfirmSheet(
                     signal: signal,
                     risk: risk,
@@ -289,12 +290,21 @@ class _LoadingState extends StatelessWidget {
   Widget build(BuildContext context) => ColoredBox(
         color: C.bg,
         child: Center(
-          child: Text.rich(
-            TextSpan(
-              text: 'Signal',
-              style: T.jost(24),
-              children: [TextSpan(text: 'AI', style: T.jost(24, color: C.accent))],
-            ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const BrandMark(size: 56),
+              const SizedBox(height: 14),
+              Text.rich(
+                TextSpan(
+                  text: 'Signal',
+                  style: T.jost(22),
+                  children: [
+                    TextSpan(text: 'AI', style: T.jost(22, color: C.accent)),
+                  ],
+                ),
+              ),
+            ],
           ),
         ),
       );

@@ -24,6 +24,18 @@ class NativeChannel(private val context: Context) {
         when (call.method) {
             "filesDir" -> result.success(context.filesDir.absolutePath)
 
+            // Версия берётся у системы, а не хардкодится в интерфейсе: в
+            // карточке «О приложении» должно стоять то, что реально стоит на
+            // устройстве, иначе она бесполезна при разборе «что за сборка».
+            "appVersion" -> {
+                val info = context.packageManager.getPackageInfo(context.packageName, 0)
+                // versionCode, а не longVersionCode: последний появился в API 28,
+                // а минимальная версия приложения — 24.
+                @Suppress("DEPRECATION")
+                val code = info.versionCode
+                result.success("${info.versionName} ($code)")
+            }
+
             "notify" -> result.success(
                 Notifications.post(
                     context,

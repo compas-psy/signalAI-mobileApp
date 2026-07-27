@@ -2,4 +2,6 @@
 <resources>
     <!-- Тёмная поверхность SignalAI (surfaceRaised): на ней светится молния. -->
     <color name="ic_launcher_background">#17171C</color>
+    <!-- Фон приложения: им же залито окно, пока стартует процесс. -->
+    <color name="launch_background">#0B0B0D</color>
 </resources>

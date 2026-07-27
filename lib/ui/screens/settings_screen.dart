@@ -8,9 +8,11 @@ import '../../theme/typography.dart';
 import '../../domain/broker/broker.dart';
 import '../../monitor/background_mode.dart';
 import '../layout.dart';
+import '../../data/native_bridge.dart';
 import '../widgets/broker_keys_sheet.dart';
 import '../widgets/common.dart';
 import '../widgets/risk_edit_sheet.dart';
+import '../widgets/vector_icon.dart';
 import 'diagnostics_screen.dart';
 import 'trading_diagnostics_screen.dart';
 
@@ -130,6 +132,7 @@ class SettingsScreen extends StatelessWidget {
                   ],
                 ),
               ),
+              const _AboutCard(),
               ]),
             ],
           ),
@@ -754,4 +757,61 @@ class _RiskCard extends StatelessWidget {
       ),
     );
   }
+}
+
+/// «О приложении»: знак, имя и версия установленной сборки.
+///
+/// Версия спрашивается у системы, а не пишется в коде: при разборе «что за
+/// сборка стоит на устройстве» строка из интерфейса должна совпадать со
+/// строкой из настроек Android, иначе она только запутывает.
+class _AboutCard extends StatefulWidget {
+  const _AboutCard();
+
+  @override
+  State<_AboutCard> createState() => _AboutCardState();
+}
+
+class _AboutCardState extends State<_AboutCard> {
+  String? _version;
+
+  @override
+  void initState() {
+    super.initState();
+    const NativeBridge().appVersion().then((value) {
+      if (mounted) setState(() => _version = value);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) => SectionCard(
+        child: Row(
+          children: [
+            const BrandMark(size: 52),
+            const SizedBox(width: 13),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text.rich(
+                    TextSpan(
+                      text: 'Signal',
+                      style: T.jost(17),
+                      children: [
+                        TextSpan(text: 'AI', style: T.jost(17, color: C.accent)),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    _version == null
+                        ? 'личная сборка · версию спрашиваем у системы'
+                        : 'версия $_version · личная сборка',
+                    style: T.mono(11, color: C.muted),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      );
 }
