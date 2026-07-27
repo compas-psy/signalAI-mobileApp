@@ -95,6 +95,10 @@ class FakeProbe implements TradingProbe {
   Future<ConfirmMethod> get confirmMethod async => method;
 
   @override
+  Future<String?> get confirmMethodDetails async =>
+      'SDK 34 · экран защищён: true · canAuthenticate: strong=0, credential=0 (0 = доступно)';
+
+  @override
   List<BrokerId> get probedBrokers => const [BrokerId.bybit];
 
   @override

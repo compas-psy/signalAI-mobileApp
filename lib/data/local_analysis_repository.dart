@@ -51,7 +51,23 @@ class LocalAnalysisRepository
     LocalStore? store,
     this.vault = const SecureVault(),
     this.fortsRoots = const ['SI', 'BR', 'MX', 'RI', 'NG', 'GAZR', 'SBRF'],
-    this.cryptoSymbols = const ['BTCUSDT', 'ETHUSDT', 'SOLUSDT'],
+    // Топ-10 перпетуалов Bybit по обороту. Ширина не создаёт эдж — она даёт
+    // тому же эджу больше независимых возможностей; хвост списка ликвидности
+    // сюда сознательно не берём: проскальзывание там съедает больше, чем
+    // даёт сигнал. Группа корреляции у всей крипты одна: альты ходят за
+    // биткоином, и риск-движок не даст открыть одну и ту же ставку дважды.
+    this.cryptoSymbols = const [
+      'BTCUSDT',
+      'ETHUSDT',
+      'SOLUSDT',
+      'XRPUSDT',
+      'BNBUSDT',
+      'DOGEUSDT',
+      'TONUSDT',
+      'ADAUSDT',
+      'LINKUSDT',
+      'AVAXUSDT',
+    ],
     this.maxIdeas = 5,
     this.staleQuoteAfter = const Duration(minutes: 30),
     this.digestFreshFor = const Duration(minutes: 60),
@@ -2027,6 +2043,9 @@ class LocalAnalysisRepository
 
   @override
   Future<ConfirmMethod> get confirmMethod => vault.confirmMethod;
+
+  @override
+  Future<String?> get confirmMethodDetails => vault.confirmMethodDetails;
 
   @override
   bool get tradingEnabled => _trading.enabled;

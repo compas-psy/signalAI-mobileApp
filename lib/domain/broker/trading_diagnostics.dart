@@ -29,6 +29,9 @@ abstract interface class TradingProbe {
   /// Чем подтверждается сделка на этом устройстве.
   Future<ConfirmMethod> get confirmMethod;
 
+  /// Сырые факты детекции подтверждения. null — платформа их не отдаёт.
+  Future<String?> get confirmMethodDetails;
+
   /// Разрешена ли отправка ордеров и не нажата ли аварийная остановка.
   bool get tradingEnabled;
   bool get killSwitch;
@@ -74,11 +77,15 @@ Stream<TradingCheck> diagnoseTradingWith(TradingProbe probe) async* {
 
   yield await _guard('Подтверждение сделки', () async {
     final method = await probe.confirmMethod;
+    final raw = await probe.confirmMethodDetails;
     return TradingCheck(
       name: 'Подтверждение сделки',
       ok: method.available,
       details: [
         'способ: ${method.label}',
+        // Сырые факты устройства: спор «включено или нет» решают данные,
+        // а не пересказ.
+        if (raw != null && raw.isNotEmpty) raw,
         if (method.available)
           'каждая заявка подтверждается отдельно — молча ничего не уходит'
         else

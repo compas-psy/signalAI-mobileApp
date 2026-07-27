@@ -53,6 +53,8 @@ class MainActivity : FlutterActivity() {
                     // сделку подтвердит отпечаток, ПИН — или ничего.
                     "confirmMethod" -> result.success(biometrics.method())
 
+                    "confirmMethodDetails" -> result.success(biometrics.methodDetails())
+
                     "biometricConfirm" -> biometrics.confirm(
                         call.argument<String>("title") ?: "Подтвердите сделку",
                         call.argument<String>("subtitle") ?: "",

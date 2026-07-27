@@ -1,5 +1,6 @@
 import 'package:flutter/widgets.dart';
 
+import '../../data/broker/secure_vault.dart';
 import '../../data/repository.dart';
 import '../../domain/broker/trading_diagnostics.dart';
 import '../../theme/tokens.dart';
@@ -35,6 +36,25 @@ class _TradingDiagnosticsScreenState extends State<TradingDiagnosticsScreen> {
   void initState() {
     super.initState();
     _run();
+  }
+
+  /// Живой тест подтверждения: системный диалог без заявки, итог карточкой.
+  Future<void> _probeConfirm() async {
+    const vault = SecureVault();
+    final confirmed = await vault.confirm(
+      title: 'Проверка подтверждения',
+      subtitle: 'Это тест — заявка не отправляется',
+    );
+    if (!mounted) return;
+    setState(() => _results.add(TradingCheck(
+          name: 'Живой тест подтверждения',
+          ok: confirmed,
+          details: [
+            confirmed
+                ? 'диалог открылся, подтверждение получено — контур работает'
+                : 'подтверждение не получено: отказ, отмена или диалог не открылся',
+          ],
+        )));
   }
 
   Future<void> _run() async {
@@ -136,6 +156,25 @@ class _TradingDiagnosticsScreenState extends State<TradingDiagnosticsScreen> {
                       ),
                     ),
                   if (!_running) ...[
+                    const SizedBox(height: 8),
+                    // Решающий тест на устройстве: реальный системный диалог
+                    // подтверждения, без заявки. Если он открывается и
+                    // отвечает — контур подтверждения работает, что бы ни
+                    // говорила детекция.
+                    Pressable(
+                      onTap: _probeConfirm,
+                      child: Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          border: Border.all(color: C.borderHover),
+                          borderRadius: BorderRadius.circular(R.inner),
+                        ),
+                        child: Center(
+                          child: Text('Проверить подтверждение сделки',
+                              style: T.body(13, weight: 800, color: C.accent)),
+                        ),
+                      ),
+                    ),
                     const SizedBox(height: 8),
                     Pressable(
                       onTap: _run,

@@ -64,4 +64,7 @@ class SecureVault {
   /// Чем именно подтверждается сделка на этом устройстве.
   Future<ConfirmMethod> get confirmMethod async =>
       ConfirmMethod.parse(await _bridge.confirmMethod());
+
+  /// Сырые факты детекции: SDK, защищённость экрана, коды canAuthenticate.
+  Future<String?> get confirmMethodDetails => _bridge.confirmMethodDetails();
 }

@@ -34,31 +34,72 @@ class Biometrics(private val activity: Activity) {
         // и [confirm] это честно повторяет отказом.
         if (Build.VERSION.SDK_INT < 28) return NONE
         val secure = keyguard()?.isDeviceSecure == true
-        val manager = activity.getSystemService(Context.BIOMETRIC_SERVICE)
-            as? android.hardware.biometrics.BiometricManager
-        if (manager != null && Build.VERSION.SDK_INT >= 30) {
-            val strong = manager.canAuthenticate(
-                android.hardware.biometrics.BiometricManager.Authenticators.BIOMETRIC_STRONG,
-            )
-            if (strong == android.hardware.biometrics.BiometricManager.BIOMETRIC_SUCCESS) {
-                return BIOMETRICS
+        // Любой сбой биометрического сервиса деградирует к isDeviceSecure:
+        // проверка ПИНа разрешений не требует и не падает. Ровно этот случай
+        // уже случился в проде: без USE_BIOMETRIC в манифесте canAuthenticate
+        // бросал SecurityException — и приложение говорило «нечем» владельцу
+        // с включёнными ПИНом и отпечатком.
+        try {
+            val manager = activity.getSystemService(Context.BIOMETRIC_SERVICE)
+                as? android.hardware.biometrics.BiometricManager
+            if (manager != null && Build.VERSION.SDK_INT >= 30) {
+                val strong = manager.canAuthenticate(
+                    android.hardware.biometrics.BiometricManager.Authenticators.BIOMETRIC_STRONG,
+                )
+                if (strong == android.hardware.biometrics.BiometricManager.BIOMETRIC_SUCCESS) {
+                    return BIOMETRICS
+                }
+                val credential = manager.canAuthenticate(
+                    android.hardware.biometrics.BiometricManager.Authenticators.DEVICE_CREDENTIAL,
+                )
+                if (credential == android.hardware.biometrics.BiometricManager.BIOMETRIC_SUCCESS) {
+                    return CREDENTIAL
+                }
+                return if (secure) CREDENTIAL else NONE
             }
-            val credential = manager.canAuthenticate(
-                android.hardware.biometrics.BiometricManager.Authenticators.DEVICE_CREDENTIAL,
-            )
-            if (credential == android.hardware.biometrics.BiometricManager.BIOMETRIC_SUCCESS) {
-                return CREDENTIAL
+            if (manager != null && Build.VERSION.SDK_INT >= 29) {
+                if (manager.canAuthenticate() ==
+                    android.hardware.biometrics.BiometricManager.BIOMETRIC_SUCCESS
+                ) {
+                    return BIOMETRICS
+                }
             }
-            return if (secure) CREDENTIAL else NONE
-        }
-        if (manager != null && Build.VERSION.SDK_INT >= 29) {
-            if (manager.canAuthenticate() ==
-                android.hardware.biometrics.BiometricManager.BIOMETRIC_SUCCESS
-            ) {
-                return BIOMETRICS
-            }
+        } catch (_: Throwable) {
+            // Падение сервиса — не «нечем»: ПИН отвечает за себя сам.
         }
         return if (secure) CREDENTIAL else NONE
+    }
+
+    /// Сырые факты детекции — для диагностики, чтобы спор «включено или нет»
+    /// решался данными устройства, а не пересказом.
+    @Suppress("DEPRECATION")
+    fun methodDetails(): String {
+        val sdk = Build.VERSION.SDK_INT
+        val secure = try {
+            keyguard()?.isDeviceSecure
+        } catch (e: Throwable) {
+            "ошибка: $e"
+        }
+        val auth = try {
+            val manager = activity.getSystemService(Context.BIOMETRIC_SERVICE)
+                as? android.hardware.biometrics.BiometricManager
+            when {
+                manager == null -> "сервис биометрии недоступен"
+                sdk >= 30 -> {
+                    val strong = manager.canAuthenticate(
+                        android.hardware.biometrics.BiometricManager.Authenticators.BIOMETRIC_STRONG,
+                    )
+                    val credential = manager.canAuthenticate(
+                        android.hardware.biometrics.BiometricManager.Authenticators.DEVICE_CREDENTIAL,
+                    )
+                    "canAuthenticate: strong=$strong, credential=$credential (0 = доступно)"
+                }
+                else -> "canAuthenticate=${manager.canAuthenticate()} (0 = доступно)"
+            }
+        } catch (e: Throwable) {
+            "canAuthenticate бросил: $e"
+        }
+        return "SDK $sdk · экран защищён: $secure · $auth"
     }
 
     /**
@@ -93,23 +134,29 @@ class Biometrics(private val activity: Activity) {
             builder.setDeviceCredentialAllowed(true)
         }
 
-        builder.build().authenticate(
-            CancellationSignal(),
-            activity.mainExecutor,
-            object : BiometricPrompt.AuthenticationCallback() {
-                override fun onAuthenticationSucceeded(
-                    result: BiometricPrompt.AuthenticationResult?,
-                ) = answer(true)
+        try {
+            builder.build().authenticate(
+                CancellationSignal(),
+                activity.mainExecutor,
+                object : BiometricPrompt.AuthenticationCallback() {
+                    override fun onAuthenticationSucceeded(
+                        result: BiometricPrompt.AuthenticationResult?,
+                    ) = answer(true)
 
-                override fun onAuthenticationError(code: Int, message: CharSequence?) =
-                    answer(false)
+                    override fun onAuthenticationError(code: Int, message: CharSequence?) =
+                        answer(false)
 
-                override fun onAuthenticationFailed() {
-                    // Неудачная попытка — не отказ: диалог остаётся открытым,
-                    // окончательный ответ придёт в onAuthenticationError.
-                }
-            },
-        )
+                    override fun onAuthenticationFailed() {
+                        // Неудачная попытка — не отказ: диалог остаётся открытым,
+                        // окончательный ответ придёт в onAuthenticationError.
+                    }
+                },
+            )
+        } catch (_: Throwable) {
+            // Диалог не открылся — подтверждения не было. При сомнении ордер
+            // не уходит; причина видна в methodDetails диагностики.
+            answer(false)
+        }
     }
 
     private fun keyguard(): KeyguardManager? =
