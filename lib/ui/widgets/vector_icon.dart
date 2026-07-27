@@ -55,7 +55,13 @@ abstract final class Icons {
 
   static const navIdeas = IconSpec(paths: ['M13 2L4 14h6l-1 8 9-12h-6l1-8z']);
 
-  /// «Инвест» — столбики: другой рынок и другой горизонт, чем молния свинга.
+  /// «Сегодня» — циферблат: раздел отвечает на вопрос «что сейчас».
+  static const navToday = IconSpec(
+    paths: ['M12 7v5l3 2'],
+    circles: [IconCircle(12, 12, 9)],
+  );
+
+  /// «Капитал» — столбики: другой рынок и другой горизонт, чем молния свинга.
   static const navInvest = IconSpec(paths: ['M5 21V10M12 21V4M19 21v-6']);
 
   static const navTrades = IconSpec(paths: ['M3 17l5-6 4 3 6-8', 'M21 3v18H3']);

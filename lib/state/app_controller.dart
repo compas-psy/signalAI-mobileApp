@@ -5,7 +5,12 @@ import 'package:flutter/foundation.dart';
 import '../data/api/api_client.dart';
 import '../data/local_analysis_repository.dart';
 import '../data/native_bridge.dart';
+import '../data/ledger/capital_desk.dart';
 import '../data/repository.dart';
+import '../domain/ledger/account.dart';
+import '../domain/ledger/ledger_event.dart';
+import '../domain/ledger/money.dart';
+import 'navigation.dart';
 import '../domain/broker/broker.dart';
 import '../domain/enums.dart';
 import '../domain/invest/invest_models.dart';
@@ -56,6 +61,14 @@ class AppController extends ChangeNotifier {
   bool get optimizing => _optimizing;
 
   AppTab _tab = AppTab.ideas;
+
+  /// Раздел и выбранная пилюля версии 3.
+  AppRoute _route = const AppRoute(AppSection.today);
+
+  CapitalState? _capital;
+  bool _capitalLoading = false;
+  String? _capitalNote;
+
   String? _selectedSignalId;
   bool _sheetOpen = false;
   String? _toast;
@@ -315,6 +328,271 @@ class AppController extends ChangeNotifier {
     // «Инвест» подгружается лениво: кэш мгновенно, пересчёт — если ночь
     // прошла, а скана ещё не было.
     if (tab == AppTab.invest && _invest == null) refreshInvest();
+  }
+
+  // ── Навигация версии 3 ─────────────────────────────────────────────────
+
+  AppRoute get route => _route;
+  AppSection get section => _route.section;
+  int get pill => _route.pill;
+
+  /// Переход в раздел. Пилюля сбрасывается на первую, если раздел меняется, —
+  /// возвращаться в «Книгу», потому что там были в прошлый раз, значит терять
+  /// три секунды на понимание, куда попал.
+  void goSection(AppSection section) {
+    if (_route.section == section) return;
+    _route = AppRoute(section);
+    _selectedSignalId = null;
+    _sheetOpen = false;
+    _syncLegacyTab();
+    notifyListeners();
+    _prefetchForRoute();
+  }
+
+  void goPill(int index) {
+    if (_route.pill == index) return;
+    _route = _route.withPill(index);
+    _selectedSignalId = null;
+    _syncLegacyTab();
+    notifyListeners();
+    _prefetchForRoute();
+  }
+
+  /// Старые экраны живут внутри новых разделов и продолжают спрашивать
+  /// [AppTab]. Пока они не переписаны целиком, вкладка держится в
+  /// соответствии с маршрутом — так не появляется второй источник истины.
+  void _syncLegacyTab() {
+    _tab = switch (_route.section) {
+      AppSection.today => AppTab.ideas,
+      AppSection.capital => AppTab.trades,
+      AppSection.trading =>
+        _route.pill == TradingPill.ideas.index ? AppTab.ideas : AppTab.trades,
+      AppSection.lab =>
+        _route.pill == LabPill.screener.index ? AppTab.invest : AppTab.strategies,
+      AppSection.control => AppTab.settings,
+    };
+  }
+
+  void _prefetchForRoute() {
+    if (_route.section == AppSection.lab &&
+        _route.pill == LabPill.screener.index &&
+        _invest == null) {
+      refreshInvest();
+    }
+    if (_route.section == AppSection.today || _route.section == AppSection.capital) {
+      refreshCapital();
+    }
+  }
+
+  // ── Книга капитала ─────────────────────────────────────────────────────
+
+  /// Книга: null — режим без учёта (демо-репозиторий).
+  CapitalDesk? get capitalDesk {
+    final repository = _repository;
+    return repository is CapitalKeeper ? (repository as CapitalKeeper).capital : null;
+  }
+
+  CapitalState? get capital => _capital;
+  bool get capitalLoading => _capitalLoading;
+
+  /// Итог последней синхронизации с площадками.
+  String? get capitalNote => _capitalNote;
+
+  /// Пересчитывает состояние капитала из книги.
+  Future<void> refreshCapital({bool sync = false}) async {
+    final repository = _repository;
+    final desk = capitalDesk;
+    if (desk == null || repository is! CapitalKeeper || _capitalLoading) return;
+    _capitalLoading = true;
+    notifyListeners();
+    try {
+      await desk.load();
+      if (sync) {
+        _capitalNote = await (repository as CapitalKeeper).syncCapital();
+      }
+      _capital = await desk.state();
+    } catch (e) {
+      _capitalNote = 'синхронизация не удалась: $e';
+    } finally {
+      _capitalLoading = false;
+      notifyListeners();
+    }
+  }
+
+  /// Ручная операция в книгу. Возвращает true, если запись добавлена.
+  ///
+  /// Ручной ввод — не костыль, а обязательная часть модели: банковский
+  /// резерв, перевод между площадками и дивиденд, который брокер показал
+  /// только в отчёте, иначе в капитал не попадут никогда.
+  Future<bool> recordOperation({
+    required LedgerEventType type,
+    required String accountId,
+    required Money cashImpact,
+    DateTime? at,
+    String? instrument,
+    Quantity? quantity,
+    Money? price,
+    Contour? contour,
+    String? note,
+  }) async {
+    final desk = capitalDesk;
+    if (desk == null) return false;
+    final now = DateTime.now().toUtc();
+    final added = await desk.record([
+      LedgerEvent(
+        id: 'manual-${now.microsecondsSinceEpoch}',
+        type: type,
+        effectiveAt: (at ?? now).toUtc(),
+        receivedAt: now,
+        accountId: accountId,
+        cashImpact: cashImpact,
+        instrument: instrument,
+        quantity: quantity,
+        price: price,
+        contour: contour,
+        source: LedgerSource.manual,
+        reconcile: ReconcileStatus.manual,
+        note: note,
+      ),
+    ]);
+    if (added > 0) {
+      _capital = await desk.state();
+      showToast('Операция записана в книгу');
+      notifyListeners();
+    }
+    return added > 0;
+  }
+
+  /// Добавляет счёт, который брокер не отдаёт: банковский резерв, кошелёк.
+  Future<void> addAccount(Account account) async {
+    final desk = capitalDesk;
+    if (desk == null) return;
+    await desk.saveAccounts([...desk.accounts, account]);
+    _capital = await desk.state();
+    notifyListeners();
+  }
+
+  /// Подпись о свежести данных для шапки раздела.
+  ///
+  /// Число без времени, к которому оно относится, ничего не стоит: котировки
+  /// могли встать полчаса назад, и владелец должен видеть это без перехода в
+  /// диагностику.
+  String? get dataFreshness {
+    final at = _digestFetchedAt;
+    if (at == null) return null;
+    final local = at.toLocal();
+    final minutes = DateTime.now().difference(at).inMinutes;
+    final stamp = '${local.hour.toString().padLeft(2, '0')}:'
+        '${local.minute.toString().padLeft(2, '0')}';
+    if (minutes < 2) return 'данные $stamp · только что';
+    if (minutes < 60) return 'данные $stamp · $minutes мин назад';
+    return 'данные $stamp · ${minutes ~/ 60} ч назад';
+  }
+
+  /// Аварийная остановка одним движением: кнопка рейла.
+  ///
+  /// Два тапа максимум (ТЗ §15): переключение и подтверждение тостом. Снятие
+  /// — тем же переключателем, но осознанно: включённый «Стоп» виден всегда.
+  Future<void> toggleKillSwitch() async {
+    final desk = tradingDesk;
+    if (desk == null) return;
+    final on = desk.tradingState.killSwitch;
+    final note = await desk.setKillSwitch(!on);
+    showToast(note);
+    notifyListeners();
+  }
+
+  /// Включена ли аварийная остановка.
+  bool get killSwitchOn => tradingDesk?.tradingState.killSwitch ?? false;
+
+  /// Режим риск-движка по фактическому состоянию контура.
+  ///
+  /// Режим не выбирается руками (кроме аварийной остановки): его назначает
+  /// состояние — иначе индикатор показывал бы намерение, а не факт.
+  RiskMode get riskMode {
+    final desk = tradingDesk;
+    if (desk == null) return RiskMode.normal;
+    final state = desk.tradingState;
+    if (state.killSwitch) return RiskMode.killSwitch;
+    if (!state.enabled) return RiskMode.reduceOnly;
+    if (!desk.liveGate.allowed) return RiskMode.caution;
+    return RiskMode.normal;
+  }
+
+  /// Очередь решений: что сегодня требует человека.
+  ///
+  /// Собирается из фактического состояния, а не из списка «полезных
+  /// напоминаний»: идея живёт, пока не подтверждена; расхождение книги
+  /// висит, пока не сведено; позиция без стопа — дефект и стоит первой.
+  List<Decision> get decisions {
+    final result = <Decision>[];
+
+    for (final signal in _digest?.signals ?? const <TradingSignal>[]) {
+      if (!signal.status.canConfirm) continue;
+      result.add(Decision(
+        kind: DecisionKind.idea,
+        title: '${signal.symbol} · ${signal.direction.label} ${signal.score}/100',
+        context: '${signal.name} · вход ${signal.lastPrice} · R:R ${signal.riskReward}',
+        urgency: DecisionUrgency.today,
+        target: signal.id,
+      ));
+    }
+
+    final state = _capital;
+    if (state != null) {
+      if (state.snapshot.mismatches > 0) {
+        result.insert(
+          0,
+          Decision(
+            kind: DecisionKind.reconcile,
+            title: 'Книга не сходится с брокером',
+            context: 'записей с расхождением: ${state.snapshot.mismatches} — '
+                'сверить до новых сделок',
+            urgency: DecisionUrgency.now,
+          ),
+        );
+      }
+      if (!state.persistent && !state.isEmpty) {
+        result.insert(
+          0,
+          const Decision(
+            kind: DecisionKind.reconcile,
+            title: 'Книга не пишется на диск',
+            context: 'операции этой сессии не переживут перезапуск',
+            urgency: DecisionUrgency.now,
+          ),
+        );
+      }
+    }
+
+    for (final position in _unprotected) {
+      result.insert(
+        0,
+        Decision(
+          kind: DecisionKind.unprotected,
+          title: '${position.symbol} без стопа',
+          context: 'позиция открыта, защита на бирже не стоит',
+          urgency: DecisionUrgency.now,
+          target: position.symbol,
+        ),
+      );
+    }
+
+    return result;
+  }
+
+  List<BrokerPosition> _unprotected = const [];
+
+  /// Обновляет список незащищённых позиций для очереди решений.
+  Future<void> refreshUnprotected() async {
+    final repository = _repository;
+    if (repository is! LocalAnalysisRepository) return;
+    try {
+      _unprotected = await repository.unprotectedPositions();
+      notifyListeners();
+    } on Exception {
+      // Площадка молчит — очередь просто не покажет этот пункт, а не соврёт.
+    }
   }
 
   // ── Раздел «Инвест» ────────────────────────────────────────────────────

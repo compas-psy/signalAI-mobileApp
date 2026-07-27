@@ -19,7 +19,7 @@ abstract final class C {
   static const headerBg = Color(0xFF0B0B0D); // липкий хедер (rgba(11,11,13,.92))
 
   // Границы
-  static const border = Color(0xFF1F1F26);
+  static const border = Color(0xFF24242B);
   static const divider = Color(0xFF1C1C23);
   static const dividerSoft = Color(0xFF1B1B20);
   static const borderStrong = Color(0xFF2C2C34);
@@ -31,18 +31,37 @@ abstract final class C {
   static const text = Color(0xFFF2F2EF);
   static const textSoft = Color(0xFFE5E5EA);
   static const textSecondary = Color(0xFFA9A9B2); // пояснения под заголовком
-  static const muted = Color(0xFF8B8B96);
-  static const faint = Color(0xFF6B6B75); // микро-подписи ВХОД/СТОП/ЦЕЛИ
+  static const muted = Color(0xFF9696A1);
+  static const faint = Color(0xFF666670); // микро-подписи ВХОД/СТОП/ЦЕЛИ
   static const dim = Color(0xFF5A5A64);
   static const navInactive = faint;
   static const axis = Color(0xFF4E4E58); // подписи шкалы графика
   static const grid = Color(0xFF1B1B22); // сетка графика
 
-  // Акценты
+  // Акценты.
+  //
+  // Семантика строгая (ТЗ v3 §2): жёлтый — только действие и фокус, зелёный и
+  // красный — только финансовый результат и направление, синий — учётный
+  // статус и ядро, фиолетовый — тактика и переводы, оранжевый — сверка и
+  // неполные данные. В версии 2 жёлтый значил и «важно», и «нажми», и
+  // «хорошо» — от этого акцент перестал работать как акцент.
   static const accent = Color(0xFFFFD400);
   static const accentHover = Color(0xFFFFE045);
   static const green = Color(0xFF2FD575);
   static const red = Color(0xFFFF5C5C);
+  static const info = Color(0xFF63A5FF);
+  static const tactical = Color(0xFFB38CFF);
+  static const warning = Color(0xFFFFB74D);
+
+  // Полупрозрачные заливки новых акцентов.
+  static const infoFaint = Color(0x1F63A5FF);
+  static const infoBorder = Color(0x4D63A5FF);
+  static const tacticalFaint = Color(0x1FB38CFF);
+  static const tacticalBorder = Color(0x4DB38CFF);
+  static const warningFaint = Color(0x1FFFB74D);
+  static const warningBorder = Color(0x4DFFB74D);
+  static const redFaint = Color(0x1FFF5C5C);
+  static const redBorder = Color(0x4DFF5C5C);
 
   // Чипы ценовой шкалы на графике
   static const chipSl = Color(0xFFE5484D);

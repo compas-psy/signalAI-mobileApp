@@ -20,6 +20,10 @@ import '../domain/models/strategy.dart';
 import '../domain/risk/risk_engine.dart';
 import '../monitor/background_cycle.dart';
 import '../monitor/background_mode.dart';
+import '../domain/ledger/account.dart';
+import '../domain/ledger/ledger_event.dart';
+import '../domain/ledger/money.dart';
+import 'ledger/capital_desk.dart';
 import 'broker/bybit_broker.dart';
 import 'broker/tinvest_broker.dart';
 import 'broker/tinvest_fundamentals.dart';
@@ -47,6 +51,7 @@ class LocalAnalysisRepository
         TradingProbe,
         PaperTracking,
         InvestDesk,
+        CapitalKeeper,
         MonitorTarget {
   LocalAnalysisRepository({
     IssClient? iss,
@@ -91,6 +96,12 @@ class LocalAnalysisRepository
   final IssClient _iss;
   final BybitClient _bybit;
   final LocalStore _store;
+
+  /// Книга капитала: единственный источник истины по деньгам и позициям.
+  late final CapitalDesk _capital = CapitalDesk(store: _store);
+
+  @override
+  CapitalDesk get capital => _capital;
 
   /// Параметры стратегий: дефолт либо результат walk-forward оптимизации.
   final Map<String, StrategyParams> _params = {
@@ -429,6 +440,79 @@ class LocalAnalysisRepository
       }
     }
     return result;
+  }
+
+  // ── Книга капитала ─────────────────────────────────────────────────────
+
+  /// Синхронизация книги с площадками.
+  ///
+  /// Снимок брокера намеренно НЕ переписывает книгу: он создаёт наблюдение
+  /// сверки. Иначе любой сбой площадки — пустой ответ, устаревший кэш,
+  /// частичная выдача — молча стирал бы историю владельца. Здесь снимок
+  /// делает три вещи: обновляет карточки счетов, кладёт последние цены для
+  /// переоценки позиций и сообщает, сходится ли книга с брокером.
+  @override
+  Future<String> syncCapital() async {
+    await _capital.load();
+
+    final accounts = <Account>[..._capital.accounts];
+    final notes = <String>[];
+    var marked = 0;
+
+    for (final id in BrokerId.values) {
+      final title = id == BrokerId.bybit ? 'Bybit' : 'Т-Инвестиции';
+      if (!await hasBrokerKeys(id)) {
+        notes.add('$title — ключей нет');
+        continue;
+      }
+      final mode = _trading.modeOf(id);
+      try {
+        final positions = await brokerOf(id).positions();
+        for (final position in positions) {
+          // Цена входа — не котировка, но это честная цена сделки, а не
+          // выдуманное число: пока нет рыночной, позиция считается по ней.
+          _capital.mark(
+            position.symbol,
+            Money.of(position.entryPrice, Currency.rub),
+          );
+          marked++;
+        }
+        accounts
+          ..removeWhere((a) => a.id == id.name)
+          ..add(Account(
+            id: id.name,
+            title: title,
+            kind: id == BrokerId.bybit ? AccountKind.crypto : AccountKind.broker,
+            currency: id == BrokerId.bybit ? Currency.usdt : Currency.rub,
+            venue: title,
+            // Ключ без права вывода — не ограничение, а требование: с правом
+            // вывода взлом устройства выносит деньги.
+            permissions: const ApiPermissions(read: true, trade: true),
+            syncedAt: DateTime.now().toUtc(),
+            reconcile: ReconcileStatus.pending,
+            note: 'режим ${mode.name}',
+          ));
+        notes.add('$title — позиций ${positions.length}');
+      } on BrokerException catch (e) {
+        accounts
+          ..removeWhere((a) => a.id == id.name)
+          ..add(Account(
+            id: id.name,
+            title: title,
+            kind: id == BrokerId.bybit ? AccountKind.crypto : AccountKind.broker,
+            currency: id == BrokerId.bybit ? Currency.usdt : Currency.rub,
+            venue: title,
+            permissions: const ApiPermissions(read: true, trade: true),
+            reconcile: ReconcileStatus.stale,
+            note: e.message,
+          ));
+        notes.add('$title — не ответил');
+      }
+    }
+
+    await _capital.saveAccounts(accounts);
+    if (marked > 0) notes.add('переоценено позиций: $marked');
+    return notes.isEmpty ? 'площадки не настроены' : notes.join(' · ');
   }
 
   @override

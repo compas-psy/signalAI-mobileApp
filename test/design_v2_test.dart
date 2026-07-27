@@ -118,16 +118,25 @@ void main() {
     });
   });
 
-  group('Токены v2', () {
+  group('Токены v3', () {
     test('поверхности и рамки — из макета', () {
       expect(C.card, const Color(0xFF141419));
       expect(C.inset, const Color(0xFF101014));
       expect(C.sheet, const Color(0xFF17171C));
-      expect(C.border, const Color(0xFF1F1F26));
-      expect(C.muted, const Color(0xFF8B8B96));
-      expect(C.faint, const Color(0xFF6B6B75));
+      expect(C.border, const Color(0xFF24242B));
+      expect(C.muted, const Color(0xFF9696A1));
+      expect(C.faint, const Color(0xFF666670));
       expect(R.card, 18);
       expect(R.sheet, 22);
+    });
+
+    test('семантические акценты заданы отдельными токенами', () {
+      // Жёлтый больше не значит «важно», «нажми» и «хорошо» одновременно:
+      // у учёта, тактики и неполных данных свои цвета.
+      expect(C.info, const Color(0xFF63A5FF));
+      expect(C.tactical, const Color(0xFFB38CFF));
+      expect(C.warning, const Color(0xFFFFB74D));
+      expect(C.accent, const Color(0xFFFFD400));
     });
   });
 }

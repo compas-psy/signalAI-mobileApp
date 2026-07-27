@@ -30,17 +30,6 @@ class InvestScreen extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        const ScreenHeader(
-          title: 'Инвест',
-          trailing: OutlineBadge(
-            label: 'ЛОНГИ · 1–3 МЕС',
-            color: C.accent,
-            borderColor: C.accentBorder,
-            background: C.accentFaint,
-            fontWeight: 700,
-            padding: EdgeInsets.symmetric(horizontal: 9, vertical: 4),
-          ),
-        ),
         Expanded(
           child: digest == null
               ? _Pending(controller: controller)

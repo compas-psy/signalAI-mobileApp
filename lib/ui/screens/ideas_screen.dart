@@ -22,7 +22,6 @@ class IdeasScreen extends StatelessWidget {
   Widget build(BuildContext context) => Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const _Header(),
           Expanded(
             child: ListView(
               padding: EdgeInsets.zero,
@@ -67,64 +66,6 @@ class IdeasScreen extends StatelessWidget {
             ),
           ),
         ],
-      );
-}
-
-class _Header extends StatelessWidget {
-  const _Header();
-
-  @override
-  Widget build(BuildContext context) => Container(
-        padding: const EdgeInsets.fromLTRB(S.screen, 12, S.screen, 10),
-        decoration: const BoxDecoration(
-          color: C.headerBg,
-          border: Border(bottom: BorderSide(color: C.dividerSoft)),
-        ),
-        child: Row(
-          children: [
-            const BrandMark(size: 30),
-            const SizedBox(width: 10),
-            Text.rich(
-              TextSpan(
-                text: 'Signal',
-                style: T.jost(19),
-                children: [TextSpan(text: 'AI', style: T.jost(19, color: C.accent))],
-              ),
-            ),
-            const Spacer(),
-            SizedBox(
-              width: 38,
-              height: 38,
-              child: Stack(
-                children: [
-                  Container(
-                    width: 38,
-                    height: 38,
-                    decoration: const BoxDecoration(
-                      color: C.card,
-                      shape: BoxShape.circle,
-                    ),
-                    child: const Center(
-                      child: VectorIcon(Icons.bell, size: 17, color: C.textSecondary),
-                    ),
-                  ),
-                  // Непрочитанные уведомления.
-                  const Positioned(
-                    top: 7,
-                    right: 8,
-                    child: SizedBox(
-                      width: 7,
-                      height: 7,
-                      child: DecoratedBox(
-                        decoration: BoxDecoration(color: C.accent, shape: BoxShape.circle),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
       );
 }
 

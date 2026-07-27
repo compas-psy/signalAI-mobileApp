@@ -4,7 +4,10 @@ import '../state/app_controller.dart';
 import '../state/app_scope.dart';
 import '../theme/tokens.dart';
 import '../theme/typography.dart';
+import '../state/navigation.dart';
+import 'screens/capital_screen.dart';
 import 'screens/idea_detail_screen.dart';
+import 'screens/today_screen.dart';
 import 'screens/ideas_screen.dart';
 import 'screens/invest_screen.dart';
 import 'screens/settings_screen.dart';
@@ -14,6 +17,7 @@ import 'widgets/confirm_sheet.dart';
 import 'widgets/toast.dart';
 import 'widgets/vector_icon.dart';
 import 'widgets/bottom_nav.dart';
+import 'widgets/section_header.dart';
 import 'widgets/side_nav.dart';
 import 'layout.dart';
 
@@ -72,9 +76,8 @@ class AppShell extends StatelessWidget {
           Expanded(child: _content(controller, pane)),
           if (!controller.sheetOpen)
             BottomNav(
-              current: controller.tab,
-              detailOpen: controller.isDetailOpen,
-              onSelect: controller.goTab,
+              current: controller.section,
+              onSelect: controller.goSection,
             ),
         ],
       );
@@ -82,10 +85,11 @@ class AppShell extends StatelessWidget {
     return Row(
       children: [
         SideNav(
-          current: controller.tab,
-          detailOpen: controller.isDetailOpen,
-          onSelect: controller.goTab,
+          current: controller.section,
+          onSelect: controller.goSection,
           extended: pane == Pane.expanded,
+          onKillSwitch: controller.toggleKillSwitch,
+          killSwitchOn: controller.killSwitchOn,
         ),
         Expanded(child: _content(controller, pane)),
       ],
@@ -95,10 +99,23 @@ class AppShell extends StatelessWidget {
   /// Содержимое: на широком экране «Идеи» и разбор стоят рядом, остальные
   /// разделы — колонкой ограниченной ширины, чтобы строки оставались читаемыми.
   Widget _content(AppController controller, Pane pane) {
-    if (pane.usesTwoPane && controller.tab == AppTab.ideas) {
+    if (pane.usesTwoPane &&
+        controller.section == AppSection.trading &&
+        controller.pill == TradingPill.ideas.index) {
       final signal = controller.currentSignal;
       final risk = controller.risk;
-      return Row(
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          SectionHeader(
+            section: controller.section,
+            pill: controller.pill,
+            onPill: controller.goPill,
+            mode: controller.riskMode,
+            dataAt: controller.dataFreshness,
+          ),
+          Expanded(
+            child: Row(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           SizedBox(
@@ -117,10 +134,25 @@ class AppShell extends StatelessWidget {
                     showBack: false,
                   ),
           ),
+              ],
+            ),
+          ),
         ],
       );
     }
-    final screen = _screen(controller);
+    final screen = Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        SectionHeader(
+          section: controller.section,
+          pill: controller.pill,
+          onPill: controller.goPill,
+          mode: controller.riskMode,
+          dataAt: controller.dataFreshness,
+        ),
+        Expanded(child: _screen(controller)),
+      ],
+    );
     return pane.isCompact
         ? screen
         : ReadableColumn(maxWidth: pane.contentWidth, child: screen);
@@ -134,19 +166,37 @@ class AppShell extends StatelessWidget {
         return IdeaDetailScreen(signal: signal, risk: risk);
       }
     }
-    return switch (controller.tab) {
-      AppTab.ideas => controller.digest == null
-          ? _DigestPending(controller: controller)
-          : IdeasScreen(digest: controller.digest!),
-      AppTab.trades => TradesScreen(summary: controller.trades!),
-      AppTab.strategies => StrategiesScreen(
-          snapshot: controller.strategies!,
-          backtestRunning: controller.backtestRunning,
-          optimizing: controller.optimizing,
-          backtestStage: controller.analysisStage,
-        ),
-      AppTab.invest => const InvestScreen(),
-      AppTab.settings => SettingsScreen(snapshot: controller.settings!),
+    return switch (controller.section) {
+      AppSection.today => const TodayScreen(),
+      AppSection.capital => CapitalScreen(pill: controller.pill),
+      AppSection.trading => switch (TradingPill.values[
+            controller.pill.clamp(0, TradingPill.values.length - 1)]) {
+          TradingPill.ideas => controller.digest == null
+              ? _DigestPending(controller: controller)
+              : IdeasScreen(digest: controller.digest!),
+          TradingPill.positions => TradesScreen(summary: controller.trades!),
+          // Опционы и журнал пока живут внутри «Позиций»: рисовать пустой
+          // раздел с выдуманной кривой выплат — ровно то, чего этот продукт
+          // не делает.
+          TradingPill.options => const _NotYet(
+              title: 'Опционы',
+              text: 'Раздел появится, когда приложение сможет забрать реальную '
+                  'цепочку опционов и греки у Т-Инвестиций. Рисовать диаграмму '
+                  'выплат по выдуманным премиям — обман, а не заглушка.',
+            ),
+          TradingPill.journal => TradesScreen(summary: controller.trades!),
+        },
+      AppSection.lab => switch (LabPill
+            .values[controller.pill.clamp(0, LabPill.values.length - 1)]) {
+          LabPill.strategies => StrategiesScreen(
+              snapshot: controller.strategies!,
+              backtestRunning: controller.backtestRunning,
+              optimizing: controller.optimizing,
+              backtestStage: controller.analysisStage,
+            ),
+          LabPill.screener => const InvestScreen(),
+        },
+      AppSection.control => SettingsScreen(snapshot: controller.settings!),
     };
   }
 
@@ -189,6 +239,37 @@ class AppShell extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Раздел, которого пока нет — с причиной, а не пустым экраном.
+class _NotYet extends StatelessWidget {
+  const _NotYet({required this.title, required this.text});
+
+  final String title;
+  final String text;
+
+  @override
+  Widget build(BuildContext context) => ListView(
+        padding: const EdgeInsets.fromLTRB(S.screen, 12, S.screen, 90),
+        children: [
+          Container(
+            padding: const EdgeInsets.fromLTRB(15, 14, 15, 15),
+            decoration: BoxDecoration(
+              color: C.card,
+              border: Border.all(color: C.border),
+              borderRadius: BorderRadius.circular(R.card),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title, style: T.jost(17)),
+                const SizedBox(height: 6),
+                Text(text, style: T.body(11.5, color: C.muted, height: 1.5)),
+              ],
+            ),
+          ),
+        ],
+      );
 }
 
 /// Правая колонка планшета, пока идея не выбрана.

@@ -28,7 +28,6 @@ class SettingsScreen extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        const ScreenHeader(title: 'Настройки'),
         Expanded(
           child: ListView(
             padding: const EdgeInsets.fromLTRB(S.screen, 12, S.screen, 90),

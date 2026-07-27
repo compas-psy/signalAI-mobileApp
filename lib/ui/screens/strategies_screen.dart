@@ -35,7 +35,6 @@ class StrategiesScreen extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        const ScreenHeader(title: 'Стратегии'),
         Expanded(
           child: ListView(
             padding: const EdgeInsets.fromLTRB(S.screen, 12, S.screen, 90),

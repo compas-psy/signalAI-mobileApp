@@ -1,4 +1,5 @@
 import '../domain/broker/broker.dart';
+import 'ledger/capital_desk.dart';
 import '../domain/invest/invest_models.dart';
 import '../domain/ledger/signal_ledger.dart';
 import '../domain/broker/trading_diagnostics.dart';
@@ -181,4 +182,19 @@ abstract interface class SignalAiRepository {
 
   /// Обновление политики риска (депозит и % риска на сделку).
   Future<RiskProfile> updateRiskProfile({double? deposit, double? riskPercent});
+}
+
+/// Репозиторий, ведущий книгу капитала.
+///
+/// Отдельная способность по той же причине, что и торговый контур: анализ
+/// работает и без учёта, а книга без брокерских ключей работает на ручных
+/// операциях. Экран проверяет `is CapitalKeeper` и не рисует раздел, если
+/// вести капитал нечем.
+abstract interface class CapitalKeeper {
+  /// Книга и производные состояния.
+  CapitalDesk get capital;
+
+  /// Синхронизация с площадками: обновляет счета, переоценку позиций и
+  /// статусы сверки. Возвращает человекочитаемый итог для подписи.
+  Future<String> syncCapital();
 }

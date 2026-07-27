@@ -20,6 +20,18 @@ void main() {
     await tester.pump(const Duration(milliseconds: 400));
   }
 
+  /// Переходит в раздел нижней навигации, затем в его пилюлю.
+  ///
+  /// Навигация версии 3: пять разделов внизу, подразделы — пилюли в шапке.
+  Future<void> goTo(WidgetTester tester, String section, [String? pill]) async {
+    await tester.tap(find.text(section).last);
+    await tester.pump(const Duration(milliseconds: 300));
+    if (pill != null) {
+      await tester.tap(find.text(pill));
+      await tester.pump(const Duration(milliseconds: 300));
+    }
+  }
+
   /// Прокручивает текущий список до виджета: сначала пока он не будет
   /// построен, затем доводит его в видимую область — список строит немного
   /// больше, чем показывает, и тап по такому виджету не попадает.
@@ -34,6 +46,7 @@ void main() {
 
   testWidgets('дайджест показывает режим рынка и пять идей', (tester) async {
     await pumpApp(tester);
+    await goTo(tester, 'Торговля');
 
     expect(find.text('Утренний дайджест'), findsOneWidget);
     expect(find.text('Сб, 25 июля · 10:10 МСК'), findsOneWidget);
@@ -44,6 +57,7 @@ void main() {
 
   testWidgets('карточка идеи открывается по тапу', (tester) async {
     await pumpApp(tester);
+    await goTo(tester, 'Торговля');
 
     await tester.tap(find.text('SiU6'));
     await tester.pump(const Duration(milliseconds: 300));
@@ -61,6 +75,7 @@ void main() {
 
   testWidgets('подтверждение выставляет ордер и показывает тост', (tester) async {
     await pumpApp(tester);
+    await goTo(tester, 'Торговля');
 
     await tester.tap(find.text('SiU6'));
     await tester.pump(const Duration(milliseconds: 300));
@@ -81,22 +96,22 @@ void main() {
     );
   });
 
-  testWidgets('вкладки переключаются', (tester) async {
+  testWidgets('разделы и подразделы переключаются', (tester) async {
     await pumpApp(tester);
 
-    await tester.tap(find.text('Сделки'));
-    await tester.pump(const Duration(milliseconds: 300));
+    // Приложение открывается на «Сегодня»: состояние капитала, а не лента.
+    expect(find.text('Очередь решений'.toUpperCase()), findsOneWidget);
+
+    await goTo(tester, 'Торговля', 'Позиции');
     expect(find.text('Эквити · 30 дней'.toUpperCase()), findsOneWidget);
     expect(find.text('+8,4%'), findsOneWidget);
 
-    await tester.tap(find.text('Стратегии'));
-    await tester.pump(const Duration(milliseconds: 300));
+    await goTo(tester, 'Лаборатория');
     await scrollTo(tester, find.text('Запустить бэктест'));
     expect(find.text('Бэктест'.toUpperCase()), findsOneWidget);
     expect(find.text('Запустить бэктест'), findsOneWidget);
 
-    await tester.tap(find.text('Настройки'));
-    await tester.pump(const Duration(milliseconds: 300));
+    await goTo(tester, 'Контроль');
     expect(find.text('Биржи · API'.toUpperCase()), findsOneWidget);
     expect(find.text('Т-Инвестиции API'), findsOneWidget);
   });
@@ -104,8 +119,7 @@ void main() {
   testWidgets('бэктест обновляет статистику', (tester) async {
     await pumpApp(tester);
 
-    await tester.tap(find.text('Стратегии'));
-    await tester.pump(const Duration(milliseconds: 300));
+    await goTo(tester, 'Лаборатория');
 
     await scrollTo(tester, find.text('Запустить бэктест'));
     await tester.tap(find.text('Запустить бэктест'));
@@ -120,8 +134,7 @@ void main() {
   testWidgets('Binance подключается из настроек', (tester) async {
     await pumpApp(tester);
 
-    await tester.tap(find.text('Настройки'));
-    await tester.pump(const Duration(milliseconds: 300));
+    await goTo(tester, 'Контроль');
 
     expect(find.text('Не подключено'), findsOneWidget);
     await tester.tap(find.text('Подключить'));

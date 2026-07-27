@@ -20,7 +20,6 @@ class TradesScreen extends StatelessWidget {
   Widget build(BuildContext context) => Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const ScreenHeader(title: 'Сделки'),
           Expanded(
             child: ListView(
               padding: const EdgeInsets.fromLTRB(S.screen, 12, S.screen, 90),
