@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:signalai/core/format.dart';
 import 'package:signalai/data/ledger/broker_import.dart';
+import 'package:signalai/data/ledger/capital_desk.dart';
 import 'package:signalai/data/ledger/ledger_store.dart';
 import 'package:signalai/domain/broker/broker.dart';
 import 'package:signalai/domain/ledger/ledger_event.dart';
@@ -542,6 +543,104 @@ void main() {
 
     test('идентификаторы площадок не пересекаются', () {
       expect(BrokerImport.eventId('bybit', '1'), isNot(BrokerImport.eventId('tinvest', '1')));
+    });
+  });
+
+  group('Кривая капитала и дельты', () {
+    CapitalState stateWith({
+      required List<EquityPoint> curve,
+      required num equity,
+      required num contributed,
+    }) =>
+        CapitalState(
+          snapshot: const LedgerProjector().project([
+            event(type: LedgerEventType.deposit, cash: contributed),
+            if (equity - contributed != 0)
+              event(
+                type: LedgerEventType.dividend,
+                cash: equity - contributed,
+              ),
+          ]),
+          accounts: const [],
+          packages: const [],
+          marks: const {},
+          persistent: true,
+          curve: curve,
+        );
+
+    test('пополнение не выдаётся за заработок', () {
+      // Ровно то, ради чего в отметке хранится внесённое: без этого перевод
+      // своих же денег на счёт выглядел бы как прибыль дня.
+      final now = DateTime.utc(2026, 7, 27);
+      final state = stateWith(
+        curve: [
+          EquityPoint(
+            at: now.subtract(const Duration(days: 2)),
+            equity: rubles(1000000),
+            contributed: rubles(1000000),
+          ),
+        ],
+        equity: 1200000,
+        contributed: 1200000,
+      );
+
+      final day = state.deltas(now: now).firstWhere((d) => d.label == 'День');
+      expect(day.amount, rubles(0),
+          reason: 'капитал вырос только на внесённые деньги');
+    });
+
+    test('настоящий результат виден за вычетом потоков', () {
+      final now = DateTime.utc(2026, 7, 27);
+      final state = stateWith(
+        curve: [
+          EquityPoint(
+            at: now.subtract(const Duration(days: 2)),
+            equity: rubles(1000000),
+            contributed: rubles(1000000),
+          ),
+        ],
+        equity: 1150000,
+        contributed: 1100000,
+      );
+
+      final day = state.deltas(now: now).firstWhere((d) => d.label == 'День');
+      expect(day.amount, rubles(50000));
+      expect(day.percent, closeTo(5, 1e-9));
+    });
+
+    test('без отметок за период дельта не выдумывается', () {
+      // «+0%» на месте отсутствующей истории — это ложь, а не заглушка.
+      final now = DateTime.utc(2026, 7, 27);
+      final state = stateWith(
+        curve: [
+          EquityPoint(
+            at: now.subtract(const Duration(hours: 1)),
+            equity: rubles(1000000),
+            contributed: rubles(1000000),
+          ),
+        ],
+        equity: 1000000,
+        contributed: 1000000,
+      );
+
+      final labels = [for (final d in state.deltas(now: now)) d.label];
+      expect(labels, isNot(contains('День')));
+      expect(labels, isNot(contains('Месяц')));
+    });
+
+    test('кривая из одной точки не рисуется', () {
+      final state = stateWith(
+        curve: [
+          EquityPoint(
+            at: DateTime.utc(2026, 7, 27),
+            equity: rubles(1000000),
+            contributed: rubles(1000000),
+          ),
+        ],
+        equity: 1000000,
+        contributed: 1000000,
+      );
+      expect(state.equityCurve.length, 1);
     });
   });
 }

@@ -31,6 +31,57 @@ Future<void> showOperationDetail(BuildContext context, LedgerEvent event) =>
 Future<void> showAddAccountSheet(BuildContext context, AppController controller) =>
     showModalSheet<void>(context, (context) => _AccountForm(controller: controller));
 
+/// Раскрытие расчёта: из чего сложилось показанное число.
+///
+/// ТЗ §10.1: ни одного числа без источника. Метрика, которую нельзя
+/// разложить, — это утверждение на веру, а терминал, которому верят на
+/// веру, однажды покажет чужой капитал и не будет уличён.
+Future<void> showCalculationSheet(
+  BuildContext context, {
+  required String title,
+  required List<String> lines,
+}) =>
+    showModalSheet<void>(
+      context,
+      (context) => Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(title, style: T.jost(17)),
+          const SizedBox(height: 10),
+          for (final line in lines)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    margin: const EdgeInsets.only(top: 6),
+                    width: 4,
+                    height: 4,
+                    decoration: const BoxDecoration(
+                      color: C.faint,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                  const SizedBox(width: 9),
+                  Expanded(
+                    child: Text(line,
+                        style: T.body(11.5, color: C.textSecondary, height: 1.5)),
+                  ),
+                ],
+              ),
+            ),
+          const SizedBox(height: 4),
+          ActionButton(
+            label: 'Понятно',
+            dense: true,
+            onTap: () => Navigator.of(context).pop(),
+          ),
+        ],
+      ),
+    );
+
 /// Общий контейнер модальных листов раздела.
 Future<Res?> showModalSheet<Res>(BuildContext context, WidgetBuilder builder) =>
     Navigator.of(context).push<Res>(

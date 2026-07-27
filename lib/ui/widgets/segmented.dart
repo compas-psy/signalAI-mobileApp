@@ -2,6 +2,7 @@ import 'package:flutter/widgets.dart';
 
 import '../../theme/tokens.dart';
 import '../../theme/typography.dart';
+import 'common.dart';
 
 /// Сегмент-контрол: «План · Факторы · События».
 ///
@@ -73,6 +74,7 @@ class MetricTile extends StatelessWidget {
     required this.value,
     this.color = C.text,
     this.hint,
+    this.onTap,
   });
 
   final String label;
@@ -82,22 +84,40 @@ class MetricTile extends StatelessWidget {
   /// Третья строка мелким шрифтом: единица измерения или уточнение.
   final String? hint;
 
+  /// Раскрыть расчёт. Число без источника — это число, которому нельзя
+  /// верить: у каждой плитки должен быть способ спросить «откуда».
+  final VoidCallback? onTap;
+
   @override
-  Widget build(BuildContext context) => Container(
+  Widget build(BuildContext context) {
+    final tile = _tile();
+    return onTap == null ? tile : Pressable(onTap: onTap, child: tile);
+  }
+
+  Widget _tile() => Container(
         padding: const EdgeInsets.fromLTRB(11, 9, 11, 10),
         decoration: BoxDecoration(
           color: C.inset,
           borderRadius: BorderRadius.circular(R.inset),
+          border: onTap == null ? null : Border.all(color: C.border),
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text(
-              label.toUpperCase(),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: T.microLabel(),
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    label.toUpperCase(),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: T.microLabel(),
+                  ),
+                ),
+                if (onTap != null)
+                  Text('?', style: T.mono(10, weight: 700, color: C.faint)),
+              ],
             ),
             const SizedBox(height: 4),
             Text(

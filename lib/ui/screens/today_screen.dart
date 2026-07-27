@@ -12,6 +12,7 @@ import '../../theme/tokens.dart';
 import '../../theme/typography.dart';
 import '../layout.dart';
 import '../widgets/common.dart';
+import '../widgets/operation_sheet.dart';
 import '../widgets/segmented.dart';
 import '../widgets/sparkline.dart';
 
@@ -86,6 +87,10 @@ class _HeroCard extends StatelessWidget {
             'результат ${fmtMoney(state.investmentResult, sign: true)}',
             style: T.mono(11.5, color: C.muted),
           ),
+          const SizedBox(height: 10),
+          _Deltas(state: state),
+          const SizedBox(height: 12),
+          _EquityCurve(state: state),
           const SizedBox(height: 14),
           _AllocationBar(allocation: allocation),
           const SizedBox(height: 10),
@@ -123,6 +128,74 @@ class _HeroCard extends StatelessWidget {
         ],
       ),
     );
+  }
+}
+
+/// Результат за день, месяц и с начала года.
+///
+/// Считается по отметкам капитала за вычетом потоков: пополнение — не
+/// заработок. Периода, для которого отметок нет, здесь не появляется вовсе:
+/// «+0%» на месте отсутствующей истории — это ложь, а не заглушка.
+class _Deltas extends StatelessWidget {
+  const _Deltas({required this.state});
+
+  final CapitalState state;
+
+  @override
+  Widget build(BuildContext context) {
+    final deltas = state.deltas();
+    if (deltas.isEmpty) {
+      return Text(
+        'Изменение за период появится, когда накопятся отметки капитала: '
+        'первая сделана сейчас, следующая — при следующей сверке.',
+        style: T.body(10.5, color: C.faint, height: 1.4),
+      );
+    }
+    return Wrap(
+      spacing: 14,
+      runSpacing: 6,
+      children: [
+        for (final delta in deltas)
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text('${delta.label} ', style: T.body(10.5, color: C.faint)),
+              Text(
+                fmtMoney(delta.amount, sign: true),
+                style: T.mono(11.5,
+                    weight: 700,
+                    color: delta.amount.isNegative ? C.red : C.green),
+              ),
+              Text(
+                ' ${delta.percent >= 0 ? '+' : '−'}'
+                '${delta.percent.abs().toStringAsFixed(1).replaceAll('.', ',')}%',
+                style: T.mono(10.5, color: C.muted),
+              ),
+            ],
+          ),
+      ],
+    );
+  }
+}
+
+/// Кривая капитала по отметкам.
+class _EquityCurve extends StatelessWidget {
+  const _EquityCurve({required this.state});
+
+  final CapitalState state;
+
+  @override
+  Widget build(BuildContext context) {
+    final values = state.equityCurve;
+    if (values.length < 2) {
+      return Text(
+        'Кривая капитала строится из отметок на моменты сверки — сейчас их '
+        '${values.length}. Пересчитывать прошлое сегодняшними ценами нельзя: '
+        'график получился бы красивый и неверный.',
+        style: T.body(10, color: C.faint, height: 1.4),
+      );
+    }
+    return CapitalSparkline(values: values);
   }
 }
 
@@ -175,6 +248,16 @@ class _KpiRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final pnl = state.snapshot.pnl;
+    final unmarked = [
+      for (final position in state.snapshot.positions)
+        if (state.marks[position.instrument] == null) position.instrument,
+    ];
+
+    // ТЗ §10.1: ни одного числа без источника. Каждая плитка открывает свой
+    // расчёт — из чего сложилась и чего в ней не хватает.
+    void explain(String title, List<String> lines) =>
+        showCalculationSheet(context, title: title, lines: lines);
+
     return Column(
       children: [
         MetricRow(tiles: [
@@ -183,11 +266,32 @@ class _KpiRow extends StatelessWidget {
             value: fmtMoney(state.freeCash),
             color: C.info,
             hint: 'деньги на счетах',
+            onTap: () => explain('Свободный кэш', [
+              'Сумма денежных остатков по всем счетам книги, приведённая к '
+                  '${state.base.code}.',
+              'Счетов в книге: ${state.accounts.length}.',
+              'Остаток каждого счёта — это все денежные операции по нему: '
+                  'пополнения, выводы, расчёты по сделкам, комиссии, налоги.',
+              'Валюта без известного курса в сумму не входит — складывать '
+                  'разные валюты как одну нельзя.',
+            ]),
           ),
           MetricTile(
             label: 'В позициях',
             value: fmtMoney(state.positionsValue),
             hint: 'позиций: ${state.snapshot.positions.length}',
+            onTap: () => explain('Стоимость позиций', [
+              'Количество каждой позиции умножается на последнюю известную '
+                  'цену инструмента.',
+              'Позиции считаются методом FIFO: первым закрывается то, что '
+                  'куплено раньше.',
+              if (unmarked.isEmpty)
+                'Цены есть по всем инструментам.'
+              else
+                'Без рыночной цены: ${unmarked.toSet().join(', ')} — они '
+                    'считаются по цене входа. Это занижает или завышает '
+                    'капитал, но честнее выдуманной котировки.',
+            ]),
           ),
         ]),
         const SizedBox(height: 8),
@@ -197,12 +301,30 @@ class _KpiRow extends StatelessWidget {
             value: fmtMoney(state.unrealized, sign: true),
             color: state.unrealized.isNegative ? C.red : C.green,
             hint: 'по открытым позициям',
+            onTap: () => explain('Нереализованный результат', [
+              'Разница между текущей ценой и ценой входа по каждому открытому '
+                  'лоту, сложенная по всем позициям.',
+              'В результат не входят позиции без рыночной цены: считать их '
+                  'по цене входа значит показывать ноль там, где движение '
+                  'просто неизвестно.',
+              'Это ещё не деньги: результат станет реализованным в момент '
+                  'закрытия позиции.',
+            ]),
           ),
           MetricTile(
             label: 'Чистый результат',
             value: fmtMoney(pnl.net, sign: true),
             color: pnl.net.isNegative ? C.red : C.green,
             hint: 'после комиссий и налогов',
+            onTap: () => explain('Чистый результат', [
+              'Реализовано: ${fmtMoney(pnl.realized, sign: true)}',
+              'Доходы (дивиденды, купоны): ${fmtMoney(pnl.income, sign: true)}',
+              'Комиссии и фандинг: −${fmtMoney(pnl.fees)}',
+              'Налоги: −${fmtMoney(pnl.taxes)}',
+              'Итого: ${fmtMoney(pnl.net, sign: true)}',
+              'Пополнения и выводы сюда не входят: это перемещение денег '
+                  'владельца, а не заработок.',
+            ]),
           ),
         ]),
       ],

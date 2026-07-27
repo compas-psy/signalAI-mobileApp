@@ -485,6 +485,11 @@ class AppController extends ChangeNotifier {
       if (sync) {
         _capitalNote = await (repository as CapitalKeeper).syncCapital();
       }
+      final state = await desk.state();
+      // Отметка капитала на сегодня: кривая и дельты строятся из отметок, а
+      // не пересчётом прошлого — цен вчерашнего дня никто не хранит, и такой
+      // пересчёт врал бы ровно на движение рынка.
+      await desk.markEquity(state);
       _capital = await desk.state();
     } catch (e) {
       _capitalNote = 'синхронизация не удалась: $e';
