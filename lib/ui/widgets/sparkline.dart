@@ -2,6 +2,9 @@ import 'dart:math' as math;
 
 import 'package:flutter/widgets.dart';
 
+import '../../theme/tokens.dart';
+import '../../theme/typography.dart';
+
 /// Спарклайн эквити и бэктеста — порт метода `spark()` из макета:
 /// заливка под линией с прозрачностью .09 и линия толщиной 1.8.
 class Sparkline extends StatelessWidget {
@@ -10,18 +13,54 @@ class Sparkline extends StatelessWidget {
     required this.values,
     required this.height,
     required this.color,
+    this.emptyLabel,
   });
 
   final List<double> values;
   final double height;
   final Color color;
 
+  /// Что показать, когда точек меньше двух.
+  ///
+  /// Кривая по одной точке не строится, и раньше на этом месте оставалась
+  /// пустая коробка — молчаливая, неотличимая от поломки. Виджет обязан
+  /// сказать, почему он пуст, а не притворяться графиком.
+  final String? emptyLabel;
+
   @override
-  Widget build(BuildContext context) => SizedBox(
+  Widget build(BuildContext context) {
+    if (values.length < 2) {
+      return SizedBox(
         height: height,
         width: double.infinity,
-        child: CustomPaint(painter: _SparklinePainter(values, color)),
+        child: Stack(
+          alignment: Alignment.center,
+          children: [
+            // Базовая линия: место графика занято и видно, что оно не пустое
+            // по ошибке верстки.
+            Align(
+              alignment: Alignment.bottomCenter,
+              child: Container(height: 1, color: C.border),
+            ),
+            if (emptyLabel != null)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                child: Text(
+                  emptyLabel!,
+                  textAlign: TextAlign.center,
+                  style: T.body(10.5, color: C.faint, height: 1.4),
+                ),
+              ),
+          ],
+        ),
       );
+    }
+    return SizedBox(
+      height: height,
+      width: double.infinity,
+      child: CustomPaint(painter: _SparklinePainter(values, color)),
+    );
+  }
 }
 
 class _SparklinePainter extends CustomPainter {

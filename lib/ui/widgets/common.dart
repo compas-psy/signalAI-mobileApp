@@ -218,6 +218,76 @@ class _PressableState extends State<Pressable> {
   }
 }
 
+/// Индикатор незавершённой работы: тонкая бегущая полоса.
+///
+/// В приложении не было ни одного индикатора: ожидание показывалось только
+/// текстом, и экран, который считает, выглядел так же, как экран, который
+/// сломался. Полоса отвечает на вопрос «оно вообще живое» без слов.
+///
+/// Неопределённая по построению: сколько осталось, приложение не знает —
+/// биржа не сообщает, сколько ещё пришлёт. Полоса прогресса с выдуманным
+/// процентом врала бы.
+class BusyBar extends StatefulWidget {
+  const BusyBar({super.key, this.color = C.accent, this.height = 2});
+
+  final Color color;
+  final double height;
+
+  @override
+  State<BusyBar> createState() => _BusyBarState();
+}
+
+class _BusyBarState extends State<BusyBar> with SingleTickerProviderStateMixin {
+  late final AnimationController _run = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1100),
+  )..repeat();
+
+  @override
+  void dispose() {
+    _run.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => ClipRRect(
+        borderRadius: BorderRadius.circular(widget.height),
+        child: SizedBox(
+          height: widget.height,
+          width: double.infinity,
+          child: ColoredBox(
+            color: C.inset,
+            child: AnimatedBuilder(
+              animation: _run,
+              builder: (context, _) => FractionallySizedBox(
+                widthFactor: 0.35,
+                alignment: Alignment(_run.value * 4 - 2, 0),
+                child: ColoredBox(color: widget.color),
+              ),
+            ),
+          ),
+        ),
+      );
+}
+
+/// Строка ожидания: полоса и объяснение, чего именно ждём.
+class BusyLine extends StatelessWidget {
+  const BusyLine({super.key, required this.label, this.color = C.accent});
+
+  final String label;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          BusyBar(color: color),
+          const SizedBox(height: 8),
+          Text(label, style: T.body(11.5, color: C.muted, height: 1.5)),
+        ],
+      );
+}
+
 /// Кнопка действия: заливка для главного действия экрана, контур — для
 /// остальных. Собрана в одном месте специально: пока каждый экран рисовал
 /// свой контейнер, высота и радиус кнопок разъезжались от экрана к экрану.

@@ -474,27 +474,12 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
                   ],
                   if (_running)
                     Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 16),
-                      child: Center(
-                        child: Text(_stage ?? '…', style: T.mono(12, color: C.accent)),
-                      ),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      child: BusyLine(label: _stage ?? 'запускаем…'),
                     ),
                   if (!_running) ...[
                     const SizedBox(height: 8),
-                    Pressable(
-                      onTap: _run,
-                      child: Container(
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          border: Border.all(color: C.borderHover),
-                          borderRadius: BorderRadius.circular(R.inner),
-                        ),
-                        child: Center(
-                          child: Text('Запустить снова',
-                              style: T.body(13, weight: 800, color: C.accent)),
-                        ),
-                      ),
-                    ),
+                    ActionButton(label: 'Запустить снова', dense: true, onTap: _run),
                   ],
                 ],
               ),

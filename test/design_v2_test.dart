@@ -4,6 +4,7 @@ import 'package:signalai/theme/tokens.dart';
 import 'package:signalai/ui/layout.dart';
 import 'package:signalai/ui/widgets/level_strip.dart';
 import 'package:signalai/ui/widgets/segmented.dart';
+import 'package:signalai/ui/widgets/sparkline.dart';
 
 /// Обёртка: компоненты нарисованы на `widgets`, без Material.
 Widget _host(Widget child, {double width = 380}) => Directionality(
@@ -107,6 +108,36 @@ void main() {
       final cx = tester.getTopLeft(find.text('c')).dx;
       expect(bx, greaterThan(ax));
       expect(cx, ax, reason: 'третья карточка возвращается в левую колонку');
+    });
+  });
+
+  group('Спарклайн', () {
+    testWidgets('одна точка объясняет себя, а не остаётся пустой коробкой',
+        (tester) async {
+      // Кривая по одной точке не строится, и раньше здесь оставался пустой
+      // прямоугольник 64 px — неотличимый от поломки. Владелец так его и
+      // прочитал: «серое окно».
+      await tester.pumpWidget(_host(const Sparkline(
+        values: [1],
+        height: 64,
+        color: C.green,
+        emptyLabel: 'кривая появится со второй сделки',
+      )));
+
+      expect(find.text('кривая появится со второй сделки'), findsOneWidget);
+    });
+
+    testWidgets('с двумя точками рисуется график, а не подпись',
+        (tester) async {
+      await tester.pumpWidget(_host(const Sparkline(
+        values: [1, 2],
+        height: 64,
+        color: C.green,
+        emptyLabel: 'не должно появиться',
+      )));
+
+      expect(find.text('не должно появиться'), findsNothing);
+      expect(find.byType(CustomPaint), findsWidgets);
     });
   });
 

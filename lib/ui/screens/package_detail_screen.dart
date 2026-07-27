@@ -144,14 +144,15 @@ class _CompositionCard extends StatelessWidget {
           const SectionLabel('Что купить'),
           const SizedBox(height: 8),
           if (allocation == null)
-            Text(
-              loading
-                  ? 'Спрашиваем цены инструментов…'
-                  : 'Цены инструментов не получены — количество не посчитано. '
-                      'Показывать проценты вместо штук значит выдавать замысел '
-                      'за исполнимый план.',
-              style: T.body(11.5, color: C.muted, height: 1.5),
-            )
+            loading
+                ? const BusyLine(
+                    label: 'Спрашиваем цены инструментов на MOEX и Bybit…')
+                : Text(
+                    'Цены инструментов не получены — количество не посчитано. '
+                    'Показывать проценты вместо штук значит выдавать замысел '
+                    'за исполнимый план.',
+                    style: T.body(11.5, color: C.muted, height: 1.5),
+                  )
           else ...[
             Text(
               'Капитал пакета ${fmtMoney(allocation.total)}. Количество '
@@ -308,13 +309,15 @@ class _HistoryCard extends StatelessWidget {
           const SectionLabel('Как состав вёл себя раньше'),
           const SizedBox(height: 8),
           if (history == null || history.isEmpty)
-            Text(
-              loading
-                  ? 'Считаем по реальным сериям MOEX и Bybit…'
-                  : 'Истории пока нет: серии не пришли либо период слишком '
-                      'короткий, чтобы что-то утверждать.',
-              style: T.body(11.5, color: C.muted, height: 1.5),
-            )
+            loading
+                ? const BusyLine(
+                    label: 'Считаем по реальным сериям MOEX и Bybit — '
+                        'это несколько запросов истории за пять лет…')
+                : Text(
+                    'Истории пока нет: серии не пришли либо период слишком '
+                    'короткий, чтобы что-то утверждать.',
+                    style: T.body(11.5, color: C.muted, height: 1.5),
+                  )
           else ...[
             Sparkline(values: history.equity, height: 56, color: C.green),
             const SizedBox(height: 10),

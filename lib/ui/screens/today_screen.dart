@@ -585,13 +585,16 @@ class _HealthCard extends StatelessWidget {
                 '${controller.riskMode.hint}',
           ),
           const SizedBox(height: 10),
-          ActionButton(
-            label: controller.capitalLoading ? 'Сверяем…' : 'Сверить с площадками',
-            dense: true,
-            onTap: controller.capitalLoading
-                ? null
-                : () => controller.refreshCapital(sync: true),
-          ),
+          if (controller.capitalLoading)
+            const BusyLine(
+              label: 'Спрашиваем площадки: счета, позиции и выписку за год.',
+            )
+          else
+            ActionButton(
+              label: 'Сверить с площадками',
+              dense: true,
+              onTap: () => controller.refreshCapital(sync: true),
+            ),
           if (controller.capitalNote != null) ...[
             const SizedBox(height: 8),
             Text(controller.capitalNote!,
@@ -645,17 +648,20 @@ class _CapitalPending extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              controller.capitalLoading ? 'Читаем книгу…' : 'Книга не подключена',
+              controller.capitalLoading ? 'Читаем книгу' : 'Книга не подключена',
               style: T.jost(17),
             ),
-            const SizedBox(height: 6),
-            Text(
-              controller.capitalLoading
-                  ? 'Считаем остатки, позиции и результат по операциям.'
-                  : 'В этом режиме учёт капитала недоступен: книга живёт '
-                      'только в автономном расчёте на устройстве.',
-              style: T.body(11.5, color: C.muted, height: 1.5),
-            ),
+            const SizedBox(height: 10),
+            if (controller.capitalLoading)
+              const BusyLine(
+                label: 'Считаем остатки, позиции и результат по операциям.',
+              )
+            else
+              Text(
+                'В этом режиме учёт капитала недоступен: книга живёт '
+                'только в автономном расчёте на устройстве.',
+                style: T.body(11.5, color: C.muted, height: 1.5),
+              ),
           ],
         ),
       );

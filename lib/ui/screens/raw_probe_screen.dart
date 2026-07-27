@@ -126,12 +126,10 @@ class _RawProbeScreenState extends State<RawProbeScreen> {
                   ],
                   const SizedBox(height: 8),
                   if (_running)
-                    Center(
-                      child: Padding(
-                        padding: const EdgeInsets.all(20),
-                        child: Text('запрос идёт…',
-                            style: T.mono(12, color: C.accent)),
-                      ),
+                    const BusyLine(
+                      label: 'Запрос идёт. Доска опционов большая: биржа может '
+                          'отвечать долго, а на мобильной сети — оборвать тело '
+                          'ответа на середине.',
                     )
                   else if (probe != null) ...[
                     _ProbeCard(probe: probe),

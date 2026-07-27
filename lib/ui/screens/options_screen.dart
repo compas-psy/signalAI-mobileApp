@@ -60,10 +60,19 @@ class _OptionsScreenState extends State<OptionsScreen> {
           ),
         const SizedBox(height: 12),
         if (controller.optionsLoading)
-          const _Note(
-            title: 'Читаем цепочку',
-            text: 'Биржа отдаёт страйки, теоретическую цену, подразумеваемую '
-                'волатильность и открытый интерес по каждому контракту.',
+          SectionCard(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Читаем цепочку', style: T.jost(16)),
+                const SizedBox(height: 10),
+                const BusyLine(
+                  label: 'Доска опционов большая: биржа отдаёт страйки, '
+                      'теоретическую цену, волатильность и открытый интерес '
+                      'по каждому контракту.',
+                ),
+              ],
+            ),
           )
         else if (controller.optionsError != null)
           _Note(

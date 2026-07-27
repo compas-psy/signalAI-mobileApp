@@ -24,14 +24,17 @@ class TradesScreen extends StatelessWidget {
             child: ListView(
               padding: const EdgeInsets.fromLTRB(S.screen, 12, S.screen, 90),
               children: [
+                // Порядок раздела — от денег к справке. Сверху то, что
+                // происходит со счётом прямо сейчас: результат, допуск,
+                // выставленное на бирже, идущие сделки, закрытые. Отбраковка
+                // — рассказ о том, чего мы НЕ сделали; она стояла выше
+                // идущих и закрытых сделок, и это было нелогично.
                 CardGrid(
                   children: [
                     _EquityCard(summary: summary),
                     if (summary.gate != null) _GateCard(gate: summary.gate!),
                     if (summary.exchange.isNotEmpty)
                       _ExchangeCard(rows: summary.exchange),
-                    if (summary.rejections.isNotEmpty)
-                      _RejectionsCard(rows: summary.rejections),
                   ],
                 ),
                 const SizedBox(height: 12),
@@ -61,6 +64,10 @@ class TradesScreen extends StatelessWidget {
                     ],
                   ),
                 ),
+                if (summary.rejections.isNotEmpty) ...[
+                  const SizedBox(height: 12),
+                  _RejectionsCard(rows: summary.rejections),
+                ],
               ],
             ),
           ),
@@ -250,7 +257,15 @@ class _EquityCard extends StatelessWidget {
             ),
             Padding(
               padding: const EdgeInsets.only(top: 10, bottom: 4),
-              child: Sparkline(values: summary.equityCurve, height: 64, color: C.green),
+              child: Sparkline(
+                values: summary.equityCurve,
+                height: 64,
+                color: C.green,
+                emptyLabel: summary.equityCurve.isEmpty
+                    ? 'Закрытых сделок ещё нет — кривой не из чего строить'
+                    : 'Закрыта одна сделка: кривая появится со второй, '
+                        'по одной точке рисовать нечего',
+              ),
             ),
             const SizedBox(height: 8),
             MetricRow(
