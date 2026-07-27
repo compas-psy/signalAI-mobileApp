@@ -1,4 +1,6 @@
 import '../domain/broker/broker.dart';
+import '../domain/invest/invest_models.dart';
+import '../domain/ledger/signal_ledger.dart';
 import '../domain/broker/trading_diagnostics.dart';
 import '../domain/broker/trading_gate.dart';
 import '../domain/models/digest.dart';
@@ -104,6 +106,28 @@ abstract interface class TradingDesk {
   /// Нужен ровно затем, зачем и диагностика данных: чтобы «работает или нет»
   /// был проверяемым фактом, а не ощущением от зелёной подписи.
   Stream<TradingCheck> diagnoseTrading();
+}
+
+/// Раздел «Инвест»: среднесрочные идеи по акциям с дневным пересчётом.
+///
+/// Отдельная способность: раздел живёт только в автономном режиме, где
+/// дневки считаются на устройстве, а фундаментальные паспорта приходят из
+/// Invest API. Исполнение — руками; автоторговли здесь нет по построению.
+abstract interface class InvestDesk {
+  /// Выдача раздела. [force] — пересчитать сейчас, не дожидаясь ночи.
+  Future<InvestDigest> fetchInvestDigest({bool force = false});
+
+  /// Отдельный журнал бумажных сделок раздела.
+  SignalLedger get investLedger;
+
+  /// Бэктест дневной стратегии по ликвидным акциям.
+  Future<BacktestResult> runInvestBacktest();
+
+  /// Последний бэктест. null — ещё не запускался.
+  BacktestResult? get investBacktest;
+
+  /// Walk-forward подбор параметров дневной стратегии.
+  Future<String> optimizeInvestParameters();
 }
 
 /// Репозиторий, ведущий журнал бумажных сделок.

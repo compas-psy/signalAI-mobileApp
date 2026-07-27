@@ -326,11 +326,21 @@ class SignalLedger {
     }
   }
 
-  /// Сверка всех живых записей по свежим свечам (символ → часовики).
-  void reconcile(Map<String, List<Candle>> hourlyBySymbol) {
+  /// Сверка всех живых записей по свежим свечам (символ → бары рабочего ТФ).
+  ///
+  /// [orderTtlBars] и [maxHoldBars] задаются журналом-владельцем: у свинга это
+  /// часы (24/120), у дневного «Инвеста» — дни (5/60). Один журнал — один
+  /// таймфрейм; смешивать их в одном экземпляре нельзя.
+  void reconcile(
+    Map<String, List<Candle>> hourlyBySymbol, {
+    int orderTtlBars = 24,
+    int maxHoldBars = 120,
+  }) {
     for (final trade in trades) {
       final candles = hourlyBySymbol[trade.symbol];
-      if (candles != null) trade.reconcile(candles);
+      if (candles != null) {
+        trade.reconcile(candles, orderTtlBars: orderTtlBars, maxHoldBars: maxHoldBars);
+      }
     }
     for (final record in rejected) {
       if (record.movePercent24h != null) continue;

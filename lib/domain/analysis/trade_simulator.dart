@@ -67,8 +67,15 @@ TradingCosts defaultCostsFor(InstrumentSpec spec) => switch (spec.market) {
           slippage: spec.tick,
           fundingPerBar: 0.0001 / 8,
         ),
-      Market.forts || Market.moex => TradingCosts(
+      Market.forts => TradingCosts(
           feePoints: spec.valuePerPoint > 0 ? 1 / spec.valuePerPoint : 0,
+          slippage: spec.tick,
+        ),
+      // Акции: комиссия — доля от суммы (0,05% за сторону, типичный тариф
+      // брокера), проскальзывание — шаг цены. Фандинга нет: позиция без
+      // плеча, ежедневной платы за перенос не возникает.
+      Market.moex => TradingCosts(
+          feeRate: 0.0005,
           slippage: spec.tick,
         ),
     };

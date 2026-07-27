@@ -116,11 +116,22 @@ String correlationGroup(InstrumentSpec spec) =>
 /// недоступны, а группу знать надо.
 String correlationGroupFor(String rawSymbol, Market market) {
   final symbol = rawSymbol.toUpperCase();
-  if (symbol.startsWith('SI') || symbol.startsWith('CNY') || symbol.startsWith('ED')) {
+  if (symbol.startsWith('SI') ||
+      symbol.startsWith('CNY') ||
+      symbol.startsWith('CR') ||
+      symbol.startsWith('ED')) {
     return 'currency';
   }
   if (symbol.startsWith('BR') || symbol.startsWith('NG')) return 'energy';
+  // Металлы: длинные корни и короткие коды серий (GOLD→GD, SILV→SV).
+  if (symbol.startsWith('GOLD') ||
+      symbol.startsWith('GD') ||
+      symbol.startsWith('SILV') ||
+      symbol.startsWith('SV')) {
+    return 'metals';
+  }
   if (market == Market.crypto) return 'crypto';
+  if (market == Market.moex) return 'stocks';
   return 'index';
 }
 
@@ -253,6 +264,47 @@ List<Candle> resampleHours(List<Candle> hourly, int hours) {
   return result;
 }
 
+/// Свести дневные свечи к неделькам — контекст для среднесрочного скринера.
+///
+/// Границы — по понедельникам ISO-недели: так недельки рисует и биржа.
+List<Candle> resampleWeeks(List<Candle> daily) {
+  if (daily.isEmpty) return daily;
+  DateTime weekStart(DateTime t) {
+    final d = DateTime.utc(t.year, t.month, t.day);
+    return d.subtract(Duration(days: d.weekday - 1));
+  }
+
+  final result = <Candle>[];
+  Candle? current;
+  DateTime? bucket;
+  for (final c in daily) {
+    final b = weekStart(c.time);
+    if (bucket != b) {
+      if (current != null) result.add(current);
+      bucket = b;
+      current = Candle(
+        time: b,
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close,
+        volume: c.volume,
+      );
+    } else {
+      current = Candle(
+        time: b,
+        open: current!.open,
+        high: c.high > current.high ? c.high : current.high,
+        low: c.low < current.low ? c.low : current.low,
+        close: c.close,
+        volume: current.volume + c.volume,
+      );
+    }
+  }
+  if (current != null) result.add(current);
+  return result;
+}
+
 /// Детерминированный скринер первой ступени (ТЗ §5.1 и §5.3).
 ///
 /// Считает всё на устройстве по публичным данным: LLM-ступени здесь нет,
@@ -268,6 +320,7 @@ class Screener {
     this.requireTrigger = false,
     this.entryType = EntryType.limit,
     this.align4h = false,
+    this.timeframeLabel = '1H',
   });
 
   /// Ниже этого SignalScore кандидат не показывается вовсе.
@@ -300,6 +353,10 @@ class Screener {
   /// лонга при падающей 4H-структуре — торговля против ближайшего старшего
   /// потока; флэт 4H проходит.
   final bool align4h;
+
+  /// Подпись рабочего таймфрейма на графике идеи. Скринер сам не знает,
+  /// какие бары ему передали, — знает вызывающий: у свинга это 1H, у акций 1D.
+  final String timeframeLabel;
 
   /// Доли фиксации по тейкам. Настраиваемы: walk-forward оптимизация может
   /// выбрать другой профиль фиксации.
@@ -559,7 +616,7 @@ class Screener {
     ];
 
     return SignalChart(
-      timeframeLabel: '1H',
+      timeframeLabel: timeframeLabel,
       candles: [
         for (final c in window) ChartCandle(c.open, c.high, c.low, c.close),
       ],

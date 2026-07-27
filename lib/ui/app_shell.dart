@@ -6,6 +6,7 @@ import '../theme/tokens.dart';
 import '../theme/typography.dart';
 import 'screens/idea_detail_screen.dart';
 import 'screens/ideas_screen.dart';
+import 'screens/invest_screen.dart';
 import 'screens/settings_screen.dart';
 import 'screens/strategies_screen.dart';
 import 'screens/trades_screen.dart';
@@ -78,6 +79,7 @@ class AppShell extends StatelessWidget {
           optimizing: controller.optimizing,
           backtestStage: controller.analysisStage,
         ),
+      AppTab.invest => const InvestScreen(),
       AppTab.settings => SettingsScreen(snapshot: controller.settings!),
     };
   }

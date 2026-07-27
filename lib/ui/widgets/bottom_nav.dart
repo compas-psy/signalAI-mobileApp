@@ -30,6 +30,7 @@ class BottomNav extends StatelessWidget {
         child: Row(
           children: [
             _item(AppTab.ideas, 'Идеи', Icons.navIdeas),
+            _item(AppTab.invest, 'Инвест', Icons.navStrategies(C.bg)),
             _item(AppTab.trades, 'Сделки', Icons.navTrades),
             _item(AppTab.strategies, 'Стратегии', Icons.navStrategies(C.bg)),
             _item(AppTab.settings, 'Настройки', Icons.navSettings),

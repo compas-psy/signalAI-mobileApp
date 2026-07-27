@@ -8,6 +8,7 @@ import '../data/native_bridge.dart';
 import '../data/repository.dart';
 import '../domain/broker/broker.dart';
 import '../domain/enums.dart';
+import '../domain/invest/invest_models.dart';
 import '../domain/models/digest.dart';
 import '../domain/models/portfolio.dart';
 import '../domain/models/settings.dart';
@@ -18,7 +19,7 @@ import '../monitor/background_cycle.dart';
 import '../monitor/background_mode.dart';
 
 /// Вкладки нижней навигации.
-enum AppTab { ideas, trades, strategies, settings }
+enum AppTab { ideas, invest, trades, strategies, settings }
 
 /// Состояние приложения: что показываем и что сейчас делает пользователь.
 ///
@@ -63,6 +64,10 @@ class AppController extends ChangeNotifier {
   bool _confirming = false;
 
   DailyDigest? _digest;
+  InvestDigest? _invest;
+  bool _investLoading = false;
+  Object? _investError;
+  bool _investBacktestRunning = false;
   TradesSummary? _trades;
   StrategiesSnapshot? _strategies;
   SettingsSnapshot? _settings;
@@ -78,6 +83,18 @@ class AppController extends ChangeNotifier {
   bool get backtestRunning => _backtestRunning;
   bool get confirming => _confirming;
   DailyDigest? get digest => _digest;
+  InvestDigest? get invest => _invest;
+  bool get investLoading => _investLoading;
+  Object? get investError => _investError;
+  bool get investBacktestRunning => _investBacktestRunning;
+  String get investErrorText =>
+      _investError == null ? '' : _errorText(_investError!);
+
+  /// Раздел «Инвест» репозитория. null — режим без него (демо, сервер).
+  InvestDesk? get investDesk {
+    final repository = _repository;
+    return repository is InvestDesk ? repository as InvestDesk : null;
+  }
   TradesSummary? get trades => _trades;
   StrategiesSnapshot? get strategies => _strategies;
   SettingsSnapshot? get settings => _settings;
@@ -295,6 +312,80 @@ class AppController extends ChangeNotifier {
     _selectedSignalId = null;
     _sheetOpen = false;
     notifyListeners();
+    // «Инвест» подгружается лениво: кэш мгновенно, пересчёт — если ночь
+    // прошла, а скана ещё не было.
+    if (tab == AppTab.invest && _invest == null) refreshInvest();
+  }
+
+  // ── Раздел «Инвест» ────────────────────────────────────────────────────
+
+  Future<void> refreshInvest({bool force = false}) async {
+    final desk = investDesk;
+    if (desk == null || _investLoading) return;
+    _investLoading = true;
+    _investError = null;
+    final repository = _repository;
+    if (repository is ProgressReporting) {
+      (repository as ProgressReporting).onProgress = (stage) {
+        _analysisStage = stage;
+        notifyListeners();
+      };
+    }
+    notifyListeners();
+    try {
+      _invest = await desk.fetchInvestDigest(force: force);
+    } catch (e) {
+      _investError = e;
+    } finally {
+      _investLoading = false;
+      _analysisStage = null;
+      if (repository is ProgressReporting) {
+        (repository as ProgressReporting).onProgress = null;
+      }
+      notifyListeners();
+    }
+  }
+
+  Future<void> runInvestBacktest() async {
+    final desk = investDesk;
+    if (desk == null || _investBacktestRunning) return;
+    _investBacktestRunning = true;
+    final repository = _repository;
+    if (repository is ProgressReporting) {
+      (repository as ProgressReporting).onProgress = (stage) {
+        _analysisStage = stage;
+        notifyListeners();
+      };
+    }
+    notifyListeners();
+    try {
+      final result = await desk.runInvestBacktest();
+      showToast('Бэктест акций завершён · PF ${_profitFactor(result)}');
+    } catch (e) {
+      showToast(_errorText(e));
+    } finally {
+      _investBacktestRunning = false;
+      _analysisStage = null;
+      if (repository is ProgressReporting) {
+        (repository as ProgressReporting).onProgress = null;
+      }
+      notifyListeners();
+    }
+  }
+
+  Future<void> optimizeInvest() async {
+    final desk = investDesk;
+    if (desk == null || _investBacktestRunning) return;
+    _investBacktestRunning = true;
+    notifyListeners();
+    try {
+      showToast(await desk.optimizeInvestParameters());
+    } catch (e) {
+      showToast(_errorText(e));
+    } finally {
+      _investBacktestRunning = false;
+      notifyListeners();
+    }
   }
 
   void openSignal(String id) {

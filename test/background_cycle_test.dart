@@ -74,6 +74,9 @@ class FakeTarget implements MonitorTarget {
   Future<List<BrokerPosition>> unprotectedPositions() async => nakedList;
 
   @override
+  Future<List<({String title, String body})>> investNightly() async => const [];
+
+  @override
   Future<bool> placeProtectiveStop({
     required String symbol,
     required double stopPrice,

@@ -25,13 +25,14 @@ class StrategyParams {
   /// Согласование направления со структурой 4H.
   final bool align4h;
 
-  Screener buildScreener() => Screener(
+  Screener buildScreener({String timeframeLabel = '1H'}) => Screener(
         minScore: minScore,
         maxEntryDistanceAtr: maxEntryDistanceAtr,
         takeProfitMultiples: takeProfitMultiples,
         requireTrigger: requireTrigger,
         entryType: entryType,
         align4h: align4h,
+        timeframeLabel: timeframeLabel,
       );
 
   Map<String, dynamic> toJson() => {

@@ -10,6 +10,7 @@ import '../domain/analysis/optimizer.dart';
 import '../domain/analysis/screener.dart';
 import '../domain/analysis/trade_simulator.dart';
 import '../domain/enums.dart';
+import '../domain/invest/invest_models.dart';
 import '../domain/ledger/signal_ledger.dart';
 import '../domain/models/digest.dart';
 import '../domain/models/portfolio.dart';
@@ -21,6 +22,7 @@ import '../monitor/background_cycle.dart';
 import '../monitor/background_mode.dart';
 import 'broker/bybit_broker.dart';
 import 'broker/tinvest_broker.dart';
+import 'broker/tinvest_fundamentals.dart';
 import 'broker/secure_vault.dart';
 import 'local_store.dart';
 import 'state_lock.dart';
@@ -44,13 +46,18 @@ class LocalAnalysisRepository
         TradingDesk,
         TradingProbe,
         PaperTracking,
+        InvestDesk,
         MonitorTarget {
   LocalAnalysisRepository({
     IssClient? iss,
     BybitClient? bybit,
     LocalStore? store,
     this.vault = const SecureVault(),
-    this.fortsRoots = const ['SI', 'BR', 'MX', 'RI', 'NG', 'GAZR', 'SBRF'],
+    // Корни фьючерсной вселенной. Металлы и юань — по просьбе владельца:
+    // ликвидные и слабо коррелированные с индексом группы.
+    this.fortsRoots = const [
+      'SI', 'BR', 'MX', 'RI', 'NG', 'GAZR', 'SBRF', 'GOLD', 'SILV', 'CNY',
+    ],
     // Топ-10 перпетуалов Bybit по обороту. Ширина не создаёт эдж — она даёт
     // тому же эджу больше независимых возможностей; хвост списка ликвидности
     // сюда сознательно не берём: проскальзывание там съедает больше, чем
@@ -89,11 +96,15 @@ class LocalAnalysisRepository
   final Map<String, StrategyParams> _params = {
     'forts': StrategyParams.defaults,
     'crypto': StrategyParams.defaults,
+    // Дневная стратегия раздела «Инвест» — тот же движок, другой таймфрейм.
+    'stocks': StrategyParams.defaults,
   };
 
   /// Скринер для стратегии — собирается из её текущих параметров.
+  /// У акций рабочий таймфрейм — дневки, и график обязан говорить правду.
   Screener _screenerFor(String strategyId) =>
-      (_params[strategyId] ?? StrategyParams.defaults).buildScreener();
+      (_params[strategyId] ?? StrategyParams.defaults)
+          .buildScreener(timeframeLabel: strategyId == 'stocks' ? '1D' : '1H');
 
   /// Скринер FORTS — базовый: его пороги показываются в параметрах.
   Screener get screener => _screenerFor('forts');
@@ -938,8 +949,12 @@ class LocalAnalysisRepository
 
     for (final snapshot in snapshots) {
       final symbol = snapshot.spec.symbol.toUpperCase();
+      // Сопоставление и по тикеру, и по имени серии: у металлов и юаня
+      // короткий код не совпадает с корнем (GOLD-9.26 торгуется как GDU6),
+      // и сопоставление только по началу тикера молча теряло бы их.
+      final series = snapshot.spec.name.toUpperCase();
       final root = fortsRoots.firstWhere(
-        (r) => symbol.startsWith(r),
+        (r) => symbol.startsWith(r) || series.startsWith('$r-'),
         orElse: () => '',
       );
       if (root.isEmpty) continue;
@@ -1564,6 +1579,406 @@ class LocalAnalysisRepository
 
   static String _signedR(double r) =>
       '${r >= 0 ? '+' : '−'}${r.abs().toStringAsFixed(2).replaceAll('.', ',')}R';
+
+  // ── Раздел «Инвест»: среднесрочные идеи по акциям ───────────────────────
+
+  /// Параметры дневного контура: лимитка живёт 5 торговых дней, позиция —
+  /// до 60 (≈3 месяца). Тот же движок сделки, что в свинге, — другой шаг.
+  static const investOrderTtlBars = 5;
+  static const investMaxHoldBars = 60;
+
+  /// Порог ликвидности вселенной: медианный дневной оборот ниже — бумага
+  /// отбраковывается с причиной, а не пропадает молча.
+  static const investMinTurnover = 50e6;
+
+  static const investTopIdeas = 5;
+
+  /// Глубина дневной истории: ~3 года на бэктест и структуру.
+  static const _investHistoryDays = 1100;
+
+  InvestDigest? _investDigest;
+  bool _investLoaded = false;
+
+  /// Отдельный журнал бумажных сделок раздела — со свингом не смешивается:
+  /// другой таймфрейм, другой горизонт, другая статистика.
+  @override
+  final SignalLedger investLedger = SignalLedger();
+
+  /// Фундаментальные паспорта: Invest API, токен — тот же, что у брокера.
+  late final TInvestFundamentals fundamentals = TInvestFundamentals(
+    token: () => vault.apiKey(
+      exchange: BrokerId.tinvest.name,
+      mode: _trading.modeOf(BrokerId.tinvest).name,
+    ),
+    store: _store,
+  );
+
+  Future<void> _ensureInvestLoaded() async {
+    if (_investLoaded) return;
+    _investLoaded = true;
+    final storedLedger = await _store.read('invest_ledger');
+    if (storedLedger != null) {
+      try {
+        final parsed = SignalLedger.fromJson(storedLedger);
+        investLedger.trades.addAll(parsed.trades);
+        investLedger.rejected.addAll(parsed.rejected);
+      } on Exception {
+        // Битый журнал не должен ломать раздел.
+      }
+    }
+    final cached = await _store.read('invest');
+    if (cached != null) {
+      try {
+        _investDigest = InvestDigest.fromJson(cached);
+      } on Exception {
+        _investDigest = null;
+      }
+    }
+  }
+
+  /// Пора ли ночной пересчёт: последний был не сегодня, и дневка уже закрыта
+  /// (после 01:00 МСК ISS отдаёт финальные данные вчерашнего дня).
+  bool investScanDue(DateTime mskNow) {
+    final last = _investDigest?.at;
+    if (last == null) return true;
+    final sameDay = last.year == mskNow.year &&
+        last.month == mskNow.month &&
+        last.day == mskNow.day;
+    if (sameDay) return false;
+    return mskNow.hour >= 1;
+  }
+
+  @override
+  Future<InvestDigest> fetchInvestDigest({bool force = false}) async {
+    await _ensureLoaded();
+    await _ensureInvestLoaded();
+    final cached = _investDigest;
+    if (!force && cached != null && !investScanDue(IssClient.mskNow())) {
+      return cached;
+    }
+    return _computeInvestDigest();
+  }
+
+  Future<InvestDigest> _computeInvestDigest() async {
+    _stage('Доска акций TQBR…');
+    final shares = await _iss.sharesSnapshot();
+    final rejections = <String>[];
+
+    final liquid = <ShareSnapshot>[];
+    for (final share in shares) {
+      if (share.turnover < investMinTurnover) {
+        // Неликвид в лог не пишем поимённо — их сотни; итог честно виден
+        // числами «вселенная / прошло фильтр».
+        continue;
+      }
+      liquid.add(share);
+    }
+    liquid.sort((a, b) => b.turnover.compareTo(a.turnover));
+
+    final regime = await _investRegime();
+    final screener = _screenerFor('stocks');
+    final from = DateTime.now().subtract(const Duration(days: _investHistoryDays));
+
+    final rejected = <RejectedCandidate>[];
+    final dailyBySymbol = <String, List<Candle>>{};
+    final results = <ScreenerResult>[];
+    final inputs = await _mapLimited<ShareSnapshot, InstrumentInput?>(
+      liquid,
+      (share) async {
+        try {
+          _stage('Анализ ${share.spec.symbol}…');
+          final daily = await _iss.shareCandles(share.spec.symbol, from: from);
+          if (daily.length < 260) {
+            rejected.add(RejectedCandidate(share.spec.symbol,
+                'мало дневной истории: ${daily.length} баров'));
+            return null;
+          }
+          dailyBySymbol[share.spec.symbol] = daily;
+          return InstrumentInput(
+            spec: share.spec,
+            hourly: daily,
+            daily: resampleWeeks(daily),
+            lastPrice: share.lastPrice > 0 ? share.lastPrice : daily.last.close,
+            changePercentLabel: _percentLabel(share.changePercent),
+            changeUp: share.changePercent >= 0,
+          );
+        } on Exception catch (e) {
+          rejected.add(RejectedCandidate(share.spec.symbol, 'нет данных: $e'));
+          return null;
+        }
+      },
+    );
+
+    for (final input in inputs) {
+      if (input == null) continue;
+      final result = screener.evaluate(
+        input,
+        regime,
+        rejected: rejected,
+        factorHistory: _lastFactorEdges['stocks'],
+      );
+      if (result == null) continue;
+      if (!result.signal.direction.isLong) {
+        // Решение владельца: шорт акций на 1–3 месяца не торгуем — платная
+        // маржиналка съедает эдж, шорт-экспозиция есть через фьючерсы.
+        rejected.add(RejectedCandidate(
+            result.signal.symbol, 'шорт акций не торгуем: маржиналка съедает эдж'));
+        continue;
+      }
+      results.add(result);
+    }
+
+    results.sort((a, b) => b.signal.score.compareTo(a.signal.score));
+    final top = results.take(investTopIdeas).toList();
+
+    // Паспорта — только для показанных идей: гонять Invest API по всей доске
+    // незачем, а отказ по одной бумаге не валит остальные.
+    _stage('Фундаментальные паспорта…');
+    final ideas = <InvestIdea>[];
+    for (final result in top) {
+      final passport = await fundamentals.passport(result.signal.symbol);
+      ideas.add(InvestIdea(signal: result.signal, passport: passport));
+    }
+
+    rejections.addAll([
+      for (final r in rejected.take(30)) '${r.symbol} — ${r.reason}',
+    ]);
+
+    final digest = InvestDigest(
+      at: IssClient.mskNow(),
+      universeSize: shares.length,
+      liquidSize: liquid.length,
+      ideas: ideas,
+      rejections: rejections,
+      passportNote: ideas.any((i) => i.passport != null)
+          ? ''
+          : (fundamentals.lastError ?? ''),
+    );
+    _investDigest = digest;
+    await _store.write('invest', digest.toJson());
+
+    // Журнал: идеи записываются автоматически — форвард-статистика раздела
+    // не должна зависеть от того, нажал ли владелец кнопку. Живые записи
+    // проживаются вперёд по тем же дневкам.
+    try {
+      for (final idea in ideas) {
+        final spec = _investSpec(liquid, idea.signal.symbol);
+        investLedger.record(
+          idea.signal,
+          DateTime.now(),
+          costs: spec == null ? TradingCosts.none : defaultCostsFor(spec),
+          fillMargin: spec?.tick ?? 0,
+          breakevenAfterTp1: true,
+        );
+      }
+      // Свечи бумаг, живущих в журнале, но выпавших из топа, докачиваются —
+      // иначе их сделки перестали бы проживаться.
+      for (final trade in investLedger.openOrPending) {
+        if (dailyBySymbol.containsKey(trade.symbol)) continue;
+        try {
+          dailyBySymbol[trade.symbol] =
+              await _iss.shareCandles(trade.symbol, from: from);
+        } on Exception {
+          // Сверим в следующий раз.
+        }
+      }
+      investLedger.reconcile(
+        dailyBySymbol,
+        orderTtlBars: investOrderTtlBars,
+        maxHoldBars: investMaxHoldBars,
+      );
+      await _store.write('invest_ledger', investLedger.toJson());
+    } on Object {
+      // Журнал вторичен к дайджесту.
+    }
+    return digest;
+  }
+
+  InstrumentSpec? _investSpec(List<ShareSnapshot> shares, String symbol) {
+    for (final share in shares) {
+      if (share.spec.symbol == symbol) return share.spec;
+    }
+    return null;
+  }
+
+  /// Режим рынка для акций: дневная структура фьючерса на индекс МосБиржи.
+  Future<MarketRegime> _investRegime() async {
+    try {
+      final snapshots = await _iss.fortsSnapshot();
+      FortsSnapshot? mx;
+      for (final s in snapshots) {
+        final name = s.spec.name.toUpperCase();
+        if (!name.startsWith('MIX-') && !name.startsWith('MX-')) continue;
+        if (mx == null || s.turnover > mx.turnover) mx = s;
+      }
+      if (mx == null) return MarketRegime.unknown;
+      final daily = await _iss.candles(
+        mx.spec.symbol,
+        timeframe: Timeframe.d1,
+        from: DateTime.now().subtract(const Duration(days: 200)),
+        cache: true,
+      );
+      if (daily.length < 20) return MarketRegime.unknown;
+      final trend = analyzeStructure(daily).trend;
+      return MarketRegime(
+        indexTrend: trend,
+        currencyTrend: StructureTrend.flat,
+        cryptoTrend: StructureTrend.flat,
+      );
+    } on Exception {
+      // Режим неизвестен — идеи проходят без вето, и это видно по нейтральной
+      // оценке блока режима.
+      return MarketRegime.unknown;
+    }
+  }
+
+  @override
+  Future<BacktestResult> runInvestBacktest() async {
+    await _ensureLoaded();
+    await _ensureInvestLoaded();
+    _stage('Доска акций TQBR…');
+    final shares = await _iss.sharesSnapshot();
+    final liquid = [
+      for (final s in shares)
+        if (s.turnover >= investMinTurnover) s,
+    ]..sort((a, b) => b.turnover.compareTo(a.turnover));
+    // Прогон по самым ликвидным: 40 бумаг × 3 года дневок — представительная
+    // выборка, не превращающая телефон в печку.
+    final subset = liquid.take(40).toList();
+    final from = DateTime.now().subtract(const Duration(days: _investHistoryDays));
+
+    final histories = <InstrumentHistory>[];
+    for (final share in subset) {
+      try {
+        _stage('История ${share.spec.symbol}…');
+        final daily = await _iss.shareCandles(share.spec.symbol, from: from);
+        if (daily.length < 260) continue;
+        histories.add(InstrumentHistory(
+          spec: share.spec,
+          hourly: daily,
+          daily: resampleWeeks(daily),
+        ));
+      } on Exception {
+        continue;
+      }
+    }
+    if (histories.isEmpty) {
+      throw const FeatureUnavailableException(
+        'История акций не получена: биржа не отдала дневки. Попробуйте позже.',
+      );
+    }
+
+    _stage('Режим рынка за всю историю…');
+    final timeline = await _investRegimeTimeline();
+
+    final summary = await _investBacktester(_screenerFor('stocks'))
+        .run(histories, onProgress: onProgress, regime: timeline);
+    final backtest = _lastBacktests['stocks'] = _formatBacktest(summary);
+    _lastFactorEdges['stocks'] = computeFactorEdges(summary.trades);
+    await _persistState();
+    return backtest;
+  }
+
+  /// Последний бэктест дневной стратегии — для блока в разделе.
+  @override
+  BacktestResult? get investBacktest => _lastBacktests['stocks'];
+
+  @override
+  Future<String> optimizeInvestParameters() async {
+    await _ensureLoaded();
+    final shares = await _iss.sharesSnapshot();
+    final liquid = [
+      for (final s in shares)
+        if (s.turnover >= investMinTurnover) s,
+    ]..sort((a, b) => b.turnover.compareTo(a.turnover));
+    final subset = liquid.take(25).toList();
+    final from = DateTime.now().subtract(const Duration(days: _investHistoryDays));
+    final histories = <InstrumentHistory>[];
+    for (final share in subset) {
+      try {
+        final daily = await _iss.shareCandles(share.spec.symbol, from: from);
+        if (daily.length < 260) continue;
+        histories.add(InstrumentHistory(
+          spec: share.spec,
+          hourly: daily,
+          daily: resampleWeeks(daily),
+        ));
+      } on Exception {
+        continue;
+      }
+    }
+    if (histories.isEmpty) {
+      throw const FeatureUnavailableException('История акций не получена.');
+    }
+    final timeline = await _investRegimeTimeline();
+    final outcome = await StrategyOptimizer(backtester: _investBacktester(null))
+        .optimize(
+      histories,
+      onProgress: onProgress,
+      screenerBuilder: (p) => p.buildScreener(timeframeLabel: '1D'),
+      regime: timeline,
+    );
+    if (outcome.improved) {
+      _params['stocks'] = outcome.params;
+    }
+    await _persistState();
+    final pf = outcome.testProfitFactor;
+    return outcome.improved
+        ? 'акции: новые параметры, PF ${pf == null ? '∞' : pf.toStringAsFixed(1).replaceAll('.', ',')} '
+            'на ${outcome.testTrades} сделках вне выборки'
+        : 'акции: дефолт не обыгран — параметры не тронуты';
+  }
+
+  /// Бэктестер дневного контура: те же правила, шаг — день.
+  Backtester _investBacktester(Screener? screener) => Backtester(
+        screener: screener ?? _screenerFor('stocks'),
+        windowBars: 260,
+        orderTtlBars: investOrderTtlBars,
+        maxHoldBars: investMaxHoldBars,
+        cooldownBars: 3,
+      );
+
+  Future<RegimeTimeline> _investRegimeTimeline() async {
+    try {
+      final snapshots = await _iss.fortsSnapshot();
+      FortsSnapshot? mx;
+      for (final s in snapshots) {
+        final name = s.spec.name.toUpperCase();
+        if (!name.startsWith('MIX-') && !name.startsWith('MX-')) continue;
+        if (mx == null || s.turnover > mx.turnover) mx = s;
+      }
+      if (mx == null) return RegimeTimeline.empty;
+      final daily = await _iss.candles(
+        mx.spec.symbol,
+        timeframe: Timeframe.d1,
+        from: DateTime.now().subtract(const Duration(days: _investHistoryDays)),
+        cache: true,
+      );
+      return RegimeTimeline.build(index: daily);
+    } on Exception {
+      return RegimeTimeline.empty;
+    }
+  }
+
+  /// Ночной прогон раздела для фонового контура: пересчёт, если пора, и
+  /// уведомление о сильной идее. Пусто — пересчёт не требовался.
+  @override
+  Future<List<({String title, String body})>> investNightly() async {
+    await _ensureLoaded();
+    await _ensureInvestLoaded();
+    if (!investScanDue(IssClient.mskNow())) return const [];
+    final digest = await fetchInvestDigest(force: true);
+    final top = digest.ideas.isEmpty ? null : digest.ideas.first.signal;
+    if (top == null || top.score < 75) return const [];
+    return [
+      (
+        title: 'Инвест: ${top.symbol} · Лонг · ${top.score}/100',
+        body: 'Вход ${top.entry.toStringAsFixed(top.priceDecimals)} · '
+            'SL ${top.stopLoss.toStringAsFixed(top.priceDecimals)} · '
+            'горизонт до 3 месяцев. Разбор — на вкладке «Инвест».',
+      ),
+    ];
+  }
 
   /// Спецификация инструмента идеи — нужна риск-движку и расчёту объёма.
   ///

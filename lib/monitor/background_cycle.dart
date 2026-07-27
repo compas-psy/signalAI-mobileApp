@@ -30,6 +30,10 @@ abstract interface class MonitorTarget {
     required bool long,
     required double quantity,
   });
+
+  /// Ночной прогон раздела «Инвест»: пересчёт, если пора, и уведомления о
+  /// сильных идеях. Пусто — пересчёт не требовался.
+  Future<List<({String title, String body})>> investNightly();
 }
 
 /// Одно уведомление: заголовок и текст.
@@ -169,6 +173,7 @@ class BackgroundCycle {
       notices.addAll(_newSignals(digest, state));
       notices.addAll(await _positions(state));
       notices.addAll(await _protectPositions(state));
+      notices.addAll(await _investNightly(state));
     } on Object catch (e) {
       // Фон обязан пережить любой отказ: сети может не быть вовсе, а сервис
       // должен дожить до следующего часа и попробовать снова.
@@ -220,6 +225,16 @@ class BackgroundCycle {
       notices.add(signalNotice(signal));
     }
     state._trim(state.notifiedSignals);
+    return notices;
+  }
+
+  /// Ночной пересчёт «Инвеста» — раз в сутки, дедупликация как у сигналов.
+  Future<List<MonitorNotice>> _investNightly(MonitorState state) async {
+    final notices = <MonitorNotice>[];
+    for (final notice in await target.investNightly()) {
+      if (!state.notifiedSignals.add('invest:${notice.title}')) continue;
+      notices.add((title: notice.title, body: notice.body));
+    }
     return notices;
   }
 

@@ -4,6 +4,27 @@ import '../../domain/enums.dart';
 import 'candle_store.dart';
 import 'http_json.dart';
 
+/// Снимок одной акции основной доски: спецификация, цена, оборот, лот.
+class ShareSnapshot {
+  const ShareSnapshot({
+    required this.spec,
+    required this.lastPrice,
+    required this.changePercent,
+    required this.turnover,
+    required this.lotSize,
+  });
+
+  final InstrumentSpec spec;
+  final double lastPrice;
+  final double changePercent;
+
+  /// Оборот за день, ₽ — фильтр ликвидности вселенной «Инвест».
+  final double turnover;
+
+  /// Акций в лоте заявки.
+  final int lotSize;
+}
+
 /// Снимок торгуемого фьючерса из ISS.
 class FortsSnapshot {
   const FortsSnapshot({
@@ -171,6 +192,113 @@ class IssClient {
   /// Постоянное хранилище истории. null — работаем без него, как раньше.
   CandleStore? store;
 
+  static const _sharesPath = 'engines/stock/markets/shares/boards/TQBR';
+
+  /// Снимок всей основной доски акций (TQBR): «весь рынок» раздела «Инвест».
+  ///
+  /// Кэш длиннее фьючерсного: раздел пересчитывается раз в сутки, и обороты
+  /// нужны только для фильтра ликвидности, а не для исполнения.
+  Future<List<ShareSnapshot>> sharesSnapshot({Duration ttl = const Duration(hours: 1)}) async {
+    final cached = _sharesCache;
+    final at = _sharesAt;
+    if (cached != null && at != null && DateTime.now().difference(at) < ttl) {
+      return cached;
+    }
+    final fresh = await _fetchShares();
+    _sharesCache = fresh;
+    _sharesAt = DateTime.now();
+    return fresh;
+  }
+
+  List<ShareSnapshot>? _sharesCache;
+  DateTime? _sharesAt;
+
+  Future<List<ShareSnapshot>> _fetchShares() async {
+    Uri page(int start) => Uri.parse(
+          '$_base/$_sharesPath/securities.json'
+          '?iss.meta=off&iss.only=securities,marketdata'
+          '&securities.columns=SECID,SHORTNAME,MINSTEP,DECIMALS,LOTSIZE,PREVPRICE'
+          '&marketdata.columns=SECID,LAST,VALTODAY'
+          '&limit=$_snapshotPageSize&start=$start',
+        );
+
+    final securities = <Map<String, Object?>>[];
+    final marketDataRows = <Map<String, Object?>>[];
+    final seen = <String>{};
+    for (var start = 0, guard = 0; guard < _maxPages; guard++) {
+      final json = await _http.get(page(start));
+      final securitiesPage = issRows(json, 'securities');
+      final marketDataPage = issRows(json, 'marketdata');
+      if (securitiesPage.isEmpty && marketDataPage.isEmpty) break;
+
+      var fresh = 0;
+      for (final row in securitiesPage) {
+        final secId = row['SECID'] as String?;
+        if (secId == null || !seen.add(secId)) continue;
+        securities.add(row);
+        fresh++;
+      }
+      marketDataRows.addAll(marketDataPage);
+      if (securitiesPage.isEmpty || fresh == 0) break;
+      if (securitiesPage.length < _snapshotPageSize) break;
+      start += securitiesPage.length;
+    }
+
+    final marketData = {
+      for (final row in marketDataRows) row['SECID'] as String? ?? '': row,
+    };
+
+    final result = <ShareSnapshot>[];
+    for (final row in securities) {
+      final secId = row['SECID'] as String?;
+      if (secId == null) continue;
+      final md = marketData[secId];
+      final previous = _toDouble(row['PREVPRICE']);
+      final last = _toDouble(md?['LAST']) ?? previous;
+      final minStep = _toDouble(row['MINSTEP']);
+      if (last == null || last <= 0 || minStep == null || minStep <= 0) continue;
+
+      result.add(ShareSnapshot(
+        spec: InstrumentSpec(
+          id: secId.toLowerCase(),
+          symbol: secId,
+          name: (row['SHORTNAME'] as String?) ?? secId,
+          market: Market.moex,
+          priceDecimals: (_toDouble(row['DECIMALS']) ?? 2).toInt(),
+          // Акция: пункт цены и есть рубль на одну акцию.
+          valuePerPoint: 1,
+          unitMultiplier: 1,
+          unitDecimals: 0,
+          unitName: 'акц.',
+          unitRiskSuffix: 'акцию',
+          tickSize: minStep,
+        ),
+        lastPrice: last,
+        changePercent:
+            previous == null || previous == 0 ? 0 : (last - previous) / previous * 100,
+        turnover: _toDouble(md?['VALTODAY']) ?? 0,
+        lotSize: (_toDouble(row['LOTSIZE']) ?? 1).toInt(),
+      ));
+    }
+    return result;
+  }
+
+  /// Дневные свечи акции с основной доски — инкрементально через хранилище.
+  Future<List<Candle>> shareCandles(String secId, {required DateTime from}) async {
+    const interval = 24; // код дневки у ISS
+    final candleStore = store;
+    if (candleStore == null) {
+      return _fetchCandles(secId, interval, from, path: _sharesPath);
+    }
+    final key = CandleStore.keyFor('stock:$secId', '$interval');
+    final known = await candleStore.load(key);
+    final since = candleStore.incrementalStart(known, from);
+    final fresh =
+        await _fetchCandles(secId, interval, since ?? from, path: _sharesPath);
+    final merged = await candleStore.merge(key, fresh, coveredFrom: from);
+    return [for (final c in merged) if (!c.time.isBefore(from)) c];
+  }
+
   /// Свечи по инструменту.
   ///
   /// Код интервала у ISS — не всегда минуты: день кодируется числом 24, а не
@@ -200,9 +328,14 @@ class IssClient {
     return [for (final c in merged) if (!c.time.isBefore(from)) c];
   }
 
-  Future<List<Candle>> _fetchCandles(String secId, int interval, DateTime from) async {
+  Future<List<Candle>> _fetchCandles(
+    String secId,
+    int interval,
+    DateTime from, {
+    String path = _fortsPath,
+  }) async {
     Uri page(int start) => Uri.parse(
-          '$_base/$_fortsPath/securities/$secId/candles.json'
+          '$_base/$path/securities/$secId/candles.json'
           '?iss.meta=off&iss.only=candles'
           '&interval=$interval&from=${_date(from)}&start=$start',
         );
