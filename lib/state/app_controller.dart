@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import '../data/api/api_client.dart';
 import '../data/broker/tinvest_broker.dart';
 import '../data/local_analysis_repository.dart';
+import '../data/market/iss_client.dart';
 import '../data/native_bridge.dart';
 import '../data/ledger/capital_desk.dart';
 import '../data/repository.dart';
@@ -606,6 +607,7 @@ class AppController extends ChangeNotifier {
   double? _optionVolatility;
   bool _optionsLoading = false;
   String? _optionsError;
+  OptionsChainResult? _optionsProbe;
 
   String get optionAsset => _optionAsset;
   List<OptionContract> get optionChain => _optionChain;
@@ -614,6 +616,31 @@ class AppController extends ChangeNotifier {
   double? get optionVolatility => _optionVolatility;
   bool get optionsLoading => _optionsLoading;
   String? get optionsError => _optionsError;
+
+  /// Протокол последнего запроса цепочки: чем спрашивали и что пришло.
+  OptionsChainResult? get optionsProbe => _optionsProbe;
+
+  /// Почему цепочки нет — по протоколу, а не общими словами.
+  ///
+  /// «Цепочки нет» не говорит ничего и не даёт что делать дальше. Строка
+  /// ниже говорит, каким путём спрашивали, сколько ушло запросов и что
+  /// ответила биржа.
+  String? get optionsDiagnosis {
+    if (_optionChain.isNotEmpty) return null;
+    final probe = _optionsProbe;
+    if (probe == null) return null;
+    final failure = probe.failure;
+    if (failure != null) return 'биржа не ответила: $failure';
+    final columns = probe.reports
+        .expand((r) => r.blocks.entries)
+        .where((e) => e.value.present)
+        .map((e) => '${e.key}: ${e.value.columns.length} колонок')
+        .toSet()
+        .join(' · ');
+    return 'путь «${probe.note}», запросов ${probe.requests}, '
+        'строк ${probe.reports.fold<int>(0, (s, r) => s + r.rows)}'
+        '${columns.isEmpty ? '' : ' · $columns'}';
+  }
 
   /// Читает цепочку опционов и собирает конструкции с ограниченным риском.
   Future<void> loadOptionChain({String? asset}) async {
@@ -630,9 +657,10 @@ class AppController extends ChangeNotifier {
     notifyListeners();
 
     try {
-      final chain = await repository.optionChain(_optionAsset);
+      final (chain, probe) = await repository.optionChainProbe(_optionAsset);
       final futures = await repository.underlyingPrice(_optionAsset);
       _optionChain = chain;
+      _optionsProbe = probe;
       _optionFuturesPrice = futures;
 
       if (chain.isEmpty || futures == null) {

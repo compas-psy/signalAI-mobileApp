@@ -11,6 +11,7 @@ import '../../theme/tokens.dart';
 import '../../theme/typography.dart';
 import '../widgets/common.dart';
 import '../widgets/vector_icon.dart';
+import 'raw_probe_screen.dart';
 
 /// Диагностика данных: живой прогон обоих источников с вердиктами.
 ///
@@ -244,48 +245,6 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
       );
     });
 
-    await check('MOEX ISS: цепочка опционов', () async {
-      // Единственная проверка, которую нельзя было сделать при разработке:
-      // из среды сборки доступа к MOEX нет, а состав колонок опционной
-      // выдачи биржа меняет. Здесь видно, какие поля реально пришли.
-      const asset = 'SI';
-      final chain = await iss.optionsChain(asset);
-      if (chain.isEmpty) {
-        return const _CheckResult(
-          name: 'MOEX ISS: цепочка опционов',
-          ok: false,
-          details: [
-            'по SI не пришло ни одного контракта',
-            'выходной, нет серии либо изменился состав выдачи ISS',
-          ],
-        );
-      }
-      final withPrice = chain.where((c) => (c.last ?? c.theoretical ?? 0) > 0).length;
-      final withIv = chain.where((c) => (c.impliedVolatility ?? 0) > 0).length;
-      final withOi = chain.where((c) => c.openInterest > 0).length;
-      final strikes = {for (final c in chain) c.strike}.length;
-      final expiries = {for (final c in chain) c.expiration}.length;
-
-      return _CheckResult(
-        name: 'MOEX ISS: цепочка опционов',
-        // Цена обязательна: без неё конструкцию не собрать. IV и открытый
-        // интерес желательны — их отсутствие ухудшает оценку, но не ломает.
-        ok: withPrice > 0 && strikes > 3,
-        details: [
-          'контрактов по $asset: ${chain.length}',
-          'страйков: $strikes, серий: $expiries',
-          'с ценой: $withPrice',
-          withIv > 0
-              ? 'с волатильностью биржи: $withIv'
-              : 'ВОЛАТИЛЬНОСТЬ НЕ ПРИШЛА — считаем сами из цены',
-          withOi > 0
-              ? 'с открытым интересом: $withOi'
-              : 'ОТКРЫТЫЙ ИНТЕРЕС НЕ ПРИШЁЛ — ликвидность не проверить',
-          'пример: ${chain.first.secId} страйк ${chain.first.strike}',
-        ],
-      );
-    });
-
     await check('Bybit: тикеры и фандинг', () async {
       final tickers = await bybit.tickers(symbols: const ['BTCUSDT']);
       final btc = tickers.isEmpty ? null : tickers.first;
@@ -352,6 +311,72 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
           threw
               ? 'Bybit честно отказал в 10-минутках (ArgumentError) — тихой подмены нет'
               : 'ОШИБКА: Bybit отдал 10-минутки, которых у него нет',
+        ],
+      );
+    });
+
+    // Цепочка опционов идёт последней сознательно: доска на порядок длиннее
+    // остальных выдач, и раньше экран стоял на ней, не доходя до следующих
+    // строк. Теперь всё остальное уже показано, а этот прогон ещё и печатает
+    // протокол запроса — что именно спрашивали и что пришло.
+    await check('MOEX ISS: цепочка опционов', () async {
+      const asset = 'SI';
+      final probe = await iss.optionsChainProbe(
+        asset,
+        ttl: Duration.zero,
+        budget: const Duration(seconds: 20),
+      );
+      final chain = probe.rows;
+      final protocol = [
+        'путь: ${probe.note}, запросов ${probe.requests}',
+        for (final report in probe.reports.take(2))
+          report.ok
+              ? '${report.url.path}: строк ${report.rows} '
+                  'за ${report.elapsed.inMilliseconds} мс'
+              : 'ОШИБКА ${report.url.path}: ${report.error}',
+        for (final entry in (probe.reports.isEmpty
+                ? const <String, IssBlockShape>{}
+                : probe.reports.first.blocks)
+            .entries)
+          entry.value.present
+              ? '${entry.key}: ${entry.value.columns.join(', ')}'
+              : 'блока ${entry.key} в ответе нет',
+      ];
+
+      if (chain.isEmpty) {
+        return _CheckResult(
+          name: 'MOEX ISS: цепочка опционов',
+          ok: false,
+          details: [
+            'по $asset не пришло ни одного контракта',
+            ...protocol,
+            'откройте «Сырой ответ биржи» — там видно, что отдаёт ISS',
+          ],
+        );
+      }
+      final withPrice = chain.where((c) => (c.last ?? c.theoretical ?? 0) > 0).length;
+      final withIv = chain.where((c) => (c.impliedVolatility ?? 0) > 0).length;
+      final withOi = chain.where((c) => c.openInterest > 0).length;
+      final strikes = {for (final c in chain) c.strike}.length;
+      final expiries = {for (final c in chain) c.expiration}.length;
+
+      return _CheckResult(
+        name: 'MOEX ISS: цепочка опционов',
+        // Цена обязательна: без неё конструкцию не собрать. IV и открытый
+        // интерес желательны — их отсутствие ухудшает оценку, но не ломает.
+        ok: withPrice > 0 && strikes > 3,
+        details: [
+          'контрактов по $asset: ${chain.length}',
+          'страйков: $strikes, серий: $expiries',
+          'с ценой: $withPrice',
+          withIv > 0
+              ? 'с волатильностью биржи: $withIv'
+              : 'ВОЛАТИЛЬНОСТЬ НЕ ПРИШЛА — считаем сами из цены',
+          withOi > 0
+              ? 'с открытым интересом: $withOi'
+              : 'ОТКРЫТЫЙ ИНТЕРЕС НЕ ПРИШЁЛ — ликвидность не проверить',
+          'пример: ${chain.first.secId} страйк ${chain.first.strike}',
+          ...protocol,
         ],
       );
     });
@@ -429,6 +454,18 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
                     'соответствует реальности бирж, и скринеру можно верить '
                     'на уровне данных.',
                     style: T.body(11, color: C.muted, height: 1.5),
+                  ),
+                  const SizedBox(height: 10),
+                  ActionButton(
+                    label: 'Сырой ответ биржи',
+                    dense: true,
+                    onTap: () => Navigator.of(context).push(
+                      PageRouteBuilder<void>(
+                        pageBuilder: (_, _, _) => const RawProbeScreen(),
+                        transitionsBuilder: (_, animation, _, child) =>
+                            FadeTransition(opacity: animation, child: child),
+                      ),
+                    ),
                   ),
                   const SizedBox(height: 12),
                   for (final result in _results) ...[

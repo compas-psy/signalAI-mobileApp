@@ -29,6 +29,23 @@ class FakeHttp implements HttpJson {
   void close() {}
 }
 
+/// HTTP, который всегда отказывает: отказ сети — это не «данных нет».
+class ThrowingHttp implements HttpJson {
+  ThrowingHttp(this.message);
+
+  final String message;
+
+  @override
+  Duration get timeout => const Duration(seconds: 1);
+
+  @override
+  Future<Map<String, dynamic>> get(Uri uri, {int attempts = 3}) async =>
+      throw MarketDataException(message);
+
+  @override
+  void close() {}
+}
+
 Map<String, dynamic> issCandles(List<List<Object>> rows) => {
       'candles': {
         'columns': ['open', 'close', 'high', 'low', 'value', 'volume', 'begin', 'end'],
@@ -411,4 +428,123 @@ void main() {
       expect(snapshot.ageAt(DateTime.utc(2025, 7, 15, 10, 0)), isNull);
     });
   });
+
+  group('IssClient.optionsChain', () {
+    test('первый запрос идёт с фильтром по базовому активу', () async {
+      // Доска опционов MOEX — десятки тысяч контрактов. Полный обход по сто
+      // строк до нужного актива не доходит, а сорок последовательных запросов
+      // вешают экран. Ровно это и увидел владелец: раздел пустой, диагностика
+      // стоит на этой же строке.
+      final http = FakeHttp([issOptions(const [])]);
+      await IssClient(http: http).optionsChain('SI', ttl: Duration.zero);
+
+      expect(http.requested.first.query, contains('assetcode=SI'));
+    });
+
+    test('фильтрованный ответ разбирается без обхода всей доски', () async {
+      final http = FakeHttp([
+        issOptions([
+          issOptionRow('SI95000BC5', 'SI', 95000, 'C'),
+          issOptionRow('SI95000BX5', 'SI', 95000, 'P'),
+        ]),
+      ]);
+      final result = await IssClient(http: http)
+          .optionsChainProbe('SI', ttl: Duration.zero);
+
+      expect(result.rows.length, 2);
+      expect(http.requested.length, 1, reason: 'одна страница — один запрос');
+      expect(result.note, contains('фильтр'));
+    });
+
+    test('если фильтр не поддержан, идёт обход доски', () async {
+      // Первый ответ пуст — биржа фильтр проигнорировала или не знает его.
+      // Молча вернуть «цепочки нет» нельзя: данные на доске есть.
+      final http = FakeHttp([
+        issOptions(const []),
+        issOptions([issOptionRow('SI95000BC5', 'SI', 95000, 'C')]),
+      ]);
+      final result = await IssClient(http: http)
+          .optionsChainProbe('SI', ttl: Duration.zero);
+
+      expect(result.rows.length, 1);
+      expect(result.note, contains('обход'));
+      expect(http.requested.length, 2);
+      expect(http.requested.last.query, isNot(contains('assetcode')));
+    });
+
+    test('чужой актив в цепочку не попадает', () async {
+      final http = FakeHttp([
+        issOptions([
+          issOptionRow('SI95000BC5', 'SI', 95000, 'C'),
+          issOptionRow('RI11000BC5', 'RI', 110000, 'C'),
+        ]),
+      ]);
+      final rows = await IssClient(http: http).optionsChain('SI', ttl: Duration.zero);
+
+      expect(rows.length, 1);
+      expect(rows.single.assetCode, 'SI');
+    });
+
+    test('пустая выдача не запирает раздел кэшем', () async {
+      // Кэш пустого результата означал бы: одна неудачная попытка — и десять
+      // минут раздел не работает, сколько кнопку ни жми.
+      final http = FakeHttp([
+        issOptions(const []),
+        issOptions(const []),
+        issOptions([issOptionRow('SI95000BC5', 'SI', 95000, 'C')]),
+      ]);
+      final client = IssClient(http: http);
+
+      expect(await client.optionsChain('SI'), isEmpty);
+      expect(await client.optionsChain('SI'), isNotEmpty,
+          reason: 'повторный запрос обязан снова пойти на биржу');
+    });
+
+    test('протокол запроса называет колонки, которые пришли', () async {
+      // То, чего не хватило при разработке: состав выдачи ISS меняется, а
+      // проверить его из среды сборки нечем.
+      final http = FakeHttp([issOptions(const [])]);
+      final result = await IssClient(http: http)
+          .optionsChainProbe('SI', ttl: Duration.zero);
+
+      final shape = result.reports.first.blocks['securities']!;
+      expect(shape.present, isTrue);
+      expect(shape.columns, contains('STRIKE'));
+      expect(shape.columns, contains('ASSETCODE'));
+    });
+
+    test('отказ биржи виден в протоколе, а не превращается в «данных нет»',
+        () async {
+      final result = await IssClient(http: ThrowingHttp('сеть недоступна'))
+          .optionsChainProbe('SI', ttl: Duration.zero);
+
+      expect(result.rows, isEmpty);
+      expect(result.failure, contains('сеть недоступна'));
+    });
+  });
 }
+
+/// Ответ доски опционов: колонки те же, что отдаёт ISS.
+Map<String, dynamic> issOptions(List<List<Object?>> securities) => {
+      'securities': {
+        'columns': [
+          'SECID',
+          'ASSETCODE',
+          'STRIKE',
+          'OPTIONTYPE',
+          'LASTTRADEDATE',
+          'MINSTEP',
+          'DECIMALS',
+        ],
+        'data': securities,
+      },
+      'marketdata': {
+        'columns': ['SECID', 'LAST', 'THEORPRICE', 'IMPLIEDVOLATILITY'],
+        'data': [
+          for (final row in securities) [row[0], 500, 505, 22.5],
+        ],
+      },
+    };
+
+List<Object?> issOptionRow(String secId, String asset, double strike, String type) =>
+    [secId, asset, strike, type, '2026-09-17', 1, 0];

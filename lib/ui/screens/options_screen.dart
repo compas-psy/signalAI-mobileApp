@@ -10,6 +10,7 @@ import '../../theme/tokens.dart';
 import '../../theme/typography.dart';
 import '../widgets/common.dart';
 import '../widgets/segmented.dart';
+import 'raw_probe_screen.dart';
 
 /// Раздел «Опционы»: цепочка FORTS, конструкции и инструкция к исполнению.
 ///
@@ -68,13 +69,20 @@ class _OptionsScreenState extends State<OptionsScreen> {
           _Note(
             title: 'Цепочка не пришла',
             text: controller.optionsError!,
+            action: _rawProbe(context, assets[_asset.clamp(0, assets.length - 1)]),
           )
         else if (chain.isEmpty)
-          const _Note(
+          _Note(
             title: 'Цепочки нет',
-            text: 'Биржа не вернула опционы по этому активу. Это может быть '
-                'выходной, отсутствие серии или изменение состава выдачи ISS — '
-                'проверить можно в «Контроль → Диагностика данных».',
+            // «Цепочки нет» само по себе не говорит ничего и не даёт, что
+            // делать дальше. Ниже — протокол запроса: чем спрашивали, сколько
+            // ушло обращений и что ответила биржа.
+            text: 'Биржа не вернула опционы по этому активу.'
+                '${controller.optionsDiagnosis == null ? '' : '\n\n${controller.optionsDiagnosis}'}'
+                '\n\nОткройте сырой ответ: там видно имена колонок и первые '
+                'строки — по ним понятно, изменилась схема выдачи или серии '
+                'действительно нет.',
+            action: _rawProbe(context, assets[_asset.clamp(0, assets.length - 1)]),
           )
         else ...[
           _ChainCard(controller: controller),
@@ -105,6 +113,20 @@ class _OptionsScreenState extends State<OptionsScreen> {
       ],
     );
   }
+
+  /// Кнопка «Сырой ответ биржи» прямо из раздела: причина смотрится там же,
+  /// где обнаружилась, а не через два экрана настроек.
+  static Widget _rawProbe(BuildContext context, String asset) => ActionButton(
+        label: 'Открыть сырой ответ биржи',
+        dense: true,
+        onTap: () => Navigator.of(context).push(
+          PageRouteBuilder<void>(
+            pageBuilder: (_, _, _) => RawProbeScreen(assetCode: asset),
+            transitionsBuilder: (_, animation, _, child) =>
+                FadeTransition(opacity: animation, child: child),
+          ),
+        ),
+      );
 
   static String _short(StructureKind kind) => switch (kind) {
         StructureKind.bullCallSpread => 'Колл-спред',
@@ -557,10 +579,13 @@ class _PayoffPainter extends CustomPainter {
 }
 
 class _Note extends StatelessWidget {
-  const _Note({required this.title, required this.text});
+  const _Note({required this.title, required this.text, this.action});
 
   final String title;
   final String text;
+
+  /// Что можно сделать прямо отсюда. Состояние без выхода — тупик.
+  final Widget? action;
 
   @override
   Widget build(BuildContext context) => SectionCard(
@@ -570,6 +595,10 @@ class _Note extends StatelessWidget {
             Text(title, style: T.jost(16)),
             const SizedBox(height: 6),
             Text(text, style: T.body(11.5, color: C.muted, height: 1.5)),
+            if (action != null) ...[
+              const SizedBox(height: 12),
+              action!,
+            ],
           ],
         ),
       );

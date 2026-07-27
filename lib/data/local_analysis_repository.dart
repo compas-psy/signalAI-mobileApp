@@ -565,10 +565,21 @@ class LocalAnalysisRepository
   ///
   /// Данные публичные (ISS), поэтому раздел работает и без торговых ключей:
   /// анализировать конструкцию можно, не подключая брокера.
-  Future<List<OptionContract>> optionChain(String assetCode) async {
-    final rows = await _iss.optionsChain(assetCode);
-    return [
-      for (final row in rows)
+  Future<List<OptionContract>> optionChain(String assetCode) async =>
+      (await optionChainProbe(assetCode)).$1;
+
+  /// Цепочка вместе с протоколом запроса — для раздела и диагностики.
+  ///
+  /// Протокол показывается на экране, когда цепочка не пришла: «цепочки нет»
+  /// не объясняет ничего, а «фильтр по активу, 1 запрос, 0 строк, колонки
+  /// такие-то» объясняет всё.
+  Future<(List<OptionContract>, OptionsChainResult)> optionChainProbe(
+    String assetCode,
+  ) async {
+    final result = await _iss.optionsChainProbe(assetCode);
+    return (
+      [
+      for (final row in result.rows)
         OptionContract(
           secId: row.secId,
           assetCode: row.assetCode,
@@ -585,8 +596,13 @@ class LocalAnalysisRepository
           priceStep: row.priceStep,
           priceDecimals: row.priceDecimals,
         ),
-    ];
+      ],
+      result,
+    );
   }
+
+  /// Сырой ответ биржи по адресу — для экрана диагностики.
+  Future<IssRawProbe> probeIss(Uri url) => _iss.probeUrl(url);
 
   /// Цена ближайшего фьючерса на этот актив — база для расчёта конструкций.
   Future<double?> underlyingPrice(String assetCode) async {

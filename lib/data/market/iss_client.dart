@@ -302,48 +302,65 @@ class IssClient {
   Future<List<OptionRow>> optionsChain(
     String assetCode, {
     Duration ttl = const Duration(minutes: 10),
+  }) async =>
+      (await optionsChainProbe(assetCode, ttl: ttl)).rows;
+
+  /// То же, что [optionsChain], но с протоколом запроса.
+  ///
+  /// Протокол нужен не для красоты: состав выдачи ISS меняется, а проверить
+  /// его из среды сборки нечем — доступа к бирже там нет. Отчёт показывается
+  /// на экране «Сырой ответ биржи», и один скриншот отвечает на вопрос
+  /// «что именно пришло» точнее любых догадок.
+  Future<OptionsChainResult> optionsChainProbe(
+    String assetCode, {
+    Duration ttl = const Duration(minutes: 10),
+    Duration budget = const Duration(seconds: 25),
   }) async {
     final key = assetCode.toUpperCase();
     final cached = _optionsCache[key];
     final at = _optionsAt[key];
     if (cached != null && at != null && DateTime.now().difference(at) < ttl) {
-      return cached;
+      return OptionsChainResult(
+        rows: cached,
+        reports: const [],
+        note: 'из кэша',
+      );
     }
 
-    Uri page(int start) => Uri.parse(
-          '$_base/$_optionsPath/securities.json'
-          '?iss.meta=off&iss.only=securities,marketdata'
-          '&limit=$_snapshotPageSize&start=$start',
-        );
+    final reports = <IssQueryReport>[];
+    final deadline = DateTime.now().add(budget);
 
-    final securities = <Map<String, Object?>>[];
-    final marketRows = <Map<String, Object?>>[];
-    final seen = <String>{};
-    for (var start = 0, guard = 0; guard < _maxPages; guard++) {
-      final json = await _http.get(page(start));
-      final securitiesPage = issRows(json, 'securities');
-      final marketPage = issRows(json, 'marketdata');
-      if (securitiesPage.isEmpty && marketPage.isEmpty) break;
+    // Попытка первая — с фильтром по базовому активу. Доска опционов MOEX
+    // содержит десятки тысяч контрактов; полный обход по сто строк до нужного
+    // актива не доходит никогда, а сорок последовательных запросов вешают
+    // экран на минуты. Ровно это и увидел владелец.
+    var harvest = await _optionsPages(
+      key,
+      filtered: true,
+      deadline: deadline,
+      reports: reports,
+    );
+    var note = 'фильтр по активу';
 
-      var fresh = 0;
-      for (final row in securitiesPage) {
-        final secId = row['SECID'] as String?;
-        if (secId == null || !seen.add(secId)) continue;
-        securities.add(row);
-        fresh++;
-      }
-      marketRows.addAll(marketPage);
-      if (securitiesPage.isEmpty || fresh == 0) break;
-      if (securitiesPage.length < _snapshotPageSize) break;
-      start += securitiesPage.length;
+    // Если биржа фильтр не поддержала — честный полный обход, но с ранним
+    // выходом: контракты одного актива идут подряд, и после того как они
+    // кончились, читать остаток доски незачем.
+    if (harvest.securities.isEmpty && DateTime.now().isBefore(deadline)) {
+      harvest = await _optionsPages(
+        key,
+        filtered: false,
+        deadline: deadline,
+        reports: reports,
+      );
+      note = 'фильтр не поддержан, обход доски';
     }
 
     final market = {
-      for (final row in marketRows) row['SECID'] as String? ?? '': row,
+      for (final row in harvest.marketRows) row['SECID'] as String? ?? '': row,
     };
 
     final result = <OptionRow>[];
-    for (final row in securities) {
+    for (final row in harvest.securities) {
       final secId = row['SECID'] as String?;
       final asset = (row['ASSETCODE'] as String? ?? '').toUpperCase();
       if (secId == null || asset != key) continue;
@@ -372,9 +389,162 @@ class IssClient {
       ));
     }
 
-    _optionsCache[key] = result;
-    _optionsAt[key] = DateTime.now();
-    return result;
+    // Пустой результат в кэш не кладём: иначе одна неудача запирает раздел
+    // на десять минут.
+    if (result.isNotEmpty) {
+      _optionsCache[key] = result;
+      _optionsAt[key] = DateTime.now();
+    }
+    return OptionsChainResult(rows: result, reports: reports, note: note);
+  }
+
+  /// Обход страниц доски опционов. [filtered] — добавлять ли `assetcode`.
+  Future<_OptionsHarvest> _optionsPages(
+    String assetCode, {
+    required bool filtered,
+    required DateTime deadline,
+    required List<IssQueryReport> reports,
+  }) async {
+    Uri page(int start) => Uri.parse(
+          '$_base/$_optionsPath/securities.json'
+          '?iss.meta=off&iss.only=securities,marketdata'
+          '${filtered ? '&assetcode=$assetCode' : ''}'
+          '&limit=$_snapshotPageSize&start=$start',
+        );
+
+    final securities = <Map<String, Object?>>[];
+    final marketRows = <Map<String, Object?>>[];
+    final seen = <String>{};
+    var matched = 0;
+
+    for (var start = 0, guard = 0; guard < _optionsMaxPages; guard++) {
+      if (DateTime.now().isAfter(deadline)) {
+        reports.add(IssQueryReport.aborted(
+          page(start),
+          'бюджет времени исчерпан: страниц пройдено $guard',
+        ));
+        break;
+      }
+      final uri = page(start);
+      final began = DateTime.now();
+      final Map<String, dynamic> json;
+      try {
+        json = await _http.get(uri);
+      } on MarketDataException catch (e) {
+        reports.add(IssQueryReport.failed(uri, e.message,
+            elapsed: DateTime.now().difference(began)));
+        break;
+      }
+      final securitiesPage = issRows(json, 'securities');
+      final marketPage = issRows(json, 'marketdata');
+      reports.add(IssQueryReport(
+        url: uri,
+        elapsed: DateTime.now().difference(began),
+        blocks: {
+          'securities': _blockShape(json, 'securities'),
+          'marketdata': _blockShape(json, 'marketdata'),
+        },
+      ));
+      if (securitiesPage.isEmpty && marketPage.isEmpty) break;
+
+      var fresh = 0;
+      var pageMatched = 0;
+      for (final row in securitiesPage) {
+        final secId = row['SECID'] as String?;
+        if (secId == null || !seen.add(secId)) continue;
+        securities.add(row);
+        fresh++;
+        if ((row['ASSETCODE'] as String? ?? '').toUpperCase() == assetCode) {
+          pageMatched++;
+        }
+      }
+      marketRows.addAll(marketPage);
+      matched += pageMatched;
+
+      // Ранний выход при полном обходе: нужный актив уже прошли.
+      if (!filtered && matched > 0 && pageMatched == 0) break;
+      if (fresh == 0) break;
+      if (securitiesPage.length < _snapshotPageSize) break;
+      start += securitiesPage.length;
+    }
+
+    return _OptionsHarvest(securities, marketRows);
+  }
+
+  /// Сырое обращение по произвольному адресу ISS — для экрана диагностики.
+  ///
+  /// Нужен потому, что состав выдачи биржи проверить из среды сборки нечем:
+  /// доступа к MOEX там нет. Владелец открывает адрес, делает скриншот — и
+  /// схема известна точно, вместо переписки догадками.
+  Future<IssRawProbe> probeUrl(Uri url, {int sampleRows = 3}) async {
+    final began = DateTime.now();
+    try {
+      final json = await _http.get(url, attempts: 1);
+      final blocks = <String, IssBlockShape>{};
+      final samples = <String, List<Map<String, Object?>>>{};
+      for (final entry in json.entries) {
+        if (entry.value is! Map<String, dynamic>) continue;
+        blocks[entry.key] = _blockShape(json, entry.key);
+        samples[entry.key] = issRows(json, entry.key).take(sampleRows).toList();
+      }
+      return IssRawProbe(
+        report: IssQueryReport(
+          url: url,
+          elapsed: DateTime.now().difference(began),
+          blocks: blocks,
+        ),
+        samples: samples,
+      );
+    } on MarketDataException catch (e) {
+      return IssRawProbe(
+        report: IssQueryReport.failed(url, e.message,
+            elapsed: DateTime.now().difference(began)),
+        samples: const {},
+      );
+    }
+  }
+
+  /// Адреса, по которым стоит спрашивать биржу об опционах.
+  ///
+  /// Их несколько, потому что у ISS два разных представления доски, и какое
+  /// из них живо сегодня — вопрос к бирже, а не ко мне.
+  static List<(String, Uri)> optionProbeUrls(String assetCode) => [
+        (
+          'Доска опционов с фильтром по активу',
+          Uri.parse('$_base/$_optionsPath/securities.json'
+              '?iss.meta=off&iss.only=securities,marketdata'
+              '&assetcode=$assetCode&limit=$_snapshotPageSize'),
+        ),
+        (
+          'Доска опционов без фильтра, первая страница',
+          Uri.parse('$_base/$_optionsPath/securities.json'
+              '?iss.meta=off&iss.only=securities,marketdata'
+              '&limit=$_snapshotPageSize'),
+        ),
+        (
+          'Опционная доска статистики',
+          Uri.parse('$_base/statistics/engines/futures/markets/options/assets/'
+              '$assetCode/optionboard.json?iss.meta=off'),
+        ),
+        (
+          'Базовый фьючерс',
+          Uri.parse('$_base/engines/futures/markets/forts/securities.json'
+              '?iss.meta=off&iss.only=securities,marketdata'
+              '&assetcode=$assetCode&limit=$_snapshotPageSize'),
+        ),
+      ];
+
+  /// Имена колонок и число строк блока — для отчёта о запросе.
+  static IssBlockShape _blockShape(Map<String, dynamic> json, String block) {
+    final section = json[block];
+    if (section is! Map<String, dynamic>) {
+      return const IssBlockShape(columns: [], rows: 0, present: false);
+    }
+    return IssBlockShape(
+      columns: (section['columns'] as List<dynamic>? ?? const []).cast<String>(),
+      rows: (section['data'] as List<dynamic>? ?? const []).length,
+      present: true,
+    );
   }
 
   final Map<String, List<OptionRow>> _optionsCache = {};
@@ -560,6 +730,13 @@ class IssClient {
   /// Предел страниц — страховка от зацикливания, если ISS проигнорирует `start`.
   static const _maxPages = 40;
 
+  /// Предел страниц доски опционов при полном обходе.
+  ///
+  /// Больше, чем у остальных снимков: доска опционов на порядок длиннее
+  /// доски фьючерсов. Работает вместе с ранним выходом и бюджетом времени —
+  /// без них этот предел означал бы «сто запросов подряд».
+  static const _optionsMaxPages = 120;
+
   /// Сколько строк просим на страницу снимка. Явное значение позволяет
   /// понять, что страница последняя, не делая лишний запрос.
   static const _snapshotPageSize = 100;
@@ -596,6 +773,93 @@ class IssClient {
   void close() => _http.close();
 }
 
+
+/// Форма одного блока ответа ISS: какие колонки пришли и сколько строк.
+class IssBlockShape {
+  const IssBlockShape({
+    required this.columns,
+    required this.rows,
+    required this.present,
+  });
+
+  final List<String> columns;
+  final int rows;
+
+  /// Был ли блок в ответе вообще. Отсутствие блока и пустой блок — разные
+  /// диагнозы: первое значит «не тот адрес», второе — «нет данных».
+  final bool present;
+}
+
+/// Протокол одного обращения к ISS.
+class IssQueryReport {
+  const IssQueryReport({
+    required this.url,
+    required this.elapsed,
+    this.blocks = const {},
+    this.error,
+  });
+
+  factory IssQueryReport.failed(Uri url, String error, {required Duration elapsed}) =>
+      IssQueryReport(url: url, elapsed: elapsed, error: error);
+
+  factory IssQueryReport.aborted(Uri url, String reason) =>
+      IssQueryReport(url: url, elapsed: Duration.zero, error: reason);
+
+  final Uri url;
+  final Duration elapsed;
+  final Map<String, IssBlockShape> blocks;
+
+  /// Причина, по которой ответа нет. null — ответ получен.
+  final String? error;
+
+  bool get ok => error == null;
+
+  int get rows =>
+      blocks.values.fold(0, (sum, block) => sum + block.rows);
+}
+
+/// Сырой ответ ISS: протокол плюс первые строки каждого блока как есть.
+class IssRawProbe {
+  const IssRawProbe({required this.report, required this.samples});
+
+  final IssQueryReport report;
+
+  /// Первые строки блоков — по ним видно и колонки, и значения.
+  final Map<String, List<Map<String, Object?>>> samples;
+}
+
+/// Цепочка вместе с протоколом запросов, которыми она получена.
+class OptionsChainResult {
+  const OptionsChainResult({
+    required this.rows,
+    required this.reports,
+    required this.note,
+  });
+
+  final List<OptionRow> rows;
+  final List<IssQueryReport> reports;
+
+  /// Каким путём получено: фильтром по активу, обходом доски или из кэша.
+  final String note;
+
+  /// Сколько запросов ушло на бирже.
+  int get requests => reports.length;
+
+  String? get failure {
+    for (final report in reports) {
+      if (!report.ok) return report.error;
+    }
+    return null;
+  }
+}
+
+/// Собранные страницы доски опционов.
+class _OptionsHarvest {
+  const _OptionsHarvest(this.securities, this.marketRows);
+
+  final List<Map<String, Object?>> securities;
+  final List<Map<String, Object?>> marketRows;
+}
 
 /// Строка цепочки опционов, как её отдал ISS.
 ///
