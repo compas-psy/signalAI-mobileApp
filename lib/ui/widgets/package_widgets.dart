@@ -10,10 +10,14 @@ import 'common.dart';
 /// Цвет класса активов. Один на всё приложение: полоса состава на карточке и
 /// та же полоса в разборе обязаны означать одно и то же.
 Color classColor(AssetClass assetClass) => switch (assetClass) {
-      AssetClass.bonds => C.info,
+      AssetClass.ofz => C.info,
+      AssetClass.corpBonds => C.infoBorder,
+      AssetClass.floaters => C.dim,
+      AssetClass.gold => C.warning,
+      AssetClass.fxBonds => C.tactical,
+      AssetClass.dividendStocks => C.greenSoft,
       AssetClass.stocks => C.green,
       AssetClass.moneyMarket => C.muted,
-      AssetClass.futures => C.tactical,
       AssetClass.crypto => C.accent,
     };
 

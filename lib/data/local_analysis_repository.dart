@@ -541,11 +541,16 @@ class LocalAnalysisRepository
       if (series.containsKey(asset)) continue;
       try {
         final candles = switch (asset) {
-          AssetClass.stocks || AssetClass.futures =>
-            await _iss.indexCandles('IMOEX', from: from),
+          AssetClass.stocks || AssetClass.dividendStocks =>
+            await _iss.indexCandles(asset.benchmark, from: from),
           // Индекс полной доходности ОФЗ: он учитывает купоны, а «просто цена
           // облигации» занижает результат класса на всю купонную доходность.
-          AssetClass.bonds => await _iss.indexCandles('RGBITR', from: from),
+          AssetClass.ofz || AssetClass.corpBonds || AssetClass.gold =>
+            await _iss.indexCandles(asset.benchmark, from: from),
+          // У флоатеров и валютных облигаций индекса полной доходности нет:
+          // класс попадёт в «нет истории», и симуляция скажет об этом, а не
+          // подставит похожий ряд.
+          AssetClass.floaters || AssetClass.fxBonds => const <Candle>[],
           AssetClass.moneyMarket => await _iss.shareCandles('LQDT', from: from),
           AssetClass.crypto =>
             await _bybit.candles('BTCUSDT', timeframe: Timeframe.d1, limit: 1000),

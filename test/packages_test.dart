@@ -58,11 +58,64 @@ void main() {
           .where((t) =>
               t.assetClass == AssetClass.stocks ||
               t.assetClass == AssetClass.crypto ||
-              t.assetClass == AssetClass.futures)
+              t.assetClass == AssetClass.dividendStocks)
           .fold(0.0, (sum, t) => sum + t.weightPercent);
 
       expect(risky(plans['conservative']!), lessThan(risky(plans['balanced']!)));
       expect(risky(plans['balanced']!), lessThan(risky(plans['aggressive']!)));
+    });
+
+    test('фьючерса как класса активов нет', () {
+      // Фьючерс на индекс даёт ту же экспозицию, что и фонд акций: 65% акций
+      // плюс 10% фьючерса — это 75% беты одного индекса, подписанные как
+      // диверсификация. Плечо и хедж — инструмент тактики, а не доля пакета.
+      for (final assetClass in AssetClass.values) {
+        expect(assetClass.name, isNot('futures'));
+      }
+    });
+
+    test('облигации разложены на разные источники риска', () {
+      // Один класс «облигации» склеивал процентный риск, кредитный и почти
+      // нулевую дюрацию. В цикле роста ставки такая «защита» даёт акционерную
+      // просадку.
+      expect(AssetClass.values, contains(AssetClass.ofz));
+      expect(AssetClass.values, contains(AssetClass.corpBonds));
+      expect(AssetClass.values, contains(AssetClass.floaters));
+    });
+
+    test('во всех пакетах есть нога, не зависящая от рублёвой ставки', () {
+      // Рублёвый портфель без товарной и валютной ноги полностью открыт
+      // девальвации, и ни одна его часть от неё не защищает.
+      for (final plan in PackagePlan.defaults()) {
+        final hedges = plan.targets.where((t) =>
+            t.assetClass == AssetClass.gold ||
+            t.assetClass == AssetClass.fxBonds);
+        expect(hedges, isNotEmpty, reason: plan.title);
+      }
+    });
+
+    test('полоса считается от веса, а не константой', () {
+      // ±5 п.п. при цели 10% позволяют классу уполовиниться, не выйдя из
+      // полосы; те же ±5 при цели 55% заставляют торговать из-за косметики.
+      expect(PackageTarget.defaultBand(10), 3.0, reason: 'нижняя отсечка');
+      expect(PackageTarget.defaultBand(40), 10.0.clamp(3.0, 8.0));
+      expect(PackageTarget.defaultBand(20), 5.0);
+      expect(PackageTarget.defaultBand(4), 3.0);
+    });
+
+    test('у каждого класса написано, зачем он в пакете', () {
+      // Без этого владелец не может решить, какой класс резать первым.
+      for (final assetClass in AssetClass.values) {
+        expect(assetClass.thesis, isNotEmpty, reason: assetClass.label);
+      }
+    });
+
+    test('класс без индекса честно помечен', () {
+      // Флоатеры и валютные облигации симулировать нечем: индекса полной
+      // доходности у биржи для них нет. Подставить похожий ряд нельзя.
+      expect(AssetClass.floaters.hasBenchmark, isFalse);
+      expect(AssetClass.fxBonds.hasBenchmark, isFalse);
+      expect(AssetClass.gold.hasBenchmark, isTrue);
     });
 
     test('замысел переживает сериализацию', () {
@@ -83,7 +136,7 @@ void main() {
       invalidation: '',
       targets: const [
         PackageTarget(assetClass: AssetClass.stocks, weightPercent: 60, bandPercent: 5),
-        PackageTarget(assetClass: AssetClass.bonds, weightPercent: 40, bandPercent: 5),
+        PackageTarget(assetClass: AssetClass.ofz, weightPercent: 40, bandPercent: 5),
       ],
     );
 
@@ -92,7 +145,7 @@ void main() {
       // полоса и есть то, что отличает план от суеты.
       final result = Rebalancer.plan(
         plan: plan,
-        values: {AssetClass.stocks: rub(620000), AssetClass.bonds: rub(380000)},
+        values: {AssetClass.stocks: rub(620000), AssetClass.ofz: rub(380000)},
         total: rub(1000000),
       );
       expect(result.isEmpty, isTrue);
@@ -102,7 +155,7 @@ void main() {
     test('выход за полосу даёт заявки в обе стороны', () {
       final result = Rebalancer.plan(
         plan: plan,
-        values: {AssetClass.stocks: rub(700000), AssetClass.bonds: rub(300000)},
+        values: {AssetClass.stocks: rub(700000), AssetClass.ofz: rub(300000)},
         total: rub(1000000),
       );
       expect(result.orders.length, 2);
@@ -111,7 +164,7 @@ void main() {
       final buy = result.orders.firstWhere((o) => o.buy);
       expect(sell.assetClass, AssetClass.stocks);
       expect(sell.amount, rub(100000));
-      expect(buy.assetClass, AssetClass.bonds);
+      expect(buy.assetClass, AssetClass.ofz);
       expect(buy.amount, rub(100000));
       expect(sell.reason, contains('выше полосы'));
     });
@@ -127,12 +180,12 @@ void main() {
         invalidation: '',
         targets: const [
           PackageTarget(assetClass: AssetClass.stocks, weightPercent: 60, bandPercent: 0.2),
-          PackageTarget(assetClass: AssetClass.bonds, weightPercent: 40, bandPercent: 0.2),
+          PackageTarget(assetClass: AssetClass.ofz, weightPercent: 40, bandPercent: 0.2),
         ],
       );
       final result = Rebalancer.plan(
         plan: narrow,
-        values: {AssetClass.stocks: rub(605000), AssetClass.bonds: rub(395000)},
+        values: {AssetClass.stocks: rub(605000), AssetClass.ofz: rub(395000)},
         total: rub(1000000),
       );
       expect(result.orders, isEmpty);
@@ -144,9 +197,9 @@ void main() {
       // остаётся деньгами, а перебор требует ещё одной сделки.
       final result = Rebalancer.plan(
         plan: plan,
-        values: {AssetClass.stocks: rub(700000), AssetClass.bonds: rub(300000)},
+        values: {AssetClass.stocks: rub(700000), AssetClass.ofz: rub(300000)},
         total: rub(1000000),
-        prices: {AssetClass.bonds: rub(1030), AssetClass.stocks: rub(280)},
+        prices: {AssetClass.ofz: rub(1030), AssetClass.stocks: rub(280)},
       );
       final buy = result.orders.firstWhere((o) => o.buy);
       expect(buy.lots, 97); // 100000 / 1030 = 97,08
@@ -156,11 +209,11 @@ void main() {
     test('не хватает на лот — заявки нет, а не заявка на ноль', () {
       final result = Rebalancer.plan(
         plan: plan,
-        values: {AssetClass.stocks: rub(700000), AssetClass.bonds: rub(300000)},
+        values: {AssetClass.stocks: rub(700000), AssetClass.ofz: rub(300000)},
         total: rub(1000000),
-        prices: {AssetClass.bonds: rub(500000)},
+        prices: {AssetClass.ofz: rub(500000)},
       );
-      expect(result.orders.any((o) => o.assetClass == AssetClass.bonds), isFalse);
+      expect(result.orders.any((o) => o.assetClass == AssetClass.ofz), isFalse);
       expect(result.skipped.any((s) => s.contains('один лот')), isTrue);
     });
 
@@ -177,7 +230,7 @@ void main() {
     test('фактические веса считаются от капитала', () {
       final positions = Rebalancer.positions(
         plan: plan,
-        values: {AssetClass.stocks: rub(750000), AssetClass.bonds: rub(250000)},
+        values: {AssetClass.stocks: rub(750000), AssetClass.ofz: rub(250000)},
         total: rub(1000000),
       );
       expect(positions.first.actualPercent, closeTo(75, 1e-9));
@@ -195,7 +248,7 @@ void main() {
       invalidation: '',
       targets: const [
         PackageTarget(assetClass: AssetClass.stocks, weightPercent: 60),
-        PackageTarget(assetClass: AssetClass.bonds, weightPercent: 40),
+        PackageTarget(assetClass: AssetClass.ofz, weightPercent: 40),
       ],
     );
 
@@ -212,7 +265,7 @@ void main() {
         plan: plan,
         total: rub(1000000),
         quotes: {
-          'TMOS': InstrumentQuote(symbol: 'TMOS', price: rub(7.5), lotSize: 10),
+          'EQMX': InstrumentQuote(symbol: 'EQMX', price: rub(7.5), lotSize: 10),
           'SBGB': InstrumentQuote(symbol: 'SBGB', price: rub(11.2), lotSize: 1),
         },
       );
@@ -225,7 +278,7 @@ void main() {
       expect(stocks.plannedValue, rub(600000));
 
       final bonds =
-          allocation.lines.firstWhere((l) => l.assetClass == AssetClass.bonds);
+          allocation.lines.firstWhere((l) => l.assetClass == AssetClass.ofz);
       // 400 000 / 11,2 = 35 714,28 ⇒ 35 714 штук, округление вниз.
       expect(bonds.lots, 35714);
       expect(bonds.plannedValue, rub(35714 * 11.2));
@@ -238,7 +291,7 @@ void main() {
         plan: plan,
         total: rub(1000000),
         quotes: {
-          'TMOS': InstrumentQuote(symbol: 'TMOS', price: rub(7.5), lotSize: 10),
+          'EQMX': InstrumentQuote(symbol: 'EQMX', price: rub(7.5), lotSize: 10),
           'SBGB': InstrumentQuote(symbol: 'SBGB', price: rub(11.2), lotSize: 1),
         },
       );
@@ -254,7 +307,7 @@ void main() {
         plan: plan,
         total: rub(0),
         quotes: {
-          'TMOS': InstrumentQuote(symbol: 'TMOS', price: rub(7.5), lotSize: 10),
+          'EQMX': InstrumentQuote(symbol: 'EQMX', price: rub(7.5), lotSize: 10),
           'SBGB': InstrumentQuote(symbol: 'SBGB', price: rub(11.2)),
         },
       );
@@ -272,12 +325,12 @@ void main() {
         plan: plan,
         total: rub(1000000),
         quotes: {
-          'TMOS': InstrumentQuote(symbol: 'TMOS', price: rub(7.5), lotSize: 10),
+          'EQMX': InstrumentQuote(symbol: 'EQMX', price: rub(7.5), lotSize: 10),
         },
       );
 
       final bonds =
-          allocation.lines.firstWhere((l) => l.assetClass == AssetClass.bonds);
+          allocation.lines.firstWhere((l) => l.assetClass == AssetClass.ofz);
       expect(bonds.lots, isNull);
       expect(bonds.reason, contains('цены'));
       expect(allocation.unpriced.length, 1);
@@ -317,7 +370,7 @@ void main() {
         plan: plan,
         total: rub(1000),
         quotes: {
-          'TMOS': InstrumentQuote(symbol: 'TMOS', price: rub(700), lotSize: 10),
+          'EQMX': InstrumentQuote(symbol: 'EQMX', price: rub(700), lotSize: 10),
         },
       );
 
@@ -332,9 +385,9 @@ void main() {
         plan: plan,
         total: rub(1000000),
         quotes: {
-          'TMOS': InstrumentQuote(symbol: 'TMOS', price: rub(7.5), lotSize: 10),
+          'EQMX': InstrumentQuote(symbol: 'EQMX', price: rub(7.5), lotSize: 10),
         },
-        holdings: const {'TMOS': 30000},
+        holdings: const {'EQMX': 30000},
       );
 
       final stocks =
@@ -350,9 +403,9 @@ void main() {
         plan: plan,
         total: rub(1000000),
         quotes: {
-          'TMOS': InstrumentQuote(symbol: 'TMOS', price: rub(7.5), lotSize: 10),
+          'EQMX': InstrumentQuote(symbol: 'EQMX', price: rub(7.5), lotSize: 10),
         },
-        holdings: const {'TMOS': 100000},
+        holdings: const {'EQMX': 100000},
       );
 
       final stocks =
@@ -371,7 +424,7 @@ void main() {
       invalidation: '',
       targets: const [
         PackageTarget(assetClass: AssetClass.stocks, weightPercent: 50),
-        PackageTarget(assetClass: AssetClass.bonds, weightPercent: 50),
+        PackageTarget(assetClass: AssetClass.ofz, weightPercent: 50),
       ],
     );
 
@@ -383,7 +436,7 @@ void main() {
         plan: plan,
         series: {
           AssetClass.stocks: series(start: 100, dailyReturn: daily),
-          AssetClass.bonds: series(start: 50, dailyReturn: daily),
+          AssetClass.ofz: series(start: 50, dailyReturn: daily),
         },
       );
 
@@ -435,7 +488,7 @@ void main() {
         plan: plan,
         series: {AssetClass.stocks: series(start: 100, dailyReturn: 0.0003)},
       );
-      expect(result.missing, contains('Облигации'));
+      expect(result.missing, contains('ОФЗ'));
       // Вес отсутствующего класса перераспределён, симуляция продолжается.
       expect(result.equity.length, greaterThan(400));
     });
@@ -458,7 +511,7 @@ void main() {
       );
       final result = PackageSimulator.run(
         plan: plan,
-        series: {AssetClass.stocks: long, AssetClass.bonds: short},
+        series: {AssetClass.stocks: long, AssetClass.ofz: short},
       );
       expect(result.equity.length, 200);
     });
