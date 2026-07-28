@@ -1,6 +1,10 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:signalai/domain/analysis/candle.dart';
 import 'package:signalai/domain/analysis/donchian.dart';
+import 'package:signalai/domain/analysis/screener.dart';
+import 'package:signalai/domain/analysis/instrument_spec.dart';
+import 'package:signalai/domain/analysis/trend_screener.dart';
+import 'package:signalai/domain/enums.dart';
 
 /// Ряд с заданными закрытиями; high/low раздвинуты на [range] от закрытия,
 /// чтобы у ATR было ненулевое значение.
@@ -110,6 +114,77 @@ void main() {
       // Для лонга выход по минимуму последних exitPeriod баров: он ниже входа
       // и служит правилом сопровождения, а не тейк-профитом.
       expect(signal.exit, lessThan(signal.entry));
+    });
+  });
+
+  group('Трендследящая стратегия', () {
+    /// Инструмент с дневным пробоем вверх и часовиками для совместимости.
+    InstrumentInput input(List<double> closes) {
+      final daily = series(closes);
+      return InstrumentInput(
+        spec: const InstrumentSpec(
+          id: 'siu6',
+          symbol: 'SiU6',
+          name: 'Доллар/Рубль',
+          market: Market.forts,
+          priceDecimals: 0,
+          valuePerPoint: 1,
+          unitMultiplier: 1,
+          unitDecimals: 0,
+          unitName: 'конт.',
+          unitRiskSuffix: 'контракт',
+        ),
+        hourly: daily,
+        daily: daily,
+        lastPrice: closes.last,
+        changePercentLabel: '+0,3%',
+        changeUp: true,
+      );
+    }
+
+    test('пробой превращается в идею со стоп-входом', () {
+      final result = const TrendScreener()
+          .evaluate(input([...List.filled(50, 100), 105]));
+
+      expect(result, isNotNull);
+      final signal = result!.signal;
+      // Вход стоп-заявкой — часть стратегии, а не настройка: лимитка на
+      // пробитом уровне даёт отрицательный отбор.
+      expect(signal.entryIsStop, isTrue);
+      expect(signal.direction, Direction.long);
+      expect(signal.stopLoss, lessThan(signal.entry));
+      expect(signal.invalidationPrice, signal.stopLoss);
+    });
+
+    test('отказ называет причину, а не молчит', () {
+      final reasons = <String>[];
+      final result = const TrendScreener().evaluate(
+        input(List.filled(60, 100)),
+        reject: reasons.add,
+      );
+
+      expect(result, isNull);
+      expect(reasons.single, contains('нет пробоя'));
+    });
+
+    test('ушедшая цена отсекается: заявленный риск перестал бы быть тем же', () {
+      final reasons = <String>[];
+      // Пробой есть, но текущая цена далеко за уровнем входа.
+      final base = input([...List.filled(50, 100), 105]);
+      final far = InstrumentInput(
+        spec: base.spec,
+        hourly: base.hourly,
+        daily: base.daily,
+        lastPrice: 200,
+        changePercentLabel: base.changePercentLabel,
+        changeUp: base.changeUp,
+      );
+
+      expect(
+        const TrendScreener().evaluate(far, reject: reasons.add),
+        isNull,
+      );
+      expect(reasons.single, contains('цена ушла'));
     });
   });
 }
