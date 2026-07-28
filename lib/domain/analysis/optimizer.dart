@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'backtester.dart';
 import 'screener.dart';
 
@@ -111,12 +113,28 @@ class OptimizationOutcome {
 class StrategyOptimizer {
   const StrategyOptimizer({
     this.minTrainTrades = 8,
-    this.minTestTrades = 4,
+    this.minTestTrades = 30,
     this.backtester = const Backtester(),
   });
 
   final int minTrainTrades;
+
+  /// Сколько сделок out-of-sample нужно, чтобы результат вообще что-то значил.
+  ///
+  /// Было 4. При таком объёме стандартная ошибка средней R около 0,55, а
+  /// победитель отбора получает от чистого шума примерно +0,57 R на сделку —
+  /// при том что правдоподобный реальный эдж свинговой системы после издержек
+  /// порядка 0,03–0,15 R. То есть решение принималось по шуму, превышающему
+  /// сигнал на порядок.
+  ///
+  /// 30 — компромисс: SE падает до ~0,20 R. Строго говоря, надёжным отбор
+  /// становится ближе к 150 сделкам, и на нашей истории столько не наберётся.
+  /// Поэтому основную работу делает правило одной стандартной ошибки: на малой
+  /// выборке SE велика, в неё попадают почти все кандидаты, и выбирается самый
+  /// простой — то есть дефолт. Оптимизатор сам становится консервативным там,
+  /// где данных мало, вместо того чтобы гоняться за шумом.
   final int minTestTrades;
+
   final Backtester backtester;
 
   /// Сетка кандидатов. Дефолт всегда участвует — он бенчмарк.
@@ -216,16 +234,45 @@ class StrategyOptimizer {
     }
     candidates.sort((a, b) => _score(b.$2).compareTo(_score(a.$2)));
 
-    // 2. Топ train-кандидатов проверяется на невиданных данных.
+    // 2. ВСЯ сетка проверяется на невиданных данных, а не топ-3.
+    //
+    // Раньше на OOS уходили только три лучших по train, и победитель среди них
+    // выбирался по максимуму. Это две отдельные ошибки. Первая: выбор
+    // максимума из k результатов даёт смещение — победитель получает от шума
+    // примерно SE·c(k), и при четырёх сделках это около +0,57 R на сделку,
+    // тогда как правдоподобный реальный эдж свинговой системы после издержек
+    // порядка 0,03–0,15 R. Шум превышал сигнал на порядок. Вторая: отбор шёл
+    // по трём испытаниям, а фактически их было двенадцать.
     final defaultTest = await _runTail(build(StrategyParams.defaults), test, train, regime);
-    var best = StrategyParams.defaults;
-    var bestSummary = defaultTest;
-    for (final (params, _) in candidates.take(3)) {
+    final tested = <(StrategyParams, BacktestSummary)>[];
+    for (final (params, _) in candidates) {
       onProgress?.call('Проверка на новых данных: ${params.label}');
       final summary = await _runTail(build(params), test, train, regime);
-      if (summary.count >= minTestTrades && _score(summary) > _score(bestSummary)) {
-        best = params;
-        bestSummary = summary;
+      if (summary.count >= minTestTrades) tested.add((params, summary));
+    }
+
+    // 3. Правило одной стандартной ошибки.
+    //
+    // Из кандидатов, попавших в одну SE от лучшего, берём самый простой —
+    // ближайший к дефолту. Разница внутри одной SE статистически неотличима
+    // от шума, и выбирать по ней значит подгонять. Дефолт остаётся бенчмарком:
+    // если он не обыгран уверенно, менять конфигурацию не за что.
+    var best = StrategyParams.defaults;
+    var bestSummary = defaultTest;
+    if (tested.isNotEmpty) {
+      final leader = tested.reduce((a, b) => _score(a.$2) >= _score(b.$2) ? a : b);
+      final threshold = _score(leader.$2) - _standardError(leader.$2);
+      final withinOneSe = [
+        for (final entry in tested)
+          if (_score(entry.$2) >= threshold) entry,
+      ];
+      // Простейший — тот, у кого меньше отличий от дефолта.
+      withinOneSe.sort((a, b) =>
+          _distanceFromDefault(a.$1).compareTo(_distanceFromDefault(b.$1)));
+      final pick = withinOneSe.first;
+      if (_score(pick.$2) > _score(defaultTest)) {
+        best = pick.$1;
+        bestSummary = pick.$2;
       }
     }
 
@@ -236,6 +283,29 @@ class StrategyOptimizer {
       testAvgR: bestSummary.averageR,
       improved: !identical(best, StrategyParams.defaults),
     );
+  }
+
+  /// Стандартная ошибка средней R на выборке прогона.
+  ///
+  /// Разброс результата одной сделки при нашей механике (стоп −1R, безубыток
+  /// после первого тейка, полный набор целей около +2R) даёт σ порядка 1,1 R.
+  /// Точнее оценивать не из чего: распределение по сделкам прогон не хранит.
+  static double _standardError(BacktestSummary summary) =>
+      summary.count <= 1 ? double.infinity : 1.1 / math.sqrt(summary.count);
+
+  /// Насколько вариант отличается от дефолта. Меньше — проще.
+  static int _distanceFromDefault(StrategyParams params) {
+    final d = StrategyParams.defaults;
+    var distance = 0;
+    if (params.minScore != d.minScore) distance++;
+    if (params.requireTrigger != d.requireTrigger) distance++;
+    if (params.entryType != d.entryType) distance++;
+    if (params.align4h != d.align4h) distance++;
+    if (params.maxEntryDistanceAtr != d.maxEntryDistanceAtr) distance++;
+    if (params.takeProfitMultiples.join(',') != d.takeProfitMultiples.join(',')) {
+      distance++;
+    }
+    return distance;
   }
 
   Future<BacktestSummary> _run(

@@ -186,4 +186,32 @@ void main() {
     expect(StrategyOptimizer.grid.first, StrategyParams.defaults,
         reason: 'дефолт остаётся бенчмарком');
   });
+
+  test('порог out-of-sample поднят: решение на четырёх сделках — шум', () {
+    // При четырёх сделках стандартная ошибка средней R около 0,55, а
+    // победитель отбора получает от чистого шума примерно +0,57 R на сделку.
+    // Правдоподобный реальный эдж после издержек — 0,03–0,15 R. То есть
+    // решение принималось по шуму, превышающему сигнал на порядок.
+    expect(const StrategyOptimizer().minTestTrades, greaterThanOrEqualTo(30));
+  });
+
+  test('на малой выборке отбор остаётся на дефолте', () async {
+    // Правило одной стандартной ошибки само делает оптимизатор консервативным
+    // там, где данных мало: SE велика, в неё попадают почти все кандидаты, и
+    // выбирается самый простой — дефолт. Раньше здесь побеждал максимум, то
+    // есть самый удачливый.
+    const optimizer = StrategyOptimizer(
+      minTrainTrades: 1,
+      minTestTrades: 1,
+      backtester: Backtester(costs: noCosts),
+    );
+    final outcome = await optimizer.optimize(
+      [risingHistory()],
+      // Все кандидаты, включая дефолт, торгуют одинаково: отличить их нечем.
+      screenerBuilder: (params) => const StubScreener(fires: true),
+    );
+
+    expect(outcome.improved, isFalse,
+        reason: 'неотличимые кандидаты не повод менять конфигурацию');
+  });
 }
