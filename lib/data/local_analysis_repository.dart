@@ -1036,6 +1036,17 @@ class LocalAnalysisRepository
       }
     }
 
+    final runs = await _store.read('digest_runs');
+    if (runs != null) {
+      try {
+        for (final r in runs['items'] as List? ?? const []) {
+          _digestRuns.add(DigestRun.fromJson(r as Map<String, dynamic>));
+        }
+      } on Exception {
+        // Битый журнал прогонов не должен ломать запуск.
+      }
+    }
+
     final cached = await _store.read('digest');
     if (cached != null) {
       try {
@@ -1125,6 +1136,17 @@ class LocalAnalysisRepository
       final fallback = _cachedDigest;
       if (fallback == null) rethrow;
       _lastRefreshError = e;
+      // Неудачный прогон — тоже прогон. Без этой записи журнал показывал бы
+      // реже, чем считали, и владелец решил бы, что пересчёт не запускается,
+      // тогда как он запускается и падает.
+      await _recordRun(DigestRun(
+        at: DateTime.now(),
+        ideas: 0,
+        candidates: 0,
+        rejected: 0,
+        note: 'не удалось: ${_shortReason(e)}',
+        foreground: !inBackground,
+      ));
       return fallback.withStaleNote(
         'Обновить не удалось (${_shortReason(e)}). Показаны идеи от '
         '${_timeLabel(_digestAt ?? DateTime.now())} — уровни могли устареть.',
@@ -1135,6 +1157,30 @@ class LocalAnalysisRepository
   /// Ошибка последнего неудачного пересчёта, когда показан старый кэш.
   Object? get lastRefreshError => _lastRefreshError;
   Object? _lastRefreshError;
+
+  /// Считает ли этот экземпляр в фоновом изоляте.
+  bool inBackground = false;
+
+  /// Журнал пересчётов — от новых к старым.
+  ///
+  /// Владелец не мог отличить «пересчиталось и ничего не нашлось» от «не
+  /// пересчитывалось». Настройка «раз в час» есть, а доказательства не было
+  /// никакого. Журнал и есть доказательство: время, чем закончилось и кто
+  /// считал — фон или экран.
+  List<DigestRun> get digestRuns => List.unmodifiable(_digestRuns.reversed);
+  final List<DigestRun> _digestRuns = [];
+
+  static const _runsKept = 60;
+
+  Future<void> _recordRun(DigestRun run) async {
+    _digestRuns.add(run);
+    if (_digestRuns.length > _runsKept) {
+      _digestRuns.removeRange(0, _digestRuns.length - _runsKept);
+    }
+    await _store.write('digest_runs', {
+      'items': [for (final r in _digestRuns) r.toJson()],
+    });
+  }
 
   /// Был ли последний успешный расчёт неполным (один из источников молчал).
   bool get lastResultPartial => _lastPartial;
@@ -1313,6 +1359,14 @@ class LocalAnalysisRepository
       'partial': _lastPartial,
       'digest': digest.toJson(),
     });
+    await _recordRun(DigestRun(
+      at: now,
+      ideas: approved.length,
+      candidates: results.length,
+      rejected: lastRejections.length,
+      note: unavailable.isEmpty ? null : unavailable.join('; '),
+      foreground: !inBackground,
+    ));
 
     // Журнал: новые сигналы записываются, живые — проживаются вперёд по тем
     // же свечам, отбраковки получают цену для форвард-проверки.
@@ -1500,6 +1554,7 @@ class LocalAnalysisRepository
     Map<String, double> turnoverBySymbol,
   ) async {
     final results = <ScreenerResult>[];
+    final cryptoScreener = _screenerFor('crypto');
     _stage('Bybit: тикеры…');
     final tickers = await _bybit.tickers(symbols: cryptoSymbols);
 
@@ -1532,7 +1587,12 @@ class LocalAnalysisRepository
         // Оборот Bybit приходит в USDT — риск-движок считает в рублях.
         turnoverBySymbol[ticker.symbol] = ticker.turnover * usdRub;
 
-        final result = screener.evaluate(
+        // Крипта считается СВОИМ скринером. Здесь стоял геттер `screener`,
+        // который всегда возвращает конфигурацию FORTS: параметры, подобранные
+        // walk-forward оптимизацией для крипты, сохранялись в `_params['crypto']`
+        // и никогда не доходили до живой выдачи. Оптимизация крипты работала
+        // вхолостую, а бэктест крипты мерил не то, чем торгуют.
+        final result = cryptoScreener.evaluate(
           InstrumentInput(
             spec: spec,
             hourly: hourly,
@@ -1855,13 +1915,11 @@ class LocalAnalysisRepository
           ),
         ],
         notifications: [
-          ToggleSetting(
-            id: 'digest',
-            name: 'Автопересчёт раз в час',
-            subtitle: 'Пока приложение запущено, идеи пересчитываются каждый час '
-                'и сверяются с рынком',
-            enabled: _notifications['digest'] ?? false,
-          ),
+          // Тумблера «Автопересчёт раз в час» здесь больше нет. Он не был
+          // подключён ни к чему: пересчёт на переднем плане идёт независимо от
+          // него, а настоящий часовой пересчёт при закрытом приложении даёт
+          // только фоновый контур — отдельным переключателем. Настройка,
+          // которая ничего не меняет, хуже отсутствующей: она обещает.
           ToggleSetting(
             id: 'alerts',
             name: 'Срабатывания TP / SL',
@@ -3068,4 +3126,57 @@ class LocalAnalysisRepository
       'Автономный режим: анализ выполняется при открытии приложения. '
       'Дайджест по расписанию, сопровождение позиций и доставка в Telegram/MAX '
       'требуют серверного контура.';
+}
+
+/// Одна запись журнала пересчётов.
+///
+/// Существует ради одного вопроса владельца: «правда ли пересчёт идёт раз в
+/// час». Отвечать на него настройкой нельзя — настройка это обещание, а не
+/// факт. Отвечает список: когда считали, что нашли и кто считал.
+class DigestRun {
+  const DigestRun({
+    required this.at,
+    required this.ideas,
+    required this.candidates,
+    required this.rejected,
+    required this.foreground,
+    this.note,
+  });
+
+  final DateTime at;
+
+  /// Сколько идей вышло в дайджест.
+  final int ideas;
+
+  /// Сколько кандидатов дошло до отбора.
+  final int candidates;
+
+  /// Сколько отбраковано с причиной.
+  final int rejected;
+
+  /// Считал экран (true) или фоновый контур (false).
+  final bool foreground;
+
+  /// Причина неудачи либо недоступный источник. null — прогон прошёл целиком.
+  final String? note;
+
+  bool get failed => note != null && note!.startsWith('не удалось');
+
+  Map<String, dynamic> toJson() => {
+        'at': at.toIso8601String(),
+        'ideas': ideas,
+        'candidates': candidates,
+        'rejected': rejected,
+        'fg': foreground,
+        if (note != null) 'note': note,
+      };
+
+  static DigestRun fromJson(Map<String, dynamic> json) => DigestRun(
+        at: DateTime.tryParse(json['at'] as String? ?? '') ?? DateTime.now(),
+        ideas: (json['ideas'] as num?)?.toInt() ?? 0,
+        candidates: (json['candidates'] as num?)?.toInt() ?? 0,
+        rejected: (json['rejected'] as num?)?.toInt() ?? 0,
+        foreground: json['fg'] as bool? ?? true,
+        note: json['note'] as String?,
+      );
 }

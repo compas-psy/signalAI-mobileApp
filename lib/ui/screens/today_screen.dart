@@ -592,6 +592,12 @@ class _HealthCard extends StatelessWidget {
             text: 'Риск-движок: ${controller.riskMode.label} — '
                 '${controller.riskMode.hint}',
           ),
+          // Факт вместо обещания: сколько пересчётов реально было за сутки.
+          // Настройка «раз в час» ничего не доказывает — журнал доказывает.
+          _HealthRow(
+            ok: controller.digestRuns.isNotEmpty,
+            text: 'Идеи: ${controller.digestRunsNote}',
+          ),
           if (withSync) ...[
             const SizedBox(height: 10),
             if (controller.capitalLoading)

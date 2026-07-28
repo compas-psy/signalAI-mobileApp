@@ -26,7 +26,9 @@ Future<void> signalaiMonitorMain() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   final store = LocalStore();
-  final repository = LocalAnalysisRepository(store: store);
+  // Пометка нужна журналу пересчётов: владелец должен видеть, какие прогоны
+  // сделал фон, пока приложение было закрыто, а какие — экран у него в руках.
+  final repository = LocalAnalysisRepository(store: store)..inBackground = true;
   final cycle = BackgroundCycle(target: repository, lock: StateLock(store));
   const bridge = NativeBridge();
 

@@ -822,6 +822,31 @@ class AppController extends ChangeNotifier {
         : 'Торговый счёт назначен');
   }
 
+  /// Журнал пересчётов дайджеста — от новых к старым.
+  ///
+  /// Настройка «раз в час» — это обещание, а журнал — факт. Владелец не мог
+  /// отличить «пересчиталось и ничего не нашлось» от «не пересчитывалось».
+  List<DigestRun> get digestRuns {
+    final repository = _repository;
+    return repository is LocalAnalysisRepository ? repository.digestRuns : const [];
+  }
+
+  /// Сводка по прогонам за сутки для строки в здоровье данных.
+  String get digestRunsNote {
+    final runs = digestRuns;
+    if (runs.isEmpty) return 'пересчётов ещё не было';
+    final since = DateTime.now().subtract(const Duration(hours: 24));
+    final day = runs.where((r) => r.at.isAfter(since)).toList();
+    final failed = day.where((r) => r.failed).length;
+    final background = day.where((r) => !r.foreground).length;
+    final last = runs.first.at.toLocal();
+    final stamp = '${last.hour.toString().padLeft(2, '0')}:'
+        '${last.minute.toString().padLeft(2, '0')}';
+    return 'пересчётов за сутки: ${day.length}'
+        '${background > 0 ? ' (в фоне $background)' : ''}'
+        '${failed > 0 ? ', с ошибкой $failed' : ''} · последний $stamp';
+  }
+
   // ── Площадки ───────────────────────────────────────────────────────────
 
   List<VenueStatus> _venues = const [];

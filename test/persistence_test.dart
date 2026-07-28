@@ -57,7 +57,7 @@ void main() {
     final first = LocalAnalysisRepository(store: store);
     await first.updateRiskProfile(deposit: 2500000, riskPercent: 1.0);
     await first.setChannelEnabled('push', true);
-    await first.setNotificationEnabled('digest', true);
+    await first.setNotificationEnabled('alerts', true);
     await first.setStrategyEnabled('crypto', false);
 
     // «Перезапуск»: новый репозиторий, то же хранилище.
@@ -67,8 +67,10 @@ void main() {
     expect(settings.risk.deposit, 2500000);
     expect(settings.risk.riskPercent, 1.0);
     expect(settings.channels.firstWhere((c) => c.id == 'push').enabled, isTrue);
+    // Тумблера «Автопересчёт раз в час» здесь больше нет: он не был подключён
+    // ни к чему. Проверяем тот, который существует.
     expect(
-      settings.notifications.firstWhere((n) => n.id == 'digest').enabled,
+      settings.notifications.firstWhere((n) => n.id == 'alerts').enabled,
       isTrue,
     );
     expect(second.pushEnabled, isTrue);
@@ -78,6 +80,44 @@ void main() {
       strategies.packs.firstWhere((p) => p.id == 'crypto').enabled,
       isFalse,
     );
+  });
+
+  test('журнал пересчётов переживает перезапуск', () async {
+    // Владелец не мог отличить «пересчиталось и ничего не нашлось» от «не
+    // пересчитывалось»: настройка «раз в час» была, а доказательства не было.
+    final store = LocalStore.inMemory();
+    final first = LocalAnalysisRepository(store: store);
+    await first.fetchSettings();
+    expect(first.digestRuns, isEmpty, reason: 'до первого прогона журнал пуст');
+
+    await store.write('digest_runs', {
+      'items': [
+        DigestRun(
+          at: DateTime.utc(2026, 7, 28, 9),
+          ideas: 2,
+          candidates: 18,
+          rejected: 16,
+          foreground: false,
+        ).toJson(),
+        DigestRun(
+          at: DateTime.utc(2026, 7, 28, 10),
+          ideas: 0,
+          candidates: 0,
+          rejected: 0,
+          foreground: true,
+          note: 'не удалось: сеть',
+        ).toJson(),
+      ],
+    });
+
+    final second = LocalAnalysisRepository(store: store);
+    await second.fetchSettings();
+
+    // От новых к старым: последний прогон первым.
+    expect(second.digestRuns.first.failed, isTrue);
+    expect(second.digestRuns.last.foreground, isFalse,
+        reason: 'фоновый прогон отличим от экранного');
+    expect(second.digestRuns.last.ideas, 2);
   });
 }
 
