@@ -247,6 +247,26 @@ void main() {
       expect(allocation.residual.isNegative, isFalse);
     });
 
+    test('нулевой капитал — одна причина на пакет, а не на каждую строку', () {
+      // На экране было три одинаковых предупреждения подряд и ни одного
+      // числа: нулевой капитал — свойство пакета, а не инструмента в нём.
+      final allocation = TargetAllocation.of(
+        plan: plan,
+        total: rub(0),
+        quotes: {
+          'TMOS': InstrumentQuote(symbol: 'TMOS', price: rub(7.5), lotSize: 10),
+          'SBGB': InstrumentQuote(symbol: 'SBGB', price: rub(11.2)),
+        },
+      );
+
+      expect(allocation.blocker, isNotNull);
+      expect(allocation.blocker, contains('Капитала'));
+      // Состав всё равно показывается: веса и инструменты известны без денег.
+      expect(allocation.lines.length, 2);
+      expect(allocation.lines.every((l) => l.reason == null), isTrue);
+      expect(allocation.lines.first.quote, isNotNull);
+    });
+
     test('без цены количество не выдумывается', () {
       final allocation = TargetAllocation.of(
         plan: plan,

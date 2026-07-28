@@ -154,38 +154,45 @@ class _CompositionCard extends StatelessWidget {
                     style: T.body(11.5, color: C.muted, height: 1.5),
                   )
           else ...[
-            Text(
-              'Капитал пакета ${fmtMoney(allocation.total)}. Количество '
-              'округлено вниз до целого лота: недобор остаётся деньгами, '
-              'перебор потребовал бы ещё одной сделки.',
-              style: T.body(10.5, color: C.faint, height: 1.45),
-            ),
+            if (allocation.blocker != null)
+              InsetBox(
+                child: Text(allocation.blocker!,
+                    style: T.body(11.5, color: C.warning, height: 1.45)),
+              )
+            else
+              Text(
+                'Капитал пакета ${fmtMoney(allocation.total)}. Количество '
+                'округлено вниз до целого лота: недобор остаётся деньгами.',
+                style: T.body(10.5, color: C.faint, height: 1.45),
+              ),
             const SizedBox(height: 10),
             for (final line in allocation.lines) ...[
               _LineRow(line: line),
               const SizedBox(height: 8),
             ],
-            Container(
-              padding: const EdgeInsets.symmetric(vertical: 8),
-              decoration: const BoxDecoration(
-                border: Border(top: BorderSide(color: C.divider)),
+            if (allocation.blocker == null) ...[
+              Container(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                decoration: const BoxDecoration(
+                  border: Border(top: BorderSide(color: C.divider)),
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text('Остаток кэшем',
+                          style: T.body(11.5, color: C.muted)),
+                    ),
+                    Text(fmtMoney(allocation.residual),
+                        style: T.mono(12, weight: 600, color: C.info)),
+                  ],
+                ),
               ),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Text('Остаток кэшем',
-                        style: T.body(11.5, color: C.muted)),
-                  ),
-                  Text(fmtMoney(allocation.residual),
-                      style: T.mono(12, weight: 600, color: C.info)),
-                ],
+              Text(
+                'Остаток — то, что не легло в целые лоты: сумма строк должна '
+                'сходиться с капиталом.',
+                style: T.body(10, color: C.faint, height: 1.4),
               ),
-            ),
-            Text(
-              'Остаток — это то, что не легло в целые лоты. Он не исчезает и '
-              'не «размазывается»: иначе сумма строк не сойдётся с капиталом.',
-              style: T.body(10, color: C.faint, height: 1.4),
-            ),
+            ],
           ],
           if (!loading) ...[
             const SizedBox(height: 12),
@@ -235,51 +242,63 @@ class _LineRow extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 6),
-          KeyValueRow(
-            name: 'Целевая сумма',
-            value: fmtMoney(line.targetValue),
-            valueStyle: T.mono(11.5, weight: 600),
-          ),
-          if (line.reason != null)
-            Padding(
-              padding: const EdgeInsets.only(top: 6),
-              child: Text(line.reason!,
-                  style: T.body(10.5, color: C.warning, height: 1.4)),
+          // Пока капитала нет, целевая сумма у всех строк нулевая, и
+          // повторять её в каждой — шум. Показываем цену инструмента: это
+          // единственное настоящее число, которое здесь есть.
+          if (line.targetValue.isZero && line.reason == null)
+            KeyValueRow(
+              name: 'Цена лота',
+              value: line.quote == null ? '—' : fmtMoney(line.quote!.lotPrice),
+              valueStyle: T.mono(11.5),
+              showDivider: false,
             )
           else ...[
             KeyValueRow(
-              name: 'Цена лота'
-                  '${line.quote!.lotSize > 1 ? ' (${line.quote!.lotSize} шт.)' : ''}',
-              value: fmtMoney(line.quote!.lotPrice),
-              valueStyle: T.mono(11.5),
-            ),
-            KeyValueRow(
-              name: 'Купить лотов',
-              value: '${line.lots} · ${line.units} шт.',
-              valueStyle: T.mono(11.5, weight: 700, color: C.accent),
-            ),
-            KeyValueRow(
-              name: 'На сумму',
-              value: fmtMoney(line.plannedValue!),
+              name: 'Целевая сумма',
+              value: fmtMoney(line.targetValue),
               valueStyle: T.mono(11.5, weight: 600),
             ),
-            KeyValueRow(
-              name: 'Уже есть',
-              value: line.actualUnits == 0
-                  ? 'нет'
-                  : '${line.actualUnits.toStringAsFixed(0)} шт.',
-              valueStyle: T.mono(11.5),
-              showDivider: delta != null && delta != 0,
-            ),
-            if (delta != null && delta != 0)
+            if (line.reason != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Text(line.reason!,
+                    style: T.body(10.5, color: C.warning, height: 1.4)),
+              )
+            else ...[
               KeyValueRow(
-                name: delta > 0 ? 'Докупить' : 'Сократить',
-                value: '${delta.abs()} шт.'
-                    '${deltaValue == null ? '' : ' · ${fmtMoney(deltaValue.abs)}'}',
-                valueStyle: T.mono(12,
-                    weight: 700, color: delta > 0 ? C.green : C.red),
-                showDivider: false,
+                name: 'Цена лота'
+                    '${line.quote!.lotSize > 1 ? ' (${line.quote!.lotSize} шт.)' : ''}',
+                value: fmtMoney(line.quote!.lotPrice),
+                valueStyle: T.mono(11.5),
               ),
+              KeyValueRow(
+                name: 'Купить лотов',
+                value: '${line.lots} · ${line.units} шт.',
+                valueStyle: T.mono(11.5, weight: 700, color: C.accent),
+              ),
+              KeyValueRow(
+                name: 'На сумму',
+                value: fmtMoney(line.plannedValue!),
+                valueStyle: T.mono(11.5, weight: 600),
+              ),
+              KeyValueRow(
+                name: 'Уже есть',
+                value: line.actualUnits == 0
+                    ? 'нет'
+                    : '${line.actualUnits.toStringAsFixed(0)} шт.',
+                valueStyle: T.mono(11.5),
+                showDivider: delta != null && delta != 0,
+              ),
+              if (delta != null && delta != 0)
+                KeyValueRow(
+                  name: delta > 0 ? 'Докупить' : 'Сократить',
+                  value: '${delta.abs()} шт.'
+                      '${deltaValue == null ? '' : ' · ${fmtMoney(deltaValue.abs)}'}',
+                  valueStyle: T.mono(12,
+                      weight: 700, color: delta > 0 ? C.green : C.red),
+                  showDivider: false,
+                ),
+            ],
           ],
         ],
       ),

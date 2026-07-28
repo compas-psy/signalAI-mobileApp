@@ -98,12 +98,20 @@ class TargetAllocation {
   const TargetAllocation({
     required this.lines,
     required this.total,
+    this.blocker,
   });
 
   final List<AllocationLine> lines;
 
   /// Капитал, который распределяем.
   final Money total;
+
+  /// Одна причина, по которой не посчитан весь пакет целиком.
+  ///
+  /// Нулевой капитал — свойство пакета, а не каждого инструмента в нём. Пока
+  /// эта причина писалась в каждую строку, экран показывал три одинаковых
+  /// предупреждения подряд и ни одного числа.
+  final String? blocker;
 
   /// Сколько денег ушло в лоты.
   Money get planned {
@@ -134,6 +142,27 @@ class TargetAllocation {
     Map<String, InstrumentQuote> quotes = const {},
     Map<String, double> holdings = const {},
   }) {
+    // Нулевой капитал — одна причина на весь пакет. Состав при этом всё равно
+    // показывается: веса и инструменты известны и без денег.
+    if (total.isZero) {
+      return TargetAllocation(
+        total: total,
+        blocker: 'Капитала в книге нет — покупать не на что. Сверьте счета '
+            'с площадками или запишите начальный остаток.',
+        lines: [
+          for (final target in plan.targets)
+            AllocationLine(
+              assetClass: target.assetClass,
+              symbol: target.assetClass.proxy,
+              weightPercent: target.weightPercent,
+              targetValue: total,
+              quote: quotes[target.assetClass.proxy],
+              actualUnits: holdings[target.assetClass.proxy] ?? 0,
+            ),
+        ],
+      );
+    }
+
     final lines = <AllocationLine>[];
     for (final target in plan.targets) {
       final symbol = target.assetClass.proxy;
