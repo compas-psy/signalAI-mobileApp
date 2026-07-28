@@ -8,6 +8,7 @@ import '../domain/analysis/instrument_spec.dart';
 import '../domain/analysis/factor_audit.dart';
 import '../domain/analysis/optimizer.dart';
 import '../domain/analysis/screener.dart';
+import '../domain/analysis/trend_screener.dart';
 import '../domain/analysis/trade_simulator.dart';
 import '../domain/enums.dart';
 import '../domain/invest/invest_models.dart';
@@ -125,6 +126,13 @@ class LocalAnalysisRepository
 
   /// Скринер FORTS — базовый: его пороги показываются в параметрах.
   Screener get screener => _screenerFor('forts');
+
+  /// Трендследящая стратегия — вторая система, не ветка первой.
+  ///
+  /// Периоды классические из правил Turtle; в сетку оптимизатора они
+  /// сознательно не заводятся: подбирать их на нашей годовой истории значит
+  /// подгонять две ручки под десяток дневных пробоев.
+  static const _trendScreener = TrendScreener();
 
   /// Сколько дайджест считается свежим: в течение этого срока повторные
   /// запросы отдают кэш, а не гоняют расчёт заново.
@@ -1113,7 +1121,13 @@ class LocalAnalysisRepository
     pauseRule: '${_limits.stopsBeforePause} стопа подряд — пауза '
         '${_limits.pauseAfterStops.inHours} ч',
   );
-  Map<String, bool> _strategyEnabled = {'forts': true, 'crypto': true};
+  Map<String, bool> _strategyEnabled = {
+    'forts': true,
+    'crypto': true,
+    // Трендследование включено по умолчанию: это единственная система с
+    // внешней доказательной базой. Выключить её — решение владельца.
+    'trend': true,
+  };
   Map<String, bool> _channels = {'push': false, 'telegram': false, 'max': false};
   Map<String, bool> _notifications = {'digest': false, 'alerts': false, 'events': false};
 
@@ -1258,6 +1272,26 @@ class LocalAnalysisRepository
           factorHistory: _lastFactorEdges['forts'],
         );
         if (result != null) results.add(result);
+      }
+
+      // Трендследование считается по тем же данным отдельным проходом.
+      // Отдельным, а не веткой внутри скринера: у систем разная природа, и
+      // усреднить их в один скоринг значит получить то, что не работает нигде.
+      if (_strategyEnabled['trend'] ?? true) {
+        for (final input in inputs) {
+          if (input == null) continue;
+          final result = _trendScreener.evaluate(
+            input,
+            reject: (reason) => lastRejections.add(
+              RejectedCandidate(
+                input.spec.symbol,
+                'тренд: $reason',
+                price: input.lastPrice,
+              ),
+            ),
+          );
+          if (result != null) results.add(result);
+        }
       }
     }
 
@@ -1795,6 +1829,19 @@ class LocalAnalysisRepository
             statsLabel: 'вселенная: ${fortsRoots.join(' · ')}\n'
                 '${(_params['forts'] ?? StrategyParams.defaults).label}',
             enabled: _strategyEnabled['forts'] ?? true,
+          ),
+          StrategyPack(
+            id: 'trend',
+            name: 'Трендследящая · канал Дончиана',
+            description: 'Пробой канала на дневках, вход стоп-заявкой, выход по '
+                'обратному пробою. Единственная система здесь с внешней '
+                'доказательной базой: временной моментум документирован на 58 '
+                'фьючерсах (JFE 2012) и 67 рынках с 1880 года (JPM 2017). На '
+                'нашей годовой истории FORTS это не проверяется — дневных '
+                'пробоев слишком мало, опора на публикации.',
+            statsLabel: 'вселенная: ${fortsRoots.join(' · ')}\n'
+                '${_trendScreener.label} · держит недели, сделок мало',
+            enabled: _strategyEnabled['trend'] ?? true,
           ),
           StrategyPack(
             id: 'crypto',
