@@ -47,17 +47,16 @@ class TodayScreen extends StatelessWidget {
         const SizedBox(height: 12),
         _DecisionsCard(decisions: controller.decisions),
         const SizedBox(height: 12),
-        // Здоровье данных и сверка показываются всегда, включая пустую книгу.
-        // Пока этот блок висел на условии «книга не пуста», получался
-        // замкнутый круг: наполнить книгу можно было только кнопкой, которая
-        // появлялась после наполнения.
+        // Здоровье данных показывается всегда, включая пустую книгу. Кнопка
+        // сверки живёт здесь только тогда, когда её нет выше: два одинаковых
+        // главных действия на одном экране обесценивают оба.
         if (hasBook)
           CardGrid(children: [
             _ResultCard(state: state),
-            _HealthCard(state: state, controller: controller),
+            _HealthCard(state: state, controller: controller, withSync: true),
           ])
         else
-          _HealthCard(state: state, controller: controller),
+          _HealthCard(state: state, controller: controller, withSync: state == null),
       ],
     );
   }
@@ -356,9 +355,9 @@ class _DecisionsCard extends StatelessWidget {
           const SizedBox(height: 8),
           if (decisions.isEmpty)
             Text(
-              'Решений нет: подтверждённых идей не ждёт, позиции защищены, '
-              'книга сходится. Пустая очередь — это результат, а не поломка.',
-              style: T.body(11.5, color: C.muted, height: 1.5),
+              'Пусто: идей на подтверждении нет, позиции защищены, книга '
+              'сходится.',
+              style: T.body(11.5, color: C.muted, height: 1.45),
             )
           else
             for (final decision in decisions) ...[
@@ -538,10 +537,19 @@ class _ResultBar extends StatelessWidget {
 /// [state] может быть `null` — книга ещё читается или режим без учёта. Даже
 /// тогда карточка нужна: в ней живёт единственная кнопка сверки.
 class _HealthCard extends StatelessWidget {
-  const _HealthCard({required this.state, required this.controller});
+  const _HealthCard({
+    required this.state,
+    required this.controller,
+    this.withSync = true,
+  });
 
   final CapitalState? state;
   final AppController controller;
+
+  /// Показывать ли кнопку сверки. Два одинаковых главных действия на одном
+  /// экране обесценивают оба, поэтому кнопка здесь только тогда, когда её
+  /// нет выше.
+  final bool withSync;
 
   @override
   Widget build(BuildContext context) {
@@ -584,17 +592,19 @@ class _HealthCard extends StatelessWidget {
             text: 'Риск-движок: ${controller.riskMode.label} — '
                 '${controller.riskMode.hint}',
           ),
-          const SizedBox(height: 10),
-          if (controller.capitalLoading)
-            const BusyLine(
-              label: 'Спрашиваем площадки: счета, позиции и выписку за год.',
-            )
-          else
-            ActionButton(
-              label: 'Сверить с площадками',
-              dense: true,
-              onTap: () => controller.refreshCapital(sync: true),
-            ),
+          if (withSync) ...[
+            const SizedBox(height: 10),
+            if (controller.capitalLoading)
+              const BusyLine(
+                label: 'Спрашиваем площадки: счета, позиции и выписку за год.',
+              )
+            else
+              ActionButton(
+                label: 'Сверить с площадками',
+                dense: true,
+                onTap: () => controller.refreshCapital(sync: true),
+              ),
+          ],
           if (controller.capitalNote != null) ...[
             const SizedBox(height: 8),
             Text(controller.capitalNote!,
@@ -678,13 +688,19 @@ class _EmptyBook extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Книга пуста', style: T.jost(17)),
-            const SizedBox(height: 6),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.baseline,
+              textBaseline: TextBaseline.alphabetic,
+              children: [
+                Expanded(child: Text('Капитал', style: T.jost(17))),
+                Text('0 ₽', style: T.mono(24, weight: 600, color: C.faint)),
+              ],
+            ),
+            const SizedBox(height: 4),
             Text(
-              'Капитал считается из операций, а не вводится числом. Самый '
-              'быстрый путь — сверка: приложение заберёт с площадок выписку, '
-              'счета и позиции. Банковский резерв и переводы вносятся руками.',
-              style: T.body(11.5, color: C.muted, height: 1.5),
+              'В книге нет ни одной операции. Сверка заберёт с площадок '
+              'выписку, счета и позиции.',
+              style: T.body(11.5, color: C.muted, height: 1.45),
             ),
             const SizedBox(height: 12),
             ActionButton(

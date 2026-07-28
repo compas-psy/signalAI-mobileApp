@@ -220,9 +220,28 @@ class _Accounts extends StatelessWidget {
     return null;
   }
 
+  /// Рыночная стоимость позиций каждого счёта.
+  ///
+  /// Карточка счёта обязана показывать не только кэш: счёт с пустым остатком
+  /// и позициями на миллион — не пустой счёт.
+  static Map<String, Money> _positionsByAccount(CapitalState state) {
+    final result = <String, Money>{};
+    for (final position in state.snapshot.positions) {
+      final mark = state.marks[position.instrument];
+      final value = mark == null
+          ? position.costBasis.abs
+          : mark.multiplyBy(position.quantity.abs);
+      final current = result[position.accountId];
+      if (current != null && current.currency != value.currency) continue;
+      result[position.accountId] = current == null ? value : current + value;
+    }
+    return result;
+  }
+
   @override
   Widget build(BuildContext context) {
     final cash = state.snapshot.cash;
+    final positions = _positionsByAccount(state);
     final manual = [
       for (final account in state.accounts)
         if (_venueOf(account) == null) account,
@@ -241,6 +260,7 @@ class _Accounts extends StatelessWidget {
                 if (_venueOf(account) == venue.id.name) account,
             ],
             cash: cash,
+            positions: positions,
           ),
           const SizedBox(height: 12),
         ],
@@ -260,6 +280,7 @@ class _Accounts extends StatelessWidget {
               _AccountCard(
                 account: account,
                 balances: cash[account.id] ?? const {},
+                positions: positions[account.id],
               ),
           ]),
           const SizedBox(height: 12),
@@ -285,6 +306,16 @@ class _Accounts extends StatelessWidget {
           dense: true,
           onTap: () => showAddAccountSheet(context, controller),
         ),
+        const SizedBox(height: 12),
+        // Одно правило конфигурации — одна строка внизу экрана. Раньше этот
+        // абзац повторялся на каждой карточке счёта: объяснение, одинаковое
+        // для всех строк, не является свойством строки.
+        Text(
+          'Право на вывод средств у ключей не запрашивается ни на одной '
+          'площадке: приложению оно не нужно, а ключ с выводом делает взлом '
+          'устройства кражей денег.',
+          style: T.body(10, color: C.faint, height: 1.4),
+        ),
       ],
     );
   }
@@ -296,11 +327,13 @@ class _VenueCard extends StatelessWidget {
     required this.venue,
     required this.accounts,
     required this.cash,
+    required this.positions,
   });
 
   final VenueStatus venue;
   final List<Account> accounts;
   final Map<String, Map<String, Money>> cash;
+  final Map<String, Money> positions;
 
   @override
   Widget build(BuildContext context) {
@@ -348,6 +381,7 @@ class _VenueCard extends StatelessWidget {
               _AccountCard(
                 account: account,
                 balances: cash[account.id] ?? const {},
+                positions: positions[account.id],
                 nested: true,
               ),
               if (account != accounts.last) const SizedBox(height: 8),
@@ -363,11 +397,15 @@ class _AccountCard extends StatelessWidget {
   const _AccountCard({
     required this.account,
     required this.balances,
+    this.positions,
     this.nested = false,
   });
 
   final Account account;
   final Map<String, Money> balances;
+
+  /// Рыночная стоимость позиций этого счёта. null — позиций нет.
+  final Money? positions;
 
   /// Карточка внутри карточки площадки: без второй рамки поверх первой.
   final bool nested;
@@ -387,90 +425,129 @@ class _AccountCard extends StatelessWidget {
         : SectionCard(child: body);
   }
 
-  Widget _body(Color status) => Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Container(
-                width: 36,
-                height: 36,
-                alignment: Alignment.center,
-                decoration: BoxDecoration(
-                  color: C.inset,
-                  borderRadius: BorderRadius.circular(R.inset),
-                ),
-                child: Text(
-                  account.title.characters.first.toUpperCase(),
-                  style: T.jost(15, color: C.accent),
-                ),
+  // Карточка счёта по ТЗ v3 §5: аватар, название, тип, equity справа и три
+  // ячейки — кэш, позиции, итого. Раньше здесь вместо чисел стоял абзац про
+  // право на вывод, и он повторялся на каждом счёте. Объяснение, одинаковое
+  // для всех строк, — это не свойство строки: оно ушло одной строкой в низ
+  // экрана.
+  Widget _body(Color status) {
+    final cash = balances.isEmpty ? null : balances.values.first;
+    final total = cash == null
+        ? positions
+        : positions == null || positions!.currency != cash.currency
+            ? cash
+            : cash + positions!;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Container(
+              width: 36,
+              height: 36,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: C.inset,
+                borderRadius: BorderRadius.circular(R.inset),
               ),
-              const SizedBox(width: 11),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(account.title,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: T.body(13, weight: 700)),
-                    Text('${account.kind.label} · ${account.currency.code}',
-                        style: T.body(10.5, color: C.muted)),
-                  ],
-                ),
+              child: Text(
+                account.title.characters.first.toUpperCase(),
+                style: T.jost(15, color: C.accent),
               ),
-              const SizedBox(width: 8),
-              Text(
-                balances.isEmpty
-                    ? '—'
-                    : fmtMoney(balances.values.first),
-                style: T.mono(13, weight: 600),
+            ),
+            const SizedBox(width: 11),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(account.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: T.body(13, weight: 700)),
+                  Text('${account.kind.label} · ${account.currency.code}',
+                      style: T.body(10.5, color: C.muted)),
+                ],
               ),
-            ],
-          ),
-          const SizedBox(height: 10),
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Container(
-                margin: const EdgeInsets.only(top: 4),
-                width: 7,
-                height: 7,
-                decoration: BoxDecoration(color: status, shape: BoxShape.circle),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  [
-                    account.reconcile.label,
-                    if (account.syncedAt != null) _time(account.syncedAt!),
-                    account.permissions.label,
-                  ].join(' · '),
-                  style: T.mono(10.5, color: C.muted, height: 1.4),
-                ),
-              ),
-            ],
-          ),
-          if (account.permissions.safe && account.kind.syncable) ...[
-            const SizedBox(height: 6),
+            ),
+            const SizedBox(width: 8),
             Text(
-              'Право на вывод средств не запрашивается — приложению оно не '
-              'нужно, а ключ с выводом делает взлом устройства кражей денег.',
-              style: T.body(10, color: C.faint, height: 1.4),
+              total == null ? '—' : fmtMoney(total),
+              style: T.mono(13.5, weight: 700),
             ),
           ],
-          if (account.note != null) ...[
-            const SizedBox(height: 6),
-            Text(account.note!, style: T.body(10.5, color: C.muted)),
+        ),
+        const SizedBox(height: 10),
+        Row(
+          children: [
+            _Cell(label: 'кэш', value: cash),
+            _Cell(label: 'позиции', value: positions),
+            _Cell(label: 'итого', value: total, strong: true),
           ],
+        ),
+        const SizedBox(height: 9),
+        Row(
+          children: [
+            Container(
+              width: 7,
+              height: 7,
+              decoration: BoxDecoration(color: status, shape: BoxShape.circle),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                [
+                  account.reconcile.label,
+                  if (account.syncedAt != null) _time(account.syncedAt!),
+                  account.permissions.label,
+                ].join(' · '),
+                style: T.mono(10.5, color: C.muted),
+              ),
+            ),
+          ],
+        ),
+        if (account.note != null) ...[
+          const SizedBox(height: 5),
+          Text(account.note!, style: T.mono(10, color: C.faint, height: 1.35)),
         ],
-      );
+      ],
+    );
+  }
 
   static String _time(DateTime at) {
     final local = at.toLocal();
     return '${local.hour.toString().padLeft(2, '0')}:'
         '${local.minute.toString().padLeft(2, '0')}';
   }
+}
+
+/// Ячейка карточки счёта: подпись сверху, число снизу.
+class _Cell extends StatelessWidget {
+  const _Cell({required this.label, required this.value, this.strong = false});
+
+  final String label;
+  final Money? value;
+  final bool strong;
+
+  @override
+  Widget build(BuildContext context) => Expanded(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(label.toUpperCase(), style: T.microLabel()),
+            const SizedBox(height: 2),
+            Text(
+              value == null ? '—' : fmtMoney(value!),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: T.mono(
+                11.5,
+                weight: strong ? 700 : 500,
+                color: value == null ? C.faint : C.text,
+              ),
+            ),
+          ],
+        ),
+      );
 }
 
 /// Пакеты: целевые корзины поверх книги.
