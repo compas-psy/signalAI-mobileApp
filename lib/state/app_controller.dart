@@ -12,6 +12,7 @@ import '../data/repository.dart';
 import '../domain/ledger/account.dart';
 import '../domain/ledger/ledger_event.dart';
 import '../domain/ledger/money.dart';
+import '../domain/ledger/signal_ledger.dart';
 import '../domain/options/structure_builder.dart';
 import '../domain/portfolio/allocation.dart';
 import '../domain/portfolio/package_backtest.dart';
@@ -24,6 +25,10 @@ import 'navigation.dart';
 import '../domain/broker/broker.dart';
 import '../domain/broker/trading_diagnostics.dart';
 import '../domain/enums.dart';
+import '../domain/idea/idea.dart';
+import '../domain/idea/idea_mapper.dart';
+import '../domain/idea/quality_score.dart';
+import '../domain/idea/risk_center.dart';
 import '../domain/invest/invest_models.dart';
 import '../domain/models/digest.dart';
 import '../domain/models/portfolio.dart';
@@ -204,6 +209,66 @@ class AppController extends ChangeNotifier {
   }
 
   RiskProfile? get risk => _settings?.risk;
+
+  // ── Идеи по ТЗ v2 ──────────────────────────────────────────────────────
+
+  /// Состояние риск-лимитов ТЗ §20 по журналу бумажных сделок.
+  ///
+  /// null — настройки ещё не загружены: риск на сделку неизвестен, а без
+  /// него перевести результат в R в проценты капитала нельзя.
+  RiskCenter? get riskCenter {
+    final profile = _settings?.risk;
+    if (profile == null) return null;
+    final repository = _repository;
+    // Режим без журнала бумажных сделок — это не «лимиты неизвестны», а
+    // «сделок ещё не было»: пустой журнал и есть честное состояние.
+    final ledger = repository is LocalAnalysisRepository
+        ? repository.ledger
+        : SignalLedger(trades: const [], rejected: const []);
+    return RiskCenter.fromLedger(
+      ledger,
+      now: DateTime.now(),
+      riskPerTradePercent: profile.riskPercent,
+    );
+  }
+
+  /// Идеи в модели ТЗ v2: состояние, план, доказательства, разметка.
+  ///
+  /// Пересобираются из сигналов расчётного контура при каждом обращении —
+  /// бюджет риска и срок жизни зависят от текущего момента, и кэшировать их
+  /// значит показывать вчерашний лимит на сегодняшнем экране.
+  List<Idea> get ideas {
+    final signals = _digest?.signals;
+    final profile = _settings?.risk;
+    final center = riskCenter;
+    if (signals == null || profile == null || center == null) return const [];
+    final now = DateTime.now();
+    final out = <Idea>[];
+    for (final signal in signals) {
+      // Бюджет считается в два прохода: сначала оценка без плана, потом с
+      // ней — иначе бюджет зависел бы от размера, который сам от него зависит.
+      final draft = IdeaMapper.fromSignal(
+        signal,
+        budget: center.budgetFor(QualityScore(contributions: const [])),
+        equity: profile.deposit,
+        now: now,
+      );
+      out.add(IdeaMapper.fromSignal(
+        signal,
+        budget: center.budgetFor(draft.score),
+        equity: profile.deposit,
+        now: now,
+      ));
+    }
+    return out;
+  }
+
+  /// Идея, открытая в разборе.
+  Idea? get currentIdea {
+    final list = ideas;
+    if (list.isEmpty) return null;
+    return list.where((i) => i.id == _selectedSignalId).firstOrNull ?? list.first;
+  }
 
   /// Запуск: сначала быстрые данные (настройки, стратегии, сделки) — оболочка
   /// появляется сразу; затем дайджест с живым прогрессом расчёта.
@@ -431,30 +496,27 @@ class AppController extends ChangeNotifier {
   void _syncLegacyTab() {
     _tab = switch (_route.section) {
       AppSection.today => AppTab.ideas,
-      AppSection.capital => AppTab.trades,
-      AppSection.trading =>
-        _route.pill == TradingPill.ideas.index ? AppTab.ideas : AppTab.trades,
-      AppSection.lab =>
-        _route.pill == LabPill.screener.index ? AppTab.invest : AppTab.strategies,
-      AppSection.control => AppTab.settings,
+      AppSection.portfolio => AppTab.trades,
+      AppSection.ideas => AppTab.ideas,
+      AppSection.journal => AppTab.trades,
+      AppSection.settings =>
+        _route.pill == SettingsPill.strategies.index
+            ? AppTab.strategies
+            : AppTab.settings,
     };
   }
 
   void _prefetchForRoute() {
-    if (_route.section == AppSection.lab &&
-        _route.pill == LabPill.screener.index &&
-        _invest == null) {
-      refreshInvest();
-    }
-    if (_route.section == AppSection.today || _route.section == AppSection.capital) {
+    if (_route.section == AppSection.today ||
+        _route.section == AppSection.portfolio) {
       refreshCapital();
     }
-    if (_route.section == AppSection.capital &&
-        _route.pill == CapitalPill.accounts.index) {
+    if (_route.section == AppSection.portfolio &&
+        _route.pill == PortfolioPill.accounts.index) {
       refreshVenues();
     }
-    if (_route.section == AppSection.control &&
-        _route.pill == ControlPill.integrations.index) {
+    if (_route.section == AppSection.settings &&
+        _route.pill == SettingsPill.connections.index) {
       refreshVenues();
     }
   }

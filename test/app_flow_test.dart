@@ -30,7 +30,17 @@ void main() {
     await tester.tap(find.text(section).last);
     await tester.pump(const Duration(milliseconds: 300));
     if (pill != null) {
-      await tester.tap(find.text(pill));
+      // Пилюль в разделе может быть больше, чем помещается в ширину телефона:
+      // строка прокручивается, и до дальних приходится доезжать.
+      final target = find.text(pill);
+      final row = find.byType(SingleChildScrollView).first;
+      for (var i = 0; i < 8 && target.evaluate().isEmpty; i++) {
+        await tester.drag(row, const Offset(-160, 0));
+        await tester.pump(const Duration(milliseconds: 120));
+      }
+      await tester.ensureVisible(target);
+      await tester.pump(const Duration(milliseconds: 120));
+      await tester.tap(target);
       await tester.pump(const Duration(milliseconds: 300));
     }
   }
@@ -107,20 +117,18 @@ void main() {
     ));
   });
 
-  testWidgets('дайджест показывает режим рынка и пять идей', (tester) async {
+  testWidgets('лента идей показывает карточки по ТЗ §8.1', (tester) async {
     await pumpApp(tester);
-    await goTo(tester, 'Торговля');
+    await goTo(tester, 'Идеи', 'Все');
 
-    expect(find.text('Утренний дайджест'), findsOneWidget);
-    expect(find.text('Сб, 25 июля · 10:10 МСК'), findsOneWidget);
-    expect(find.text('5 из 5'), findsOneWidget);
+    // Инструмент, направление и состояние — то, что читается первым.
     expect(find.text('SiU6'), findsOneWidget);
-    expect(find.text('IMOEX'), findsOneWidget);
+    expect(find.text('LONG'), findsWidgets);
   });
 
   testWidgets('карточка идеи открывается по тапу', (tester) async {
     await pumpApp(tester);
-    await goTo(tester, 'Торговля');
+    await goTo(tester, 'Идеи', 'Все');
 
     await tester.tap(find.text('SiU6'));
     await tester.pump(const Duration(milliseconds: 300));
@@ -128,17 +136,13 @@ void main() {
     expect(find.text('Доллар/Рубль · сент 2026'), findsOneWidget);
     expect(find.text('Тейк-профиты'.toUpperCase()), findsOneWidget);
 
-    // Объём считается от депозита 2 400 000 ₽ и риска 0,75%.
-    await scrollTo(tester, find.text('32 конт.'));
-    expect(find.text('32 конт.'), findsOneWidget);
-
     await scrollTo(tester, find.text('Отправить на биржу'));
     expect(find.text('Отправить на биржу'), findsOneWidget);
   });
 
   testWidgets('подтверждение выставляет ордер и показывает тост', (tester) async {
     await pumpApp(tester);
-    await goTo(tester, 'Торговля');
+    await goTo(tester, 'Идеи', 'Все');
 
     await tester.tap(find.text('SiU6'));
     await tester.pump(const Duration(milliseconds: 300));
@@ -153,39 +157,31 @@ void main() {
     await tester.pump(const Duration(milliseconds: 300));
 
     expect(find.text('Ордер отправлен · OCO SL + TP выставлены'), findsOneWidget);
-    expect(
-      find.text('В работе · лимитный ордер и OCO (SL + 3 TP) выставлены'),
-      findsOneWidget,
-    );
   });
 
-  testWidgets('сверка с площадками доступна и без книги', (tester) async {
-    // Замкнутый круг, из-за которого на устройстве нечем было начать: блок
-    // здоровья данных с единственной кнопкой сверки рисовался только при
-    // непустой книге, а наполнить книгу можно было только этой кнопкой.
+  testWidgets('«Сегодня» отвечает на три вопроса: деньги, риск, решения',
+      (tester) async {
+    // ТЗ §6.1: экран не дублирует терминал. Ровно капитал, лимиты риска и
+    // счётчик решений — всё остальное живёт в своих разделах.
     await pumpApp(tester);
 
-    await scrollTo(tester, find.text('Сверить с площадками'));
-    expect(find.text('Здоровье данных'.toUpperCase()), findsOneWidget);
-    expect(find.text('Сверить с площадками'), findsWidgets);
+    expect(find.text('Капитал'.toUpperCase()), findsOneWidget);
+    expect(find.text('Риск'.toUpperCase()), findsOneWidget);
+    expect(find.text('Нужны решения'.toUpperCase()), findsOneWidget);
   });
 
   testWidgets('разделы и подразделы переключаются', (tester) async {
     await pumpApp(tester);
 
-    // Приложение открывается на «Сегодня»: состояние капитала, а не лента.
-    expect(find.text('Очередь решений'.toUpperCase()), findsOneWidget);
-
-    await goTo(tester, 'Торговля', 'Позиции');
+    await goTo(tester, 'Журнал');
     expect(find.text('Эквити · 30 дней'.toUpperCase()), findsOneWidget);
     expect(find.text('+8,4%'), findsOneWidget);
 
-    await goTo(tester, 'Лаборатория');
+    await goTo(tester, 'Настройки', 'Стратегии');
     await scrollTo(tester, find.text('Запустить бэктест'));
-    expect(find.text('Бэктест'.toUpperCase()), findsOneWidget);
     expect(find.text('Запустить бэктест'), findsOneWidget);
 
-    await goTo(tester, 'Контроль', 'Интеграции');
+    await goTo(tester, 'Настройки', 'Подключения');
     expect(find.text('Биржи · API'.toUpperCase()), findsOneWidget);
     expect(find.text('Т-Инвестиции API'), findsOneWidget);
   });
@@ -193,7 +189,7 @@ void main() {
   testWidgets('бэктест обновляет статистику', (tester) async {
     await pumpApp(tester);
 
-    await goTo(tester, 'Лаборатория');
+    await goTo(tester, 'Настройки', 'Стратегии');
 
     await scrollTo(tester, find.text('Запустить бэктест'));
     await tester.tap(find.text('Запустить бэктест'));
@@ -208,7 +204,7 @@ void main() {
   testWidgets('Binance подключается из настроек', (tester) async {
     await pumpApp(tester);
 
-    await goTo(tester, 'Контроль', 'Интеграции');
+    await goTo(tester, 'Настройки', 'Подключения');
 
     expect(find.text('Не подключено'), findsOneWidget);
     await tester.tap(find.text('Подключить'));

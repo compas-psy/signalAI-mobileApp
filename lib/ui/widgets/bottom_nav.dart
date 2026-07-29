@@ -5,7 +5,7 @@ import '../../theme/tokens.dart';
 import '../../theme/typography.dart';
 import 'vector_icon.dart';
 
-/// Нижняя навигация: Сегодня · Капитал · Торговля · Лаборатория · Контроль.
+/// Нижняя навигация: Сегодня · Портфель · Идеи · Журнал · Настройки.
 class BottomNav extends StatelessWidget {
   const BottomNav({super.key, required this.current, required this.onSelect});
 
@@ -70,14 +70,14 @@ class NavItem {
 /// Порядок разделов — один для нижней панели и бокового рейла.
 const navItems = <NavItem>[
   NavItem(AppSection.today, 'Сегодня', _today),
-  NavItem(AppSection.capital, 'Капитал', _capital),
-  NavItem(AppSection.trading, 'Торговля', _trading),
-  NavItem(AppSection.lab, 'Лаборатория', _lab),
-  NavItem(AppSection.control, 'Контроль', _control),
+  NavItem(AppSection.portfolio, 'Портфель', _portfolio),
+  NavItem(AppSection.ideas, 'Идеи', _ideas),
+  NavItem(AppSection.journal, 'Журнал', _journal),
+  NavItem(AppSection.settings, 'Настройки', _settings),
 ];
 
 IconSpec _today(Color _) => Icons.navToday;
-IconSpec _capital(Color _) => Icons.navInvest;
-IconSpec _trading(Color _) => Icons.navIdeas;
-IconSpec _lab(Color background) => Icons.navStrategies(background);
-IconSpec _control(Color _) => Icons.navSettings;
+IconSpec _portfolio(Color _) => Icons.navInvest;
+IconSpec _ideas(Color _) => Icons.navIdeas;
+IconSpec _journal(Color background) => Icons.navStrategies(background);
+IconSpec _settings(Color _) => Icons.navSettings;

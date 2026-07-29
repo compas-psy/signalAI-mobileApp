@@ -1,427 +1,311 @@
 import 'package:flutter/widgets.dart';
 
-import '../../core/format.dart';
-import '../../domain/models/digest.dart';
-import '../../domain/models/signal.dart';
+import '../../domain/idea/idea.dart';
+import '../../domain/idea/idea_state.dart';
 import '../../state/app_scope.dart';
+import '../../state/navigation.dart';
 import '../../theme/tokens.dart';
 import '../../theme/typography.dart';
 import '../tone.dart';
 import '../widgets/common.dart';
 import '../widgets/confluence_ring.dart';
-import '../widgets/level_strip.dart';
-import '../widgets/vector_icon.dart';
 
-/// Экран «Идеи» — утренний дайджест (ТЗ §4: анализ в 10:10 МСК).
-class IdeasScreen extends StatelessWidget {
-  const IdeasScreen({super.key, required this.digest});
-
-  final DailyDigest digest;
-
-  @override
-  Widget build(BuildContext context) => Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Expanded(
-            child: ListView(
-              padding: EdgeInsets.zero,
-              children: [
-                _DigestTitle(digest: digest),
-                if (digest.stale) const _StaleBanner(),
-                _RegimeCard(digest: digest),
-                _EventsCard(events: digest.events),
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(S.screen, 18, S.screen, 8),
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.baseline,
-                    textBaseline: TextBaseline.alphabetic,
-                    children: [
-                      const Expanded(child: SectionLabel('Идеи на сегодня')),
-                      Text(
-                        digest.signalsQuota,
-                        style: T.body(12, weight: 700, color: C.accent),
-                      ),
-                    ],
-                  ),
-                ),
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(S.screen, 0, S.screen, 90),
-                  child: Column(
-                    children: [
-                      if (digest.signals.isEmpty)
-                        const _NoIdeasCard()
-                      else
-                        for (final signal in digest.signals) ...[
-                          IdeaCard(signal: signal),
-                          if (signal != digest.signals.last) const SizedBox(height: 10),
-                        ],
-                      if (digest.sourceNote != null || digest.rejections.isNotEmpty) ...[
-                        const SizedBox(height: 10),
-                        _ProvenanceCard(digest: digest),
-                      ],
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-      );
-}
-
-class _DigestTitle extends StatelessWidget {
-  const _DigestTitle({required this.digest});
-
-  final DailyDigest digest;
-
-  @override
-  Widget build(BuildContext context) => Padding(
-        padding: const EdgeInsets.fromLTRB(S.screen, 14, S.screen, 8),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(digest.title, style: T.jost(23)),
-                  const SizedBox(height: 2),
-                  Text(digest.subtitle, style: T.body(12, color: C.muted)),
-                ],
-              ),
-            ),
-            for (final badge in digest.deliveryBadges) ...[
-              const SizedBox(width: 6),
-              OutlineBadge(
-                label: badge,
-                color: C.green,
-                borderColor: C.greenBorder,
-                background: C.greenFaint,
-                fontWeight: 700,
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                radius: R.pill,
-              ),
-            ],
-          ],
-        ),
-      );
-}
-
-class _RegimeCard extends StatelessWidget {
-  const _RegimeCard({required this.digest});
-
-  final DailyDigest digest;
-
-  @override
-  Widget build(BuildContext context) => SectionCard(
-        margin: const EdgeInsets.fromLTRB(S.screen, 6, S.screen, 0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Wrap(
-              spacing: 6,
-              runSpacing: 6,
-              children: [
-                for (final quote in digest.regime)
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-                    decoration: BoxDecoration(
-                      color: C.chip,
-                      borderRadius: BorderRadius.circular(R.chipLg),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.baseline,
-                      textBaseline: TextBaseline.alphabetic,
-                      children: [
-                        Text(quote.name, style: T.body(11, weight: 600, color: C.muted)),
-                        const SizedBox(width: 5),
-                        Text(
-                          quote.value,
-                          style: T.mono(11, weight: 600, color: toneColor(quote.tone)),
-                        ),
-                      ],
-                    ),
-                  ),
-              ],
-            ),
-            const SizedBox(height: 10),
-            Text(
-              digest.regimeNote,
-              style: T.body(12, color: C.textSecondary, height: 1.5),
-            ),
-          ],
-        ),
-      );
-}
-
-class _EventsCard extends StatelessWidget {
-  const _EventsCard({required this.events});
-
-  final List<MarketEvent> events;
-
-  @override
-  Widget build(BuildContext context) => SectionCard(
-        margin: const EdgeInsets.fromLTRB(S.screen, 10, S.screen, 0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const SectionLabel('События по активным идеям'),
-            for (final event in events) ...[
-              const SizedBox(height: 9),
-              Row(
-                children: [
-                  Container(
-                    width: 7,
-                    height: 7,
-                    decoration: BoxDecoration(
-                      color: impactColor(event.impact),
-                      shape: BoxShape.circle,
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  SizedBox(
-                    width: 40,
-                    child: Text(event.time, style: T.mono(11, color: C.muted)),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(event.text, style: T.body(12, color: C.textSoft)),
-                  ),
-                  if (event.affects != null) ...[
-                    const SizedBox(width: 10),
-                    Text(event.affects!, style: T.body(10, color: C.muted)),
-                  ],
-                ],
-              ),
-            ],
-          ],
-        ),
-      );
-}
-
-/// Данные показаны из кэша: обновить не удалось. Молчать об этом нельзя —
-/// уровни могли устареть, а решение принимает человек.
-class _StaleBanner extends StatelessWidget {
-  const _StaleBanner();
-
-  @override
-  Widget build(BuildContext context) => Container(
-        margin: const EdgeInsets.fromLTRB(S.screen, 8, S.screen, 0),
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-        decoration: BoxDecoration(
-          color: const Color(0x1AFFD400),
-          border: Border.all(color: const Color(0x59FFD400)),
-          borderRadius: BorderRadius.circular(R.inner),
-        ),
-        child: Row(
-          children: [
-            const VectorIcon(Icons.shield, size: 14, color: C.accent),
-            const SizedBox(width: 9),
-            Expanded(
-              child: Text(
-                'Данные из кэша: обновить не удалось. Проверьте связь — '
-                'Настройки → Диагностика данных.',
-                style: T.body(11, color: C.accent, height: 1.4),
-              ),
-            ),
-          ],
-        ),
-      );
-}
-
-/// Честная пустая выдача: идей нет — и это результат, а не сбой.
-class _NoIdeasCard extends StatelessWidget {
-  const _NoIdeasCard();
-
-  @override
-  Widget build(BuildContext context) => SectionCard(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('Сегодня идей нет', style: T.body(14, weight: 700)),
-            const SizedBox(height: 4),
-            Text(
-              'Скринер отработал, но ни один кандидат не прошёл фильтры. '
-              'Это нормально: отсутствие сделки — тоже решение. Причины '
-              'отбраковки — ниже.',
-              style: T.body(11, color: C.muted, height: 1.5),
-            ),
-          ],
-        ),
-      );
-}
-
-/// Происхождение данных: где посчитано, что отбраковано, кнопка пересчёта.
+/// Лента идей (ТЗ §8).
 ///
-/// Карточка отвечает на вопрос «это муляж или реальные идеи?» прямо в
-/// интерфейсе: видно время расчёта, источники и работу фильтров.
-class _ProvenanceCard extends StatefulWidget {
-  const _ProvenanceCard({required this.digest});
+/// Карточка отвечает на пять вопросов и молчит обо всём остальном: что за
+/// инструмент и куда, в каком состоянии, какой сетап и на каких таймфреймах,
+/// сколько это стоит и сколько ещё живёт. Всё прочее — в разборе идеи.
+class IdeasScreen extends StatelessWidget {
+  const IdeasScreen({super.key, required this.pill});
 
-  final DailyDigest digest;
-
-  @override
-  State<_ProvenanceCard> createState() => _ProvenanceCardState();
-}
-
-class _ProvenanceCardState extends State<_ProvenanceCard> {
-  bool _expanded = false;
+  /// Разрез ленты из пилюли раздела.
+  final int pill;
 
   @override
   Widget build(BuildContext context) {
-    final controller = AppScope.read(context);
-    final digest = widget.digest;
-    final rejections = digest.rejections;
-    final shown = _expanded ? rejections : rejections.take(4).toList();
+    final controller = AppScope.of(context);
+    final now = DateTime.now();
+    final filter = IdeasPill.values[pill.clamp(0, IdeasPill.values.length - 1)];
 
-    return SectionCard(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const SectionLabel('Откуда эти идеи'),
-          if (digest.sourceNote != null) ...[
-            const SizedBox(height: 6),
-            Text(digest.sourceNote!, style: T.body(11, color: C.textSecondary, height: 1.5)),
-          ],
-          if (rejections.isNotEmpty) ...[
-            const SizedBox(height: 10),
-            Text(
-              'Отбраковано кандидатов: ${rejections.length}',
-              style: T.body(11, weight: 700, color: C.muted),
-            ),
-            const SizedBox(height: 4),
-            for (final line in shown)
-              Padding(
-                padding: const EdgeInsets.only(top: 3),
-                child: Text('· $line', style: T.mono(10.5, color: C.dim)),
-              ),
-            if (rejections.length > 4) ...[
-              const SizedBox(height: 6),
-              Pressable(
-                onTap: () => setState(() => _expanded = !_expanded),
-                child: Text(
-                  _expanded ? 'Свернуть' : 'Показать все ${rejections.length}',
-                  style: T.body(11, weight: 700, color: C.accent),
-                ),
-              ),
-            ],
-          ],
-          const SizedBox(height: 10),
-          Pressable(
-            onTap: () => controller.refreshDigest(force: true),
-            child: Container(
-              padding: const EdgeInsets.symmetric(vertical: 10),
-              decoration: BoxDecoration(
-                border: Border.all(color: C.borderHover),
-                borderRadius: BorderRadius.circular(R.inner),
-              ),
-              child: Center(
-                child: Text(
-                  'Пересчитать идеи',
-                  style: T.body(12, weight: 800, color: C.accent),
-                ),
-              ),
-            ),
-          ),
-        ],
+    if (controller.digest == null) {
+      return _Pending(
+        loading: controller.digestLoading,
+        stage: controller.analysisStage,
+        error:
+            controller.digestError == null ? null : controller.digestErrorText,
+        onRetry: controller.refreshDigest,
+      );
+    }
+
+    final all = controller.ideas;
+    final visible = filterIdeas(all, filter, now);
+    if (visible.isEmpty) return _Empty(filter: filter, total: all.length);
+
+    return ListView.builder(
+      padding: const EdgeInsets.fromLTRB(S.screen, 12, S.screen, 18),
+      itemCount: visible.length,
+      itemBuilder: (context, i) => Padding(
+        padding: EdgeInsets.only(bottom: i == visible.length - 1 ? 0 : S.gap),
+        child: IdeaCard(
+          idea: visible[i],
+          now: now,
+          onTap: () => controller.openSignal(visible[i].id),
+        ),
       ),
     );
   }
+
+  /// Разрез по состоянию (ТЗ §8.2). Порядок внутри разреза — приоритет §6.2.
+  static List<Idea> filterIdeas(
+      List<Idea> ideas, IdeasPill filter, DateTime now) {
+    final ranked = IdeaPriority.rank(ideas, now);
+    return switch (filter) {
+      IdeasPill.decisions =>
+        ranked.where((i) => i.state.needsAttention).toList(),
+      IdeasPill.watch =>
+        ranked.where((i) => i.state == IdeaState.watch).toList(),
+      IdeasPill.active =>
+        ranked.where((i) => i.state == IdeaState.active).toList(),
+      IdeasPill.all => ranked,
+    };
+  }
 }
 
-/// Карточка идеи в списке дайджеста.
+/// Карточка идеи в списке (ТЗ §8.1).
 class IdeaCard extends StatelessWidget {
-  const IdeaCard({super.key, required this.signal});
+  const IdeaCard({
+    super.key,
+    required this.idea,
+    required this.now,
+    this.onTap,
+  });
 
-  final TradingSignal signal;
+  final Idea idea;
+  final DateTime now;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
-    final controller = AppScope.read(context);
-    final working = signal.status.isWorking;
-
-    final decimals = signal.priceDecimals;
-    // Сетап одной строкой: то же, что раньше было россыпью чипов, но читается
-    // слева направо как фраза и не отнимает у карточки третью строку.
-    final setup = [
-      if (signal.chips.isNotEmpty) signal.chips.join(' + '),
-      signal.market.label,
-      signal.horizonLabel,
-    ].join(' · ');
-
+    final plan = idea.plan;
     return Pressable(
-      onTap: () => controller.openSignal(signal.id),
+      onTap: onTap,
       child: SectionCard(
-        padding: const EdgeInsets.fromLTRB(14, 13, 14, 13),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                ConfluenceRing(score: signal.score),
-                const SizedBox(width: 11),
                 Expanded(
-                  child: Row(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Flexible(
-                        child: Text(
-                          signal.symbol,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: T.jost(17),
-                        ),
+                      Row(
+                        children: [
+                          Flexible(
+                            child: Text(
+                              idea.instrumentId,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: T.jost(17),
+                            ),
+                          ),
+                          const SizedBox(width: 7),
+                          DirectionBadge(
+                            label: idea.direction.label,
+                            color: directionColor(idea.direction),
+                            background: directionBackground(idea.direction),
+                          ),
+                          const SizedBox(width: 6),
+                          StateBadge(state: idea.state),
+                        ],
                       ),
-                      const SizedBox(width: 7),
-                      DirectionBadge(
-                        label: signal.direction.label,
-                        color: directionColor(signal.direction),
-                        background: directionBackground(signal.direction),
+                      const SizedBox(height: 7),
+                      Text(
+                        '${idea.strategy.label} · ${idea.timeframes.join(" / ")}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: T.body(11.5, color: C.muted),
                       ),
-                      if (working) ...[
-                        const SizedBox(width: 7),
-                        Text(
-                          '● ${signal.status.label}',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: T.body(10, weight: 700, color: C.accent),
-                        ),
-                      ],
                     ],
                   ),
                 ),
-                const SizedBox(width: 8),
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: [
-                    Text(signal.lastPrice, style: T.mono(13.5, weight: 600)),
-                    Text(
-                      signal.changeLabel,
-                      style: T.mono(11, color: signal.changeUp ? C.green : C.red),
-                    ),
-                  ],
-                ),
+                const SizedBox(width: 10),
+                ConfluenceRing(score: idea.score.value),
               ],
             ),
-            const SizedBox(height: 7),
-            Text(
-              setup,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: T.body(11.5, color: C.muted),
-            ),
-            const SizedBox(height: 10),
-            LevelStrip(
-              entry: fmtPrice(signal.entry, decimals),
-              stop: fmtPrice(signal.stopLoss, decimals),
-              targets: [
-                for (final tp in signal.takeProfits) fmtPrice(tp.price, decimals),
+            const SizedBox(height: 11),
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                TagChip(idea.market.label),
+                TagChip(plan == null
+                    ? 'плана нет'
+                    : 'R/R ${_rr(plan.rrToSecondTarget)}'),
+                TagChip(riskLabel(idea)),
+                TagChip(ttlLabel(idea, now)),
               ],
-              riskReward: '${signal.riskReward} R:R',
             ),
           ],
         ),
       ),
     );
   }
+
+  static String _rr(double value) =>
+      value.toStringAsFixed(1).replaceAll('.', ',');
+
+  /// Риск сделки. Идея без права входа честно говорит «риск не выделен»,
+  /// а не показывает ноль — ноль читается как «бесплатно».
+  static String riskLabel(Idea idea) {
+    final plan = idea.plan;
+    if (plan == null || plan.riskRubles <= 0) return 'риск не выделен';
+    return 'риск ${money(plan.riskRubles)} ₽ · '
+        '${plan.riskPercent.toStringAsFixed(2).replaceAll('.', ',')}%';
+  }
+
+  static String ttlLabel(Idea idea, DateTime now) {
+    if (idea.state.isTerminal) return idea.state.label;
+    final left = idea.remaining(now);
+    if (left.isNegative) return 'срок вышел';
+    if (left.inHours >= 24) return 'ещё ${left.inDays} дн';
+    if (left.inHours >= 1) {
+      return 'ещё ${left.inHours} ч ${left.inMinutes % 60} мин';
+    }
+    return 'ещё ${left.inMinutes} мин';
+  }
+
+  static String money(double v) => v
+      .round()
+      .toString()
+      .replaceAllMapped(RegExp(r'\B(?=(\d{3})+(?!\d))'), (_) => ' ');
+}
+
+/// Бейдж состояния идеи. Цвет — по смыслу: жёлтый значит «требует решения
+/// сейчас», серый — «наблюдаем», красный — «исполнять нельзя».
+class StateBadge extends StatelessWidget {
+  const StateBadge({super.key, required this.state});
+
+  final IdeaState state;
+
+  static Color colorOf(IdeaState state) => switch (state) {
+        IdeaState.triggered => C.accent,
+        IdeaState.ready => C.info,
+        IdeaState.active => C.green,
+        IdeaState.watch => C.muted,
+        IdeaState.closed => C.muted,
+        IdeaState.skipped => C.muted,
+        IdeaState.expired => C.warning,
+        IdeaState.invalidated => C.red,
+      };
+
+  @override
+  Widget build(BuildContext context) {
+    final color = colorOf(state);
+    return OutlineBadge(
+      label: state.label,
+      color: color,
+      borderColor: color.withValues(alpha: 0.35),
+      background: color.withValues(alpha: 0.12),
+      fontWeight: 800,
+    );
+  }
+}
+
+class _Empty extends StatelessWidget {
+  const _Empty({required this.filter, required this.total});
+
+  final IdeasPill filter;
+  final int total;
+
+  @override
+  Widget build(BuildContext context) {
+    // Честный пустой экран (ТЗ §6): называет, чего именно нет и почему.
+    final (title, note) = switch (filter) {
+      IdeasPill.decisions => (
+          'Решений нет',
+          total == 0
+              ? 'Расчёт не нашёл ни одной идеи выше порога показа. Это не '
+                  'сбой: в узком рынке сетапов может не быть неделями.'
+              : 'Ни одна идея не дошла до состояния, требующего решения. '
+                  'Остальные — на вкладках «Наблюдение» и «Все».'
+        ),
+      IdeasPill.watch => (
+          'Наблюдать нечего',
+          'Идей с контекстом, но без триггера, сейчас нет.'
+        ),
+      IdeasPill.active => (
+          'Открытых позиций нет',
+          'Подтверждённые идеи появятся здесь вместе с заявками.'
+        ),
+      IdeasPill.all => (
+          'Идей нет',
+          'Расчёт не нашёл ни одной идеи выше порога показа 65.'
+        ),
+    };
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(28),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(title, style: T.jost(18)),
+            const SizedBox(height: 8),
+            Text(
+              note,
+              textAlign: TextAlign.center,
+              style: T.body(12, color: C.muted, height: 1.5),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _Pending extends StatelessWidget {
+  const _Pending({
+    required this.loading,
+    required this.stage,
+    required this.error,
+    required this.onRetry,
+  });
+
+  final bool loading;
+  final String? stage;
+  final String? error;
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) => Center(
+        child: Padding(
+          padding: const EdgeInsets.all(28),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (loading || error == null) ...[
+                BusyLine(label: stage ?? 'Подключаемся к биржам…'),
+                const SizedBox(height: 12),
+                Text(
+                  'Идёт расчёт по котировкам MOEX ISS и Bybit. Остальные '
+                  'разделы уже работают — расчёт не прервётся.',
+                  textAlign: TextAlign.center,
+                  style: T.body(11.5, color: C.muted, height: 1.5),
+                ),
+              ] else ...[
+                Text('Данные бирж недоступны', style: T.jost(18)),
+                const SizedBox(height: 8),
+                Text(
+                  error!,
+                  textAlign: TextAlign.center,
+                  style: T.body(12, color: C.muted, height: 1.5),
+                ),
+                const SizedBox(height: 16),
+                ActionButton(label: 'Повторить', onTap: onRetry, primary: true),
+              ],
+            ],
+          ),
+        ),
+      );
 }

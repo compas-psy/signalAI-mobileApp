@@ -8,7 +8,6 @@ import '../../domain/ledger/money.dart';
 import '../../domain/portfolio/package_plan.dart';
 import '../../state/app_controller.dart';
 import '../../state/app_scope.dart';
-import '../../state/navigation.dart';
 import '../../theme/tokens.dart';
 import '../../theme/typography.dart';
 import '../layout.dart';
@@ -23,6 +22,13 @@ import '../widgets/segmented.dart';
 ///
 /// Книга здесь не витрина, а рабочая поверхность: операцию можно завести
 /// руками, и любое число раздела считается из тех же записей.
+/// Подразделы прежнего «Капитала».
+///
+/// Живут здесь, а не в навигации: снаружи раздел называется «Портфель» и
+/// имеет собственные пилюли по ТЗ §7. Это внутреннее устройство экрана,
+/// которое уйдёт вместе с его переписыванием.
+enum CapitalPill { overview, accounts, packages, book, analytics }
+
 class CapitalScreen extends StatelessWidget {
   const CapitalScreen({super.key, required this.pill});
 

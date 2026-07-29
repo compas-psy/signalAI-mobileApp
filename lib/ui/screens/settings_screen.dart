@@ -30,8 +30,8 @@ class SettingsScreen extends StatelessWidget {
   final int pill;
 
   /// Показывать ли карточки этого подраздела.
-  bool _show(ControlPill target) =>
-      pill.clamp(0, ControlPill.values.length - 1) == target.index;
+  bool _show(SettingsPill target) =>
+      pill.clamp(0, SettingsPill.values.length - 1) == target.index;
 
   @override
   Widget build(BuildContext context) {
@@ -44,17 +44,17 @@ class SettingsScreen extends StatelessWidget {
             padding: const EdgeInsets.fromLTRB(S.screen, 12, S.screen, 90),
             children: [
               CardGrid(children: [
-              // Риск и лимиты: можно ли торговать, чем и на каких правилах.
-              if (_show(ControlPill.risk)) ...[
-                if (snapshot.trading != null) ...[
-                  _TradingStatusCard(trading: snapshot.trading!),
-                  _TradingControlsCard(trading: snapshot.trading!),
-                ],
-                _RiskCard(risk: snapshot.risk),
+              // Режим: paper / shadow / live и допуск к живым деньгам.
+              if (_show(SettingsPill.mode) && snapshot.trading != null) ...[
+                _TradingStatusCard(trading: snapshot.trading!),
+                _TradingControlsCard(trading: snapshot.trading!),
               ],
 
+              // Риск: лимиты ТЗ §20 и правила размера позиции.
+              if (_show(SettingsPill.risk)) _RiskCard(risk: snapshot.risk),
+
               // Интеграции: источники данных и площадки исполнения.
-              if (_show(ControlPill.integrations)) ...[
+              if (_show(SettingsPill.connections)) ...[
                 if (snapshot.exchanges.any((e) => e.isDataSource))
                   _ExchangesCard(
                     title: 'Источники данных',
@@ -79,7 +79,7 @@ class SettingsScreen extends StatelessWidget {
               ],
 
               // Уведомления: расписание и доставка.
-              if (_show(ControlPill.notifications)) ...[
+              if (_show(SettingsPill.notifications)) ...[
                 _TogglesCard(
                   title: 'Доставка сигналов',
                   items: snapshot.channels,
@@ -96,7 +96,7 @@ class SettingsScreen extends StatelessWidget {
               ],
 
               // Безопасность и прозрачность: чем проверяется доверие.
-              if (_show(ControlPill.security)) ...[
+              if (_show(SettingsPill.security)) ...[
                 // Доверие проверяется, а не декларируется: живой прогон
                 // источников данных с вердиктами по каждому полю.
                 SectionCard(

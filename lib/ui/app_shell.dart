@@ -5,15 +5,14 @@ import '../state/app_scope.dart';
 import '../theme/tokens.dart';
 import '../theme/typography.dart';
 import '../state/navigation.dart';
-import 'screens/capital_screen.dart';
 import 'screens/idea_detail_screen.dart';
-import 'screens/today_screen.dart';
 import 'screens/ideas_screen.dart';
-import 'screens/options_screen.dart';
-import 'screens/invest_screen.dart';
+import 'screens/journal_screen.dart';
+import 'screens/portfolio_screen.dart';
+import 'screens/diagnostics_screen.dart';
 import 'screens/settings_screen.dart';
 import 'screens/strategies_screen.dart';
-import 'screens/trades_screen.dart';
+import 'screens/today_screen.dart';
 import 'widgets/confirm_sheet.dart';
 import 'widgets/toast.dart';
 import 'widgets/vector_icon.dart';
@@ -100,9 +99,7 @@ class AppShell extends StatelessWidget {
   /// Содержимое: на широком экране «Идеи» и разбор стоят рядом, остальные
   /// разделы — колонкой ограниченной ширины, чтобы строки оставались читаемыми.
   Widget _content(AppController controller, Pane pane) {
-    if (pane.usesTwoPane &&
-        controller.section == AppSection.trading &&
-        controller.pill == TradingPill.ideas.index) {
+    if (pane.usesTwoPane && controller.section == AppSection.ideas) {
       final signal = controller.currentSignal;
       final risk = controller.risk;
       return Column(
@@ -119,12 +116,7 @@ class AppShell extends StatelessWidget {
             child: Row(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          SizedBox(
-            width: 400,
-            child: controller.digest == null
-                ? _DigestPending(controller: controller)
-                : IdeasScreen(digest: controller.digest!),
-          ),
+          SizedBox(width: 400, child: IdeasScreen(pill: controller.pill)),
           const VerticalDivider(),
           Expanded(
             child: signal == null || risk == null
@@ -169,28 +161,29 @@ class AppShell extends StatelessWidget {
     }
     return switch (controller.section) {
       AppSection.today => const TodayScreen(),
-      AppSection.capital => CapitalScreen(pill: controller.pill),
-      AppSection.trading => switch (TradingPill.values[
-            controller.pill.clamp(0, TradingPill.values.length - 1)]) {
-          TradingPill.ideas => controller.digest == null
-              ? _DigestPending(controller: controller)
-              : IdeasScreen(digest: controller.digest!),
-          TradingPill.positions => TradesScreen(summary: controller.trades!),
-          TradingPill.options => const OptionsScreen(),
-          TradingPill.journal => TradesScreen(summary: controller.trades!),
-        },
-      AppSection.lab => switch (LabPill
-            .values[controller.pill.clamp(0, LabPill.values.length - 1)]) {
-          LabPill.strategies => StrategiesScreen(
+      AppSection.portfolio => PortfolioScreen(pill: controller.pill),
+      AppSection.ideas => IdeasScreen(pill: controller.pill),
+      AppSection.journal => JournalScreen(
+          pill: controller.pill,
+          summary: controller.trades!,
+        ),
+      // Стратегии и диагностика данных — подразделы настроек по ТЗ §13, но
+      // экраны у них свои: набивать их в общую ленту настроек значило бы
+      // прятать бэктест и живую проверку источников под скроллом.
+      AppSection.settings => switch (SettingsPill
+            .values[controller.pill.clamp(0, SettingsPill.values.length - 1)]) {
+          SettingsPill.strategies => StrategiesScreen(
               snapshot: controller.strategies!,
               backtestRunning: controller.backtestRunning,
               optimizing: controller.optimizing,
               backtestStage: controller.analysisStage,
             ),
-          LabPill.screener => const InvestScreen(),
+          SettingsPill.data => const DiagnosticsScreen(),
+          _ => SettingsScreen(
+              snapshot: controller.settings!,
+              pill: controller.pill,
+            ),
         },
-      AppSection.control =>
-        SettingsScreen(snapshot: controller.settings!, pill: controller.pill),
     };
   }
 
@@ -261,72 +254,6 @@ class VerticalDivider extends StatelessWidget {
   @override
   Widget build(BuildContext context) =>
       Container(width: 1, color: C.dividerSoft);
-}
-
-/// Вкладка «Идеи», пока дайджест ещё считается или расчёт упал.
-///
-/// Это не заставка: оболочка уже работает, вкладки переключаются, а здесь
-/// виден живой прогресс реального расчёта по данным бирж.
-class _DigestPending extends StatelessWidget {
-  const _DigestPending({required this.controller});
-
-  final AppController controller;
-
-  @override
-  Widget build(BuildContext context) {
-    final failed = controller.digestError != null && !controller.digestLoading;
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(28),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(
-              failed ? 'Данные бирж недоступны' : 'Считаем идеи…',
-              style: T.jost(20),
-            ),
-            const SizedBox(height: 10),
-            if (failed) ...[
-              Text(
-                controller.digestErrorText,
-                textAlign: TextAlign.center,
-                style: T.body(12, color: C.muted, height: 1.5),
-              ),
-              const SizedBox(height: 18),
-              GestureDetector(
-                onTap: controller.refreshDigest,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 13),
-                  decoration: BoxDecoration(
-                    color: C.accent,
-                    borderRadius: BorderRadius.circular(R.button),
-                  ),
-                  child: Text('Повторить', style: T.body(14, weight: 800, color: C.onAccent)),
-                ),
-              ),
-            ] else ...[
-              // Стадия обновляется репозиторием: видно, какой инструмент
-              // анализируется прямо сейчас.
-              Text(
-                controller.analysisStage ?? 'Подключаемся к биржам…',
-                textAlign: TextAlign.center,
-                style: T.mono(12, color: C.accent),
-              ),
-              const SizedBox(height: 10),
-              Text(
-                'Идёт реальный расчёт по котировкам MOEX ISS и Bybit: десятки '
-                'запросов к биржам, обычно от полуминуты до пары минут. '
-                'Расчёт не прерывается, если уйти на другую вкладку — '
-                'остальные разделы уже работают.',
-                textAlign: TextAlign.center,
-                style: T.body(11, color: C.muted, height: 1.5),
-              ),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
 }
 
 class _LoadingState extends StatelessWidget {

@@ -1,18 +1,19 @@
-/// Навигация v3: пять разделов, подразделы — пилюли в шапке.
+/// Навигация по ТЗ v2: Today · Portfolio · Ideas · Journal · Settings.
 ///
-/// Почему подразделы не отдельные экраны: пять разделов по пять экранов —
-/// это двадцать пять адресов на одного пользователя. Каждый лишний уровень
-/// стоит трёх секунд поиска утром, когда нужно решение, а не путешествие по
-/// меню. Глубина фиксирована: раздел → пилюля → разбор конкретного объекта.
+/// Разделов ровно пять, и каждый отвечает на один вопрос: что делать сегодня,
+/// как устроены деньги вдолгую, что происходит с идеями, чем всё закончилось,
+/// как это настроено. Подразделы — пилюли в шапке, а не отдельные адреса:
+/// пять разделов по пять экранов дали бы двадцать пять мест, где утром надо
+/// искать решение.
 library;
 
-/// Верхнеуровневый раздел.
+/// Верхнеуровневый раздел (ТЗ §6–§13).
 enum AppSection {
   today('Сегодня'),
-  capital('Капитал'),
-  trading('Торговля'),
-  lab('Лаборатория'),
-  control('Контроль');
+  portfolio('Портфель'),
+  ideas('Идеи'),
+  journal('Журнал'),
+  settings('Настройки');
 
   const AppSection(this.title);
 
@@ -20,31 +21,47 @@ enum AppSection {
 
   /// Подписи пилюль. Пусто — у раздела нет подразделов.
   List<String> get pills => switch (this) {
+        // ТЗ §6.1: Today не дублирует терминал, поэтому и делить нечего.
         AppSection.today => const [],
-        AppSection.capital => const ['Обзор', 'Счета', 'Пакеты', 'Книга', 'Аналитика'],
-        AppSection.trading => const ['Идеи', 'Позиции', 'Опционы', 'Журнал'],
-        AppSection.lab => const ['Стратегии', 'Скринер РФ'],
-        AppSection.control =>
-          const ['Риск и лимиты', 'Интеграции', 'Уведомления', 'Безопасность'],
+        AppSection.portfolio => const ['Пакеты', 'Ребалансировка', 'Счета'],
+        // ТЗ §8.2: фильтр по состоянию — главный разрез ленты идей.
+        AppSection.ideas => const ['Решения', 'Наблюдение', 'В работе', 'Все'],
+        AppSection.journal => const ['Сделки', 'Пропуски', 'Метрики'],
+        AppSection.settings => const [
+            'Режим',
+            'Риск',
+            'Подключения',
+            'Стратегии',
+            'Уведомления',
+            'Данные',
+            'Безопасность',
+          ],
       };
 
-  static AppSection parse(String? raw) => AppSection.values
-      .where((s) => s.name == raw)
-      .firstOrNull ??
+  static AppSection parse(String? raw) =>
+      AppSection.values.where((s) => s.name == raw).firstOrNull ??
       AppSection.today;
 }
 
-/// Подразделы «Капитала» — по индексу пилюли.
-enum CapitalPill { overview, accounts, packages, book, analytics }
+/// Подразделы «Портфеля» (ТЗ §7).
+enum PortfolioPill { packages, rebalance, accounts }
 
-/// Подразделы «Торговли».
-enum TradingPill { ideas, positions, options, journal }
+/// Разрез ленты идей (ТЗ §8.2).
+enum IdeasPill { decisions, watch, active, all }
 
-/// Подразделы «Лаборатории».
-enum LabPill { strategies, screener }
+/// Подразделы «Журнала» (ТЗ §12).
+enum JournalPill { trades, skips, metrics }
 
-/// Подразделы «Контроля».
-enum ControlPill { risk, integrations, notifications, security }
+/// Подразделы «Настроек» (ТЗ §13).
+enum SettingsPill {
+  mode,
+  risk,
+  connections,
+  strategies,
+  notifications,
+  data,
+  security,
+}
 
 /// Адрес внутри приложения: раздел и выбранная пилюля.
 class AppRoute {
@@ -55,17 +72,18 @@ class AppRoute {
   /// Индекс пилюли внутри раздела.
   final int pill;
 
-  /// Куда ведут маршруты версии 2 — чтобы сохранённое состояние и старые
-  /// ссылки не упирались в пустоту.
+  /// Куда ведут сохранённые адреса прежних версий.
   ///
-  /// Идеи → Торговля·Идеи, Инвест → Лаборатория·Скринер, Сделки →
-  /// Торговля·Позиции, Стратегии → Лаборатория, Настройки → Контроль.
+  /// Разделы «Капитал», «Торговля», «Лаборатория» и «Контроль» упразднены
+  /// вместе с операционной системой капитала. Сохранённое состояние не должно
+  /// упираться в пустоту: приложение открывается там, где смысл ближе всего.
   static AppRoute fromLegacy(String legacyTab) => switch (legacyTab) {
-        'ideas' => const AppRoute(AppSection.trading, 0),
-        'invest' => const AppRoute(AppSection.lab, 1),
-        'trades' => const AppRoute(AppSection.trading, 1),
-        'strategies' => const AppRoute(AppSection.lab, 0),
-        'settings' => const AppRoute(AppSection.control, 0),
+        'ideas' || 'trading' => const AppRoute(AppSection.ideas),
+        'invest' || 'capital' => const AppRoute(AppSection.portfolio),
+        'trades' => const AppRoute(AppSection.journal),
+        'strategies' || 'lab' =>
+          AppRoute(AppSection.settings, SettingsPill.strategies.index),
+        'settings' || 'control' => const AppRoute(AppSection.settings),
         _ => const AppRoute(AppSection.today),
       };
 
@@ -80,7 +98,7 @@ class AppRoute {
 }
 
 /// Режим риск-движка. Индикатор в шапке, а не переключатель: режим назначает
-/// движок по состоянию капитала, руками ставится только аварийная остановка.
+/// движок по состоянию лимитов, руками ставится только аварийная остановка.
 enum RiskMode {
   normal('NORMAL', 'лимиты соблюдены'),
   caution('CAUTION', 'объём новых сделок урезан'),

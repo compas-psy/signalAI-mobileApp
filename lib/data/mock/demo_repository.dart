@@ -103,12 +103,12 @@ class DemoRepository implements SignalAiRepository {
           invalidationPrice: 87300,
           factors: const [
             SignalFactor(
-              name: 'Wyckoff',
+              name: 'Режим рынка',
               text: 'Фаза C накопления, spring 87 050 с тестом на падающем объёме',
               weight: 3,
             ),
             SignalFactor(
-              name: 'Smart Money',
+              name: 'Структура · SMC',
               text: 'BOS 1H на 87 750, ретест OB 87 300–87 500, FVG закрыт',
               weight: 3,
             ),
@@ -123,7 +123,7 @@ class DemoRepository implements SignalAiRepository {
               weight: 2,
             ),
             SignalFactor(
-              name: 'Эллиотт',
+              name: 'Зона входа',
               text: 'Старшая волна 3 вверх, локальная коррекция (ii) завершена',
               weight: 1,
             ),
@@ -172,12 +172,12 @@ class DemoRepository implements SignalAiRepository {
           invalidationPrice: 83.05,
           factors: const [
             SignalFactor(
-              name: 'Wyckoff',
+              name: 'Режим рынка',
               text: 'Распределение, UTAD 83,60 без продолжения',
               weight: 3,
             ),
             SignalFactor(
-              name: 'Smart Money',
+              name: 'Структура · SMC',
               text: 'CHoCH 1H, ордер-блок 82,10–82,40, FVG до 80,90',
               weight: 3,
             ),
@@ -192,7 +192,7 @@ class DemoRepository implements SignalAiRepository {
               weight: 2,
             ),
             SignalFactor(
-              name: 'Эллиотт',
+              name: 'Зона входа',
               text: 'Волна C нисходящей коррекции',
               weight: 1,
             ),
@@ -243,12 +243,12 @@ class DemoRepository implements SignalAiRepository {
           invalidationPrice: 115800,
           factors: const [
             SignalFactor(
-              name: 'Wyckoff',
+              name: 'Режим рынка',
               text: 'Ре-аккумуляция над 114 000, спринг-свип лоу',
               weight: 2,
             ),
             SignalFactor(
-              name: 'Smart Money',
+              name: 'Структура · SMC',
               text: 'OB 4H 115 800–117 200, свип equal lows, BOS на 1H',
               weight: 3,
             ),
@@ -263,7 +263,7 @@ class DemoRepository implements SignalAiRepository {
               weight: 2,
             ),
             SignalFactor(
-              name: 'Эллиотт',
+              name: 'Зона входа',
               text: 'Начало волны 3 после плоской коррекции',
               weight: 1,
             ),
@@ -312,12 +312,12 @@ class DemoRepository implements SignalAiRepository {
           invalidationPrice: 336.8,
           factors: const [
             SignalFactor(
-              name: 'Wyckoff',
+              name: 'Режим рынка',
               text: 'Выход из ре-аккумуляции 328–341',
               weight: 2,
             ),
             SignalFactor(
-              name: 'Smart Money',
+              name: 'Структура · SMC',
               text: 'BOS D1, ретест зоны спроса 340–342',
               weight: 2,
             ),
@@ -332,7 +332,7 @@ class DemoRepository implements SignalAiRepository {
               weight: 2,
             ),
             SignalFactor(
-              name: 'Эллиотт',
+              name: 'Зона входа',
               text: 'Волна 3 среднесрочного импульса',
               weight: 1,
             ),
@@ -381,12 +381,12 @@ class DemoRepository implements SignalAiRepository {
           invalidationPrice: 4262,
           factors: const [
             SignalFactor(
-              name: 'Wyckoff',
+              name: 'Режим рынка',
               text: 'Распределение 4 190–4 260, признаки SOW',
               weight: 3,
             ),
             SignalFactor(
-              name: 'Smart Money',
+              name: 'Структура · SMC',
               text: 'CHoCH 1H, ордер-блок 4 215–4 240',
               weight: 2,
             ),
@@ -401,7 +401,7 @@ class DemoRepository implements SignalAiRepository {
               weight: 3,
             ),
             SignalFactor(
-              name: 'Эллиотт',
+              name: 'Зона входа',
               text: 'Завершение волны 5 старшего импульса',
               weight: 1,
             ),

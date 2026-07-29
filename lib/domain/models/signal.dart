@@ -4,22 +4,44 @@ import '../enums.dart';
 ///
 /// [weight] 1–3 — вклад фактора, рисуется полоской в карточке идеи.
 class SignalFactor {
-  const SignalFactor({required this.name, required this.text, required this.weight});
+  const SignalFactor({
+    required this.name,
+    required this.text,
+    required this.weight,
+    double? fraction,
+  }) : _fraction = fraction;
 
   final String name;
   final String text;
   final int weight;
 
+  /// Точная доля выполнения фактора 0…1.
+  ///
+  /// [weight] огрубляет её до трёх ступеней ради полоски в карточке. Скоринг
+  /// ТЗ §14.2 работает с долей, а не со ступенью: 0,74 и 0,41 не одно и то же,
+  /// хотя обе дают вес 2.
+  final double? _fraction;
+
+  /// Доля выполнения. Если точное значение не сохранилось (старый кэш),
+  /// восстанавливается по ступени — с потерей точности, но без вранья.
+  double get fraction => _fraction ?? (weight / 3);
+
   /// Заполнение полоски, 0–100%.
-  double get fillPercent => weight * 33.4;
+  double get fillPercent => fraction * 100;
 
   factory SignalFactor.fromJson(Map<String, dynamic> j) => SignalFactor(
         name: j['name'] as String,
         text: j['text'] as String,
         weight: (j['weight'] as num).toInt(),
+        fraction: (j['fraction'] as num?)?.toDouble(),
       );
 
-  Map<String, dynamic> toJson() => {'name': name, 'text': text, 'weight': weight};
+  Map<String, dynamic> toJson() => {
+        'name': name,
+        'text': text,
+        'weight': weight,
+        if (_fraction != null) 'fraction': _fraction,
+      };
 }
 
 /// Уровень фиксации прибыли с долей объёма.

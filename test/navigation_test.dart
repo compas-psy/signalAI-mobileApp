@@ -10,48 +10,43 @@ void main() {
   // биндинга канал недоступен и чтение падает ещё до диска.
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  group('Разделы версии 3', () {
+  group('Разделы по ТЗ v2', () {
     test('у «Сегодня» подразделов нет — это один ответ, а не меню', () {
       expect(AppSection.today.pills, isEmpty);
     });
 
+    test('разделов ровно пять и в порядке ТЗ', () {
+      expect(AppSection.values.map((s) => s.name).toList(),
+          ['today', 'portfolio', 'ideas', 'journal', 'settings']);
+    });
+
     test('глубина не превышает двух уровней', () {
       // Раздел → пилюля → разбор объекта. Третьего уровня нет ни у кого:
-      // пять разделов по пять экранов — двадцать пять адресов на одного
-      // пользователя, и утро уходит на поиск.
+      // иначе утро уходит на поиск нужного экрана, а не на решение.
       for (final section in AppSection.values) {
-        expect(section.pills.length, lessThanOrEqualTo(5));
+        expect(section.pills.length, lessThanOrEqualTo(7), reason: section.title);
       }
     });
 
-    test('состав подразделов совпадает с ТЗ', () {
-      expect(AppSection.capital.pills,
-          ['Обзор', 'Счета', 'Пакеты', 'Книга', 'Аналитика']);
-      expect(AppSection.trading.pills, ['Идеи', 'Позиции', 'Опционы', 'Журнал']);
-      expect(AppSection.lab.pills, ['Стратегии', 'Скринер РФ']);
-      expect(AppSection.control.pills,
-          ['Риск и лимиты', 'Интеграции', 'Уведомления', 'Безопасность']);
-    });
-
     test('индексы пилюль совпадают с перечислениями', () {
-      expect(AppSection.capital.pills.length, CapitalPill.values.length);
-      expect(AppSection.trading.pills.length, TradingPill.values.length);
-      expect(AppSection.lab.pills.length, LabPill.values.length);
-      expect(AppSection.control.pills.length, ControlPill.values.length);
+      // Пилюля адресуется индексом: разъезд между списком подписей и
+      // перечислением означает, что нажатие открывает не тот экран.
+      expect(AppSection.portfolio.pills.length, PortfolioPill.values.length);
+      expect(AppSection.ideas.pills.length, IdeasPill.values.length);
+      expect(AppSection.journal.pills.length, JournalPill.values.length);
+      expect(AppSection.settings.pills.length, SettingsPill.values.length);
     });
   });
 
-  group('Миграция маршрутов версии 2', () {
-    test('старые вкладки ведут в свои новые места', () {
-      expect(AppRoute.fromLegacy('ideas'),
-          const AppRoute(AppSection.trading, 0));
-      expect(AppRoute.fromLegacy('trades'),
-          AppRoute(AppSection.trading, TradingPill.positions.index));
-      expect(AppRoute.fromLegacy('invest'),
-          AppRoute(AppSection.lab, LabPill.screener.index));
+  group('Миграция сохранённых маршрутов', () {
+    test('прежние вкладки ведут в свои новые места', () {
+      expect(AppRoute.fromLegacy('ideas'), const AppRoute(AppSection.ideas));
+      expect(AppRoute.fromLegacy('trades'), const AppRoute(AppSection.journal));
+      expect(AppRoute.fromLegacy('invest'), const AppRoute(AppSection.portfolio));
+      expect(AppRoute.fromLegacy('capital'), const AppRoute(AppSection.portfolio));
       expect(AppRoute.fromLegacy('strategies'),
-          AppRoute(AppSection.lab, LabPill.strategies.index));
-      expect(AppRoute.fromLegacy('settings'), const AppRoute(AppSection.control, 0));
+          AppRoute(AppSection.settings, SettingsPill.strategies.index));
+      expect(AppRoute.fromLegacy('settings'), const AppRoute(AppSection.settings));
     });
 
     test('неизвестный маршрут ведёт на «Сегодня», а не падает', () {

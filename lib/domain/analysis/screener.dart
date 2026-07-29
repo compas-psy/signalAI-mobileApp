@@ -183,9 +183,13 @@ class ScoreComponent {
   final double maxPoints;
   final String note;
 
+  /// Доля выполнения блока 0…1.
+  double get fraction =>
+      maxPoints == 0 ? 0 : (points / maxPoints).clamp(0.0, 1.0);
+
   /// Вес 1–3 для полоски фактора в карточке идеи.
   int get weight {
-    final share = maxPoints == 0 ? 0 : points / maxPoints;
+    final share = fraction;
     if (share >= 0.75) return 3;
     if (share >= 0.4) return 2;
     return 1;
@@ -562,7 +566,12 @@ class Screener {
         note: _note(input, structure, direction, entry),
         factors: [
           for (final c in components)
-            SignalFactor(name: c.name, text: c.note, weight: c.weight),
+            SignalFactor(
+              name: c.name,
+              text: c.note,
+              weight: c.weight,
+              fraction: c.fraction,
+            ),
         ],
         events: const [],
         unitRisk: unitRisk,
