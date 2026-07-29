@@ -29,6 +29,7 @@ import '../domain/idea/idea.dart';
 import '../domain/idea/idea_mapper.dart';
 import '../domain/idea/quality_score.dart';
 import '../domain/idea/idea_state.dart';
+import '../domain/idea/journal_metrics.dart';
 import '../domain/idea/risk_center.dart';
 import '../domain/idea/skip_record.dart';
 import '../domain/invest/invest_models.dart';
@@ -263,6 +264,14 @@ class AppController extends ChangeNotifier {
       ));
     }
     return out;
+  }
+
+  /// Показатели журнала (ТЗ §12.1). null — журнала нет вовсе.
+  JournalMetrics? get journalMetrics {
+    final repository = _repository;
+    return repository is LocalAnalysisRepository
+        ? JournalMetrics.fromLedger(repository.ledger)
+        : null;
   }
 
   /// Пропущенные идеи с причинами (ТЗ §12).

@@ -1,5 +1,6 @@
 import 'package:flutter/widgets.dart';
 
+import '../../domain/idea/journal_metrics.dart';
 import '../../domain/idea/skip_record.dart';
 import '../../domain/models/portfolio.dart';
 import '../../state/app_scope.dart';
@@ -27,7 +28,7 @@ class JournalScreen extends StatelessWidget {
     return switch (section) {
       JournalPill.trades => TradesScreen(summary: summary),
       JournalPill.skips => const SkipsView(),
-      JournalPill.metrics => TradesScreen(summary: summary),
+      JournalPill.metrics => const MetricsView(),
     };
   }
 }
@@ -206,4 +207,181 @@ class _Empty extends StatelessWidget {
           ),
         ),
       );
+}
+
+/// Показатели журнала (ТЗ §12.1).
+class MetricsView extends StatelessWidget {
+  const MetricsView({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final metrics = AppScope.of(context).journalMetrics;
+    if (metrics == null) {
+      return const _Empty(
+        title: 'Статистики нет',
+        note: 'В этом режиме журнал сделок не ведётся, считать нечего.',
+      );
+    }
+    if (metrics.overall.trades == 0) {
+      return const _Empty(
+        title: 'Сделок ещё не было',
+        note: 'Показатели появятся после первой закрытой сделки. Пустые '
+            'нули здесь врали бы: «ноль» и «не было» — разные состояния.',
+      );
+    }
+
+    final monotonic = metrics.calibrationMonotonic;
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(S.screen, 12, S.screen, 18),
+      children: [
+        _SliceCard(slice: metrics.overall, title: 'Итого'),
+        const SizedBox(height: 12),
+        SectionCard(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const SectionLabel('Калибровка оценки'),
+              const SizedBox(height: 8),
+              Text(
+                switch (monotonic) {
+                  null => 'Сравнивать нечего: закрытые сделки попали меньше '
+                      'чем в две корзины оценки.',
+                  true => 'Высокие оценки не хуже низких — шкала работает на '
+                      'этой выборке.',
+                  false => 'Высокие оценки идут хуже низких. На этой выборке '
+                      'шкала не работает, и доверять ей нельзя.',
+                },
+                style: T.body(11.5,
+                    color: monotonic == false ? C.red : C.muted, height: 1.45),
+              ),
+              const SizedBox(height: 10),
+              for (final bucket in metrics.byScoreBucket) ...[
+                _BucketRow(slice: bucket),
+                if (bucket != metrics.byScoreBucket.last)
+                  const SizedBox(height: 7),
+              ],
+            ],
+          ),
+        ),
+        if (metrics.byStrategy.length > 1) ...[
+          const SizedBox(height: 12),
+          const SectionLabel('По стратегиям'),
+          const SizedBox(height: 8),
+          for (final slice in metrics.byStrategy) ...[
+            _SliceCard(slice: slice, title: slice.name),
+            if (slice != metrics.byStrategy.last) const SizedBox(height: S.gap),
+          ],
+        ],
+      ],
+    );
+  }
+}
+
+class _SliceCard extends StatelessWidget {
+  const _SliceCard({required this.slice, required this.title});
+
+  final MetricSlice slice;
+  final String title;
+
+  @override
+  Widget build(BuildContext context) => SectionCard(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(child: SectionLabel(title)),
+                Text('${slice.trades} сделок',
+                    style: T.mono(11, color: C.muted)),
+              ],
+            ),
+            const SizedBox(height: 10),
+            _MetricRow('Матожидание', _r(slice.expectancyR), accent: true),
+            const SizedBox(height: 6),
+            _MetricRow('Profit factor', _two(slice.profitFactor)),
+            const SizedBox(height: 6),
+            _MetricRow('Доля прибыльных', _percent(slice.winRate)),
+            const SizedBox(height: 6),
+            _MetricRow('Средняя прибыль', _r(slice.averageWinR)),
+            const SizedBox(height: 6),
+            _MetricRow('Средний убыток', _r(slice.averageLossR)),
+            const SizedBox(height: 6),
+            _MetricRow('Макс. просадка',
+                '−${slice.maxDrawdownR.toStringAsFixed(1).replaceAll('.', ',')}R'),
+            if (!slice.conclusive) ...[
+              const SizedBox(height: 10),
+              Text(
+                'Выборки мало для выводов: ${slice.trades} из '
+                '${MetricSlice.minimumForConclusions} сделок. Числа настоящие, '
+                'но делать по ним ставку рано.',
+                style: T.body(11, color: C.warning, height: 1.4),
+              ),
+            ],
+          ],
+        ),
+      );
+
+  static String _r(double? v) =>
+      v == null ? '—' : '${v >= 0 ? '+' : '−'}${v.abs().toStringAsFixed(2).replaceAll('.', ',')}R';
+
+  static String _two(double? v) =>
+      v == null ? '—' : v.toStringAsFixed(2).replaceAll('.', ',');
+
+  static String _percent(double? v) =>
+      v == null ? '—' : '${(v * 100).round()}%';
+}
+
+class _MetricRow extends StatelessWidget {
+  const _MetricRow(this.label, this.value, {this.accent = false});
+
+  final String label;
+  final String value;
+  final bool accent;
+
+  @override
+  Widget build(BuildContext context) => Row(
+        children: [
+          Expanded(child: Text(label, style: T.body(12, color: C.muted))),
+          Text(value,
+              style: T.mono(accent ? 13 : 12,
+                  color: accent ? C.accent : C.text)),
+        ],
+      );
+}
+
+class _BucketRow extends StatelessWidget {
+  const _BucketRow({required this.slice});
+
+  final MetricSlice slice;
+
+  @override
+  Widget build(BuildContext context) {
+    final expectancy = slice.expectancyR;
+    return Row(
+      children: [
+        SizedBox(
+          width: 62,
+          child: Text(slice.name, style: T.mono(11, color: C.muted)),
+        ),
+        Expanded(
+          child: Text(
+            slice.trades == 0 ? 'сделок не было' : '${slice.trades} сделок',
+            style: T.body(11.5, color: slice.trades == 0 ? C.faint : C.text),
+          ),
+        ),
+        Text(
+          expectancy == null
+              ? '—'
+              : '${expectancy >= 0 ? '+' : '−'}'
+                  '${expectancy.abs().toStringAsFixed(2).replaceAll('.', ',')}R',
+          style: T.mono(11,
+              color: expectancy == null
+                  ? C.faint
+                  : expectancy >= 0
+                      ? C.green
+                      : C.red),
+        ),
+      ],
+    );
+  }
 }
