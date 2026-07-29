@@ -18,6 +18,10 @@ on:
       admin_ip:
         description: 'IP, с которого вы ходите по SSH (firewall оставит 22 только ему)'
         required: true
+      ssh_user:
+        description: 'Пользователь SSH (если секрета VPS_USER нет)'
+        required: false
+        default: 'root'
       acme_email:
         description: "Почта для Let's Encrypt"
         required: false
@@ -50,14 +54,14 @@ jobs:
 
       - name: Проверить, что секреты заданы
         env:
-          HOST: ${{ secrets.VPS_HOST }}
-          USER_NAME: ${{ secrets.VPS_USER }}
-          KEY: ${{ secrets.VPS_SSH_KEY }}
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          USER_NAME: ${{ secrets.VPS_USER || inputs.ssh_user }}
+          KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
         run: |
           missing=""
-          [ -n "$HOST" ] || missing="$missing VPS_HOST"
-          [ -n "$USER_NAME" ] || missing="$missing VPS_USER"
-          [ -n "$KEY" ] || missing="$missing VPS_SSH_KEY"
+          [ -n "$HOST" ] || missing="$missing VPS_HOST|SERVER_HOST"
+          [ -n "$USER_NAME" ] || missing="$missing VPS_USER (или задайте ssh_user при запуске)"
+          [ -n "$KEY" ] || missing="$missing VPS_SSH_KEY|SSH_SECRET"
           if [ -n "$missing" ]; then
             echo "::error::не заданы секреты:$missing"
             echo "Задать: Settings → Secrets and variables → Actions → New repository secret"
@@ -67,8 +71,8 @@ jobs:
 
       - name: Подготовить ключ
         env:
-          KEY: ${{ secrets.VPS_SSH_KEY }}
-          HOST: ${{ secrets.VPS_HOST }}
+          KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
         run: |
           install -d -m 700 ~/.ssh
           printf '%s\n' "$KEY" > ~/.ssh/id_deploy
@@ -81,8 +85,8 @@ jobs:
       - name: Первичная установка
         if: ${{ inputs.action == 'bootstrap' }}
         env:
-          HOST: ${{ secrets.VPS_HOST }}
-          USER_NAME: ${{ secrets.VPS_USER }}
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          USER_NAME: ${{ secrets.VPS_USER || inputs.ssh_user }}
           DOMAIN: ${{ inputs.domain }}
           ADMIN_IP: ${{ inputs.admin_ip }}
           ACME_EMAIL: ${{ inputs.acme_email }}
@@ -94,43 +98,59 @@ jobs:
           REPO=https://github.com/compas-psy/signalAI-mobileApp.git
           DIR="$HOME/signalai"
 
+          # Под root sudo не нужен и может отсутствовать вовсе; под обычным
+          # пользователем он обязателен. Определяем один раз.
+          SUDO=""
+          if [ "$(id -u)" -ne 0 ]; then
+            command -v sudo >/dev/null || { echo "нужен sudo либо вход под root"; exit 1; }
+            SUDO="sudo"
+          fi
+
+          # На чистой Ubuntu git нередко отсутствует, а без него нечего
+          # клонировать. Ставим до первого обращения, а не после отказа.
+          if ! command -v git >/dev/null; then
+            $SUDO apt-get update -qq
+            $SUDO apt-get install -y -qq --no-install-recommends git
+          fi
+
           if [ -d "$DIR/.git" ]; then
             git -C "$DIR" fetch --depth 1 origin claude/release-y40hk5
-            git -C "$DIR" reset --hard origin/claude/release-y40hk5
+            git -C "$DIR" reset --hard FETCH_HEAD
           else
             git clone --depth 1 -b claude/release-y40hk5 "$REPO" "$DIR"
           fi
 
           cd "$DIR/server"
-          sudo -E SIGNALAI_DOMAIN="$SIGNALAI_DOMAIN" \
-                  SIGNALAI_ADMIN_IP="$SIGNALAI_ADMIN_IP" \
-                  SIGNALAI_ACME_EMAIL="$SIGNALAI_ACME_EMAIL" \
-                  bash deploy/bootstrap.sh
+          $SUDO env SIGNALAI_DOMAIN="$SIGNALAI_DOMAIN" \
+                    SIGNALAI_ADMIN_IP="$SIGNALAI_ADMIN_IP" \
+                    SIGNALAI_ACME_EMAIL="$SIGNALAI_ACME_EMAIL" \
+                    bash deploy/bootstrap.sh
           REMOTE
 
       - name: Обновить код и перезапустить
         if: ${{ inputs.action == 'update' }}
         env:
-          HOST: ${{ secrets.VPS_HOST }}
-          USER_NAME: ${{ secrets.VPS_USER }}
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          USER_NAME: ${{ secrets.VPS_USER || inputs.ssh_user }}
         run: |
           ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$USER_NAME@$HOST" 'bash -s' <<'REMOTE'
           set -euo pipefail
+          SUDO=""; [ "$(id -u)" -eq 0 ] || SUDO="sudo"
           cd "$HOME/signalai"
           git fetch --depth 1 origin claude/release-y40hk5
-          git reset --hard origin/claude/release-y40hk5
+          git reset --hard FETCH_HEAD
           cd server
           # Миграции до перезапуска: сервер не должен стартовать на схеме,
           # которой ещё нет.
-          sudo docker compose --env-file /etc/signalai/.env run --rm api alembic upgrade head
-          sudo docker compose --env-file /etc/signalai/.env up -d --build
+          $SUDO docker compose --env-file /etc/signalai/.env run --rm api alembic upgrade head
+          $SUDO docker compose --env-file /etc/signalai/.env up -d --build
           REMOTE
 
       - name: Состояние сервера
         if: ${{ always() && inputs.action != 'logs' }}
         env:
-          HOST: ${{ secrets.VPS_HOST }}
-          USER_NAME: ${{ secrets.VPS_USER }}
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          USER_NAME: ${{ secrets.VPS_USER || inputs.ssh_user }}
         run: |
           ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$USER_NAME@$HOST" \
             'curl -fsS http://127.0.0.1:8000/health' > health.json 2>/dev/null \
@@ -159,11 +179,11 @@ jobs:
       - name: Логи
         if: ${{ inputs.action == 'logs' || failure() }}
         env:
-          HOST: ${{ secrets.VPS_HOST }}
-          USER_NAME: ${{ secrets.VPS_USER }}
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          USER_NAME: ${{ secrets.VPS_USER || inputs.ssh_user }}
         run: |
           ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$USER_NAME@$HOST" \
-            'sudo docker compose --env-file /etc/signalai/.env -f "$HOME/signalai/server/docker-compose.yml" logs --tail 120 api' \
+            'SUDO=""; [ "$(id -u)" -eq 0 ] || SUDO=sudo; $SUDO docker compose --env-file /etc/signalai/.env -f "$HOME/signalai/server/docker-compose.yml" logs --tail 120 api' \
             || echo "логи получить не удалось"
 
       - name: Убрать ключ
