@@ -1,8 +1,10 @@
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 
 import '../../core/format.dart';
+import '../../domain/idea/evidence.dart';
 import '../../domain/models/signal.dart';
 import '../../theme/tokens.dart';
 import '../../theme/typography.dart';
@@ -15,10 +17,42 @@ import '../../theme/typography.dart';
 /// заглушка, а не нарисованная картинка.
 ///
 /// Тег в левом верхнем углу всегда показывает таймфрейм отображаемых свечей.
+///
+/// Видимость слоёв задаётся снаружи (ТЗ §10.1): выключенный слой не рисуется
+/// вовсе. Свечи выключить нельзя — без них разметка висит в пустоте.
 class TradeChart extends StatefulWidget {
-  const TradeChart({super.key, required this.signal});
+  const TradeChart({
+    super.key,
+    required this.signal,
+    this.visibleLayers = allLayers,
+    this.highlight = const {},
+  });
+
+  /// Слои, которые этот график умеет рисовать.
+  ///
+  /// Предлагать переключатель слоя, который нечем нарисовать, нельзя: чип
+  /// нажимается, а на графике не меняется ничего — и владелец справедливо
+  /// решает, что приложение сломано.
+  static const renderableLayers = {
+    ChartLayer.candles,
+    ChartLayer.levels,
+    ChartLayer.smc,
+  };
+
+  /// Слои по умолчанию.
+  static const allLayers = renderableLayers;
 
   final TradingSignal signal;
+
+  /// Какие слои показывать. Свечи подразумеваются всегда.
+  final Set<ChartLayer> visibleLayers;
+
+  /// Подсвеченные объекты разметки: `entry`, `stop`, `tp1`, `zone0`, `break`.
+  ///
+  /// ТЗ §9.1: тап по доказательству в тезисе обязан показать ровно тот
+  /// объект на графике, о котором идёт речь. Ключи — хвосты идентификаторов
+  /// аннотаций, которые собирает `IdeaMapper`.
+  final Set<String> highlight;
 
   static const double viewWidth = 380;
   static const double viewHeight = 292;
@@ -58,6 +92,8 @@ class _TradeChartState extends State<TradeChart> with SingleTickerProviderStateM
             painter: _ChartPainter(
               signal: widget.signal,
               chart: chart,
+              layers: widget.visibleLayers,
+              highlight: widget.highlight,
               // 0 → 1 → 0: opacity 1 в начале и конце, .35 в середине
               pulse: 1 - 0.65 * (1 - (2 * pulse.value - 1).abs()),
             ),
@@ -102,11 +138,35 @@ class _ChartUnavailable extends StatelessWidget {
 }
 
 class _ChartPainter extends CustomPainter {
-  _ChartPainter({required this.signal, required this.chart, required this.pulse});
+  _ChartPainter({
+    required this.signal,
+    required this.chart,
+    required this.layers,
+    required this.highlight,
+    required this.pulse,
+  });
 
   final TradingSignal signal;
   final SignalChart chart;
+
+  /// Включённые слои. Выключенный слой не рисуется — ТЗ §10.1.
+  final Set<ChartLayer> layers;
+
+  /// Подсвеченные объекты разметки.
+  final Set<String> highlight;
+
+  /// Приглушать ли всё, что не подсвечено. Пока подсветки нет, приглушать
+  /// нечего: график в обычном состоянии показывает всё одинаково.
+  bool get _dimming => highlight.isNotEmpty;
+
+  /// Прозрачность объекта разметки с ключом [key].
+  double _alpha(String key) =>
+      !_dimming || highlight.contains(key) ? 1.0 : 0.22;
+
   final double pulse;
+
+  bool get _showLevels => layers.contains(ChartLayer.levels);
+  bool get _showSmc => layers.contains(ChartLayer.smc);
 
   // Геометрия совпадает с макетом: поле графика слева, шкала цен справа.
   static const double _w = TradeChart.viewWidth;
@@ -169,38 +229,42 @@ class _ChartPainter extends CustomPainter {
       _text(canvas, label(price), Offset(_axisX, gy + 3), size: 8.5, color: C.axis, mono: true);
     }
 
-    // Зоны FVG — только реально найденные скринером.
-    for (final zone in chart.zones) {
+    // Зоны FVG — только реально найденные скринером и только при включённом
+    // слое SMC.
+    final zones = _showSmc ? chart.zones : const <ChartZone>[];
+    for (var z = 0; z < zones.length; z++) {
+      final zone = zones[z];
+      final a = _alpha('zone$z');
       final startX = x(zone.startIndex.clamp(0, n - 1)) - candleWidth / 2;
       final rect = Rect.fromLTRB(startX, y(math.max(zone.from, zone.to)), _plotRight,
           y(math.min(zone.from, zone.to)));
       canvas.drawRRect(
         RRect.fromRectAndRadius(rect, const Radius.circular(2)),
-        Paint()..color = const Color.fromRGBO(255, 212, 0, .07),
+        Paint()..color = C.accent.withValues(alpha: .07 * a),
       );
       _dashed(
         canvas,
         Path()..addRRect(RRect.fromRectAndRadius(rect, const Radius.circular(2))),
         Paint()
           ..style = PaintingStyle.stroke
-          ..strokeWidth = 1
-          ..color = const Color.fromRGBO(255, 212, 0, .35),
+          ..strokeWidth = _dimming && highlight.contains('zone$z') ? 1.8 : 1
+          ..color = C.accent.withValues(alpha: .35 * a),
         dash: 3,
         gap: 3,
       );
       _text(canvas, zone.label, Offset(startX + 4, rect.top + 9),
-          size: 8, color: C.accent, weight: 700);
+          size: 8, color: C.accent.withValues(alpha: a), weight: 700);
     }
 
-    // Слом структуры — если он был.
-    if (level != null && chart.breakLabel != null) {
+    // Слом структуры — если он был и если слой включён.
+    if (_showSmc && level != null && chart.breakLabel != null) {
       _dashedLine(
         canvas,
         Offset(_plotLeft, y(level)),
         Offset(_plotRight, y(level)),
         Paint()
-          ..color = C.muted
-          ..strokeWidth = 1,
+          ..color = C.muted.withValues(alpha: _alpha('break'))
+          ..strokeWidth = _dimming && highlight.contains('break') ? 1.8 : 1,
         dash: 2,
         gap: 3,
       );
@@ -209,61 +273,62 @@ class _ChartPainter extends CustomPainter {
         '${chart.breakLabel} ${signal.direction.isLong ? '↑' : '↓'}',
         Offset(_plotLeft + 4, y(level) - 4),
         size: 8.5,
-        color: C.textSecondary,
+        color: C.textSecondary.withValues(alpha: _alpha('break')),
         weight: 700,
       );
     }
 
-    // Зоны риска и профита от последней свечи до края поля.
     final toolLeft = x(n - 1) + 6;
     final entryY = y(signal.entry);
     final slY = y(signal.stopLoss);
-    canvas.drawRect(
-      Rect.fromLTRB(toolLeft, math.min(entryY, slY), _plotRight, math.max(entryY, slY)),
-      Paint()..color = const Color.fromRGBO(255, 92, 92, .10),
-    );
-    if (tps.isNotEmpty) {
-      final lastTpY = y(tps.last.price);
-      canvas.drawRect(
-        Rect.fromLTRB(toolLeft, math.min(entryY, lastTpY), _plotRight, math.max(entryY, lastTpY)),
-        Paint()..color = const Color.fromRGBO(47, 213, 117, .08),
-      );
-    }
 
-    // Линии входа, стопа и тейков.
-    _dashedLine(
-      canvas,
-      Offset(_plotLeft, entryY),
-      Offset(_plotRight, entryY),
-      Paint()
-        ..color = C.accent
-        ..strokeWidth = 1.2,
-      dash: 5,
-      gap: 3,
-    );
-    _dashedLine(
-      canvas,
-      Offset(toolLeft - 30, slY),
-      Offset(_plotRight, slY),
-      Paint()
-        ..color = C.red
-        ..strokeWidth = 1,
-      dash: 4,
-      gap: 3,
-    );
-    for (var k = 0; k < tps.length; k++) {
-      final ty = y(tps[k].price);
+    // Уровни сделки: зоны риска и профита, линии входа, стопа и тейков.
+    if (_showLevels) {
+      canvas.drawRect(
+        Rect.fromLTRB(toolLeft, math.min(entryY, slY), _plotRight, math.max(entryY, slY)),
+        Paint()..color = const Color.fromRGBO(255, 92, 92, .10),
+      );
+      if (tps.isNotEmpty) {
+        final lastTpY = y(tps.last.price);
+        canvas.drawRect(
+          Rect.fromLTRB(toolLeft, math.min(entryY, lastTpY), _plotRight, math.max(entryY, lastTpY)),
+          Paint()..color = const Color.fromRGBO(47, 213, 117, .08),
+        );
+      }
       _dashedLine(
         canvas,
-        Offset(toolLeft - 4, ty),
-        Offset(_plotRight, ty),
+        Offset(_plotLeft, entryY),
+        Offset(_plotRight, entryY),
         Paint()
-          ..color = C.green.withValues(alpha: .85)
-          ..strokeWidth = 1,
-        dash: 3,
+          ..color = C.accent.withValues(alpha: _alpha('entry'))
+          ..strokeWidth = _dimming && highlight.contains('entry') ? 2 : 1.2,
+        dash: 5,
         gap: 3,
       );
-      _text(canvas, 'TP${k + 1}', Offset(toolLeft, ty - 3), size: 8, color: C.green, mono: true);
+      _dashedLine(
+        canvas,
+        Offset(toolLeft - 30, slY),
+        Offset(_plotRight, slY),
+        Paint()
+          ..color = C.red.withValues(alpha: _alpha('stop'))
+          ..strokeWidth = _dimming && highlight.contains('stop') ? 1.8 : 1,
+        dash: 4,
+        gap: 3,
+      );
+      for (var k = 0; k < tps.length; k++) {
+        final ty = y(tps[k].price);
+        _dashedLine(
+          canvas,
+          Offset(toolLeft - 4, ty),
+          Offset(_plotRight, ty),
+          Paint()
+            ..color = C.green.withValues(alpha: .85)
+            ..strokeWidth = 1,
+          dash: 3,
+          gap: 3,
+        );
+        _text(canvas, 'TP${k + 1}', Offset(toolLeft, ty - 3), size: 8, color: C.green, mono: true);
+      }
     }
 
     // Свечи — реальные данные, по которым считался сигнал.
@@ -304,11 +369,13 @@ class _ChartPainter extends CustomPainter {
           size: 9, color: foreground, weight: 600, mono: true);
     }
 
-    chip(signal.stopLoss, C.chipSl, const Color(0xFFFFFFFF));
-    for (final tp in tps) {
-      chip(tp.price, C.chipTp, C.chipTpText);
+    if (_showLevels) {
+      chip(signal.stopLoss, C.chipSl, const Color(0xFFFFFFFF));
+      for (final tp in tps) {
+        chip(tp.price, C.chipTp, C.chipTpText);
+      }
+      chip(signal.entry, C.accent, C.onAccent);
     }
-    chip(signal.entry, C.accent, C.onAccent);
 
     // Тег таймфрейма — всегда виден: зритель должен знать, что за свечи.
     _tag(canvas, chart.timeframeLabel, const Offset(_plotLeft, 8));
@@ -403,5 +470,9 @@ class _ChartPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(_ChartPainter old) => old.signal.id != signal.id || old.pulse != pulse;
+  bool shouldRepaint(_ChartPainter old) =>
+      old.signal.id != signal.id ||
+      old.pulse != pulse ||
+      !setEquals(old.layers, layers) ||
+      !setEquals(old.highlight, highlight);
 }

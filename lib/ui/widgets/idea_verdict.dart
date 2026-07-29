@@ -1,5 +1,6 @@
 import 'package:flutter/widgets.dart';
 
+import '../../domain/idea/evidence.dart';
 import '../../domain/idea/final_check.dart';
 import '../../domain/idea/idea.dart';
 import '../../domain/idea/quality_score.dart';
@@ -125,6 +126,115 @@ class _FactorLine extends StatelessWidget {
               style: T.body(11, color: C.muted, height: 1.4)),
         ],
       ],
+    );
+  }
+}
+
+/// Тезис идеи с доказательствами (ТЗ §9, зона Thesis; §9.1).
+///
+/// Каждая строка — доказательство, участвовавшее в оценке. Тап подсвечивает
+/// ровно те метки на графике, на которые оно ссылается: текст и картинка
+/// обязаны говорить одно и то же, и проверить это должно быть можно пальцем,
+/// а не на слово.
+class ThesisCard extends StatelessWidget {
+  const ThesisCard({
+    super.key,
+    required this.idea,
+    required this.selectedEvidenceId,
+    required this.onSelect,
+  });
+
+  final Idea idea;
+
+  /// Выбранное доказательство. null — подсветки нет, график обычный.
+  final String? selectedEvidenceId;
+
+  final ValueChanged<String?> onSelect;
+
+  @override
+  Widget build(BuildContext context) => SectionCard(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const SectionLabel('Почему эта идея есть'),
+            const SizedBox(height: 8),
+            if (idea.thesis.isNotEmpty)
+              Text(idea.thesis,
+                  style: T.body(12.5, color: C.textSecondary, height: 1.5)),
+            if (idea.evidence.isEmpty)
+              Text(
+                'Расчёт не оставил разбора по факторам — показать нечего.',
+                style: T.body(11.5, color: C.muted, height: 1.45),
+              )
+            else ...[
+              const SizedBox(height: 10),
+              for (final evidence in idea.evidence) ...[
+                _EvidenceRow(
+                  evidence: evidence,
+                  selected: evidence.id == selectedEvidenceId,
+                  // Доказательство без единой метки подсвечивать нечем:
+                  // строка остаётся, но не притворяется нажимаемой.
+                  onTap: evidence.annotationIds.isEmpty
+                      ? null
+                      : () => onSelect(
+                          evidence.id == selectedEvidenceId ? null : evidence.id),
+                ),
+                if (evidence != idea.evidence.last) const SizedBox(height: 7),
+              ],
+            ],
+          ],
+        ),
+      );
+}
+
+class _EvidenceRow extends StatelessWidget {
+  const _EvidenceRow({
+    required this.evidence,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final Evidence evidence;
+  final bool selected;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final linked = onTap != null;
+    return Pressable(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          color: selected ? C.accentFaint : C.inset,
+          border: Border.all(color: selected ? C.accentBorder : C.divider),
+          borderRadius: BorderRadius.circular(R.inset),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(evidence.summary,
+                      style: T.body(12,
+                          weight: 700, color: selected ? C.accent : C.text)),
+                ),
+                if (linked)
+                  Text(
+                    selected ? 'на графике' : 'показать',
+                    style: T.body(10, weight: 700, color: C.faint),
+                  ),
+              ],
+            ),
+            if (evidence.detail.isNotEmpty) ...[
+              const SizedBox(height: 3),
+              Text(evidence.detail,
+                  style: T.body(11, color: C.muted, height: 1.4)),
+            ],
+          ],
+        ),
+      ),
     );
   }
 }

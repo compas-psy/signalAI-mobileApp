@@ -1,6 +1,7 @@
 import 'package:flutter/widgets.dart';
 
 import '../../core/format.dart';
+import '../../domain/idea/evidence.dart';
 import '../../domain/idea/final_check.dart';
 import '../../domain/idea/idea.dart';
 import '../../domain/models/settings.dart';
@@ -11,6 +12,7 @@ import '../../state/app_scope.dart';
 import '../../theme/tokens.dart';
 import '../../theme/typography.dart';
 import '../tone.dart';
+import '../widgets/chart_layers.dart';
 import '../widgets/common.dart';
 import '../widgets/idea_verdict.dart';
 import '../widgets/segmented.dart';
@@ -44,12 +46,26 @@ class IdeaDetailScreen extends StatefulWidget {
 class _IdeaDetailScreenState extends State<IdeaDetailScreen> {
   int _tab = 0;
 
+  /// Выключенные владельцем слои графика.
+  ///
+  /// Хранится именно выключенное, а не включённое: набор доступных слоёв
+  /// зависит от идеи, и «включённое» пришлось бы пересобирать при каждой
+  /// смене — с риском показать слой, за которым нет доказательства.
+  final Set<ChartLayer> _hidden = {};
+
+  /// Доказательство, выбранное в тезисе. null — подсветки нет.
+  String? _selectedEvidence;
+
   @override
   void didUpdateWidget(IdeaDetailScreen old) {
     super.didUpdateWidget(old);
     // На планшете вторая колонка не пересоздаётся при выборе другой идеи —
-    // сегмент должен вернуться к плану, а не показывать факторы прошлой.
-    if (old.signal.id != widget.signal.id) _tab = 0;
+    // сегмент должен вернуться к плану, а слои к полному набору.
+    if (old.signal.id != widget.signal.id) {
+      _tab = 0;
+      _hidden.clear();
+      _selectedEvidence = null;
+    }
   }
 
   @override
@@ -60,6 +76,17 @@ class _IdeaDetailScreenState extends State<IdeaDetailScreen> {
     final idea = ideas.where((i) => i.id == signal.id).firstOrNull;
     final checks = idea == null ? const <CheckResult>[] : _checks(controller, idea);
     final blocked = checks.isNotEmpty && !FinalCheck.passes(checks);
+    // Показываем пересечение: слой должен и стоять за доказательством
+    // (§9.1), и уметь быть нарисованным.
+    final available = {
+      for (final layer in idea?.availableLayers ?? TradeChart.allLayers)
+        if (TradeChart.renderableLayers.contains(layer)) layer,
+    };
+    final visible = {
+      for (final layer in available)
+        if (!_hidden.contains(layer)) layer,
+    };
+    final highlight = _highlightKeys(idea, _selectedEvidence);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -79,17 +106,51 @@ class _IdeaDetailScreenState extends State<IdeaDetailScreen> {
                     border: Border.all(color: C.divider),
                     borderRadius: BorderRadius.circular(R.inner),
                   ),
-                  child: TradeChart(signal: signal),
+                  child: TradeChart(
+                    signal: signal,
+                    visibleLayers: visible,
+                    highlight: highlight,
+                  ),
                 ),
               ),
+              const SizedBox(height: 10),
+              // Без свечей график рисует заглушку, и переключать на нём
+              // нечего: панель слоёв там была бы управлением без объекта.
+              if (signal.chart != null)
+                ChartLayerBar(
+                  available: available,
+                  visible: visible,
+                  onToggle: (layer) => setState(() {
+                    _hidden.contains(layer)
+                        ? _hidden.remove(layer)
+                        : _hidden.add(layer);
+                  }),
+                ),
               const SizedBox(height: 12),
-              // Короткий вывод крупно — почему сделка вообще есть. Подробности
-              // (инвалидация, план ведения, происхождение расчёта) ушли в
-              // сегмент «План»: перед глазами остаётся одна фраза.
-              Text(
-                _lead(signal.note),
-                style: T.body(12.5, color: C.textSecondary, height: 1.5),
-              ),
+              if (idea != null)
+                ThesisCard(
+                  idea: idea,
+                  selectedEvidenceId: _selectedEvidence,
+                  onSelect: (id) => setState(() {
+                    _selectedEvidence = id;
+                    // Подсвечивать метку выключенного слоя бессмысленно:
+                    // включаем его вместе с подсветкой.
+                    if (id != null) {
+                      for (final a in idea.annotations) {
+                        if (idea.evidence
+                            .where((e) => e.id == id)
+                            .any((e) => e.annotationIds.contains(a.id))) {
+                          _hidden.remove(a.layer);
+                        }
+                      }
+                    }
+                  }),
+                )
+              else
+                Text(
+                  _lead(signal.note),
+                  style: T.body(12.5, color: C.textSecondary, height: 1.5),
+                ),
               const SizedBox(height: 12),
               _LevelsRow(signal: signal),
               const SizedBox(height: 12),
@@ -194,6 +255,22 @@ class _IdeaDetailScreenState extends State<IdeaDetailScreen> {
       ],
     );
   }
+}
+
+/// Ключи разметки для подсветки выбранного доказательства (ТЗ §9.1).
+///
+/// Идентификаторы аннотаций строятся как `<id идеи>_<ключ>`; график знает
+/// именно хвост — `entry`, `stop`, `tp1`, `zone0`, `break`.
+Set<String> _highlightKeys(Idea? idea, String? evidenceId) {
+  if (idea == null || evidenceId == null) return const {};
+  final evidence =
+      idea.evidence.where((e) => e.id == evidenceId).firstOrNull;
+  if (evidence == null) return const {};
+  final prefix = '${idea.id}_';
+  return {
+    for (final id in evidence.annotationIds)
+      id.startsWith(prefix) ? id.substring(prefix.length) : id,
+  };
 }
 
 /// Финальная проверка идеи в текущих условиях (ТЗ §11.1).

@@ -446,6 +446,17 @@ abstract final class IdeaMapper {
         if (signal.chart == null) DataQualityFlag.gap,
       ];
 
-  static String _price(double value, int decimals) =>
-      value.toStringAsFixed(decimals).replaceAll('.', ',');
+  /// Цена с разделителем разрядов: «87 300», а не «87300».
+  ///
+  /// Число без разделителя на пять знаков читается с запинкой, а условие
+  /// инвалидации читают в момент, когда думать некогда.
+  static String _price(double value, int decimals) {
+    final fixed = value.toStringAsFixed(decimals);
+    final dot = fixed.indexOf('.');
+    final whole = dot < 0 ? fixed : fixed.substring(0, dot);
+    final rest = dot < 0 ? '' : ',${fixed.substring(dot + 1)}';
+    final grouped = whole.replaceAllMapped(
+        RegExp(r'\B(?=(\d{3})+(?!\d))'), (_) => '\u00A0');
+    return '$grouped$rest';
+  }
 }

@@ -134,6 +134,8 @@ void main() {
     await tester.pump(const Duration(milliseconds: 300));
 
     expect(find.text('Доллар/Рубль · сент 2026'), findsOneWidget);
+    // Тезис с доказательствами стоит выше плана — до тейков надо доехать.
+    await scrollTo(tester, find.text('Тейк-профиты'.toUpperCase()));
     expect(find.text('Тейк-профиты'.toUpperCase()), findsOneWidget);
 
     await scrollTo(tester, find.text('Отправить на биржу'));
