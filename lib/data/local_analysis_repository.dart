@@ -12,6 +12,7 @@ import '../domain/analysis/trend_screener.dart';
 import '../domain/analysis/trade_simulator.dart';
 import '../domain/enums.dart';
 import '../domain/invest/invest_models.dart';
+import '../domain/idea/skip_record.dart';
 import '../domain/ledger/signal_ledger.dart';
 import '../domain/models/digest.dart';
 import '../domain/models/portfolio.dart';
@@ -182,6 +183,9 @@ class LocalAnalysisRepository
   /// Вечный журнал сигналов: форвард-статистика стратегии на реальных свечах.
   @override
   final SignalLedger ledger = SignalLedger();
+
+  /// Пропущенные идеи с причинами (ТЗ §12) — от новых к старым.
+  final List<SkipRecord> skips = [];
 
   /// Риск-гейты перед публикацией идеи.
   final RiskEngine riskEngine = const RiskEngine(limits: _limits);
@@ -1049,6 +1053,17 @@ class LocalAnalysisRepository
       }
     }
 
+    final storedSkips = await _store.read('skips');
+    if (storedSkips != null) {
+      try {
+        for (final item in storedSkips['items'] as List? ?? const []) {
+          skips.add(SkipRecord.fromJson(item as Map<String, dynamic>));
+        }
+      } on Exception {
+        // Битая запись пропуска не должна ломать запуск.
+      }
+    }
+
     final runs = await _store.read('digest_runs');
     if (runs != null) {
       try {
@@ -1190,6 +1205,17 @@ class LocalAnalysisRepository
   final List<DigestRun> _digestRuns = [];
 
   static const _runsKept = 60;
+
+  /// Сохранить пропуск. Журнал только дополняется — ТЗ §12: запись о
+  /// решении неизменяема, иначе статистику по причинам можно подправить
+  /// задним числом под то, во что приятнее верить.
+  Future<void> recordSkip(SkipRecord record) async {
+    await _ensureLoaded();
+    skips.insert(0, record);
+    await _store.write('skips', {
+      'items': [for (final s in skips) s.toJson()],
+    });
+  }
 
   Future<void> _recordRun(DigestRun run) async {
     _digestRuns.add(run);

@@ -28,7 +28,9 @@ import '../domain/enums.dart';
 import '../domain/idea/idea.dart';
 import '../domain/idea/idea_mapper.dart';
 import '../domain/idea/quality_score.dart';
+import '../domain/idea/idea_state.dart';
 import '../domain/idea/risk_center.dart';
+import '../domain/idea/skip_record.dart';
 import '../domain/invest/invest_models.dart';
 import '../domain/models/digest.dart';
 import '../domain/models/portfolio.dart';
@@ -261,6 +263,34 @@ class AppController extends ChangeNotifier {
       ));
     }
     return out;
+  }
+
+  /// Пропущенные идеи с причинами (ТЗ §12).
+  List<SkipRecord> get skips {
+    final repository = _repository;
+    return repository is LocalAnalysisRepository
+        ? repository.skips
+        : const <SkipRecord>[];
+  }
+
+  /// Ведётся ли журнал решений. Без него пропуск некуда записать, и кнопку
+  /// «пропустить с причиной» показывать нечестно.
+  bool get skipJournalAvailable => _repository is LocalAnalysisRepository;
+
+  /// Записать пропуск идеи с причиной из справочника (ТЗ §12).
+  Future<void> skipIdea(
+    Idea idea, {
+    required SkipReason reason,
+    String comment = '',
+  }) async {
+    final repository = _repository;
+    if (repository is! LocalAnalysisRepository) return;
+    await repository.recordSkip(
+      SkipRecord.of(idea, reason: reason, comment: comment, at: DateTime.now()),
+    );
+    _selectedSignalId = null;
+    showToast('Пропуск записан: ${reason.label}');
+    notifyListeners();
   }
 
   /// Идея, открытая в разборе.

@@ -15,6 +15,7 @@ import '../tone.dart';
 import '../widgets/chart_layers.dart';
 import '../widgets/common.dart';
 import '../widgets/idea_verdict.dart';
+import '../widgets/skip_sheet.dart';
 import '../widgets/segmented.dart';
 import '../widgets/trade_chart.dart';
 import '../widgets/vector_icon.dart';
@@ -56,6 +57,9 @@ class _IdeaDetailScreenState extends State<IdeaDetailScreen> {
   /// Доказательство, выбранное в тезисе. null — подсветки нет.
   String? _selectedEvidence;
 
+  /// Открыт ли лист пропуска с причиной (ТЗ §12).
+  bool _skipping = false;
+
   @override
   void didUpdateWidget(IdeaDetailScreen old) {
     super.didUpdateWidget(old);
@@ -87,7 +91,7 @@ class _IdeaDetailScreenState extends State<IdeaDetailScreen> {
         if (!_hidden.contains(layer)) layer,
     };
     final highlight = _highlightKeys(idea, _selectedEvidence);
-    return Column(
+    final screen = Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         _DetailHeader(
@@ -220,7 +224,12 @@ class _IdeaDetailScreenState extends State<IdeaDetailScreen> {
                     ),
                     const SizedBox(width: 9),
                     Pressable(
-                      onTap: controller.back,
+                      // Пропуск без причины журналу бесполезен: ТЗ §12
+                      // требует код из справочника. Кнопка ведёт в лист
+                      // выбора, а не просто закрывает карточку.
+                      onTap: idea != null && controller.skipJournalAvailable
+                          ? () => setState(() => _skipping = true)
+                          : controller.back,
                       child: Container(
                         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
                         decoration: BoxDecoration(
@@ -251,6 +260,23 @@ class _IdeaDetailScreenState extends State<IdeaDetailScreen> {
                 ),
             ],
           ),
+        ),
+      ],
+    );
+
+    if (idea == null || !_skipping) return screen;
+    return Stack(
+      children: [
+        screen,
+        Positioned.fill(
+          child: ColoredBox(color: const Color(0x99000000), child: SkipSheet(
+            idea: idea,
+            onClose: () => setState(() => _skipping = false),
+            onSkip: (reason, comment) {
+              setState(() => _skipping = false);
+              controller.skipIdea(idea, reason: reason, comment: comment);
+            },
+          )),
         ),
       ],
     );
