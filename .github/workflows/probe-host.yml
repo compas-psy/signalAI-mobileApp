@@ -82,6 +82,48 @@ jobs:
             echo "баннера нет — до sshd не доходит"
           fi
 
+      - name: HTTP и сертификат
+        env:
+          HOST: ${{ inputs.host }}
+        run: |
+          # Диагностика TLS отдельно от «порт открыт»: 443 бывает открыт, а
+          # сертификата на нём нет или он не тот. Разница видна только здесь.
+          echo "--- HTTP (порт 80) ---"
+          curl -sS --max-time 15 -o /dev/null \
+            -w 'код %{http_code}, редирект → %{redirect_url}\n' \
+            "http://$HOST/health" || echo "порт 80 не ответил"
+
+          echo
+          echo "--- ACME-путь (по нему certbot подтверждает домен) ---"
+          # certbot кладёт файл в /.well-known/acme-challenge/. Если этот путь
+          # не доходит до nginx, выпуск сертификата не пройдёт никогда — и
+          # именно так выглядит «сертификат не прописался».
+          curl -sS --max-time 15 -o /dev/null \
+            -w 'код %{http_code} (ожидается 404 от nginx, а не таймаут)\n' \
+            "http://$HOST/.well-known/acme-challenge/probe" \
+            || echo "путь недоступен — certbot не сможет подтвердить домен"
+
+          echo
+          echo "--- HTTPS (порт 443) ---"
+          curl -sSk --max-time 15 -o /dev/null \
+            -w 'код %{http_code}\n' "https://$HOST/health" \
+            || echo "порт 443 не ответил"
+
+          echo
+          echo "--- сертификат ---"
+          cert="$(timeout 20 openssl s_client -connect "$HOST:443" -servername "$HOST" \
+                    </dev/null 2>/dev/null | openssl x509 -noout -subject -issuer -dates 2>/dev/null || true)"
+          if [ -n "$cert" ]; then
+            echo "$cert"
+            if printf '%s' "$cert" | grep -qi "let's encrypt"; then
+              echo "::notice::Сертификат выпущен Let's Encrypt — TLS настроен."
+            else
+              echo "::warning::Сертификат есть, но выпущен не Let's Encrypt — вероятно самоподписанный."
+            fi
+          else
+            echo "::warning::Сертификата на 443 нет — TLS не настроен."
+          fi
+
       - name: Что это значит
         run: |
           if [ "${SSH_BLOCKED:-1}" = "0" ]; then
