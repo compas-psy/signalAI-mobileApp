@@ -1,7 +1,10 @@
 import 'package:flutter/widgets.dart';
 
 import '../../core/format.dart';
+import '../../domain/idea/final_check.dart';
+import '../../domain/idea/idea.dart';
 import '../../domain/models/settings.dart';
+import '../../state/app_controller.dart';
 import '../../domain/models/signal.dart';
 import '../../domain/position_sizing.dart';
 import '../../state/app_scope.dart';
@@ -9,6 +12,7 @@ import '../../theme/tokens.dart';
 import '../../theme/typography.dart';
 import '../tone.dart';
 import '../widgets/common.dart';
+import '../widgets/idea_verdict.dart';
 import '../widgets/segmented.dart';
 import '../widgets/trade_chart.dart';
 import '../widgets/vector_icon.dart';
@@ -52,6 +56,10 @@ class _IdeaDetailScreenState extends State<IdeaDetailScreen> {
   Widget build(BuildContext context) {
     final controller = AppScope.read(context);
     final signal = widget.signal;
+    final ideas = controller.ideas;
+    final idea = ideas.where((i) => i.id == signal.id).firstOrNull;
+    final checks = idea == null ? const <CheckResult>[] : _checks(controller, idea);
+    final blocked = checks.isNotEmpty && !FinalCheck.passes(checks);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -86,7 +94,7 @@ class _IdeaDetailScreenState extends State<IdeaDetailScreen> {
               _LevelsRow(signal: signal),
               const SizedBox(height: 12),
               SegmentedControl(
-                items: const ['План', 'Факторы', 'События'],
+                items: const ['План', 'Оценка', 'События'],
                 index: _tab,
                 onSelect: (i) => setState(() => _tab = i),
               ),
@@ -97,14 +105,27 @@ class _IdeaDetailScreenState extends State<IdeaDetailScreen> {
                     const SizedBox(height: 12),
                     _SmartRiskCard(signal: signal, risk: widget.risk),
                     const SizedBox(height: 12),
+                    if (idea != null) ...[
+                      InvalidationCard(idea: idea),
+                      const SizedBox(height: 12),
+                    ],
                     _ManagementCard(signal: signal),
                   ],
-                1 => [_FactorsCard(signal: signal)],
+                1 => [
+                    if (idea != null)
+                      ScoreBreakdownCard(score: idea.score)
+                    else
+                      _FactorsCard(signal: signal),
+                  ],
                 _ => [_SignalEventsCard(events: signal.events)],
               },
               const SizedBox(height: 12),
               if (controller.paperAvailable) ...[
                 _PaperCard(signal: signal),
+                const SizedBox(height: 12),
+              ],
+              if (checks.isNotEmpty) ...[
+                FinalCheckCard(results: checks),
                 const SizedBox(height: 12),
               ],
               if (signal.status.canConfirm)
@@ -113,17 +134,24 @@ class _IdeaDetailScreenState extends State<IdeaDetailScreen> {
                     Expanded(
                       child: Pressable(
                         pressedScale: .98,
-                        onTap: controller.openSheet,
+                        // ТЗ §11.1: проваленная или непроверенная проверка не
+                        // пускает к деньгам. Кнопка гаснет вместе с причиной
+                        // выше, а не молча ничего не делает.
+                        onTap: blocked ? null : controller.openSheet,
                         child: Container(
                           padding: const EdgeInsets.all(14),
                           decoration: BoxDecoration(
-                            color: C.accent,
+                            color: blocked ? C.inset : C.accent,
                             borderRadius: BorderRadius.circular(R.button),
                           ),
                           child: Center(
                             child: Text(
-                              'Отправить на биржу',
-                              style: T.body(14, weight: 800, color: C.onAccent),
+                              blocked
+                                  ? 'Вход заблокирован проверкой'
+                                  : 'Отправить на биржу',
+                              style: T.body(14,
+                                  weight: 800,
+                                  color: blocked ? C.faint : C.onAccent),
                             ),
                           ),
                         ),
@@ -166,6 +194,37 @@ class _IdeaDetailScreenState extends State<IdeaDetailScreen> {
       ],
     );
   }
+}
+
+/// Финальная проверка идеи в текущих условиях (ТЗ §11.1).
+///
+/// Цена берётся из последней котировки сигнала: она приходит строкой уже
+/// отформатированной биржевым разбором, и обратный перевод точен — запятая
+/// вместо точки и ничего больше.
+List<CheckResult> _checks(AppController controller, Idea idea) {
+  final center = controller.riskCenter;
+  final plan = idea.plan;
+  if (center == null || plan == null) return const [];
+  return FinalCheck.run(
+    idea,
+    ExecutionContext(
+      now: DateTime.now(),
+      lastPrice: _parsePrice(controller.currentSignal?.lastPrice),
+      budget: center.budgetFor(idea.score),
+      freeMargin: null,
+      // Кластер считается после сделки: занятое сейчас плюс то, что займёт
+      // эта идея. Проверять «до» бессмысленно — превышение создаём мы.
+      clusterRiskAfterPercent:
+          center.clusterRisk.usedPercent + plan.riskPercent,
+      shownPlanHash: plan.hash,
+      paperMode: !controller.liveTradingOn,
+    ),
+  );
+}
+
+double? _parsePrice(String? raw) {
+  if (raw == null || raw.isEmpty) return null;
+  return double.tryParse(raw.replaceAll(' ', '').replaceAll(',', '.'));
 }
 
 /// Первое предложение обоснования — вывод, а не весь абзац.

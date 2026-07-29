@@ -97,6 +97,7 @@ ExecutionContext ctx({
   bool tradingOpen = true,
   bool orderBookHealthy = true,
   bool protectiveOrders = true,
+  bool paperMode = false,
   DateTime? at,
   TradePlan? plan,
 }) =>
@@ -110,6 +111,7 @@ ExecutionContext ctx({
       tradingOpen: tradingOpen,
       orderBookHealthy: orderBookHealthy,
       protectiveOrdersSupported: protectiveOrders,
+      paperMode: paperMode,
     );
 
 CheckResult? find(List<CheckResult> results, CheckKind kind) {
@@ -315,6 +317,24 @@ void main() {
                   CheckKind.marketState)!
               .passed,
           isFalse);
+    });
+
+    test('бумажный режим не выдаёт отсутствие брокера за отказ', () {
+      // Иначе приложение блокировало бы вход навсегда: маржи и защитных
+      // заявок в бумажном режиме нет по построению, а не по сбою.
+      final results = FinalCheck.run(
+        idea(),
+        ctx(freeMargin: null, protectiveOrders: false, paperMode: true),
+      );
+      expect(find(results, CheckKind.margin)!.passed, isTrue);
+      expect(find(results, CheckKind.protectiveOrders)!.passed, isTrue);
+      expect(FinalCheck.passes(results), isTrue);
+    });
+
+    test('в живом режиме молчание брокера по-прежнему блокирует', () {
+      final results = FinalCheck.run(idea(), ctx(freeMargin: null));
+      expect(find(results, CheckKind.margin)!.skipped, isTrue);
+      expect(FinalCheck.passes(results), isFalse);
     });
 
     test('без гарантии защитной заявки вход запрещён', () {

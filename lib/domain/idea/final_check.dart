@@ -60,6 +60,7 @@ class ExecutionContext {
     this.orderBookHealthy = true,
     this.protectiveOrdersSupported = true,
     this.marketStateNote = '',
+    this.paperMode = false,
   });
 
   final DateTime now;
@@ -83,6 +84,13 @@ class ExecutionContext {
   final bool orderBookHealthy;
   final bool protectiveOrdersSupported;
   final String marketStateNote;
+
+  /// Бумажный режим: заявки на биржу не уходят.
+  ///
+  /// Тогда маржа и защитные заявки — не «неизвестно», а «не применяется»:
+  /// резервировать нечего и ставить стоп негде. Выдавать отсутствие брокера
+  /// за отказ проверки значило бы заблокировать всё приложение навсегда.
+  final bool paperMode;
 }
 
 /// Финальная проверка перед подтверждением плана (ТЗ §11.1).
@@ -172,7 +180,10 @@ abstract final class FinalCheck {
 
     // Маржа.
     final margin = ctx.freeMargin;
-    if (margin == null) {
+    if (ctx.paperMode) {
+      results.add(const CheckResult.pass(
+          CheckKind.margin, 'бумажный режим: маржа не резервируется'));
+    } else if (margin == null) {
       results.add(const CheckResult.unknown(
           CheckKind.margin, 'брокер не сообщил свободную маржу'));
     } else {
@@ -219,7 +230,10 @@ abstract final class FinalCheck {
     }
 
     // Защитные заявки.
-    results.add(ctx.protectiveOrdersSupported
+    results.add(ctx.paperMode
+        ? const CheckResult.pass(
+            CheckKind.protectiveOrders, 'бумажный режим: стоп ведётся расчётом')
+        : ctx.protectiveOrdersSupported
         ? const CheckResult.pass(CheckKind.protectiveOrders, 'стоп ставится у брокера')
         : const CheckResult.fail(CheckKind.protectiveOrders,
             'брокер не гарантирует постановку стопа — вход без защиты запрещён'));

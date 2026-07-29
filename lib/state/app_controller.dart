@@ -974,6 +974,16 @@ class AppController extends ChangeNotifier {
   /// Включена ли аварийная остановка.
   bool get killSwitchOn => tradingDesk?.tradingState.killSwitch ?? false;
 
+  /// Уходят ли заявки на настоящую биржу.
+  ///
+  /// От этого зависит, что означают проверки маржи и защитных заявок: в
+  /// бумажном режиме резервировать нечего и стоп ставить негде, а выдавать
+  /// отсутствие брокера за отказ проверки нельзя — заблокировало бы всё.
+  bool get liveTradingOn {
+    final state = tradingDesk?.tradingState;
+    return state != null && state.canSendOrders && state.anyLive;
+  }
+
   /// Режим риск-движка по фактическому состоянию контура.
   ///
   /// Режим не выбирается руками (кроме аварийной остановки): его назначает
