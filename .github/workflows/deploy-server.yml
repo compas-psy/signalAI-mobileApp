@@ -40,6 +40,7 @@ on:
           - update         # обновить код и перезапустить
           - health         # только проверить состояние
           - logs           # показать последние логи
+          - tls            # разобраться с сертификатом и выпустить его
 
 # Два развёртывания одновременно — это гонка за один и тот же docker-compose.
 concurrency:
@@ -169,6 +170,94 @@ jobs:
           # которой ещё нет.
           $SUDO docker compose --env-file /etc/signalai/.env run --rm api alembic upgrade head
           $SUDO docker compose --env-file /etc/signalai/.env up -d --build
+          REMOTE
+
+      - name: Сертификат
+        if: ${{ inputs.action == 'tls' }}
+        env:
+          HOST: ${{ inputs.host_override || secrets.VPS_HOST || secrets.SERVER_HOST }}
+          USER_NAME: ${{ secrets.VPS_USER || inputs.ssh_user }}
+          DOMAIN: ${{ inputs.domain }}
+          ACME_EMAIL: ${{ inputs.acme_email }}
+        run: |
+          # Сначала показать, что есть, и только потом чинить. Снаружи видно
+          # лишь «handshake failed»; причина всегда внутри конфигурации.
+          ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$USER_NAME@$HOST" \
+            "SIGNALAI_DOMAIN='$DOMAIN' SIGNALAI_ACME_EMAIL='$ACME_EMAIL' bash -s" <<'REMOTE'
+          set -uo pipefail
+          SUDO=""; [ "$(id -u)" -eq 0 ] || SUDO="sudo"
+          DOMAIN="${SIGNALAI_DOMAIN:-}"
+          [ -n "$DOMAIN" ] || { echo "::error::нужен параметр domain"; exit 1; }
+
+          echo "──────── что сейчас ────────"
+          echo "· сайты nginx:"
+          $SUDO ls -1 /etc/nginx/sites-enabled/ 2>/dev/null || echo "  каталога нет"
+          echo
+          echo "· server_name, которые знает nginx:"
+          $SUDO nginx -T 2>/dev/null | grep -E "server_name|ssl_certificate " | sed 's/^/  /' || true
+          echo
+          echo "· сертификаты certbot:"
+          $SUDO certbot certificates 2>/dev/null | sed 's/^/  /' || echo "  certbot не установлен"
+          echo
+          echo "· конфигурация валидна?"
+          $SUDO nginx -t 2>&1 | sed 's/^/  /'
+          echo
+          echo "· блок нашего домена:"
+          $SUDO cat /etc/nginx/sites-available/signalai 2>/dev/null | sed 's/^/  /' \
+            || echo "  файла нет — сайт не создавался"
+
+          echo
+          echo "──────── чиню ────────"
+          $SUDO apt-get install -y -qq --no-install-recommends certbot python3-certbot-nginx </dev/null >/dev/null 2>&1 || true
+
+          # Битый ssl-блок ломает handshake для своего SNI и при этом
+          # оставляет остальные сайты рабочими — снаружи это неотличимо от
+          # «сертификата нет». Сносим его до HTTP и выпускаем заново.
+          if $SUDO grep -q "ssl_certificate" /etc/nginx/sites-available/signalai 2>/dev/null \
+             && ! $SUDO test -f "/etc/letsencrypt/live/$DOMAIN/fullchain.pem"; then
+            echo "· в конфигурации есть ssl_certificate, а файла сертификата нет — вот причина handshake failed"
+          fi
+
+          $SUDO tee /etc/nginx/sites-available/signalai >/dev/null <<NGINX
+          server {
+              listen 80;
+              listen [::]:80;
+              server_name $DOMAIN;
+
+              # ACME-путь обслуживает сам nginx с диска. Проксировать его в
+              # приложение нельзя: приложение ответит 404, и подтверждение
+              # домена не пройдёт.
+              location ^~ /.well-known/acme-challenge/ {
+                  root /var/www/html;
+                  default_type "text/plain";
+              }
+
+              location / {
+                  proxy_pass http://127.0.0.1:8000;
+                  proxy_set_header Host \$host;
+                  proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto \$scheme;
+                  proxy_read_timeout 120s;
+              }
+          }
+          NGINX
+          $SUDO mkdir -p /var/www/html/.well-known/acme-challenge
+          $SUDO ln -sf /etc/nginx/sites-available/signalai /etc/nginx/sites-enabled/signalai
+          $SUDO nginx -t && $SUDO systemctl reload nginx
+          echo "· HTTP-блок пересобран и загружен"
+
+          EMAIL_ARG="--register-unsafely-without-email"
+          [ -n "${SIGNALAI_ACME_EMAIL:-}" ] && EMAIL_ARG="-m ${SIGNALAI_ACME_EMAIL}"
+          $SUDO certbot --nginx -d "$DOMAIN" --agree-tos --non-interactive \
+            --redirect $EMAIL_ARG 2>&1 | tail -30
+
+          echo
+          echo "──────── что стало ────────"
+          $SUDO certbot certificates 2>/dev/null | grep -A3 "$DOMAIN" | sed 's/^/  /' || true
+          $SUDO nginx -t 2>&1 | sed 's/^/  /'
+          echo "· проверка изнутри:"
+          curl -sS --max-time 15 -o /dev/null -w "  https код %{http_code}\n" "https://$DOMAIN/health" \
+            || echo "  https изнутри не отвечает"
           REMOTE
 
       - name: Состояние сервера
