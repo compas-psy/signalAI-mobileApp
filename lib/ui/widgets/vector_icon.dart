@@ -55,6 +55,17 @@ abstract final class Icons {
 
   static const check = IconSpec(paths: ['M20 6L9 17l-5-5'], strokeWidth: 2.4);
 
+  /// Крест отказа. Рисуем вектором, а не символом ✕: этого глифа нет в
+  /// подключённых шрифтах, и вместо знака выходил пустой квадрат.
+  static const cross =
+      IconSpec(paths: ['M18 6L6 18', 'M6 6l12 12'], strokeWidth: 2.4);
+
+  /// Знак «не проверено» — та же причина рисовать вектором.
+  static const unknown = IconSpec(
+    paths: ['M9.2 9a3 3 0 1 1 3.8 3c-.8.3-1 .9-1 1.6v.4', 'M12 17.6h.01'],
+    strokeWidth: 2.2,
+  );
+
   static const navIdeas = IconSpec(paths: ['M13 2L4 14h6l-1 8 9-12h-6l1-8z']);
 
   /// «Сегодня» — циферблат: раздел отвечает на вопрос «что сейчас».

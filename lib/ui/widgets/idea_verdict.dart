@@ -7,6 +7,7 @@ import '../../domain/idea/quality_score.dart';
 import '../../theme/tokens.dart';
 import '../../theme/typography.dart';
 import 'common.dart';
+import 'vector_icon.dart';
 
 /// Из чего собрана оценка (ТЗ §14.2).
 ///
@@ -342,17 +343,22 @@ class _CheckLine extends StatelessWidget {
         : result.skipped
             ? C.warning
             : C.red;
+    // Знак рисуется вектором: символов ✓ и ✕ нет в подключённых шрифтах, и
+    // на их месте выходил пустой квадрат — проверка выглядела сломанной.
     final mark = result.passed
-        ? '✓'
+        ? Icons.check
         : result.skipped
-            ? '?'
-            : '✕';
+            ? Icons.unknown
+            : Icons.cross;
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         SizedBox(
-          width: 16,
-          child: Text(mark, style: T.mono(12, color: color)),
+          width: 18,
+          child: Padding(
+            padding: const EdgeInsets.only(top: 1),
+            child: VectorIcon(mark, size: 13, color: color),
+          ),
         ),
         Expanded(
           child: Column(
