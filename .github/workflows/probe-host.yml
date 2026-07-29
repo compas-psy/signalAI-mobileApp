@@ -1,0 +1,71 @@
+name: Проверить доступность сервера
+
+# Разведка перед развёртыванием: доходит ли раннер GitHub до сервера.
+#
+# Секретов не требует и ничего не меняет. Адрес передаётся параметром, а не
+# секретом: IP сервера не тайна, он и так виден любому, кто откроет сайт.
+#
+# Смысл в том, что Codespaces и Actions живут в разных сетях. Блокировка
+# одной из них ничего не говорит о другой, а гадать об этом дороже, чем
+# проверить за минуту.
+on:
+  workflow_dispatch:
+    inputs:
+      host:
+        description: 'IP или домен сервера'
+        required: true
+      ports:
+        description: 'Порты через пробел'
+        required: false
+        default: '22 80 443'
+
+concurrency:
+  group: probe-host
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Откуда идёт проверка
+        run: |
+          echo "Адрес раннера: $(curl -s --max-time 10 https://api.ipify.org || echo 'определить не удалось')"
+          echo "Это понадобится, если сервер пускает только доверенные адреса."
+
+      - name: Порты
+        env:
+          HOST: ${{ inputs.host }}
+          PORTS: ${{ inputs.ports }}
+        run: |
+          fail=0
+          for p in $PORTS; do
+            if timeout 10 bash -c "cat < /dev/null > /dev/tcp/$HOST/$p" 2>/dev/null; then
+              echo "порт $p: ОТКРЫТ"
+            else
+              echo "порт $p: закрыт или молчит"
+              [ "$p" = "22" ] && fail=1
+            fi
+          done
+          echo "SSH_BLOCKED=$fail" >> "$GITHUB_ENV"
+
+      - name: Баннер SSH
+        env:
+          HOST: ${{ inputs.host }}
+        run: |
+          # Баннер приходит до всякой аутентификации: если он есть, значит
+          # сеть до sshd проходит, и дело будет только в ключе.
+          banner="$(timeout 10 bash -c "exec 3<>/dev/tcp/$HOST/22 && head -c 60 <&3" 2>/dev/null || true)"
+          if [ -n "$banner" ]; then
+            echo "sshd отвечает: $banner"
+          else
+            echo "баннера нет — до sshd не доходит"
+          fi
+
+      - name: Что это значит
+        run: |
+          if [ "${SSH_BLOCKED:-1}" = "0" ]; then
+            echo "::notice::Раннер видит порт 22 — развёртывание через Actions возможно."
+          else
+            echo "::warning::Раннер не видит порт 22. Нужен либо доступ с адреса раннера, либо другой путь."
+          fi
