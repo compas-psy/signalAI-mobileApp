@@ -41,6 +41,7 @@ on:
           - health         # только проверить состояние
           - logs           # показать последние логи
           - tls            # разобраться с сертификатом и выпустить его
+          - caddy          # выдать домен через Caddy, который держит 80/443
 
 # Два развёртывания одновременно — это гонка за один и тот же docker-compose.
 concurrency:
@@ -294,6 +295,96 @@ jobs:
           echo "· проверка изнутри:"
           curl -sS --max-time 15 -o /dev/null -w "  https код %{http_code}\n" "https://$DOMAIN/health" \
             || echo "  https изнутри не отвечает"
+          REMOTE
+
+      - name: Домен через Caddy
+        if: ${{ inputs.action == 'caddy' }}
+        env:
+          HOST: ${{ inputs.host_override || secrets.VPS_HOST || secrets.SERVER_HOST }}
+          USER_NAME: ${{ secrets.VPS_USER || inputs.ssh_user }}
+          DOMAIN: ${{ inputs.domain }}
+        run: |
+          # Порты 80 и 443 держит контейнер Caddy из прежнего стека владельца.
+          # Caddy сам получает сертификаты Let's Encrypt, поэтому правильный
+          # ход — не отбирать у него порты, а добавить один блок сайта.
+          ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$USER_NAME@$HOST" \
+            "SIGNALAI_DOMAIN='$DOMAIN' bash -s" <<'REMOTE'
+          set -uo pipefail
+          SUDO=""; [ "$(id -u)" -eq 0 ] || SUDO="sudo"
+          DOMAIN="${SIGNALAI_DOMAIN:-}"
+          [ -n "$DOMAIN" ] || { echo "::error::нужен параметр domain"; exit 1; }
+          BACKUP=""
+
+          WEB="$($SUDO docker ps --filter publish=443 --format '{{.Names}}' | head -1)"
+          [ -n "$WEB" ] || { echo "::error::контейнера с портом 443 нет"; exit 1; }
+          echo "· порты 80/443 держит контейнер: $WEB"
+
+          CADDYFILE="$($SUDO docker inspect "$WEB" \
+            --format '{{range .Mounts}}{{if eq .Destination "/etc/caddy/Caddyfile"}}{{.Source}}{{end}}{{end}}')"
+          [ -n "$CADDYFILE" ] || { echo "::error::Caddyfile не смонтирован снаружи — правку негде хранить"; exit 1; }
+          echo "· конфигурация: $CADDYFILE"
+          echo
+          echo "──────── Caddyfile сейчас ────────"
+          $SUDO cat "$CADDYFILE" | sed 's/^/  /'
+
+          if $SUDO grep -q "^$DOMAIN" "$CADDYFILE"; then
+            echo
+            echo "· блок для $DOMAIN уже есть — ничего не добавляю"
+          else
+            # Резервная копия до правки: конфигурация фронта чужого рабочего
+            # сайта, и откат должен быть в одну команду.
+            BACKUP="$CADDYFILE.bak-$(date +%Y%m%d-%H%M%S)"
+            $SUDO cp "$CADDYFILE" "$BACKUP"
+            echo "· копия: $BACKUP"
+
+            # Caddy живёт в своей сети и до 127.0.0.1:8000 хоста не достаёт:
+            # порт опубликован только на петлю. Подключаем контейнер к сети
+            # движка и ходим по имени сервиса — публиковать API наружу ради
+            # этого было бы шагом назад по §21.
+            NET="$($SUDO docker inspect server-api-1 \
+              --format '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' | awk '{print $1}')"
+            $SUDO docker network connect "$NET" "$WEB" 2>/dev/null \
+              && echo "· $WEB подключён к сети $NET" \
+              || echo "· $WEB уже в сети $NET"
+
+            $SUDO tee -a "$CADDYFILE" >/dev/null <<CADDY
+
+          # Движок SignalAI. TLS Caddy получает сам; отдельный certbot не нужен.
+          $DOMAIN {
+              reverse_proxy server-api-1:8000
+          }
+          CADDY
+            echo "· блок добавлен"
+          fi
+
+          echo
+          echo "──────── проверка и перезагрузка ────────"
+          # validate до reload: битая конфигурация не должна уронить сайт.
+          # Статус берётся у самого validate, а не у конвейера: `| tail`
+          # успешен всегда, и проверка стала бы декоративной.
+          VALIDATION="$($SUDO docker exec "$WEB" caddy validate --config /etc/caddy/Caddyfile 2>&1)"
+          VALID=$?
+          printf '%s\n' "$VALIDATION" | tail -5 | sed 's/^/  /'
+          if [ "$VALID" -eq 0 ]; then
+            $SUDO docker exec "$WEB" caddy reload --config /etc/caddy/Caddyfile 2>&1 | tail -5 | sed 's/^/  /'
+            echo "· конфигурация перезагружена"
+          else
+            echo "::error::конфигурация невалидна"
+            if [ -n "$BACKUP" ]; then
+              $SUDO cp "$BACKUP" "$CADDYFILE"
+              echo "· откатил на $BACKUP"
+            fi
+            exit 1
+          fi
+
+          echo
+          echo "· выпуск сертификата занимает до минуты, проверяю:"
+          for i in 1 2 3 4 5 6; do
+            code="$(curl -sS --max-time 20 -o /tmp/probe.json -w '%{http_code}' "https://$DOMAIN/health" 2>/dev/null || echo 000)"
+            echo "  попытка $i: код $code"
+            [ "$code" = "200" ] && { head -c 300 /tmp/probe.json; echo; break; }
+            sleep 10
+          done
           REMOTE
 
       - name: Состояние сервера
