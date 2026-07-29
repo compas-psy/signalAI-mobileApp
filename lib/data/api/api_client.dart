@@ -32,24 +32,30 @@ class ApiClient {
   final String _deviceToken;
   final HttpClient _client;
 
+  // `await` здесь обязателен, и это не стиль. Без него приведение типа
+  // применяется к самому `Future`, а не к его результату, и любой запрос
+  // падает с «type 'Future<Object?>' is not a subtype of type
+  // 'Map<String, dynamic>'». Дефект пролежал незамеченным всё время, пока
+  // REST-клиент ни разу не вызывался, и вылез первым же обращением к движку.
   Future<Map<String, dynamic>> get(String path) async =>
-      _send('GET', path) as Map<String, dynamic>;
+      await _send('GET', path) as Map<String, dynamic>;
 
   /// Ответ-массив. Контракт §18 отдаёт ленту идей списком верхнего уровня,
   /// и приводить её к объекту на стороне сервера значит менять контракт под
   /// удобство одного клиента.
   Future<List<dynamic>> getList(String path) async =>
-      _send('GET', path) as List<dynamic>;
+      await _send('GET', path) as List<dynamic>;
 
   Future<Map<String, dynamic>> post(
     String path, {
     Map<String, dynamic>? body,
     String? idempotencyKey,
   }) async =>
-      _send('POST', path, body: body, idempotencyKey: idempotencyKey) as Map<String, dynamic>;
+      await _send('POST', path, body: body, idempotencyKey: idempotencyKey)
+          as Map<String, dynamic>;
 
   Future<Map<String, dynamic>> patch(String path, {Map<String, dynamic>? body}) async =>
-      _send('PATCH', path, body: body) as Map<String, dynamic>;
+      await _send('PATCH', path, body: body) as Map<String, dynamic>;
 
   Future<Object?> _send(
     String method,
