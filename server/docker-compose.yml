@@ -45,6 +45,28 @@ services:
       sh -c "alembic upgrade head &&
              uvicorn app.main:app --host 0.0.0.0 --port 8000"
 
+  # Планировщик §26: вселенная, загрузка, допуск, скан. Отдельный процесс, а
+  # не фон внутри api: несколько воркеров uvicorn подняли бы столько же копий
+  # расписания, и каждая пошла бы грузить биржу. Портов не публикует.
+  scheduler:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      # Миграции накатывает api — планировщик не должен стартовать раньше
+      # схемы, иначе первый же тик упадёт на отсутствующей таблице.
+      api:
+        condition: service_healthy
+    environment:
+      SIGNALAI_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-signalai}
+      SIGNALAI_REDIS_URL: redis://redis:6379/0
+      SIGNALAI_UNIVERSE_EVERY_MINUTES: ${SIGNALAI_UNIVERSE_EVERY_MINUTES:-360}
+      SIGNALAI_INGEST_EVERY_MINUTES: ${SIGNALAI_INGEST_EVERY_MINUTES:-15}
+      SIGNALAI_REVIEW_EVERY_MINUTES: ${SIGNALAI_REVIEW_EVERY_MINUTES:-360}
+      SIGNALAI_SCAN_EVERY_MINUTES: ${SIGNALAI_SCAN_EVERY_MINUTES:-15}
+    command: ["python", "-m", "app.scheduler"]
+
   # Исполнение вынесено в отдельный контейнер (UX-ТЗ §16.1, §19.1): у него
   # нет входящих портов, и только он видит exec-токены брокеров. Пока движок
   # исполнения не написан, сервис объявлен, но не поднимается (профиль).

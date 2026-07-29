@@ -211,6 +211,11 @@ ok "миграции применены"
 docker compose --env-file "$ENV_FILE" up -d --build api
 ok "API поднят на 127.0.0.1:8000"
 
+# Планировщик §26 поднимается после API: он не публикует портов и живёт
+# отдельным процессом, чтобы перезапуск API не рвал загрузку на середине.
+docker compose --env-file "$ENV_FILE" up -d --build scheduler
+ok "планировщик запущен: вселенная, загрузка, допуск, скан"
+
 # ── TLS ───────────────────────────────────────────────────────────────────
 
 if [ -n "$DOMAIN" ]; then
@@ -357,6 +362,8 @@ cat <<FINAL
 Что дальше, по порядку:
 
   1. Проверьте снаружи:   curl https://${DOMAIN:-<домен не задан>}/health
+     Через 15–20 минут — что данные поехали:
+       curl -s https://${DOMAIN:-ВАШ_ДОМЕН}/api/v1/market/status | jq '{in_universe, tradable, with_data, last_bar_time}'
   2. Соберите приложение с адресом сервера и токеном устройства:
        flutter build apk --release \\
          --dart-define=SIGNALAI_API_BASE_URL=https://${DOMAIN:-ВАШ_ДОМЕН} \\
@@ -368,7 +375,9 @@ cat <<FINAL
      ≥100 бумажных сделок или 60 дней, OOS profit factor ≥ 1,20.
 
 Полезное:
-  журналы:    docker compose --env-file ${ENV_FILE} logs -f api
+  журналы API:        docker compose --env-file ${ENV_FILE} logs -f api
+  журналы загрузки:   docker compose --env-file ${ENV_FILE} logs -f scheduler
+  что загружено:      curl -s http://127.0.0.1:8000/api/v1/market/status | jq
   перезапуск: systemctl restart ${SERVICE}
   бэкап:      /usr/local/bin/signalai-backup
 ────────────────────────────────────────────────────────────────────────

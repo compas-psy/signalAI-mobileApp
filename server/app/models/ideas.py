@@ -21,7 +21,17 @@ from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from .base import Base, Money, Price, Quantity, Ratio, UuidPk, Versioned, utcnow_column
+from .base import (
+    Base,
+    Money,
+    Price,
+    Quantity,
+    Ratio,
+    StrEnumColumn,
+    UuidPk,
+    Versioned,
+    utcnow_column,
+)
 from .enums import (
     BarrierOutcome,
     Direction,
@@ -51,10 +61,10 @@ class TradeIdea(UuidPk, Versioned, Base):
     instrument_id: Mapped[str] = mapped_column(
         String(64), ForeignKey("instruments.instrument_id"), nullable=False
     )
-    strategy: Mapped[Strategy] = mapped_column(String(24), nullable=False)
-    direction: Mapped[Direction] = mapped_column(String(8), nullable=False)
-    status: Mapped[IdeaStatus] = mapped_column(String(24), nullable=False)
-    quality_status: Mapped[QualityStatus] = mapped_column(String(12), nullable=False)
+    strategy: Mapped[Strategy] = mapped_column(StrEnumColumn(Strategy, 24), nullable=False)
+    direction: Mapped[Direction] = mapped_column(StrEnumColumn(Direction, 8), nullable=False)
+    status: Mapped[IdeaStatus] = mapped_column(StrEnumColumn(IdeaStatus, 24), nullable=False)
+    quality_status: Mapped[QualityStatus] = mapped_column(StrEnumColumn(QualityStatus, 12), nullable=False)
 
     horizon_days: Mapped[int] = mapped_column(Integer, nullable=False)
     context_timeframe: Mapped[str] = mapped_column(String(8), nullable=False)
@@ -62,7 +72,7 @@ class TradeIdea(UuidPk, Versioned, Base):
     trigger_timeframe: Mapped[str] = mapped_column(String(8), nullable=False)
 
     # ── План (§22, ключевые поля trade_ideas) ────────────────────────────
-    order_intent: Mapped[OrderIntent] = mapped_column(String(24), nullable=False)
+    order_intent: Mapped[OrderIntent] = mapped_column(StrEnumColumn(OrderIntent, 24), nullable=False)
     entry_low: Mapped[Price] = mapped_column(nullable=False)
     entry_high: Mapped[Price] = mapped_column(nullable=False)
     entry_reference: Mapped[Price] = mapped_column(nullable=False)
@@ -170,8 +180,8 @@ class IdeaEvent(Base):
     sequence: Mapped[int] = mapped_column(Integer, nullable=False)
     occurred_at: Mapped[datetime] = utcnow_column()
 
-    old_status: Mapped[IdeaStatus | None] = mapped_column(String(24), nullable=True)
-    new_status: Mapped[IdeaStatus] = mapped_column(String(24), nullable=False)
+    old_status: Mapped[IdeaStatus | None] = mapped_column(StrEnumColumn(IdeaStatus, 24), nullable=True)
+    new_status: Mapped[IdeaStatus] = mapped_column(StrEnumColumn(IdeaStatus, 24), nullable=False)
     reason_code: Mapped[str] = mapped_column(String(48), nullable=False)
     reason_detail: Mapped[str] = mapped_column(Text, nullable=False, default="")
 
@@ -210,7 +220,7 @@ class IdeaOutcome(Base):
         PgUUID(as_uuid=True), ForeignKey("trade_ideas.id", ondelete="RESTRICT"),
         primary_key=True,
     )
-    barrier_outcome: Mapped[BarrierOutcome] = mapped_column(String(12), nullable=False)
+    barrier_outcome: Mapped[BarrierOutcome] = mapped_column(StrEnumColumn(BarrierOutcome, 12), nullable=False)
     resolved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     bars_to_resolution: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
@@ -242,7 +252,7 @@ class IdeaSkip(Base):
         PgUUID(as_uuid=True), ForeignKey("trade_ideas.id", ondelete="RESTRICT"),
         primary_key=True,
     )
-    reason: Mapped[SkipReason] = mapped_column(String(24), nullable=False)
+    reason: Mapped[SkipReason] = mapped_column(StrEnumColumn(SkipReason, 24), nullable=False)
     comment: Mapped[str] = mapped_column(Text, nullable=False, default="")
     skipped_at: Mapped[datetime] = utcnow_column()
     # Снимок оценки на момент отказа: спустя месяц идея выглядит иначе.

@@ -1,0 +1,256 @@
+"""Планировщик (engine-ТЗ §26).
+
+«Не хардкодить торговые часы; использовать calendar.» Календаря торгов у нас
+нет, и выдумывать его расписанием вида «с 10 до 23 по будням» нельзя: часы
+меняются, бывают праздники, вечерние сессии и внеплановые остановки.
+
+Поэтому расписание выводится **из самих данных**: задача загрузки идёт
+регулярно, а сканирование запускается только если появились новые закрытые
+бары. Рынок закрыт — новых баров нет — скан не идёт и ресурсов не тратит.
+Это не обход требования, а его выполнение доступными средствами: календарь
+здесь — сам поток котировок.
+
+Планировщик однопоточный и последовательный намеренно. Параллельный скан
+поверх незавершённой загрузки читал бы полуприехавшие данные, а на них
+строится план сделки.
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
+
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
+from ..models import Bar, DataQualityEvent
+from ..models.enums import Timeframe
+
+log = logging.getLogger("signalai.scheduler")
+
+
+@dataclass
+class JobResult:
+    name: str
+    started_at: datetime
+    finished_at: datetime
+    ok: bool
+    detail: str = ""
+
+    @property
+    def elapsed_ms(self) -> int:
+        return int((self.finished_at - self.started_at).total_seconds() * 1000)
+
+
+@dataclass
+class Job:
+    """Задача с интервалом и последним запуском."""
+
+    name: str
+    every: timedelta
+    run: Callable[[Session], str]
+    last_run: datetime | None = None
+    failures: int = 0
+
+    def due(self, now: datetime) -> bool:
+        return self.last_run is None or now - self.last_run >= self.every
+
+
+@dataclass
+class Scheduler:
+    jobs: list[Job] = field(default_factory=list)
+    history: list[JobResult] = field(default_factory=list)
+    max_history: int = 200
+
+    def add(self, name: str, every: timedelta, run: Callable[[Session], str]) -> None:
+        self.jobs.append(Job(name=name, every=every, run=run))
+
+    def tick(
+        self,
+        session: Session,
+        *,
+        now: datetime | None = None,
+        autocommit: bool = True,
+    ) -> list[JobResult]:
+        """Выполнить все назревшие задачи по очереди.
+
+        Отказ одной задачи не отменяет остальные и не останавливает
+        планировщик: сломавшаяся загрузка одной площадки не должна лишать
+        владельца пересчёта по другой.
+
+        Каждая задача фиксируется отдельно. Это не оптимизация: откат после
+        упавшего скана унёс бы вместе с ним и загруженные баром ранее данные,
+        то есть отказ на последнем шаге стирал бы работу всех предыдущих.
+        ``autocommit=False`` нужен тестам, которые держат свою транзакцию.
+        """
+        moment = now or datetime.now(UTC)
+        results: list[JobResult] = []
+        for job in self.jobs:
+            if not job.due(moment):
+                continue
+            started = datetime.now(UTC)
+            try:
+                detail = job.run(session)
+                if autocommit:
+                    session.commit()
+                job.failures = 0
+                ok = True
+            except Exception as exc:
+                detail = f"{type(exc).__name__}: {exc}"
+                job.failures += 1
+                ok = False
+                log.exception("задача %s упала", job.name)
+                session.rollback()
+            finished = datetime.now(UTC)
+            job.last_run = moment
+            result = JobResult(job.name, started, finished, ok, detail)
+            results.append(result)
+            self.history.append(result)
+        del self.history[: max(0, len(self.history) - self.max_history)]
+        return results
+
+
+def latest_bar_time(
+    session: Session, timeframe: Timeframe = Timeframe.H1
+) -> datetime | None:
+    """Время самого свежего закрытого бара во всей базе."""
+    return session.execute(
+        select(func.max(Bar.open_time)).where(
+            Bar.timeframe == timeframe, Bar.is_closed.is_(True)
+        )
+    ).scalar_one_or_none()
+
+
+def build_default_scheduler(
+    *,
+    universe_every: timedelta = timedelta(hours=6),
+    ingest_every: timedelta = timedelta(minutes=15),
+    review_every: timedelta = timedelta(hours=6),
+    scan_every: timedelta = timedelta(minutes=15),
+    fetch=None,
+) -> Scheduler:
+    """Расписание по умолчанию: вселенная → загрузка → допуск → скан.
+
+    Порядок здесь не косметический, он и есть §5: справочник обновляется
+    первым (иначе загружать нечего), допуск идёт после загрузки (иначе
+    ликвидность нечем мерить), а скан — последним и только по новым барам.
+
+    Скан объявлен отдельной задачей, но фактически привязан к данным: он
+    сравнивает время последнего бара с тем, что было при прошлом прогоне, и
+    не делает ничего, если рынок не двигался. Календарь торгов при этом не
+    нужен — его роль играет сам поток котировок.
+
+    Вселенная пересобирается редко: состав срочного рынка меняется не чаще
+    раза в квартал, а каждый проход — это полная выгрузка доски.
+    """
+    from ..market.ingest import ingest_universe
+    from ..market.universe import review_universe, sync_crypto, sync_futures
+    from ..pipeline.scan import scan as run_scan
+
+    scheduler = Scheduler()
+    state: dict[str, datetime | None] = {"last_bar": None}
+
+    def universe(session: Session) -> str:
+        parts = []
+        errors = []
+        for name, sync in (("MOEX", sync_futures), ("crypto", sync_crypto)):
+            try:
+                kept = sync(session, fetch=fetch)
+                parts.append(f"{name}: {len(kept)}")
+            except Exception as exc:
+                # Отказ одной площадки не должен обнулять вселенную другой:
+                # иначе недоступность биржи выглядит как «инструментов нет».
+                errors.append(f"{name} — {type(exc).__name__}: {exc}")
+        detail = ", ".join(parts) if parts else "ничего не обновлено"
+        if errors:
+            detail += "; отказы: " + "; ".join(errors)
+        return detail
+
+    def review(session: Session) -> str:
+        report = review_universe(session, fetch=fetch)
+        rejected = [
+            f"{key} — {v.reasons[0]}"
+            for key, v in report.verdicts.items()
+            if not v.admitted and v.reasons
+        ]
+        detail = f"проверено {report.checked}, допущено {report.admitted}"
+        if rejected:
+            detail += "; не допущены: " + "; ".join(rejected[:3])
+        return detail
+
+    def ingest(session: Session) -> str:
+        reports = ingest_universe(session, fetch=fetch)
+        written = sum(r.written for r in reports)
+        updated = sum(r.updated for r in reports)
+        failed = [r for r in reports if not r.ok]
+        detail = f"новых баров {written}, уточнено {updated}"
+        if failed:
+            detail += f", отказов {len(failed)}: " + "; ".join(
+                f"{r.instrument_id} — {r.error}" for r in failed[:3]
+            )
+        return detail
+
+    def scan(session: Session) -> str:
+        newest = latest_bar_time(session)
+        if newest is None:
+            return "баров нет — сканировать нечего"
+        if state["last_bar"] is not None and newest <= state["last_bar"]:
+            # Рынок не двигался: новый скан дал бы тот же ответ, а идеи
+            # продублировались бы в журнале.
+            return f"новых баров нет с {newest.isoformat()} — скан пропущен"
+        state["last_bar"] = newest
+        result = run_scan(session)
+        return (
+            f"просмотрено {result.scanned}, идей {result.produced}, "
+            f"пропущено {len(result.skipped)}, отказов {len(result.rejections)}"
+        )
+
+    scheduler.add("universe", universe_every, universe)
+    scheduler.add("ingest", ingest_every, ingest)
+    scheduler.add("review", review_every, review)
+    scheduler.add("scan", scan_every, scan)
+    return scheduler
+
+
+def run_forever(
+    session_factory,
+    scheduler: Scheduler,
+    *,
+    interval_seconds: int = 60,
+    stop: Callable[[], bool] | None = None,
+) -> None:
+    """Основной цикл. Каждая итерация — своя сессия.
+
+    Одна сессия на всё время работы копила бы объекты и держала соединение
+    открытым сутками. Транзакции внутри тика закрывает сам ``tick`` — по
+    одной на задачу.
+    """
+    should_stop = stop or (lambda: False)
+    while not should_stop():
+        session = session_factory()
+        try:
+            for result in scheduler.tick(session):
+                log.info(
+                    "%s: %s (%d мс) — %s",
+                    result.name,
+                    "ок" if result.ok else "ОТКАЗ",
+                    result.elapsed_ms,
+                    result.detail,
+                )
+                if not result.ok:
+                    session.add(
+                        DataQualityEvent(
+                            source="scheduler", flag="JOB_FAILED",
+                            detail=f"{result.name}: {result.detail}"[:512],
+                        )
+                    )
+            session.commit()
+        except Exception:
+            session.rollback()
+            log.exception("тик планировщика упал целиком")
+        finally:
+            session.close()
+        time.sleep(interval_seconds)

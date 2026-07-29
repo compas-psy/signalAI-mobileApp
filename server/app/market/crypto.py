@@ -113,6 +113,72 @@ def tickers(
     return out, report
 
 
+@dataclass(frozen=True, slots=True)
+class InstrumentInfo:
+    """Спецификация контракта: шаг цены, шаг объёма, минимальный лот.
+
+    Эти три числа входят в формулу размера позиции §17.1. Значение «1 по
+    умолчанию» здесь недопустимо: оно даёт правдоподобный, но неверный
+    объём — а это уже деньги.
+    """
+
+    symbol: str
+    status: str
+    contract_type: str
+    base_coin: str
+    quote_coin: str
+    tick_size: Decimal | None
+    qty_step: Decimal | None
+    min_order_qty: Decimal | None
+    launch_time: datetime | None
+    delivery_time: datetime | None
+
+    @property
+    def is_perpetual(self) -> bool:
+        return "Perpetual" in self.contract_type
+
+    @property
+    def is_trading(self) -> bool:
+        return self.status == "Trading"
+
+
+def instruments_info(
+    *, category: str = "linear", fetch=http_json
+) -> tuple[list[InstrumentInfo], FetchReport]:
+    """Справочник контрактов.
+
+    Нужен для §5.3 (delisting и pre-market отсеиваются по ``status``) и для
+    §17.1 (шаг объёма и минимальный лот). ``deliveryTime`` отличает вечный
+    контракт от поставочного: у вечного оно нулевое.
+    """
+    url = f"{BASE}/v5/market/instruments-info?category={category}&limit=1000"
+    payload, report = fetch(url)
+    rows = _result(payload).get("list") or []
+    out = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        lot = row.get("lotSizeFilter") or {}
+        price = row.get("priceFilter") or {}
+        delivery = _ms(row.get("deliveryTime"))
+        out.append(
+            InstrumentInfo(
+                symbol=str(row.get("symbol") or ""),
+                status=str(row.get("status") or ""),
+                contract_type=str(row.get("contractType") or ""),
+                base_coin=str(row.get("baseCoin") or ""),
+                quote_coin=str(row.get("quoteCoin") or ""),
+                tick_size=_dec(price.get("tickSize")),
+                qty_step=_dec(lot.get("qtyStep")),
+                min_order_qty=_dec(lot.get("minOrderQty")),
+                launch_time=_ms(row.get("launchTime")),
+                # Ноль — «поставки нет», а не «поставка в 1970 году».
+                delivery_time=delivery if str(row.get("deliveryTime")) != "0" else None,
+            )
+        )
+    return out, report
+
+
 def klines(
     symbol: str,
     timeframe: Timeframe,

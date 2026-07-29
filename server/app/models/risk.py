@@ -21,7 +21,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from .base import Base, Money, Ratio, UuidPk, utcnow_column
+from .base import Base, Money, Ratio, StrEnumColumn, UuidPk, utcnow_column
 from .enums import ExecutionMode
 
 
@@ -73,7 +73,7 @@ class RiskState(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
     execution_mode: Mapped[ExecutionMode] = mapped_column(
-        String(20), nullable=False, default=ExecutionMode.PAPER
+        StrEnumColumn(ExecutionMode, 20), nullable=False, default=ExecutionMode.PAPER
     )
     kill_switch: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     kill_switch_reason: Mapped[str] = mapped_column(Text, nullable=False, default="")

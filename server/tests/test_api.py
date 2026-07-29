@@ -277,3 +277,43 @@ def test_halt_and_resume_are_audited(client, session):
         )
     ]
     assert actions == ["kill_switch_on", "kill_switch_off"]
+
+
+# ─── Состояние загрузки ───────────────────────────────────────────────────
+
+
+def test_status_distinguishes_no_data_from_no_setups(client, session, instrument):
+    """«Идей нет» и «данных нет» — разные новости, и различить их обязан сервер."""
+    body = client.get("/api/v1/market/status").json()
+    row = next(
+        r for r in body["instruments"]
+        if r["instrument_id"] == instrument.instrument_id
+    )
+    assert body["with_data"] == 0
+    assert row["daily_bars"] == 0
+    assert row["last_bar_time"] is None
+    assert row["stale_hours"] is None
+
+
+def test_status_reports_freshness_and_counts(client, session, instrument):
+    now = datetime.now(UTC)
+    for i in range(3):
+        session.add(
+            Bar(
+                instrument_id=instrument.instrument_id, timeframe="1d",
+                open_time=now - timedelta(days=i + 1),
+                open=Decimal(100), high=Decimal(101), low=Decimal(99),
+                close=Decimal(100), is_closed=True, source="test",
+            )
+        )
+    session.flush()
+
+    body = client.get("/api/v1/market/status").json()
+    row = next(
+        r for r in body["instruments"]
+        if r["instrument_id"] == instrument.instrument_id
+    )
+    assert row["daily_bars"] == 3
+    assert row["hourly_bars"] == 0
+    assert 23 <= row["stale_hours"] <= 25
+    assert body["with_data"] == 1

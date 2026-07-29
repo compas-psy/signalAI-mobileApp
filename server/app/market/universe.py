@@ -1,0 +1,600 @@
+"""Отбор вселенной (engine-ТЗ §5).
+
+ТЗ не даёт списка инструментов — оно даёт **фильтры**. Это принципиально:
+захардкоженный список молча устаревает (серия истекла, контракт переименован,
+ликвидность ушла), а фильтр сам перестаёт пропускать то, что больше не годно.
+Поэтому здесь нет ни одного тикера, кроме двух обязательных по §5.3.
+
+Отбор идёт в два прохода, и это не усложнение, а следствие §5.2. Часть
+условий — «median daily notional за 30 дней», «≥ 250 закрытых часовых баров» —
+измеряется только по истории, а история загружается лишь для того, что уже
+попало во вселенную. Замкнутый круг разрывается так:
+
+1. **Кандидаты** — по снимку доски: срок до экспирации, наличие следующей
+   серии для роллирования, ненулевой оборот. Инструмент попадает в справочник
+   и начинает загружаться, но помечен как кандидат.
+2. **Допуск** — по накопленной истории: медианы оборота и открытого интереса,
+   спред, число баров. Прошедший становится торгуемым, не прошедший остаётся
+   в справочнике с причиной отказа.
+
+Инструмент, не прошедший второй проход, **не исчезает**: он остаётся с
+записанной причиной. «Пропал из списка» — худший вид ответа, потому что
+неотличим от сбоя загрузки.
+
+Про спред сказано отдельно. У ISS нет истории котировок, поэтому «median
+relative spread 30d» на срочном рынке измерить нечем, и вместо медианы берётся
+снимок. Это записано в причине допуска дословно, а не спрятано за одинаковым
+именем поля.
+"""
+
+from __future__ import annotations
+
+import statistics
+from dataclasses import dataclass, field
+from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
+
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
+from ..config import EngineConfig, get_config
+from ..models import Bar, DataQualityEvent, Instrument
+from ..models.enums import AssetClass, QualityFlag, Timeframe, Venue
+from . import crypto, moex
+from .http import FetchError
+
+# Обязательные по §5.3 — единственные тикеры во всём модуле.
+MANDATORY_CRYPTO = ("BTCUSDT", "ETHUSDT")
+
+
+@dataclass
+class Verdict:
+    """Решение о допуске с перечислением того, что реально измерено."""
+
+    admitted: bool
+    reasons: list[str] = field(default_factory=list)
+    measured: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def note(self) -> str:
+        if self.admitted:
+            head = "допущен §5"
+        else:
+            head = "не допущен §5"
+        detail = "; ".join(self.reasons)
+        return f"{head}: {detail}"[:256] if detail else head
+
+
+def _median(values: list[Decimal]) -> Decimal | None:
+    if not values:
+        return None
+    return Decimal(statistics.median(sorted(values)))
+
+
+def _daily_notionals(
+    session: Session, instrument_id: str, *, days: int, now: datetime
+) -> list[Decimal]:
+    since = now - timedelta(days=days)
+    rows = session.execute(
+        select(Bar.volume_notional).where(
+            Bar.instrument_id == instrument_id,
+            Bar.timeframe == Timeframe.D1,
+            Bar.is_closed.is_(True),
+            Bar.open_time >= since,
+        )
+    ).scalars()
+    return [v for v in rows if v is not None]
+
+
+def _daily_oi_notionals(
+    session: Session, instrument: Instrument, *, days: int, now: datetime
+) -> list[Decimal]:
+    """Открытый интерес в деньгах.
+
+    На срочном рынке OI приходит в контрактах, и сравнивать его с порогом в
+    рублях напрямую нельзя. Перевод — через стоимость шага цены:
+    ``tick_value / tick_size`` даёт рубли на один пункт цены.
+    """
+    since = now - timedelta(days=days)
+    rows = session.execute(
+        select(Bar.open_interest, Bar.close).where(
+            Bar.instrument_id == instrument.instrument_id,
+            Bar.timeframe == Timeframe.D1,
+            Bar.is_closed.is_(True),
+            Bar.open_time >= since,
+        )
+    ).all()
+    if not instrument.tick_size or instrument.tick_size <= 0:
+        return []
+    rubles_per_point = instrument.tick_value / instrument.tick_size
+    return [
+        oi * close * rubles_per_point
+        for oi, close in rows
+        if oi is not None and close is not None
+    ]
+
+
+def _closed_hourly_bars(session: Session, instrument_id: str) -> int:
+    return int(
+        session.execute(
+            select(func.count()).select_from(Bar).where(
+                Bar.instrument_id == instrument_id,
+                Bar.timeframe == Timeframe.H1,
+                Bar.is_closed.is_(True),
+            )
+        ).scalar_one()
+    )
+
+
+def _daily_bar_span_days(session: Session, instrument_id: str) -> int:
+    row = session.execute(
+        select(func.min(Bar.open_time), func.max(Bar.open_time)).where(
+            Bar.instrument_id == instrument_id,
+            Bar.timeframe == Timeframe.D1,
+            Bar.is_closed.is_(True),
+        )
+    ).one()
+    if row[0] is None or row[1] is None:
+        return 0
+    return (row[1] - row[0]).days
+
+
+# ─── Фьючерсы (§5.2) ──────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class FuturesCandidate:
+    root: str
+    near: moex.FortsRow
+    next_series: moex.FortsRow | None
+
+    @property
+    def can_roll(self) -> bool:
+        return self.next_series is not None
+
+
+def futures_candidates(
+    rows: list[moex.FortsRow], today: date, *, min_days_to_expiry: int
+) -> list[FuturesCandidate]:
+    """Ближняя торгуемая серия каждого корня и серия под роллирование.
+
+    Серия ближе порога §5.2 к экспирации не берётся вовсе: держать позицию в
+    истекающем контракте — отдельный риск, не имеющий отношения к сетапу.
+    Следующая серия ищется **среди всех** более дальних, включая те, что не
+    прошли бы порог сами: для роллирования важно её существование.
+    """
+    result: list[FuturesCandidate] = []
+    for root, series in moex.series_by_root(rows).items():
+        tradable = [
+            r for r in series
+            if r.last_trade_date is not None
+            and (r.last_trade_date - today).days > min_days_to_expiry
+            and (r.turnover or Decimal(0)) > 0
+        ]
+        if not tradable:
+            continue
+        near = tradable[0]
+        later = [
+            r for r in series
+            if r.last_trade_date is not None
+            and near.last_trade_date is not None
+            and r.last_trade_date > near.last_trade_date
+        ]
+        result.append(FuturesCandidate(root, near, later[0] if later else None))
+    return result
+
+
+def admit_futures(
+    session: Session,
+    instrument: Instrument,
+    *,
+    cfg: EngineConfig | None = None,
+    now: datetime | None = None,
+    spread_snapshot: Decimal | None = None,
+) -> Verdict:
+    """Проверить фьючерс по §5.2 на накопленной истории."""
+    config = cfg or get_config()
+    moment = now or datetime.now(UTC)
+    verdict = Verdict(admitted=True)
+
+    min_notional = config.decimal("universe.futures.min_median_daily_notional_rub")
+    min_oi = config.decimal("universe.futures.min_median_oi_notional_rub")
+    max_spread = config.decimal("universe.futures.max_median_relative_spread")
+    min_bars = int(config.get("universe.futures.min_closed_hourly_bars"))
+    min_days = int(config.get("universe.futures.min_days_to_expiry"))
+
+    notional = _median(_daily_notionals(session, instrument.instrument_id, days=30, now=moment))
+    if notional is None:
+        verdict.admitted = False
+        verdict.reasons.append("оборот не измерен: дневных баров нет")
+    else:
+        verdict.measured["median_daily_notional_rub"] = str(notional)
+        if notional < min_notional:
+            verdict.admitted = False
+            verdict.reasons.append(
+                f"медианный оборот {notional:.0f} ₽ ниже порога {min_notional:.0f} ₽"
+            )
+
+    oi = _median(_daily_oi_notionals(session, instrument, days=30, now=moment))
+    if oi is None:
+        # OI у ISS живёт в отдельном ряду и может не приехать. Это не повод
+        # объявить его нулевым — это повод сказать «не измерен».
+        verdict.admitted = False
+        verdict.reasons.append("открытый интерес не измерен: ряда OI нет")
+    else:
+        verdict.measured["median_oi_notional_rub"] = str(oi)
+        if oi < min_oi:
+            verdict.admitted = False
+            verdict.reasons.append(
+                f"медианный OI {oi:.0f} ₽ ниже порога {min_oi:.0f} ₽"
+            )
+
+    bars = _closed_hourly_bars(session, instrument.instrument_id)
+    verdict.measured["closed_hourly_bars"] = str(bars)
+    if bars < min_bars:
+        verdict.admitted = False
+        verdict.reasons.append(f"закрытых часовых баров {bars} из {min_bars}")
+
+    if instrument.expiry is None:
+        verdict.admitted = False
+        verdict.reasons.append("дата исполнения неизвестна")
+    else:
+        left = (instrument.expiry - moment.date()).days
+        verdict.measured["days_to_expiry"] = str(left)
+        if left <= min_days:
+            verdict.admitted = False
+            verdict.reasons.append(f"до экспирации {left} дней при пороге {min_days}")
+
+    if instrument.next_contract is None:
+        verdict.admitted = False
+        verdict.reasons.append("следующая серия недоступна — роллировать некуда")
+
+    if spread_snapshot is None:
+        # Не проваливаем допуск: истории котировок у ISS нет в принципе, и
+        # требовать невозможного значит закрыть срочный рынок целиком.
+        verdict.reasons.append("спред не измерен: ISS не отдаёт историю котировок")
+    else:
+        verdict.measured["relative_spread_snapshot"] = str(spread_snapshot)
+        if spread_snapshot > max_spread:
+            verdict.admitted = False
+            verdict.reasons.append(
+                f"спред {spread_snapshot:.4%} шире порога {max_spread:.4%} "
+                "(снимок, а не медиана за 30 дней)"
+            )
+
+    return verdict
+
+
+def sync_futures(
+    session: Session, *, now: datetime | None = None, fetch=None, cfg=None
+) -> list[Instrument]:
+    """Первый проход §5.2: справочник ближних серий по всей доске.
+
+    Спецификация **перезаписывается** при каждом проходе: шаг цены и его
+    стоимость меняются при пересмотре параметров контракта, а по ним считается
+    размер позиции. Устаревшая спецификация — тихая ошибка в деньгах.
+    """
+    config = cfg or get_config()
+    moment = now or datetime.now(UTC)
+    kwargs = {"fetch": fetch} if fetch else {}
+    min_days = int(config.get("universe.futures.min_days_to_expiry"))
+
+    rows, _ = moex.forts_board(**kwargs)
+    candidates = futures_candidates(rows, moment.date(), min_days_to_expiry=min_days)
+
+    # Корень, который есть на доске, но не дал ни одной годной серии, обязан
+    # оставить след. Иначе исчезновение инструмента из выдачи неотличимо от
+    # сбоя загрузки, а владелец гадает, куда делся привычный фьючерс.
+    passed = {c.root for c in candidates}
+    for root in moex.series_by_root(rows):
+        if root not in passed:
+            session.add(
+                DataQualityEvent(
+                    source="moex",
+                    flag=QualityFlag.LOW_LIQUIDITY.value,
+                    detail=(
+                        f"корень {root}: нет ликвидной серии дальше "
+                        f"{min_days} дней до экспирации"
+                    )[:512],
+                )
+            )
+
+    kept: list[Instrument] = []
+    for candidate in candidates:
+        series = candidate.near
+        instrument_id = f"MOEX:FUT:{series.sec_id}"
+        existing = session.execute(
+            select(Instrument).where(Instrument.instrument_id == instrument_id)
+        ).scalar_one_or_none()
+        if existing is None:
+            existing = Instrument(
+                instrument_id=instrument_id,
+                venue=Venue.MOEX,
+                asset_class=AssetClass.FUTURES,
+                symbol=series.sec_id,
+                currency="RUB",
+            )
+            session.add(existing)
+
+        existing.title = series.short_name
+        existing.tick_size = series.min_step or Decimal(1)
+        existing.tick_value = series.step_price or Decimal(1)
+        existing.expiry = series.last_trade_date
+        existing.next_contract = (
+            f"MOEX:FUT:{candidate.next_series.sec_id}" if candidate.can_roll else None
+        )
+        existing.correlation_cluster = cluster_for(candidate.root)
+        existing.in_universe = True
+        # Торгуемость подтверждает второй проход, а не снимок доски.
+        existing.is_tradable = False
+        existing.universe_note = (
+            f"кандидат §5.2: ближняя серия корня {candidate.root}, "
+            f"экспирация {series.last_trade_date}"
+            + ("" if candidate.can_roll else ", следующей серии нет")
+        )
+        spread = series.relative_spread
+        existing.metadata_json = {
+            **(existing.metadata_json or {}),
+            "root": candidate.root,
+            "spread_snapshot": str(spread) if spread is not None else None,
+        }
+        kept.append(existing)
+
+    _retire_missing(session, kept, Venue.MOEX, AssetClass.FUTURES)
+    session.flush()
+    return kept
+
+
+def _retire_missing(
+    session: Session,
+    kept: list[Instrument],
+    venue: Venue,
+    asset_class: AssetClass,
+) -> None:
+    """Вывести из вселенной то, чего в новом снимке нет.
+
+    Инструмент остаётся в справочнике: по нему есть история и, возможно,
+    закрытые сделки. Меняется только участие в скане, и меняется с причиной.
+    """
+    live = {i.instrument_id for i in kept}
+    rows = session.execute(
+        select(Instrument).where(
+            Instrument.venue == venue,
+            Instrument.asset_class == asset_class,
+            Instrument.in_universe.is_(True),
+        )
+    ).scalars()
+    for row in rows:
+        if row.instrument_id not in live:
+            row.in_universe = False
+            row.is_tradable = False
+            row.universe_note = "выбыл из снимка биржи: смена серии либо экспирация"
+
+
+# ─── Crypto (§5.3) ────────────────────────────────────────────────────────
+
+
+def crypto_candidates(
+    tickers: list[crypto.Ticker],
+    specs: dict[str, crypto.InstrumentInfo],
+    *,
+    min_turnover: Decimal,
+    max_active: int,
+) -> list[crypto.Ticker]:
+    """BTCUSDT и ETHUSDT плюс верх по обороту.
+
+    Обязательные два идут первыми и **не соревнуются за места**: §5.3
+    требует их при доступности, а не «если попадут в топ». Остальные —
+    по обороту, до предела активной вселенной.
+    """
+    by_symbol = {t.symbol: t for t in tickers}
+
+    def usable(symbol: str) -> bool:
+        spec = specs.get(symbol)
+        # Нет спецификации — нет шага объёма; торговать вслепую нельзя.
+        return spec is not None and spec.is_trading and spec.is_perpetual
+
+    chosen: list[crypto.Ticker] = []
+    for symbol in MANDATORY_CRYPTO:
+        ticker = by_symbol.get(symbol)
+        if ticker is not None and usable(symbol):
+            chosen.append(ticker)
+
+    rest = [
+        t for t in tickers
+        if t.symbol not in {c.symbol for c in chosen}
+        and usable(t.symbol)
+        and t.symbol.endswith("USDT")
+        and (t.turnover_24h or Decimal(0)) >= min_turnover
+    ]
+    rest.sort(key=lambda t: t.turnover_24h or Decimal(0), reverse=True)
+    return [*chosen, *rest[: max(0, max_active - len(chosen))]]
+
+
+def admit_crypto(
+    session: Session,
+    instrument: Instrument,
+    ticker: crypto.Ticker | None,
+    *,
+    cfg: EngineConfig | None = None,
+    now: datetime | None = None,
+) -> Verdict:
+    """Проверить криптоконтракт по §5.3."""
+    config = cfg or get_config()
+    moment = now or datetime.now(UTC)
+    verdict = Verdict(admitted=True)
+
+    min_notional = config.decimal("universe.crypto.min_median_daily_notional_usdt")
+    min_history = int(config.get("universe.crypto.min_history_days"))
+
+    notional = _median(_daily_notionals(session, instrument.instrument_id, days=30, now=moment))
+    if notional is None:
+        verdict.admitted = False
+        verdict.reasons.append("оборот не измерен: дневных баров нет")
+    else:
+        verdict.measured["median_daily_notional_usdt"] = str(notional)
+        if notional < min_notional:
+            verdict.admitted = False
+            verdict.reasons.append(
+                f"медианный оборот {notional:.0f} USDT ниже порога {min_notional:.0f}"
+            )
+
+    span = _daily_bar_span_days(session, instrument.instrument_id)
+    verdict.measured["history_days"] = str(span)
+    if span < min_history:
+        verdict.admitted = False
+        verdict.reasons.append(f"истории {span} дней из {min_history}")
+
+    if ticker is None:
+        verdict.admitted = False
+        verdict.reasons.append("инструмента нет в снимке рынка")
+    else:
+        spread = ticker.relative_spread
+        if spread is None:
+            verdict.reasons.append("спред не измерен: биржа не отдала котировки")
+        else:
+            verdict.measured["relative_spread"] = f"{spread:.6f}"
+        if ticker.open_interest is None:
+            verdict.admitted = False
+            verdict.reasons.append("открытый интерес недоступен")
+        else:
+            verdict.measured["open_interest"] = str(ticker.open_interest)
+
+    return verdict
+
+
+def sync_crypto(
+    session: Session, *, now: datetime | None = None, fetch=None, cfg=None
+) -> list[Instrument]:
+    """Первый проход §5.3: активная вселенная бессрочных контрактов."""
+    config = cfg or get_config()
+    kwargs = {"fetch": fetch} if fetch else {}
+    max_active = int(config.get("universe.crypto.max_active"))
+    min_turnover = config.decimal("universe.crypto.min_median_daily_notional_usdt")
+
+    snapshot, _ = crypto.tickers(**kwargs)
+    specs_list, _ = crypto.instruments_info(**kwargs)
+    specs = {s.symbol: s for s in specs_list}
+
+    chosen = crypto_candidates(
+        snapshot, specs, min_turnover=min_turnover, max_active=max_active
+    )
+
+    kept: list[Instrument] = []
+    for ticker in chosen:
+        spec = specs[ticker.symbol]
+        instrument_id = f"CRYPTO:PERP:{ticker.symbol}"
+        existing = session.execute(
+            select(Instrument).where(Instrument.instrument_id == instrument_id)
+        ).scalar_one_or_none()
+        if existing is None:
+            existing = Instrument(
+                instrument_id=instrument_id,
+                venue=Venue.CRYPTO,
+                asset_class=AssetClass.CRYPTO_PERPETUAL,
+                symbol=ticker.symbol,
+                currency=spec.quote_coin or "USDT",
+            )
+            session.add(existing)
+
+        existing.title = f"{spec.base_coin}/{spec.quote_coin} бессрочный"
+        existing.tick_size = spec.tick_size or Decimal("0.01")
+        # У бессрочного контракта «стоимость шага» — сам шаг цены: объём
+        # считается в базовой монете, а не в контрактах.
+        existing.tick_value = spec.tick_size or Decimal("0.01")
+        existing.quantity_step = spec.qty_step or Decimal(1)
+        existing.min_quantity = spec.min_order_qty or spec.qty_step or Decimal(1)
+        existing.expiry = None
+        existing.correlation_cluster = "crypto"
+        existing.in_universe = True
+        existing.is_tradable = False
+        existing.universe_note = (
+            "обязательный §5.3" if ticker.symbol in MANDATORY_CRYPTO
+            else f"кандидат §5.3 по обороту {ticker.turnover_24h or 0:.0f} USDT за сутки"
+        )
+        kept.append(existing)
+
+    _retire_missing(session, kept, Venue.CRYPTO, AssetClass.CRYPTO_PERPETUAL)
+    session.flush()
+    return kept
+
+
+# ─── Второй проход ────────────────────────────────────────────────────────
+
+
+@dataclass
+class AdmissionReport:
+    checked: int = 0
+    admitted: int = 0
+    verdicts: dict[str, Verdict] = field(default_factory=dict)
+
+
+def review_universe(
+    session: Session, *, now: datetime | None = None, fetch=None, cfg=None
+) -> AdmissionReport:
+    """Второй проход §5: допуск по накопленной истории.
+
+    Вызывается после загрузки, а не вместо неё: пока баров нет, ни одно из
+    условий ликвидности не измеримо, и объявить инструмент негодным было бы
+    утверждением о рынке, а не о данных.
+    """
+    config = cfg or get_config()
+    moment = now or datetime.now(UTC)
+    report = AdmissionReport()
+
+    snapshot: dict[str, crypto.Ticker] = {}
+    instruments = list(
+        session.execute(
+            select(Instrument).where(Instrument.in_universe.is_(True))
+        ).scalars()
+    )
+    if any(i.venue is Venue.CRYPTO for i in instruments):
+        try:
+            rows, _ = crypto.tickers(**({"fetch": fetch} if fetch else {}))
+            snapshot = {t.symbol: t for t in rows}
+        except (FetchError, ValueError):
+            # Снимок не приехал — допуск крипты честно провалится с причиной
+            # «нет в снимке рынка», а не пройдёт по устаревшим данным.
+            snapshot = {}
+
+    for instrument in instruments:
+        report.checked += 1
+        if instrument.venue is Venue.CRYPTO:
+            verdict = admit_crypto(
+                session, instrument, snapshot.get(instrument.symbol),
+                cfg=config, now=moment,
+            )
+        else:
+            raw = (instrument.metadata_json or {}).get("spread_snapshot")
+            verdict = admit_futures(
+                session, instrument, cfg=config, now=moment,
+                spread_snapshot=Decimal(raw) if raw else None,
+            )
+        instrument.is_tradable = verdict.admitted
+        instrument.universe_note = verdict.note
+        instrument.metadata_json = {
+            **(instrument.metadata_json or {}),
+            "admission": verdict.measured,
+        }
+        report.verdicts[instrument.instrument_id] = verdict
+        report.admitted += int(verdict.admitted)
+
+    session.flush()
+    return report
+
+
+# Кластеры корреляции §17.2. Корень, которого нет в справочнике, получает
+# собственный кластер: без него лимит на кластер к нему просто не применялся
+# бы, и две серии одного корня считались бы независимыми позициями.
+_CLUSTERS = {
+    "SI": "rub_fx", "CNY": "rub_fx", "ED": "rub_fx", "EU": "rub_fx",
+    "RI": "ru_equity_index", "MX": "ru_equity_index", "MM": "ru_equity_index",
+    "SBRF": "ru_equity", "GAZR": "ru_equity", "LKOH": "ru_equity",
+    "VTBR": "ru_equity", "GMKN": "ru_equity", "ROSN": "ru_equity",
+    "BR": "energy", "NG": "energy",
+    "GOLD": "metals", "SILV": "metals", "PLT": "metals", "PLD": "metals",
+}
+
+
+def cluster_for(root: str) -> str:
+    return _CLUSTERS.get(root.upper(), f"root_{root.upper()}")

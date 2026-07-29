@@ -17,7 +17,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Annotated
 
-from sqlalchemy import DateTime, MetaData, Numeric, String, func, text
+from sqlalchemy import DateTime, MetaData, Numeric, String, TypeDecorator, func, text
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -34,6 +34,44 @@ NAMING_CONVENTION = {
 
 class Base(DeclarativeBase):
     metadata = MetaData(naming_convention=NAMING_CONVENTION)
+
+
+class StrEnumColumn(TypeDecorator):
+    """Строковая колонка, возвращающая настоящий член перечисления.
+
+    Без неё SQLAlchemy отдаёт из базы обычную строку, и проверка вида
+    ``instrument.venue is Venue.MOEX`` **всегда ложна**. Это не academic:
+    именно на ней фьючерсы MOEX уходили загружаться на криптобиржу, а
+    обращение к ``.value`` у строки роняло конвейер и инструмент молча
+    выпадал из скана.
+
+    Тип решает это в одном месте и навсегда: в базе по-прежнему VARCHAR
+    (миграция не нужна, значения читаются глазами), в Python — член
+    перечисления, на котором работают и ``is``, и ``.value``.
+    """
+
+    impl = String
+    cache_ok = True
+
+    def __init__(self, enum_cls, length: int = 32, **kwargs):
+        self.enum_cls = enum_cls
+        super().__init__(length=length, **kwargs)
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return None
+        return str(getattr(value, "value", value))
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return None
+        try:
+            return self.enum_cls(value)
+        except ValueError:
+            # Значение из базы, которого нет в перечислении, — это данные
+            # старше кода. Отдаём как есть: падать на чтении журнала хуже,
+            # чем увидеть незнакомую строку.
+            return value
 
 
 # Цена: 28 значащих, 12 после точки. Хватает и рублёвому фьючерсу, и

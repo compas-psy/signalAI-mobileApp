@@ -21,7 +21,16 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from .base import Base, Money, Price, Quantity, Ratio, UuidPk, utcnow_column
+from .base import (
+    Base,
+    Money,
+    Price,
+    Quantity,
+    Ratio,
+    StrEnumColumn,
+    UuidPk,
+    utcnow_column,
+)
 from .enums import AssetClass, PackageSize, RiskProfile
 
 
@@ -70,7 +79,7 @@ class Holding(Base):
     average_price: Mapped[Price] = mapped_column(nullable=True)
     market_price: Mapped[Price] = mapped_column(nullable=True)
     market_value: Mapped[Money] = mapped_column(nullable=False, default=0)
-    asset_class: Mapped[AssetClass] = mapped_column(String(24), nullable=False)
+    asset_class: Mapped[AssetClass] = mapped_column(StrEnumColumn(AssetClass, 24), nullable=False)
     source: Mapped[str] = mapped_column(String(24), nullable=False, default="broker")
 
 
@@ -84,8 +93,8 @@ class PortfolioModel(UuidPk, Base):
 
     __tablename__ = "portfolio_models"
 
-    profile: Mapped[RiskProfile] = mapped_column(String(16), nullable=False)
-    package: Mapped[PackageSize] = mapped_column(String(16), nullable=False)
+    profile: Mapped[RiskProfile] = mapped_column(StrEnumColumn(RiskProfile, 16), nullable=False)
+    package: Mapped[PackageSize] = mapped_column(StrEnumColumn(PackageSize, 16), nullable=False)
     horizon_years: Mapped[int] = mapped_column(Integer, nullable=False)
 
     expected_return_low: Mapped[Ratio] = mapped_column(nullable=False)
@@ -131,7 +140,7 @@ class PortfolioWeight(Base):
     )
     instrument_id: Mapped[str] = mapped_column(String(64), primary_key=True)
 
-    asset_class: Mapped[AssetClass] = mapped_column(String(24), nullable=False)
+    asset_class: Mapped[AssetClass] = mapped_column(StrEnumColumn(AssetClass, 24), nullable=False)
     target_weight: Mapped[Ratio] = mapped_column(nullable=False)
     role: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     thesis: Mapped[str] = mapped_column(Text, nullable=False, default="")

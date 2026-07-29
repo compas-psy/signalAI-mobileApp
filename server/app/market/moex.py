@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -56,6 +57,23 @@ class FortsRow:
     decimals: int | None
     last_trade_date: date | None
     updated_at: str | None
+    bid: Decimal | None = None
+    ask: Decimal | None = None
+
+    @property
+    def relative_spread(self) -> Decimal | None:
+        """Спред в долях цены — мера ликвидности §5.2.
+
+        Это **снимок**, а не медиана за 30 дней: ISS не отдаёт историю
+        котировок. Тот, кто принимает по нему решение, обязан знать разницу,
+        поэтому она названа здесь, а не спрятана в имени поля.
+        """
+        if self.bid is None or self.ask is None or self.bid <= 0:
+            return None
+        mid = (self.bid + self.ask) / 2
+        if mid <= 0:
+            return None
+        return (self.ask - self.bid) / mid
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,7 +157,7 @@ def forts_board(*, fetch=http_json) -> tuple[list[FortsRow], list[FetchReport]]:
             f"{BASE}/{FORTS}/securities.json"
             "?iss.meta=off&iss.only=securities,marketdata"
             "&securities.columns=SECID,SHORTNAME,LASTTRADEDATE,MINSTEP,STEPPRICE,DECIMALS"
-            "&marketdata.columns=SECID,LAST,VALTODAY,OPENPOSITION,UPDATETIME"
+            "&marketdata.columns=SECID,LAST,VALTODAY,OPENPOSITION,UPDATETIME,BID,OFFER"
             f"&limit={PAGE_SIZE}&start={start}"
         )
 
@@ -165,6 +183,8 @@ def forts_board(*, fetch=http_json) -> tuple[list[FortsRow], list[FetchReport]]:
                 decimals=_int(sec.get("DECIMALS")),
                 last_trade_date=_day(sec.get("LASTTRADEDATE")),
                 updated_at=md.get("UPDATETIME"),
+                bid=_dec(md.get("BID")),
+                ask=_dec(md.get("OFFER")),
             )
         )
     return rows, [*r1, *r2]
@@ -316,6 +336,43 @@ def attach_open_interest(
     return out
 
 
+# Месяцы поставки по стандарту фьючерсных кодов. Год — одна цифра, поэтому
+# `SiU6` читается как «Si, сентябрь, ...6 год».
+MONTH_CODES = "FGHJKMNQUVXZ"
+_SHORT_CODE = re.compile(rf"^(?P<root>.+?)(?P<month>[{MONTH_CODES}])(?P<year>\d)$")
+
+
+def root_of(sec_id: str) -> str | None:
+    """Корень контракта из короткого кода биржи: ``SiU6`` → ``Si``.
+
+    Разбор идёт с конца, а не по «первым буквам»: у ``SiU6`` первые буквы —
+    ``SiU``, и наивная эвристика склеила бы корень с месяцем поставки. Тогда
+    каждая серия выглядела бы отдельным корнем, а роллирование — невозможным.
+    """
+    match = _SHORT_CODE.match(sec_id.strip())
+    if match is None:
+        return None
+    root = match.group("root")
+    return root or None
+
+
+def series_by_root(rows: list[FortsRow]) -> dict[str, list[FortsRow]]:
+    """Разложить доску по корням, ближняя серия первой.
+
+    Серии без даты исполнения отбрасываются: без неё нельзя ни выбрать
+    ближнюю, ни проверить срок до экспирации §5.2.
+    """
+    grouped: dict[str, list[FortsRow]] = {}
+    for row in rows:
+        root = root_of(row.sec_id)
+        if root is None or row.last_trade_date is None:
+            continue
+        grouped.setdefault(root.upper(), []).append(row)
+    for series in grouped.values():
+        series.sort(key=lambda r: r.last_trade_date)  # type: ignore[arg-type,return-value]
+    return grouped
+
+
 def nearest_series(rows: list[FortsRow], root: str, today: date) -> FortsRow | None:
     """Ближняя ликвидная серия корня.
 
@@ -323,9 +380,13 @@ def nearest_series(rows: list[FortsRow], root: str, today: date) -> FortsRow | N
     позицию в контракте, который вот-вот истечёт, — отдельный риск, не
     имеющий отношения к сетапу.
     """
+    # Регистр важен: у биржи secid ближнего фьючерса на доллар — `SiU6`, а
+    # корень в конфигурации записан `SI`. Прямое сравнение молча оставляло
+    # вселенную пустой, и планировщик работал вхолостую, не жалуясь.
+    prefix = root.upper()
     candidates = [
         r for r in rows
-        if r.sec_id.startswith(root)
+        if r.sec_id.upper().startswith(prefix)
         and r.last_trade_date is not None
         and (r.last_trade_date - today).days > 5
         and (r.turnover or Decimal(0)) > 0

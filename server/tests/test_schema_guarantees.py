@@ -12,10 +12,11 @@ from datetime import timedelta
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
-from app.models import AuditEvent, IdeaEvent, TradeIdea
+from app.models import AuditEvent, IdeaEvent, Instrument, TradeIdea
+from app.models.enums import AssetClass, Venue
 from tests.conftest import idea_kwargs
 
 
@@ -229,6 +230,44 @@ def test_decimal_survives_roundtrip(session, instrument, now):
     assert stored.risk_amount == Decimal("1234.56789012")
     assert stored.entry_reference == Decimal("90123.456789012345")
     assert isinstance(stored.risk_amount, Decimal)
+
+
+# ─── Перечисления переживают базу ─────────────────────────────────────────
+
+
+def test_enum_survives_roundtrip(session, instrument):
+    """Из базы обязан вернуться член перечисления, а не строка.
+
+    Дефект не гипотетический. Пока колонка была обычным ``String``, проверка
+    ``instrument.venue is Venue.MOEX`` всегда была ложной, и фьючерсы MOEX
+    молча уходили загружаться на криптобиржу: запрос уходил на
+    ``api.bybit.com`` с символом вроде ``SIU6``, отвечал пустотой, а отчёт
+    показывал «загружено 0» без единой ошибки. Такое стоит проверять на
+    самом дешёвом уровне — на типе колонки.
+    """
+    session.expire(instrument)
+    stored = session.execute(
+        select(Instrument).where(Instrument.instrument_id == "MOEX:FUT:SIU6")
+    ).scalar_one()
+
+    assert stored.venue is Venue.MOEX
+    assert stored.asset_class is AssetClass.FUTURES
+    assert stored.venue.value == "MOEX"
+
+
+def test_enum_column_stores_readable_text(session, instrument):
+    """В базе остаётся человекочитаемая строка, а не номер варианта.
+
+    Журнал читается глазами и запросами из psql; числовой код варианта
+    сделал бы дамп нечитаемым, а добавление нового значения — миграцией.
+    """
+    value = session.execute(
+        text(
+            "SELECT venue FROM instruments WHERE instrument_id = :i"
+        ),
+        {"i": "MOEX:FUT:SIU6"},
+    ).scalar_one()
+    assert value == "MOEX"
 
 
 def test_bar_high_cannot_be_below_low(session, instrument):

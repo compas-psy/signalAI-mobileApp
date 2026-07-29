@@ -21,7 +21,16 @@ from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from .base import Base, Money, Price, Quantity, Ratio, UuidPk, utcnow_column
+from .base import (
+    Base,
+    Money,
+    Price,
+    Quantity,
+    Ratio,
+    StrEnumColumn,
+    UuidPk,
+    utcnow_column,
+)
 from .enums import AssetClass, DerivativesFlow, LiquidityRegime, Timeframe
 from .enums import TrendRegime, Venue, VolatilityRegime
 
@@ -38,8 +47,8 @@ class Instrument(UuidPk, Base):
 
     # Каноническая форма «MOEX:FUT:RIU6» / «CRYPTO:PERP:BTCUSDT» (§4.3).
     instrument_id: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
-    venue: Mapped[Venue] = mapped_column(String(16), nullable=False)
-    asset_class: Mapped[AssetClass] = mapped_column(String(24), nullable=False)
+    venue: Mapped[Venue] = mapped_column(StrEnumColumn(Venue, 16), nullable=False)
+    asset_class: Mapped[AssetClass] = mapped_column(StrEnumColumn(AssetClass, 24), nullable=False)
     symbol: Mapped[str] = mapped_column(String(32), nullable=False)
     title: Mapped[str] = mapped_column(String(128), nullable=False, default="")
     currency: Mapped[str] = mapped_column(String(8), nullable=False, default="RUB")
@@ -89,7 +98,7 @@ class Bar(Base):
         String(64), ForeignKey("instruments.instrument_id", ondelete="CASCADE"),
         primary_key=True,
     )
-    timeframe: Mapped[Timeframe] = mapped_column(String(8), primary_key=True)
+    timeframe: Mapped[Timeframe] = mapped_column(StrEnumColumn(Timeframe, 8), primary_key=True)
     open_time: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), primary_key=True
     )
@@ -131,7 +140,7 @@ class MarketFeature(Base):
         String(64), ForeignKey("instruments.instrument_id", ondelete="CASCADE"),
         primary_key=True,
     )
-    timeframe: Mapped[Timeframe] = mapped_column(String(8), primary_key=True)
+    timeframe: Mapped[Timeframe] = mapped_column(StrEnumColumn(Timeframe, 8), primary_key=True)
     bar_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
     feature_version: Mapped[str] = mapped_column(String(32), primary_key=True)
 
@@ -167,14 +176,14 @@ class RegimeSnapshot(Base):
         String(64), ForeignKey("instruments.instrument_id", ondelete="CASCADE"),
         primary_key=True,
     )
-    timeframe: Mapped[Timeframe] = mapped_column(String(8), primary_key=True)
+    timeframe: Mapped[Timeframe] = mapped_column(StrEnumColumn(Timeframe, 8), primary_key=True)
     bar_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
 
-    trend: Mapped[TrendRegime] = mapped_column(String(16), nullable=False)
+    trend: Mapped[TrendRegime] = mapped_column(StrEnumColumn(TrendRegime, 16), nullable=False)
     trend_score: Mapped[int] = mapped_column(Integer, nullable=False)
-    volatility: Mapped[VolatilityRegime] = mapped_column(String(16), nullable=False)
-    liquidity: Mapped[LiquidityRegime] = mapped_column(String(16), nullable=False)
-    derivatives_flow: Mapped[DerivativesFlow] = mapped_column(String(20), nullable=False)
+    volatility: Mapped[VolatilityRegime] = mapped_column(StrEnumColumn(VolatilityRegime, 16), nullable=False)
+    liquidity: Mapped[LiquidityRegime] = mapped_column(StrEnumColumn(LiquidityRegime, 16), nullable=False)
+    derivatives_flow: Mapped[DerivativesFlow] = mapped_column(StrEnumColumn(DerivativesFlow, 20), nullable=False)
 
     detail_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     computed_at: Mapped[datetime] = utcnow_column()
