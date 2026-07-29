@@ -114,6 +114,8 @@ class _IdeaDetailScreenState extends State<IdeaDetailScreen> {
                   ),
                   child: TradeChart(
                     signal: signal,
+                    // Разметка §10.6 — та, что нашли детекторы движка.
+                    annotations: idea?.annotations ?? const [],
                     visibleLayers: visible,
                     highlight: highlight,
                   ),
@@ -295,15 +297,20 @@ class _IdeaDetailScreenState extends State<IdeaDetailScreen> {
 ///
 /// Идентификаторы аннотаций строятся как `<id идеи>_<ключ>`; график знает
 /// именно хвост — `entry`, `stop`, `tp1`, `zone0`, `break`.
+/// Метки, которые подсвечивает выбранное доказательство (§9.1).
+///
+/// Связь берётся со стороны разметки: каждая метка знает своё доказательство
+/// (`evidenceId`), и обратный список в доказательстве держать незачем — две
+/// копии одной связи расходятся, и подсветка начинает показывать не то.
+///
+/// Сравнение идёт по **полному** идентификатору. Раньше здесь отрезался
+/// префикс идеи и сравнивались хвосты строк: совпадение хвостов — не то же
+/// самое, что совпадение объектов, и подсветить могло чужую метку.
 Set<String> _highlightKeys(Idea? idea, String? evidenceId) {
   if (idea == null || evidenceId == null) return const {};
-  final evidence =
-      idea.evidence.where((e) => e.id == evidenceId).firstOrNull;
-  if (evidence == null) return const {};
-  final prefix = '${idea.id}_';
   return {
-    for (final id in evidence.annotationIds)
-      id.startsWith(prefix) ? id.substring(prefix.length) : id,
+    for (final a in idea.annotations)
+      if (a.evidenceId == evidenceId) a.id,
   };
 }
 
