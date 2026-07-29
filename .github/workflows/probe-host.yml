@@ -33,6 +33,21 @@ jobs:
           echo "Адрес раннера: $(curl -s --max-time 10 https://api.ipify.org || echo 'определить не удалось')"
           echo "Это понадобится, если сервер пускает только доверенные адреса."
 
+      - name: Имя и адрес
+        env:
+          HOST: ${{ inputs.host }}
+        run: |
+          # Если передали домен — покажем, во что он разрешается. Расхождение
+          # с ожидаемым адресом объясняет ситуацию быстрее любых догадок.
+          if printf '%s' "$HOST" | grep -qE '^[0-9.]+$'; then
+            echo "Передан IP-адрес: $HOST"
+          else
+            echo "Домен: $HOST"
+            getent hosts "$HOST" || echo "имя не разрешается"
+            echo "--- полный ответ DNS ---"
+            timeout 15 getent ahosts "$HOST" || true
+          fi
+
       - name: Порты
         env:
           HOST: ${{ inputs.host }}
