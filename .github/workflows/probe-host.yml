@@ -70,7 +70,12 @@ jobs:
         run: |
           # Баннер приходит до всякой аутентификации: если он есть, значит
           # сеть до sshd проходит, и дело будет только в ключе.
-          banner="$(timeout 10 bash -c "exec 3<>/dev/tcp/$HOST/22 && head -c 60 <&3" 2>/dev/null || true)"
+          #
+          # Читаем ОДНУ СТРОКУ, а не фиксированное число байт. Приветствие
+          # sshd вида "SSH-2.0-OpenSSH_9.6" короче шестидесяти символов, и
+          # `head -c 60` вставал в ожидании недостающих — открытый порт
+          # выглядел как недоступный.
+          banner="$(timeout 10 bash -c "exec 3<>/dev/tcp/$HOST/22 && IFS= read -r -t 5 line <&3 && printf '%s' \"\$line\"" 2>/dev/null || true)"
           if [ -n "$banner" ]; then
             echo "sshd отвечает: $banner"
           else
