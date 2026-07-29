@@ -22,6 +22,10 @@ on:
         description: 'Пользователь SSH (если секрета VPS_USER нет)'
         required: false
         default: 'root'
+      host_override:
+        description: 'Адрес сервера, если в секрете устарел (хостер сменил IP)'
+        required: false
+        default: ''
       acme_email:
         description: "Почта для Let's Encrypt"
         required: false
@@ -54,7 +58,7 @@ jobs:
 
       - name: Проверить, что секреты заданы
         env:
-          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          HOST: ${{ inputs.host_override || secrets.VPS_HOST || secrets.SERVER_HOST }}
           USER_NAME: ${{ secrets.VPS_USER || inputs.ssh_user }}
           KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
         run: |
@@ -72,20 +76,27 @@ jobs:
       - name: Подготовить ключ
         env:
           KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
-          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          HOST: ${{ inputs.host_override || secrets.VPS_HOST || secrets.SERVER_HOST }}
         run: |
           install -d -m 700 ~/.ssh
           printf '%s\n' "$KEY" > ~/.ssh/id_deploy
           chmod 600 ~/.ssh/id_deploy
           # Отпечаток хоста берётся сейчас и фиксируется: без этого первое
           # соединение согласится на любой ключ, включая подменённый.
-          ssh-keyscan -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null
-          echo "Отпечаток хоста записан."
+          if ssh-keyscan -T 10 -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null && \
+             [ -s ~/.ssh/known_hosts ]; then
+            echo "Отпечаток хоста записан."
+          else
+            # Не обрываем прогон здесь: следующий шаг даст понятную ошибку
+            # соединения вместо загадочного отказа сканера ключей.
+            echo "::warning::ssh-keyscan не получил ключ от $HOST — хост может быть недоступен"
+            echo "StrictHostKeyChecking=accept-new" >> ~/.ssh/config
+          fi
 
       - name: Первичная установка
         if: ${{ inputs.action == 'bootstrap' }}
         env:
-          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          HOST: ${{ inputs.host_override || secrets.VPS_HOST || secrets.SERVER_HOST }}
           USER_NAME: ${{ secrets.VPS_USER || inputs.ssh_user }}
           DOMAIN: ${{ inputs.domain }}
           ADMIN_IP: ${{ inputs.admin_ip }}
@@ -130,7 +141,7 @@ jobs:
       - name: Обновить код и перезапустить
         if: ${{ inputs.action == 'update' }}
         env:
-          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          HOST: ${{ inputs.host_override || secrets.VPS_HOST || secrets.SERVER_HOST }}
           USER_NAME: ${{ secrets.VPS_USER || inputs.ssh_user }}
         run: |
           ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$USER_NAME@$HOST" 'bash -s' <<'REMOTE'
@@ -149,7 +160,7 @@ jobs:
       - name: Состояние сервера
         if: ${{ always() && inputs.action != 'logs' }}
         env:
-          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          HOST: ${{ inputs.host_override || secrets.VPS_HOST || secrets.SERVER_HOST }}
           USER_NAME: ${{ secrets.VPS_USER || inputs.ssh_user }}
         run: |
           ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$USER_NAME@$HOST" \
@@ -179,7 +190,7 @@ jobs:
       - name: Логи
         if: ${{ inputs.action == 'logs' || failure() }}
         env:
-          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          HOST: ${{ inputs.host_override || secrets.VPS_HOST || secrets.SERVER_HOST }}
           USER_NAME: ${{ secrets.VPS_USER || inputs.ssh_user }}
         run: |
           ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$USER_NAME@$HOST" \
