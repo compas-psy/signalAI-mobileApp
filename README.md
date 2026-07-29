@@ -48,14 +48,15 @@ flutter test
 
 ## Сборка для телефона
 
-Подпись обязательна: Play Protect блокирует сборки с отладочным ключом.
-
 ```bash
-./tool/make_keystore.sh                       # один раз, локально
-flutter build apk --release --dart-define=SIGNALAI_API_BASE_URL=https://…
+bash tool/build_apk.sh
 ```
 
-Подробно, включая CI и внутреннее тестирование Play — `docs/ANDROID_SIGNING.md`.
+Скрипт проверит, чего не хватает, прогонит анализатор и тесты и соберёт APK.
+Сборка не выдаётся, если что-то красное.
+
+Три способа получить приложение — своя машина, CI по требованию, браузер —
+описаны в `docs/BUILD.md`. Подпись и выкладка в Play — `docs/ANDROID_SIGNING.md`.
 
 В CI две сборки, и путают их часто:
 
