@@ -55,23 +55,30 @@ class EngineClient {
     }
     try {
       final json = await _api.get('$_base/ideas/today');
-      final cards = (json['cards'] as List<dynamic>? ?? const []);
-      final ideas = <Idea>[];
-      for (final card in cards) {
-        if (card is Map<String, dynamic>) {
-          ideas.add(EngineContract.idea(card));
-        }
-      }
+      // Два списка, а не один: §16 разделяет «торговать сейчас» и «ждать
+      // триггера». Слить их значило бы выдать наблюдение за готовую сделку.
+      final ideas = <Idea>[
+        ..._parse(json['trade_now']),
+        ..._parse(json['wait_for_trigger']),
+      ];
       return EngineIdeas(
         ideas: ideas,
         noSetupsReason: ideas.isEmpty
-            ? (json['reason'] as String? ??
+            ? (json['no_trade_reason'] as String? ??
                 'Движок отработал и не нашёл сетапов, проходящих допуск §16.')
             : null,
       );
     } catch (error) {
       return EngineIdeas.unavailable(_reason(error));
     }
+  }
+
+  static List<Idea> _parse(Object? raw) {
+    if (raw is! List) return const [];
+    return [
+      for (final item in raw)
+        if (item is Map<String, dynamic>) EngineContract.idea(item),
+    ];
   }
 
   /// Полная карточка с планом, разбором оценки, доказательствами и разметкой.
@@ -90,12 +97,9 @@ class EngineClient {
     try {
       // Лента отдаётся массивом верхнего уровня — оборачиваем его на
       // стороне клиента, чтобы разбор был один и тот же для обеих форм.
-      final json = await _api.getList('$_base/ideas?limit=$limit');
-      final ideas = <Idea>[];
-      for (final item in json) {
-        if (item is Map<String, dynamic>) ideas.add(EngineContract.idea(item));
-      }
-      return EngineIdeas(ideas: ideas);
+      return EngineIdeas(
+        ideas: _parse(await _api.getList('$_base/ideas?limit=$limit')),
+      );
     } catch (error) {
       return EngineIdeas.unavailable(_reason(error));
     }
