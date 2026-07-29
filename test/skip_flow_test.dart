@@ -5,7 +5,8 @@ import 'package:signalai/data/local_store.dart';
 import 'package:signalai/domain/enums.dart';
 import 'package:signalai/domain/idea/idea.dart';
 import 'package:signalai/domain/idea/idea_state.dart';
-import 'package:signalai/domain/idea/quality_score.dart';
+
+import 'support/score_fixture.dart';
 import 'package:signalai/state/app_controller.dart';
 
 Idea sample({String id = 'idea_1'}) => Idea(
@@ -17,10 +18,7 @@ Idea sample({String id = 'idea_1'}) => Idea(
       strategy: SetupStrategy.trendPullback,
       strategyVersion: 'v1',
       state: IdeaState.triggered,
-      score: const QualityScore(contributions: [
-        FactorContribution(
-            factor: ScoreFactor.marketRegime, fraction: 1, note: ''),
-      ]),
+      score: scoreOf(80),
       createdAt: DateTime.utc(2026, 7, 29, 10),
       validUntil: DateTime.utc(2026, 7, 29, 18),
       thesis: '',

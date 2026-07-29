@@ -3,50 +3,13 @@ import 'package:signalai/domain/enums.dart';
 import 'package:signalai/domain/idea/evidence.dart';
 import 'package:signalai/domain/idea/idea.dart';
 import 'package:signalai/domain/idea/idea_state.dart';
-import 'package:signalai/domain/idea/quality_score.dart';
+
+import 'support/score_fixture.dart';
 import 'package:signalai/domain/idea/trade_plan.dart';
 
 final created = DateTime.utc(2026, 7, 29, 10);
 final expires = DateTime.utc(2026, 7, 29, 18);
 
-QualityScore scoreOf(int target) => QualityScore(contributions: [
-      FactorContribution(
-        factor: ScoreFactor.marketRegime,
-        fraction: target / ScoreFactor.marketRegime.weight,
-        note: '',
-      ),
-      const FactorContribution(
-          factor: ScoreFactor.multiTfStructure, fraction: 1, note: ''),
-      const FactorContribution(
-          factor: ScoreFactor.zoneQuality, fraction: 1, note: ''),
-      const FactorContribution(
-          factor: ScoreFactor.entryTrigger, fraction: 1, note: ''),
-      const FactorContribution(
-          factor: ScoreFactor.volumeOi, fraction: 1, note: ''),
-      const FactorContribution(
-          factor: ScoreFactor.riskReward, fraction: 1, note: ''),
-      const FactorContribution(
-          factor: ScoreFactor.liquidity, fraction: 1, note: ''),
-      const FactorContribution(
-          factor: ScoreFactor.eventRisk, fraction: 1, note: ''),
-    ]);
-
-/// Оценка ровно [value] баллов через один частично выполненный фактор.
-QualityScore exactly(int value) {
-  final full = <FactorContribution>[];
-  var left = value;
-  for (final f in ScoreFactor.values) {
-    if (left >= f.weight) {
-      full.add(FactorContribution(factor: f, fraction: 1, note: ''));
-      left -= f.weight;
-    } else if (left > 0) {
-      full.add(
-          FactorContribution(factor: f, fraction: left / f.weight, note: ''));
-      left = 0;
-    }
-  }
-  return QualityScore(contributions: full);
-}
 
 TradePlan samplePlan({double riskPercent = 0.75}) => TradePlan(
       instrumentId: 'SiZ6',
@@ -90,7 +53,7 @@ Idea idea({
       strategy: SetupStrategy.trendPullback,
       strategyVersion: 'trend-pullback-1.0.0',
       state: state,
-      score: exactly(score),
+      score: scoreOf(score),
       createdAt: created,
       validUntil: validUntil ?? expires,
       thesis: 'Откат в зону спроса на восходящем тренде.',
@@ -126,10 +89,12 @@ Evidence evidenceOf(String id, {List<String> conflicts = const []}) => Evidence(
     );
 
 void main() {
-  test('вспомогательная оценка даёт ровно заданный балл', () {
-    expect(exactly(82).value, 82);
-    expect(exactly(64).value, 64);
-    expect(scoreOf(15).value, 100);
+  test('оценка приходит с движка и не пересчитывается на клиенте', () {
+    // Итог §15.1 считает сервер. Вторая реализация тех же формул на Dart
+    // разошлась бы с серверной на округлении, и у одной идеи оказалось бы
+    // два разных балла.
+    expect(scoreOf(82).value, 82);
+    expect(scoreOf(64).value, 64);
   });
 
   group('Срок жизни идеи', () {

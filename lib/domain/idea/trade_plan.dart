@@ -300,12 +300,19 @@ class RiskBudget {
     required this.remainingClusterPercent,
   });
 
-  /// Лимиты из ТЗ §20.
-  static const dailyLossPercent = 3.0;
-  static const weeklyLossPercent = 5.0;
-  static const monthlyLossPercent = 10.0;
+  /// Жёсткие лимиты engine-ТЗ §17.
+  ///
+  /// Числа взяты у engine-ТЗ, а не у UX-ТЗ §20, где стояли 3 / 5 / 10% и
+  /// кластер 1,25%. Расхождение разобрано в docs/TZ_PRIORITY.md: на числах
+  /// побеждает engine-ТЗ, и здесь это не вкусовщина — более мягкий лимит
+  /// разрешает просадку, которую движок считает недопустимой, а разница
+  /// между 6% и 10% месячного убытка это разница между «продолжаем» и
+  /// «остановились».
+  static const dailyLossPercent = 1.5;
+  static const weeklyLossPercent = 3.5;
+  static const monthlyLossPercent = 6.0;
   static const openRiskPercent = 2.0;
-  static const clusterRiskPercent = 1.25;
+  static const clusterRiskPercent = 1.0;
 
   final double scoreRiskPercent;
   final double remainingDailyPercent;

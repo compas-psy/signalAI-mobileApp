@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import '../data/api/api_client.dart';
+import '../data/api/engine_client.dart';
 import '../data/broker/tinvest_broker.dart';
 import '../data/local_analysis_repository.dart';
 import '../data/market/iss_client.dart';
@@ -28,8 +29,6 @@ import '../domain/enums.dart';
 import '../domain/idea/execution.dart';
 import '../domain/idea/final_check.dart';
 import '../domain/idea/idea.dart';
-import '../domain/idea/idea_mapper.dart';
-import '../domain/idea/quality_score.dart';
 import '../domain/idea/idea_state.dart';
 import '../domain/idea/journal_metrics.dart';
 import '../domain/idea/risk_center.dart';
@@ -147,6 +146,15 @@ class AppController extends ChangeNotifier {
   bool _confirming = false;
 
   DailyDigest? _digest;
+
+  /// Движок §18. Считает он, приложение показывает.
+  final EngineClient _engine = EngineClient();
+  /// До первого запроса лента не «пустая», а **неопрошенная**. Разница
+  /// видна на экране: пустой список читается как «сетапов нет».
+  EngineIdeas _engineIdeas =
+      const EngineIdeas.unavailable('Движок ещё не опрошен.');
+  Map<String, dynamic>? _engineDataStatus;
+
   InvestDigest? _invest;
   bool _investLoading = false;
   Object? _investError;
@@ -237,36 +245,38 @@ class AppController extends ChangeNotifier {
     );
   }
 
-  /// Идеи в модели ТЗ v2: состояние, план, доказательства, разметка.
+  /// Идеи по ТЗ: приходят с движка целиком (§18).
   ///
-  /// Пересобираются из сигналов расчётного контура при каждом обращении —
-  /// бюджет риска и срок жизни зависят от текущего момента, и кэшировать их
-  /// значит показывать вчерашний лимит на сегодняшнем экране.
-  List<Idea> get ideas {
-    final signals = _digest?.signals;
-    final profile = _settings?.risk;
-    final center = riskCenter;
-    if (signals == null || profile == null || center == null) return const [];
-    final now = DateTime.now();
-    final out = <Idea>[];
-    for (final signal in signals) {
-      // Бюджет считается в два прохода: сначала оценка без плана, потом с
-      // ней — иначе бюджет зависел бы от размера, который сам от него зависит.
-      final draft = IdeaMapper.fromSignal(
-        signal,
-        budget: center.budgetFor(QualityScore(contributions: const [])),
-        equity: profile.deposit,
-        now: now,
-      );
-      out.add(IdeaMapper.fromSignal(
-        signal,
-        budget: center.budgetFor(draft.score),
-        equity: profile.deposit,
-        now: now,
-      ));
-    }
-    return out;
+  /// На устройстве они больше не собираются. Прежний мост набивал восемь
+  /// факторов ТЗ v2 из шести факторов легаси-скринера, подставляя ноль там,
+  /// где измерять было нечем: ликвидность всегда была нулём, событийный риск
+  /// всегда единицей, а Вайкоффа не существовало вовсе. Оценка §15.1 состоит
+  /// из одиннадцати компонентов и множителя качества данных — собрать её из
+  /// того, что скринер не измерял, невозможно, и попытка означала бы показ
+  /// чисел, за которыми ничего нет.
+  List<Idea> get ideas => _engineIdeas.ideas;
+
+  /// Почему идей нет. null — движок ответил и сетапы есть.
+  ///
+  /// «Движок недоступен» и «сетапов нет» — разные новости, и различать их
+  /// обязано приложение (§24), иначе обрыв связи читается как спокойный день.
+  String? get ideasUnavailableReason => _engineIdeas.unavailableReason;
+
+  String? get noSetupsReason => _engineIdeas.noSetupsReason;
+
+  /// Состояние загрузки данных на сервере: сколько инструментов во вселенной,
+  /// сколько допущено, насколько свежи бары.
+  Map<String, dynamic>? get engineDataStatus => _engineDataStatus;
+
+  /// Обновить выдачу движка.
+  Future<void> refreshIdeas() async {
+    _engineIdeas = await _engine.today();
+    _engineDataStatus = await _engine.dataStatus();
+    notifyListeners();
   }
+
+  /// Полная карточка идеи: план, разбор оценки, доказательства, разметка.
+  Future<Idea?> ideaDetail(String id) => _engine.detail(id);
 
   /// Показатели журнала (ТЗ §12.1). null — журнала нет вовсе.
   JournalMetrics? get journalMetrics {
@@ -337,6 +347,10 @@ class AppController extends ChangeNotifier {
     // фон: книга читается с диска, это быстро, и следующий кадр должен
     // показать капитал, а не пустой экран.
     await refreshCapital();
+    // Идеи приходят с движка §18 и запрашиваются здесь же: без этого лента
+    // осталась бы в состоянии «ещё не спрашивали» до первого ручного
+    // обновления, и владелец увидел бы пустой экран без объяснения.
+    await refreshIdeas();
     await refreshDigest();
   }
 

@@ -99,26 +99,39 @@ class MarketEvent {
       {'time': time, 'text': text, 'impact': impact.name, 'affects': affects};
 }
 
-/// Свеча графика идеи: только OHLC.
+/// Свеча графика идеи: OHLC и время открытия.
 ///
-/// Сознательно без времени, объёма и OI — график идеи рисует цену и уровни,
-/// а держать в памяти лишние поля на каждую свечу каждого сигнала незачем.
+/// Время появилось не для полноты картины. Разметка §10.6 привязана ко
+/// времени: order block, sweep, Spring, триггерная свеча — всё это события на
+/// конкретных барах. Без временной оси метку можно поставить только наугад, а
+/// метка на чужом баре хуже отсутствующей: она выглядит как факт.
+///
+/// Время необязательно: у старых сохранённых графиков его нет. Тогда
+/// привязанные ко времени метки не рисуются вовсе — см. `TradeChart`.
 class ChartCandle {
-  const ChartCandle(this.open, this.high, this.low, this.close);
+  const ChartCandle(this.open, this.high, this.low, this.close, [this.openTime]);
 
   final double open;
   final double high;
   final double low;
   final double close;
+  final DateTime? openTime;
 
   factory ChartCandle.fromJson(List<dynamic> j) => ChartCandle(
         (j[0] as num).toDouble(),
         (j[1] as num).toDouble(),
         (j[2] as num).toDouble(),
         (j[3] as num).toDouble(),
+        j.length > 4 ? DateTime.tryParse(j[4].toString()) : null,
       );
 
-  List<double> toJson() => [open, high, low, close];
+  List<Object> toJson() => [
+        open,
+        high,
+        low,
+        close,
+        if (openTime != null) openTime!.toIso8601String(),
+      ];
 }
 
 /// Ценовая зона на графике (например, незакрытый FVG).

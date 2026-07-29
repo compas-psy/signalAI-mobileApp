@@ -229,12 +229,15 @@ void main() {
       expect(budget(daily: -1.5).percent, 0);
     });
 
-    test('значения лимитов ровно из ТЗ', () {
-      expect(RiskBudget.dailyLossPercent, 3.0);
-      expect(RiskBudget.weeklyLossPercent, 5.0);
-      expect(RiskBudget.monthlyLossPercent, 10.0);
+    test('значения лимитов ровно из engine-ТЗ §17', () {
+      // У UX-ТЗ §20 стояли 3 / 5 / 10% и кластер 1,25%. На числах побеждает
+      // engine-ТЗ (docs/TZ_PRIORITY.md): разница между 6% и 10% месячного
+      // убытка — это разница между «продолжаем» и «остановились».
+      expect(RiskBudget.dailyLossPercent, 1.5);
+      expect(RiskBudget.weeklyLossPercent, 3.5);
+      expect(RiskBudget.monthlyLossPercent, 6.0);
       expect(RiskBudget.openRiskPercent, 2.0);
-      expect(RiskBudget.clusterRiskPercent, 1.25);
+      expect(RiskBudget.clusterRiskPercent, 1.0);
     });
   });
 

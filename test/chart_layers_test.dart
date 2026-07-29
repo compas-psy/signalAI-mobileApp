@@ -1,49 +1,25 @@
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:signalai/data/mock/demo_repository.dart';
 import 'package:signalai/domain/idea/evidence.dart';
-import 'package:signalai/domain/idea/idea_mapper.dart';
-import 'package:signalai/domain/idea/trade_plan.dart';
-import 'package:signalai/state/app_controller.dart';
 import 'package:signalai/ui/widgets/chart_layers.dart';
 import 'package:signalai/ui/widgets/trade_chart.dart';
-
-RiskBudget budget() => const RiskBudget(
-      scoreRiskPercent: 1,
-      remainingDailyPercent: 3,
-      remainingWeeklyPercent: 5,
-      remainingMonthlyPercent: 10,
-      remainingOpenRiskPercent: 2,
-      remainingClusterPercent: 1.25,
-    );
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  test('разметка не обещает слоёв, которых график не умеет рисовать', () async {
+  test('график умеет рисовать каждый слой из словаря разметки §10.6', () {
     // Чип слоя, который нечем нарисовать, нажимается впустую: график не
-    // меняется, и приложение выглядит сломанным. Если детектор научится
-    // новому типу разметки, этот тест упадёт раньше владельца.
-    final controller = AppController(DemoRepository());
-    addTearDown(controller.dispose);
-    await controller.load();
-
-    final signals = controller.digest?.signals ?? const [];
-    expect(signals, isNotEmpty, reason: 'нечего проверять без сигналов');
-
-    for (final signal in signals) {
-      final idea = IdeaMapper.fromSignal(
-        signal,
-        budget: budget(),
-        equity: 2400000,
-        now: DateTime.now(),
-      );
-      expect(
-        idea.availableLayers.difference(TradeChart.renderableLayers),
-        isEmpty,
-        reason: '${signal.symbol}: разметка требует слоёв, которых нет у графика',
-      );
-    }
+    // меняется, и приложение выглядит сломанным. Проверка идёт по всему
+    // словарю типов, а не по выдаче конкретного дня: детектор, научившийся
+    // новому типу, уронит этот тест раньше, чем владелец увидит пустой чип.
+    final needed = {
+      for (final type in AnnotationType.values) type.layer,
+    };
+    expect(
+      needed.difference(TradeChart.renderableLayers),
+      isEmpty,
+      reason: 'словарь §10.6 требует слоёв, которых график не рисует',
+    );
   });
 
   testWidgets('переключатель прячет метки выключенного слоя', (tester) async {

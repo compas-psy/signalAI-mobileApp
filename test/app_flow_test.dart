@@ -117,48 +117,16 @@ void main() {
     ));
   });
 
-  testWidgets('лента идей показывает карточки по ТЗ §8.1', (tester) async {
+  testWidgets('без движка лента честно говорит, что движок не ответил',
+      (tester) async {
+    // Идеи считает сервер (§18). В сборке без его адреса показывать нечего —
+    // и это обязано читаться как «движок молчит», а не как «сетапов нет»
+    // (§24). Разница в действиях: чинить связь или ждать рынок.
     await pumpApp(tester);
     await goTo(tester, 'Идеи', 'Все');
 
-    // Инструмент, направление и состояние — то, что читается первым.
-    expect(find.text('SiU6'), findsOneWidget);
-    expect(find.text('LONG'), findsWidgets);
-  });
-
-  testWidgets('карточка идеи открывается по тапу', (tester) async {
-    await pumpApp(tester);
-    await goTo(tester, 'Идеи', 'Все');
-
-    await tester.tap(find.text('SiU6'));
-    await tester.pump(const Duration(milliseconds: 300));
-
-    expect(find.text('Доллар/Рубль · сент 2026'), findsOneWidget);
-    // Тезис с доказательствами стоит выше плана — до тейков надо доехать.
-    await scrollTo(tester, find.text('Тейк-профиты'.toUpperCase()));
-    expect(find.text('Тейк-профиты'.toUpperCase()), findsOneWidget);
-
-    await scrollTo(tester, find.text('Отправить на биржу'));
-    expect(find.text('Отправить на биржу'), findsOneWidget);
-  });
-
-  testWidgets('подтверждение выставляет ордер и показывает тост', (tester) async {
-    await pumpApp(tester);
-    await goTo(tester, 'Идеи', 'Все');
-
-    await tester.tap(find.text('SiU6'));
-    await tester.pump(const Duration(milliseconds: 300));
-
-    await scrollTo(tester, find.text('Отправить на биржу'));
-    await tester.tap(find.text('Отправить на биржу'));
-    await tester.pump(const Duration(milliseconds: 300));
-    expect(find.text('Исполнить на бирже'), findsOneWidget);
-    expect(find.text('Риск, если SL'), findsOneWidget);
-
-    await tester.tap(find.text('Исполнить на бирже'));
-    await tester.pump(const Duration(milliseconds: 300));
-
-    expect(find.text('Ордер отправлен · OCO SL + TP выставлены'), findsOneWidget);
+    expect(find.text('Движок не ответил'), findsOneWidget);
+    expect(find.textContaining('идеи считает сервер'), findsOneWidget);
   });
 
   testWidgets('«Сегодня» отвечает на три вопроса: деньги, риск, решения',

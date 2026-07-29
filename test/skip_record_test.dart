@@ -2,26 +2,13 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:signalai/domain/enums.dart';
 import 'package:signalai/domain/idea/idea.dart';
 import 'package:signalai/domain/idea/idea_state.dart';
-import 'package:signalai/domain/idea/quality_score.dart';
+
+import 'support/score_fixture.dart';
 import 'package:signalai/domain/idea/skip_record.dart';
 import 'package:signalai/domain/idea/trade_plan.dart';
 
 final at = DateTime.utc(2026, 7, 29, 14, 5);
 
-QualityScore exactly(int value) {
-  final full = <FactorContribution>[];
-  var left = value;
-  for (final f in ScoreFactor.values) {
-    if (left >= f.weight) {
-      full.add(FactorContribution(factor: f, fraction: 1, note: ''));
-      left -= f.weight;
-    } else if (left > 0) {
-      full.add(FactorContribution(factor: f, fraction: left / f.weight, note: ''));
-      left = 0;
-    }
-  }
-  return QualityScore(contributions: full);
-}
 
 Idea idea({String id = 'idea_1', int score = 82}) => Idea(
       id: id,
@@ -32,7 +19,7 @@ Idea idea({String id = 'idea_1', int score = 82}) => Idea(
       strategy: SetupStrategy.trendPullback,
       strategyVersion: 'v1',
       state: IdeaState.triggered,
-      score: exactly(score),
+      score: scoreOf(score),
       createdAt: at.subtract(const Duration(hours: 4)),
       validUntil: at.add(const Duration(hours: 4)),
       thesis: '',

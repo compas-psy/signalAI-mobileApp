@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:signalai/domain/idea/quality_score.dart';
+
+import 'support/score_fixture.dart';
 import 'package:signalai/domain/idea/risk_center.dart';
 import 'package:signalai/domain/idea/trade_plan.dart';
 import 'package:signalai/domain/ledger/signal_ledger.dart';
@@ -28,20 +29,6 @@ PaperTrade trade({
       resultR: resultR,
     );
 
-QualityScore scoreOf(int value) {
-  final full = <FactorContribution>[];
-  var left = value;
-  for (final f in ScoreFactor.values) {
-    if (left >= f.weight) {
-      full.add(FactorContribution(factor: f, fraction: 1, note: ''));
-      left -= f.weight;
-    } else if (left > 0) {
-      full.add(FactorContribution(factor: f, fraction: left / f.weight, note: ''));
-      left = 0;
-    }
-  }
-  return QualityScore(contributions: full);
-}
 
 void main() {
   group('Расход лимитов (ТЗ §20)', () {
@@ -70,7 +57,8 @@ void main() {
         riskPerTradePercent: 1.0,
       );
       expect(center.daily.usedPercent, 1.0);
-      expect(center.daily.remainingPercent, 2.0);
+      // Дневной лимит engine-ТЗ — 1,5%, а не 3% из UX-ТЗ.
+      expect(center.daily.remainingPercent, 0.5);
     });
 
     test('старый убыток не расходует дневной лимит, но виден в месячном', () {
@@ -135,7 +123,8 @@ void main() {
 
     test('оценка задаёт потолок, лимиты — пол', () {
       expect(center.budgetFor(scoreOf(85)).percent, 0.75);
-      expect(center.budgetFor(scoreOf(95)).percent, 1.0);
+      // Ступени 1% из UX-ТЗ нет: выше 0,75% engine-ТЗ не поднимается.
+      expect(center.budgetFor(scoreOf(95)).percent, 0.75);
       expect(center.budgetFor(scoreOf(77)).percent, 0.50);
     });
 

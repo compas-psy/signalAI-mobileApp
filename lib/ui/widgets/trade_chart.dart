@@ -24,6 +24,7 @@ class TradeChart extends StatefulWidget {
   const TradeChart({
     super.key,
     required this.signal,
+    this.annotations = const [],
     this.visibleLayers = allLayers,
     this.highlight = const {},
   });
@@ -35,14 +36,28 @@ class TradeChart extends StatefulWidget {
   /// решает, что приложение сломано.
   static const renderableLayers = {
     ChartLayer.candles,
-    ChartLayer.levels,
+    ChartLayer.trend,
+    ChartLayer.wyckoff,
     ChartLayer.smc,
+    ChartLayer.priceAction,
+    ChartLayer.levels,
+    ChartLayer.volume,
+    ChartLayer.openInterest,
+    ChartLayer.events,
   };
 
   /// Слои по умолчанию.
   static const allLayers = renderableLayers;
 
   final TradingSignal signal;
+
+  /// Разметка §10.6, найденная детекторами движка.
+  ///
+  /// Раньше график рисовал собственные уровни и не знал об этом списке вовсе:
+  /// `Idea.annotations` не участвовал в отрисовке ни разу. Из-за этого
+  /// приложение показывало меньше, чем нашёл движок, — Вайкоффа, Price
+  /// Action, объёма и открытого интереса на графике не было в принципе.
+  final List<ChartAnnotation> annotations;
 
   /// Какие слои показывать. Свечи подразумеваются всегда.
   final Set<ChartLayer> visibleLayers;
@@ -92,6 +107,7 @@ class _TradeChartState extends State<TradeChart> with SingleTickerProviderStateM
             painter: _ChartPainter(
               signal: widget.signal,
               chart: chart,
+              annotations: widget.annotations,
               layers: widget.visibleLayers,
               highlight: widget.highlight,
               // 0 → 1 → 0: opacity 1 в начале и конце, .35 в середине
@@ -137,10 +153,47 @@ class _ChartUnavailable extends StatelessWidget {
       );
 }
 
+/// Как рисуется тип разметки.
+///
+/// Геометрия задаётся типом, а не слоем: order block и диапазон Вайкоффа
+/// живут в разных слоях, но оба прямоугольники, а Spring и поглощение — оба
+/// метки на конкретной свече.
+enum _Geometry { band, level, marker, strip, moment }
+
+_Geometry _geometry(AnnotationType type) => switch (type) {
+      AnnotationType.wyckoffRange ||
+      AnnotationType.smcOrderBlock ||
+      AnnotationType.smcFvg ||
+      AnnotationType.smcLiquidityPool ||
+      AnnotationType.channel ||
+      AnnotationType.levelEntry =>
+        _Geometry.band,
+      AnnotationType.levelStop ||
+      AnnotationType.levelTarget ||
+      AnnotationType.levelInvalidation ||
+      AnnotationType.trendline ||
+      AnnotationType.smcBos ||
+      AnnotationType.smcChoch =>
+        _Geometry.level,
+      AnnotationType.wyckoffSpring ||
+      AnnotationType.wyckoffUtad ||
+      AnnotationType.wyckoffSos ||
+      AnnotationType.wyckoffSow ||
+      AnnotationType.smcSweep ||
+      AnnotationType.paEngulfing ||
+      AnnotationType.paPinBar ||
+      AnnotationType.paRejection ||
+      AnnotationType.paFailedBreakout =>
+        _Geometry.marker,
+      AnnotationType.volumeClimax || AnnotationType.oiBuildup => _Geometry.strip,
+      AnnotationType.eventMarker => _Geometry.moment,
+    };
+
 class _ChartPainter extends CustomPainter {
   _ChartPainter({
     required this.signal,
     required this.chart,
+    required this.annotations,
     required this.layers,
     required this.highlight,
     required this.pulse,
@@ -148,6 +201,7 @@ class _ChartPainter extends CustomPainter {
 
   final TradingSignal signal;
   final SignalChart chart;
+  final List<ChartAnnotation> annotations;
 
   /// Включённые слои. Выключенный слой не рисуется — ТЗ §10.1.
   final Set<ChartLayer> layers;
@@ -349,6 +403,16 @@ class _ChartPainter extends CustomPainter {
       );
     }
 
+    // ── Разметка детекторов §10.6 ───────────────────────────────────────
+    //
+    // Рисуется поверх свечей и под ценовыми чипами: метка должна быть видна
+    // на цене, но не закрывать числа, по которым выставляется заявка.
+    //
+    // Порядок — по display_priority §10.7, от низкого к высокому, чтобы
+    // важное легло сверху. Сервер отдаёт список уже отсортированным по
+    // убыванию, поэтому идём с конца.
+    _paintAnnotations(canvas, x: x, y: y, candleWidth: candleWidth, count: n);
+
     // Маркер текущей цены — пульсирует, как в макете.
     canvas.drawCircle(
       Offset(x(n - 1), y(candles.last.close)),
@@ -467,6 +531,154 @@ class _ChartPainter extends CustomPainter {
     )..layout();
     final baseline = painter.computeDistanceToActualBaseline(TextBaseline.alphabetic);
     painter.paint(canvas, Offset(baselineStart.dx, baselineStart.dy - baseline));
+  }
+
+  /// Индекс свечи, на которую приходится момент [at].
+  ///
+  /// null — у свечей нет времени либо момент вне окна графика. Тогда метка,
+  /// привязанная ко времени, **не рисуется**: поставленная наугад, она
+  /// выглядела бы как факт, которого не было.
+  int? _indexAt(DateTime at) {
+    final candles = chart.candles;
+    if (candles.isEmpty || candles.first.openTime == null) return null;
+    var best = -1;
+    for (var i = 0; i < candles.length; i++) {
+      final t = candles[i].openTime;
+      if (t == null) continue;
+      if (!t.isAfter(at)) best = i;
+    }
+    return best < 0 ? null : best;
+  }
+
+  /// Цвет слоя. Разные слои обязаны отличаться на глаз: иначе разметка
+  /// сливается в кашу и перестаёт что-либо объяснять.
+  Color _layerColor(ChartLayer layer) => switch (layer) {
+        ChartLayer.trend => C.textSecondary,
+        ChartLayer.wyckoff => const Color(0xFFB07CFF),
+        ChartLayer.smc => C.accent,
+        ChartLayer.priceAction => const Color(0xFFFFB020),
+        ChartLayer.levels => C.muted,
+        ChartLayer.volume => const Color(0xFF6FA8FF),
+        ChartLayer.openInterest => const Color(0xFF44C7B0),
+        ChartLayer.events => C.warning,
+        ChartLayer.candles => C.muted,
+      };
+
+  void _paintAnnotations(
+    Canvas canvas, {
+    required double Function(num) x,
+    required double Function(double) y,
+    required double candleWidth,
+    required int count,
+  }) {
+    if (annotations.isEmpty) return;
+
+    // От низкого приоритета к высокому: важное ложится сверху (§10.7).
+    final ordered = [...annotations]
+      ..sort((a, b) => a.displayPriority.compareTo(b.displayPriority));
+
+    for (final a in ordered) {
+      if (!layers.contains(a.layer)) continue;
+      final alpha = _alpha(a.id) * (0.45 + 0.55 * a.confidence.clamp(0.0, 1.0));
+      final color = _layerColor(a.layer).withValues(alpha: alpha);
+
+      final startIndex = _indexAt(a.startTime);
+      final endIndex = _indexAt(a.endTime);
+      final low = a.priceLow;
+      final high = a.priceHigh;
+
+      switch (_geometry(a.type)) {
+        case _Geometry.band:
+          if (low == null || high == null) break;
+          // Полоса без времени тянется на всю ширину: это уровень плана, он
+          // действует всё окно, а не отрезок.
+          final left = startIndex == null
+              ? _plotLeft
+              : x(startIndex) - candleWidth / 2;
+          final right = endIndex == null
+              ? _plotRight
+              : math.max(left + 2, x(endIndex) + candleWidth / 2);
+          final rect = Rect.fromLTRB(left, y(math.max(low, high)), right,
+              y(math.min(low, high)));
+          canvas.drawRRect(
+            RRect.fromRectAndRadius(rect, const Radius.circular(2)),
+            Paint()..color = color.withValues(alpha: alpha * 0.12),
+          );
+          canvas.drawRRect(
+            RRect.fromRectAndRadius(rect, const Radius.circular(2)),
+            Paint()
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = 1
+              ..color = color.withValues(alpha: alpha * 0.5),
+          );
+          if (a.label.isNotEmpty && rect.height > 9) {
+            _text(canvas, a.label, Offset(left + 4, rect.top + 9),
+                size: 8, color: color, weight: 700);
+          }
+
+        case _Geometry.level:
+          final price = low ?? high;
+          if (price == null) break;
+          _dashedLine(
+            canvas,
+            Offset(_plotLeft, y(price)),
+            Offset(_plotRight, y(price)),
+            Paint()
+              ..color = color
+              ..strokeWidth = highlight.contains(a.id) ? 2 : 1,
+            dash: 4,
+            gap: 3,
+          );
+          if (a.label.isNotEmpty) {
+            _text(canvas, a.label, Offset(_plotLeft + 4, y(price) - 4),
+                size: 8, color: color, weight: 700);
+          }
+
+        case _Geometry.marker:
+          if (startIndex == null) break;
+          final price = high ?? low;
+          if (price == null) break;
+          final cx = x(startIndex);
+          final cy = y(price) - 7;
+          // Треугольник вершиной к свече: метка указывает на бар, а не
+          // висит рядом с ним.
+          final path = Path()
+            ..moveTo(cx, cy + 5)
+            ..lineTo(cx - 4, cy - 3)
+            ..lineTo(cx + 4, cy - 3)
+            ..close();
+          canvas.drawPath(path, Paint()..color = color);
+          if (a.label.isNotEmpty) {
+            _text(canvas, a.label.split(':').first,
+                Offset(cx + 6, cy), size: 7.5, color: color, weight: 700);
+          }
+
+        case _Geometry.strip:
+          if (startIndex == null) break;
+          // Подпанель внизу: объём и открытый интерес не делят шкалу с
+          // ценой — совмещённые шкалы врут обе.
+          final cx = x(startIndex);
+          canvas.drawRect(
+            Rect.fromLTWH(cx - candleWidth / 4, _h - _padBottom + 2,
+                math.max(1.5, candleWidth / 2), 4),
+            Paint()..color = color,
+          );
+
+        case _Geometry.moment:
+          if (startIndex == null) break;
+          final cx = x(startIndex);
+          _dashedLine(
+            canvas,
+            Offset(cx, _padTop),
+            Offset(cx, _h - _padBottom),
+            Paint()
+              ..color = color
+              ..strokeWidth = 1,
+            dash: 3,
+            gap: 4,
+          );
+      }
+    }
   }
 
   @override

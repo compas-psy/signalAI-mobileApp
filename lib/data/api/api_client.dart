@@ -35,6 +35,12 @@ class ApiClient {
   Future<Map<String, dynamic>> get(String path) async =>
       _send('GET', path) as Map<String, dynamic>;
 
+  /// Ответ-массив. Контракт §18 отдаёт ленту идей списком верхнего уровня,
+  /// и приводить её к объекту на стороне сервера значит менять контракт под
+  /// удобство одного клиента.
+  Future<List<dynamic>> getList(String path) async =>
+      _send('GET', path) as List<dynamic>;
+
   Future<Map<String, dynamic>> post(
     String path, {
     Map<String, dynamic>? body,

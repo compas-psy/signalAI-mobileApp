@@ -3,27 +3,14 @@ import 'package:signalai/domain/enums.dart';
 import 'package:signalai/domain/idea/final_check.dart';
 import 'package:signalai/domain/idea/idea.dart';
 import 'package:signalai/domain/idea/idea_state.dart';
-import 'package:signalai/domain/idea/quality_score.dart';
+
+import 'support/score_fixture.dart';
 import 'package:signalai/domain/idea/trade_plan.dart';
 
 final created = DateTime.utc(2026, 7, 29, 10);
 final expires = DateTime.utc(2026, 7, 29, 18);
 final now = DateTime.utc(2026, 7, 29, 12);
 
-QualityScore exactly(int value) {
-  final full = <FactorContribution>[];
-  var left = value;
-  for (final f in ScoreFactor.values) {
-    if (left >= f.weight) {
-      full.add(FactorContribution(factor: f, fraction: 1, note: ''));
-      left -= f.weight;
-    } else if (left > 0) {
-      full.add(FactorContribution(factor: f, fraction: left / f.weight, note: ''));
-      left = 0;
-    }
-  }
-  return QualityScore(contributions: full);
-}
 
 TradePlan samplePlan({
   double riskPercent = 0.75,
@@ -71,7 +58,7 @@ Idea idea({
       strategy: SetupStrategy.trendPullback,
       strategyVersion: 'trend-pullback-1.0.0',
       state: state,
-      score: exactly(score),
+      score: scoreOf(score),
       createdAt: created,
       validUntil: validUntil ?? expires,
       thesis: 'Откат в зону спроса.',
@@ -171,7 +158,7 @@ void main() {
         strategy: SetupStrategy.trendPullback,
         strategyVersion: 'v1',
         state: IdeaState.triggered,
-        score: exactly(85),
+        score: scoreOf(85),
         createdAt: created,
         validUntil: expires,
         thesis: '',
@@ -268,13 +255,13 @@ void main() {
       expect(check.passed, isFalse);
     });
 
-    test('кластер выше 1,25% блокирует', () {
+    test('кластер выше 1% блокирует', () {
       final check =
           find(FinalCheck.run(idea(), ctx(cluster: 1.6)), CheckKind.correlation)!;
       expect(check.passed, isFalse);
       expect(check.detail, contains('выше'));
       // Ровно на границе — проходит.
-      expect(find(FinalCheck.run(idea(), ctx(cluster: 1.25)), CheckKind.correlation)!.passed,
+      expect(find(FinalCheck.run(idea(), ctx(cluster: 1.0)), CheckKind.correlation)!.passed,
           isTrue);
     });
   });

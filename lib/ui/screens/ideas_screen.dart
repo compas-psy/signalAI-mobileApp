@@ -39,7 +39,14 @@ class IdeasScreen extends StatelessWidget {
 
     final all = controller.ideas;
     final visible = filterIdeas(all, filter, now);
-    if (visible.isEmpty) return _Empty(filter: filter, total: all.length);
+    if (visible.isEmpty) {
+      return _Empty(
+        filter: filter,
+        total: all.length,
+        unavailableReason: controller.ideasUnavailableReason,
+        noSetupsReason: controller.noSetupsReason,
+      );
+    }
 
     return ListView.builder(
       padding: const EdgeInsets.fromLTRB(S.screen, 12, S.screen, 18),
@@ -214,13 +221,53 @@ class StateBadge extends StatelessWidget {
 }
 
 class _Empty extends StatelessWidget {
-  const _Empty({required this.filter, required this.total});
+  const _Empty({
+    required this.filter,
+    required this.total,
+    this.unavailableReason,
+    this.noSetupsReason,
+  });
 
   final IdeasPill filter;
   final int total;
 
+  /// Почему движок не ответил. Это **не** «сетапов нет» (§24): обрыв связи и
+  /// спокойный рынок выглядят на экране одинаково, если разницу не назвать,
+  /// и владелец спокойно ждёт сигналов от сервера, который лежит.
+  final String? unavailableReason;
+
+  /// Почему движок ответил пустым списком.
+  final String? noSetupsReason;
+
   @override
   Widget build(BuildContext context) {
+    if (unavailableReason != null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(28),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text('Движок не ответил', style: T.jost(18)),
+              const SizedBox(height: 8),
+              Text(
+                unavailableReason!,
+                textAlign: TextAlign.center,
+                style: T.body(12, color: C.warning, height: 1.5),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Это не «сегодня нет сетапов»: идеи считает сервер, и пока он '
+                'молчит, сказать про рынок нечего.',
+                textAlign: TextAlign.center,
+                style: T.body(12, color: C.muted, height: 1.5),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
     // Честный пустой экран (ТЗ §6): называет, чего именно нет и почему.
     final (title, note) = switch (filter) {
       IdeasPill.decisions => (
@@ -241,7 +288,8 @@ class _Empty extends StatelessWidget {
         ),
       IdeasPill.all => (
           'Идей нет',
-          'Расчёт не нашёл ни одной идеи выше порога показа 65.'
+          noSetupsReason ??
+              'Движок не нашёл ни одной идеи выше порога показа 65.'
         ),
     };
     return Center(

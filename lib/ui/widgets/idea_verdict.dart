@@ -9,11 +9,17 @@ import '../../theme/typography.dart';
 import 'common.dart';
 import 'vector_icon.dart';
 
-/// Из чего собрана оценка (ТЗ §14.2).
+/// Из чего собрана оценка (engine-ТЗ §15.1).
 ///
-/// Показывает все восемь факторов, включая неизмеренные: оценка 60 из ста без
-/// объяснения читается как «слабая идея», хотя на деле это может быть «мы не
-/// посчитали два фактора из восьми». Разница принципиальная.
+/// Показывает все одиннадцать компонентов, включая неизмеренные и
+/// неприменимые: оценка 60 из ста без разбора читается как «слабая идея»,
+/// хотя на деле это может быть «два компонента не посчитаны». Разница
+/// принципиальная, и различить её обязано приложение, а не владелец.
+///
+/// Неприменимое и неизмеренное разведены намеренно. Открытого интереса у
+/// акции не бывает — это не изъян идеи, и вес такого компонента ушёл
+/// остальным. Открытый интерес у фьючерса бывает, но не приехал — это дыра,
+/// и она обязана быть видна.
 class ScoreBreakdownCard extends StatelessWidget {
   const ScoreBreakdownCard({super.key, required this.score});
 
@@ -21,8 +27,7 @@ class ScoreBreakdownCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final sorted = [...score.contributions]
-      ..sort((a, b) => b.points.compareTo(a.points));
+    final sorted = score.byContribution;
     return SectionCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -36,9 +41,18 @@ class ScoreBreakdownCard extends StatelessWidget {
           const SizedBox(height: 4),
           Text(
             // ТЗ §14.3: превращать оценку в вероятность до калибровки нельзя.
-            'Это оценка качества сетапа, а не вероятность прибыли.',
+            'Это оценка качества сетапа, а не вероятность прибыли. '
+            'Вероятность у движка своя и определена строго.',
             style: T.body(11, color: C.faint, height: 1.4),
           ),
+          if (score.dataQuality < 1.0) ...[
+            const SizedBox(height: 6),
+            Text(
+              'Качество данных ${(score.dataQuality * 100).round()}% — '
+              'оценка умножена на этот множитель (§15.1).',
+              style: T.body(11, color: C.warning, height: 1.4),
+            ),
+          ],
           const SizedBox(height: 10),
           for (final c in sorted) ...[
             _FactorLine(contribution: c),
@@ -77,29 +91,41 @@ class ScoreBreakdownCard extends StatelessWidget {
 class _FactorLine extends StatelessWidget {
   const _FactorLine({required this.contribution});
 
-  final FactorContribution contribution;
+  final ScoreContribution contribution;
+
+  /// Доля выполнения компонента: значение приходит в шкале 0…100.
+  double get _fraction => (contribution.value / 100).clamp(0.0, 1.0);
 
   @override
   Widget build(BuildContext context) {
-    final measured = contribution.fraction > 0;
-    final color = !measured
-        ? C.faint
-        : contribution.fraction >= 0.75
-            ? C.green
-            : contribution.fraction >= 0.4
-                ? C.accent
-                : C.warning;
+    final status = contribution.status;
+    final color = switch (status) {
+      MeasurementStatus.notApplicable => C.faint,
+      MeasurementStatus.missing => C.warning,
+      MeasurementStatus.measured when _fraction >= 0.75 => C.green,
+      MeasurementStatus.measured when _fraction >= 0.4 => C.accent,
+      _ => C.warning,
+    };
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Row(
           children: [
             Expanded(
-              child: Text(contribution.factor.label,
+              child: Text(contribution.kind.label,
                   style: T.body(12, weight: 700)),
             ),
             Text(
-              '${contribution.points.round()} из ${contribution.factor.weight}',
+              // Знаменатель — фактический вес: у неприменимого компонента вес
+              // перераспределён, и показывать номинальный значило бы обещать
+              // баллы, которых в этой оценке не существует.
+              switch (contribution.status) {
+                MeasurementStatus.notApplicable => 'неприменимо',
+                MeasurementStatus.missing => 'не измерено',
+                MeasurementStatus.measured =>
+                  '${contribution.points.round()} из '
+                      '${(contribution.effectiveWeight * 100).round()}',
+              },
               style: T.mono(11, color: color),
             ),
           ],
@@ -113,7 +139,9 @@ class _FactorLine extends StatelessWidget {
               children: [
                 const ColoredBox(color: C.inset, child: SizedBox.expand()),
                 FractionallySizedBox(
-                  widthFactor: contribution.fraction.clamp(0.0, 1.0),
+                  widthFactor: contribution.status == MeasurementStatus.measured
+                      ? _fraction
+                      : 0.0,
                   child:
                       ColoredBox(color: color, child: const SizedBox.expand()),
                 ),
@@ -121,9 +149,9 @@ class _FactorLine extends StatelessWidget {
             ),
           ),
         ),
-        if (contribution.note.isNotEmpty) ...[
+        if (contribution.detail.isNotEmpty) ...[
           const SizedBox(height: 4),
-          Text(contribution.note,
+          Text(contribution.detail,
               style: T.body(11, color: C.muted, height: 1.4)),
         ],
       ],
