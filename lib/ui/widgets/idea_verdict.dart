@@ -7,6 +7,7 @@ import '../../domain/idea/quality_score.dart';
 import '../../theme/tokens.dart';
 import '../../theme/typography.dart';
 import 'common.dart';
+import 'segmented.dart';
 import 'vector_icon.dart';
 
 /// Из чего собрана оценка (engine-ТЗ §15.1).
@@ -26,44 +27,46 @@ class ScoreBreakdownCard extends StatelessWidget {
   final QualityScore score;
 
   @override
-  Widget build(BuildContext context) {
-    final sorted = score.byContribution;
-    return SectionCard(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              const Expanded(child: SectionLabel('Из чего собрана оценка')),
-              Text(score.label, style: T.mono(11, color: C.accent)),
-            ],
-          ),
-          const SizedBox(height: 4),
-          Text(
-            // ТЗ §14.3: превращать оценку в вероятность до калибровки нельзя.
-            'Это оценка качества сетапа, а не вероятность прибыли. '
-            'Вероятность у движка своя и определена строго.',
-            style: T.body(11, color: C.faint, height: 1.4),
-          ),
-          if (score.dataQuality < 1.0) ...[
-            const SizedBox(height: 6),
-            Text(
-              'Качество данных ${(score.dataQuality * 100).round()}% — '
-              'оценка умножена на этот множитель (§15.1).',
-              style: T.body(11, color: C.warning, height: 1.4),
+  Widget build(BuildContext context) => SectionCard(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Expanded(child: SectionLabel('Из чего собрана оценка')),
+                Text(score.label, style: T.mono(11, color: C.accent)),
+              ],
             ),
+            const SizedBox(height: 4),
+            Text(
+              // ТЗ §14.3: превращать оценку в вероятность до калибровки нельзя.
+              'Это оценка качества сетапа, а не вероятность прибыли. '
+              'Вероятность у движка своя и определена строго.',
+              style: T.body(11, color: C.faint, height: 1.4),
+            ),
+            if (score.dataQuality < 1.0) ...[
+              const SizedBox(height: 6),
+              Text(
+                'Качество данных ${(score.dataQuality * 100).round()}% — '
+                'оценка умножена на этот множитель (§15.1).',
+                style: T.body(11, color: C.warning, height: 1.4),
+              ),
+            ],
+            const SizedBox(height: 11),
+            // Прототип раскладывает разбор плитками, а не строками: одиннадцать
+            // компонентов колонкой — это экран прокрутки, на котором ни один
+            // не сравнивается ни с одним.
+            TileGrid(
+              tiles: [
+                for (final c in score.byContribution) _FactorTile(contribution: c),
+              ],
+              minTileWidth: 132,
+            ),
+            const SizedBox(height: 12),
+            _riskLine(),
           ],
-          const SizedBox(height: 10),
-          for (final c in sorted) ...[
-            _FactorLine(contribution: c),
-            if (c != sorted.last) const SizedBox(height: 9),
-          ],
-          const SizedBox(height: 12),
-          _riskLine(),
-        ],
-      ),
-    );
-  }
+        ),
+      );
 
   Widget _riskLine() {
     final risk = score.riskPercent;
@@ -88,8 +91,8 @@ class ScoreBreakdownCard extends StatelessWidget {
       '${v.toStringAsFixed(2).replaceAll('.', ',')}%';
 }
 
-class _FactorLine extends StatelessWidget {
-  const _FactorLine({required this.contribution});
+class _FactorTile extends StatelessWidget {
+  const _FactorTile({required this.contribution});
 
   final ScoreContribution contribution;
 
@@ -99,6 +102,7 @@ class _FactorLine extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final status = contribution.status;
+    final measured = status == MeasurementStatus.measured;
     final color = switch (status) {
       MeasurementStatus.notApplicable => C.faint,
       MeasurementStatus.missing => C.warning,
@@ -106,55 +110,59 @@ class _FactorLine extends StatelessWidget {
       MeasurementStatus.measured when _fraction >= 0.4 => C.accent,
       _ => C.warning,
     };
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            Expanded(
-              child: Text(contribution.kind.label,
-                  style: T.body(12, weight: 700)),
-            ),
-            Text(
-              // Знаменатель — фактический вес: у неприменимого компонента вес
-              // перераспределён, и показывать номинальный значило бы обещать
-              // баллы, которых в этой оценке не существует.
-              switch (contribution.status) {
-                MeasurementStatus.notApplicable => 'неприменимо',
-                MeasurementStatus.missing => 'не измерено',
-                MeasurementStatus.measured =>
-                  '${contribution.points.round()} из '
-                      '${(contribution.effectiveWeight * 100).round()}',
-              },
-              style: T.mono(11, color: color),
-            ),
-          ],
-        ),
-        const SizedBox(height: 4),
-        ClipRRect(
-          borderRadius: BorderRadius.circular(R.pill),
-          child: SizedBox(
-            height: 5,
-            child: Stack(
-              children: [
-                const ColoredBox(color: C.inset, child: SizedBox.expand()),
-                FractionallySizedBox(
-                  widthFactor: contribution.status == MeasurementStatus.measured
-                      ? _fraction
-                      : 0.0,
-                  child:
-                      ColoredBox(color: color, child: const SizedBox.expand()),
-                ),
-              ],
+    return Container(
+      padding: const EdgeInsets.fromLTRB(10, 9, 10, 10),
+      decoration: BoxDecoration(
+        color: C.inset,
+        border: Border.all(color: C.divider),
+        borderRadius: BorderRadius.circular(R.inset),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            contribution.kind.label,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: T.body(11, weight: 700, height: 1.3),
+          ),
+          const SizedBox(height: 5),
+          Text(
+            // Знаменатель — фактический вес: у неприменимого компонента вес
+            // перераспределён, и показывать номинальный значило бы обещать
+            // баллы, которых в этой оценке не существует.
+            switch (status) {
+              MeasurementStatus.notApplicable => 'неприменимо',
+              MeasurementStatus.missing => 'не измерено',
+              MeasurementStatus.measured => '${contribution.points.round()} из '
+                  '${(contribution.effectiveWeight * 100).round()}',
+            },
+            style: T.mono(11, weight: 600, color: color),
+          ),
+          const SizedBox(height: 6),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(R.pill),
+            child: SizedBox(
+              height: 5,
+              child: Stack(
+                children: [
+                  const ColoredBox(color: C.chip, child: SizedBox.expand()),
+                  FractionallySizedBox(
+                    widthFactor: measured ? _fraction : 0.0,
+                    child: ColoredBox(color: color, child: const SizedBox.expand()),
+                  ),
+                ],
+              ),
             ),
           ),
-        ),
-        if (contribution.detail.isNotEmpty) ...[
-          const SizedBox(height: 4),
-          Text(contribution.detail,
-              style: T.body(11, color: C.muted, height: 1.4)),
+          // Пояснение остаётся у неизмеренного и неприменимого: там оно
+          // отвечает на вопрос «почему», а у измеренного повторяет полоску.
+          if (!measured && contribution.detail.isNotEmpty) ...[
+            const SizedBox(height: 5),
+            Text(contribution.detail, style: T.body(10, color: C.muted, height: 1.35)),
+          ],
         ],
-      ],
+      ),
     );
   }
 }
@@ -181,49 +189,72 @@ class ThesisCard extends StatelessWidget {
   final ValueChanged<String?> onSelect;
 
   @override
-  Widget build(BuildContext context) => SectionCard(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const SectionLabel('Почему эта идея есть'),
-            const SizedBox(height: 8),
-            if (idea.thesis.isNotEmpty)
-              Text(idea.thesis,
-                  style: T.body(12.5, color: C.textSecondary, height: 1.5)),
-            if (idea.evidence.isEmpty)
-              Text(
-                'Расчёт не оставил разбора по факторам — показать нечего.',
-                style: T.body(11.5, color: C.muted, height: 1.45),
-              )
-            else ...[
-              const SizedBox(height: 10),
-              for (final evidence in idea.evidence) ...[
-                _EvidenceRow(
-                  evidence: evidence,
-                  selected: evidence.id == selectedEvidenceId,
-                  // Доказательство без единой метки подсвечивать нечем:
-                  // строка остаётся, но не притворяется нажимаемой.
-                  onTap: evidence.annotationIds.isEmpty
-                      ? null
-                      : () => onSelect(
-                          evidence.id == selectedEvidenceId ? null : evidence.id),
-                ),
-                if (evidence != idea.evidence.last) const SizedBox(height: 7),
-              ],
+  Widget build(BuildContext context) {
+    // Вклад в оценку — у компонента, доказательство — у детектора. Связывает
+    // их `evidence_id` контракта §18: без этой связки строка тезиса и строка
+    // разбора говорят об одном, но проверить это нельзя.
+    final points = <String, ScoreContribution>{
+      for (final c in idea.score.contributions)
+        if (c.evidenceId != null) c.evidenceId!: c,
+    };
+    return SectionCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const SectionLabel('Почему идея появилась'),
+          const SizedBox(height: 8),
+          if (idea.thesis.isNotEmpty)
+            Text(idea.thesis,
+                style: T.body(12.5, color: C.textSecondary, height: 1.5)),
+          if (idea.evidence.isEmpty)
+            Text(
+              'Расчёт не оставил разбора по факторам — показать нечего.',
+              style: T.body(11.5, color: C.muted, height: 1.45),
+            )
+          else ...[
+            const SizedBox(height: 11),
+            for (var i = 0; i < idea.evidence.length; i++) ...[
+              if (i > 0) const SizedBox(height: 7),
+              _EvidenceRow(
+                number: i + 1,
+                evidence: idea.evidence[i],
+                contribution: points[idea.evidence[i].id],
+                selected: idea.evidence[i].id == selectedEvidenceId,
+                // Доказательство без единой метки подсвечивать нечем:
+                // строка остаётся, но не притворяется нажимаемой.
+                onTap: idea.evidence[i].annotationIds.isEmpty
+                    ? null
+                    : () => onSelect(idea.evidence[i].id == selectedEvidenceId
+                        ? null
+                        : idea.evidence[i].id),
+              ),
             ],
           ],
-        ),
-      );
+        ],
+      ),
+    );
+  }
 }
 
 class _EvidenceRow extends StatelessWidget {
   const _EvidenceRow({
+    required this.number,
     required this.evidence,
+    required this.contribution,
     required this.selected,
     required this.onTap,
   });
 
+  /// Порядковый номер в тезисе (прототип: `evidence-icon`). Нумерация даёт
+  /// доказательству имя, на которое можно сослаться словами.
+  final int number;
+
   final Evidence evidence;
+
+  /// Вклад этого доказательства в оценку. null — компонент не сослался на
+  /// него, и придумывать баллы нельзя.
+  final ScoreContribution? contribution;
+
   final bool selected;
   final VoidCallback? onTap;
 
@@ -239,27 +270,61 @@ class _EvidenceRow extends StatelessWidget {
           border: Border.all(color: selected ? C.accentBorder : C.divider),
           borderRadius: BorderRadius.circular(R.inset),
         ),
-        child: Column(
+        child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
-              children: [
-                Expanded(
-                  child: Text(evidence.summary,
-                      style: T.body(12,
-                          weight: 700, color: selected ? C.accent : C.text)),
-                ),
-                if (linked)
-                  Text(
-                    selected ? 'на графике' : 'показать',
-                    style: T.body(10, weight: 700, color: C.faint),
-                  ),
-              ],
+            Container(
+              width: 26,
+              height: 26,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: selected ? C.accentFaint : C.chip,
+                border: Border.all(color: selected ? C.accentBorder : C.border),
+                borderRadius: BorderRadius.circular(R.chipLg),
+              ),
+              child: Text(
+                '$number',
+                style: T.mono(11, weight: 700, color: selected ? C.accent : C.muted),
+              ),
             ),
-            if (evidence.detail.isNotEmpty) ...[
-              const SizedBox(height: 3),
-              Text(evidence.detail,
-                  style: T.body(11, color: C.muted, height: 1.4)),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    evidence.summary,
+                    style: T.body(12,
+                        weight: 700, color: selected ? C.accent : C.text),
+                  ),
+                  if (evidence.detail.isNotEmpty) ...[
+                    const SizedBox(height: 3),
+                    Text(evidence.detail,
+                        style: T.body(11, color: C.muted, height: 1.4)),
+                  ],
+                ],
+              ),
+            ),
+            if (contribution != null || linked) ...[
+              const SizedBox(width: 8),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  if (contribution != null)
+                    Text(
+                      contribution!.status == MeasurementStatus.measured
+                          ? '${contribution!.points.round()}/'
+                              '${(contribution!.effectiveWeight * 100).round()}'
+                          : contribution!.status.label,
+                      style: T.mono(11, weight: 600, color: C.textSecondary),
+                    ),
+                  if (linked)
+                    Text(
+                      selected ? 'на графике' : 'показать',
+                      style: T.body(10, weight: 700, color: C.faint),
+                    ),
+                ],
+              ),
             ],
           ],
         ),

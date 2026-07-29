@@ -9,6 +9,7 @@ import '../../theme/typography.dart';
 import '../tone.dart';
 import '../widgets/common.dart';
 import '../widgets/confluence_ring.dart';
+import '../widgets/idea_head.dart';
 
 /// Лента идей (ТЗ §8).
 ///
@@ -187,37 +188,6 @@ class IdeaCard extends StatelessWidget {
       .round()
       .toString()
       .replaceAllMapped(RegExp(r'\B(?=(\d{3})+(?!\d))'), (_) => ' ');
-}
-
-/// Бейдж состояния идеи. Цвет — по смыслу: жёлтый значит «требует решения
-/// сейчас», серый — «наблюдаем», красный — «исполнять нельзя».
-class StateBadge extends StatelessWidget {
-  const StateBadge({super.key, required this.state});
-
-  final IdeaState state;
-
-  static Color colorOf(IdeaState state) => switch (state) {
-        IdeaState.triggered => C.accent,
-        IdeaState.ready => C.info,
-        IdeaState.active => C.green,
-        IdeaState.watch => C.muted,
-        IdeaState.closed => C.muted,
-        IdeaState.skipped => C.muted,
-        IdeaState.expired => C.warning,
-        IdeaState.invalidated => C.red,
-      };
-
-  @override
-  Widget build(BuildContext context) {
-    final color = colorOf(state);
-    return OutlineBadge(
-      label: state.label,
-      color: color,
-      borderColor: color.withValues(alpha: 0.35),
-      background: color.withValues(alpha: 0.12),
-      fontWeight: 800,
-    );
-  }
 }
 
 class _Empty extends StatelessWidget {

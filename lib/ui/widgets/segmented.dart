@@ -162,6 +162,62 @@ class MetricRow extends StatelessWidget {
       );
 }
 
+/// Сетка плиток: столько колонок, сколько влезает по [minTileWidth].
+///
+/// Прототип задаёт число колонок брейкпоинтами экрана (5 → 3 → 2). Здесь
+/// считается по фактической ширине блока, а не экрана: на планшете разбор
+/// идеи живёт во второй колонке, и ширина экрана про неё ничего не говорит.
+class TileGrid extends StatelessWidget {
+  const TileGrid({
+    super.key,
+    required this.tiles,
+    this.minTileWidth = 104,
+    this.gap = 8,
+  });
+
+  final List<Widget> tiles;
+  final double minTileWidth;
+  final double gap;
+
+  @override
+  Widget build(BuildContext context) => LayoutBuilder(
+        builder: (context, constraints) {
+          final fit = ((constraints.maxWidth + gap) / (minTileWidth + gap)).floor();
+          final columns = fit.clamp(1, tiles.isEmpty ? 1 : tiles.length);
+          final rows = <Widget>[];
+          for (var start = 0; start < tiles.length; start += columns) {
+            final row = tiles.sublist(
+              start,
+              start + columns > tiles.length ? tiles.length : start + columns,
+            );
+            rows.add(IntrinsicHeight(
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  for (var i = 0; i < columns; i++) ...[
+                    if (i > 0) SizedBox(width: gap),
+                    // Последний ряд добивается пустотой, иначе три плитки в
+                    // ряду по четыре растягиваются каждая на треть и ломают
+                    // вертикальные линии сетки.
+                    Expanded(child: i < row.length ? row[i] : const SizedBox.shrink()),
+                  ],
+                ],
+              ),
+            ));
+          }
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              for (var i = 0; i < rows.length; i++) ...[
+                if (i > 0) SizedBox(height: gap),
+                rows[i],
+              ],
+            ],
+          );
+        },
+      );
+}
+
 /// Мини-бар силы фактора: три деления, закрашено [strength] из трёх.
 ///
 /// Вес фактора раньше был числом в строке текста; глазом сравнить шесть таких

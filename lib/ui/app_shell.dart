@@ -133,16 +133,21 @@ class AppShell extends StatelessWidget {
         ],
       );
     }
+    // Разбор идеи закрывает раздел целиком, вместе с шапкой и пилюлями.
+    // Пилюли — это разрез **ленты** («Решения · Наблюдение · В работе»), и
+    // над открытой карточкой они управляют тем, чего на экране нет: нажатие
+    // меняло фильтр списка, спрятанного под разбором.
     final screen = Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        SectionHeader(
-          section: controller.section,
-          pill: controller.pill,
-          onPill: controller.goPill,
-          mode: controller.riskMode,
-          dataAt: controller.dataFreshness,
-        ),
+        if (!controller.isDetailOpen)
+          SectionHeader(
+            section: controller.section,
+            pill: controller.pill,
+            onPill: controller.goPill,
+            mode: controller.riskMode,
+            dataAt: controller.dataFreshness,
+          ),
         Expanded(child: _screen(controller)),
       ],
     );

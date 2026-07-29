@@ -4,28 +4,36 @@ import '../../core/format.dart';
 import '../../domain/idea/evidence.dart';
 import '../../domain/idea/final_check.dart';
 import '../../domain/idea/idea.dart';
+import '../../domain/idea/idea_state.dart';
 import '../../domain/models/settings.dart';
 import '../../state/app_controller.dart';
 import '../../domain/models/signal.dart';
-import '../../domain/position_sizing.dart';
 import '../../state/app_scope.dart';
 import '../../theme/tokens.dart';
 import '../../theme/typography.dart';
 import '../tone.dart';
-import '../widgets/chart_layers.dart';
 import '../widgets/common.dart';
 import '../widgets/execution_strip.dart';
+import '../widgets/idea_chart_card.dart';
+import '../widgets/idea_head.dart';
 import '../widgets/idea_verdict.dart';
-import '../widgets/skip_sheet.dart';
+import '../widgets/plan_card.dart';
 import '../widgets/segmented.dart';
+import '../widgets/skip_sheet.dart';
 import '../widgets/trade_chart.dart';
 import '../widgets/vector_icon.dart';
 
-/// Карточка идеи: график, уровни, обоснование, смарт-риск и подтверждение.
+/// Карточка идеи по прототипу `design/prototype_v21.html` (`renderIdeaDetail`).
 ///
-/// Разбор разложен на три сегмента — «План», «Факторы», «События». Раньше всё
-/// это была одна лента карточек, и человек листал мимо того, что ему сейчас не
-/// нужно: перед отправкой ордера важен план, а не история фактора.
+/// Разбор — одна лента сверху вниз: шапка с состоянием и оценкой, график с
+/// разметкой, тезис рядом с параметрами сделки, разбор оценки, событийный
+/// риск рядом с условиями отмены, и внизу липкая полоса подтверждения.
+///
+/// До этого те же данные лежали под сегментами «План · Оценка · События».
+/// Сегменты убраны намеренно: решение об отправке ордера принимается по всем
+/// трём сразу, а переключатель заставлял держать в голове то, что скрыто на
+/// соседней вкладке. Плотность вместо этого снимает раскладка — на широком
+/// экране тезис и план стоят рядом, а не друг под другом.
 class IdeaDetailScreen extends StatefulWidget {
   const IdeaDetailScreen({
     super.key,
@@ -46,8 +54,6 @@ class IdeaDetailScreen extends StatefulWidget {
 }
 
 class _IdeaDetailScreenState extends State<IdeaDetailScreen> {
-  int _tab = 0;
-
   /// Выключенные владельцем слои графика.
   ///
   /// Хранится именно выключенное, а не включённое: набор доступных слоёв
@@ -65,9 +71,8 @@ class _IdeaDetailScreenState extends State<IdeaDetailScreen> {
   void didUpdateWidget(IdeaDetailScreen old) {
     super.didUpdateWidget(old);
     // На планшете вторая колонка не пересоздаётся при выборе другой идеи —
-    // сегмент должен вернуться к плану, а слои к полному набору.
+    // слои должны вернуться к полному набору, подсветка сняться.
     if (old.signal.id != widget.signal.id) {
-      _tab = 0;
       _hidden.clear();
       _selectedEvidence = null;
     }
@@ -77,8 +82,8 @@ class _IdeaDetailScreenState extends State<IdeaDetailScreen> {
   Widget build(BuildContext context) {
     final controller = AppScope.read(context);
     final signal = widget.signal;
-    final ideas = controller.ideas;
-    final idea = ideas.where((i) => i.id == signal.id).firstOrNull;
+    final now = DateTime.now();
+    final idea = controller.ideas.where((i) => i.id == signal.id).firstOrNull;
     final checks = idea == null ? const <CheckResult>[] : _checks(controller, idea);
     final blocked = checks.isNotEmpty && !FinalCheck.passes(checks);
     // Показываем пересечение: слой должен и стоять за доказательством
@@ -91,184 +96,95 @@ class _IdeaDetailScreenState extends State<IdeaDetailScreen> {
       for (final layer in available)
         if (!_hidden.contains(layer)) layer,
     };
-    final highlight = _highlightKeys(idea, _selectedEvidence);
     final execution = controller.execution(signal.id);
-    final screen = Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
+
+    final screen = Stack(
       children: [
-        _DetailHeader(
-          signal: signal,
-          onBack: controller.back,
-          showBack: widget.showBack,
-        ),
-        Expanded(
-          child: ListView(
-            padding: const EdgeInsets.fromLTRB(S.screen, 12, S.screen, 96),
-            children: [
-              ClipRRect(
-                borderRadius: BorderRadius.circular(R.inner),
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    border: Border.all(color: C.divider),
-                    borderRadius: BorderRadius.circular(R.inner),
-                  ),
-                  child: TradeChart(
-                    signal: signal,
-                    // Разметка §10.6 — та, что нашли детекторы движка.
-                    annotations: idea?.annotations ?? const [],
-                    visibleLayers: visible,
-                    highlight: highlight,
-                  ),
-                ),
-              ),
-              const SizedBox(height: 10),
-              // Без свечей график рисует заглушку, и переключать на нём
-              // нечего: панель слоёв там была бы управлением без объекта.
-              if (signal.chart != null)
-                ChartLayerBar(
-                  available: available,
-                  visible: visible,
-                  onToggle: (layer) => setState(() {
-                    _hidden.contains(layer)
-                        ? _hidden.remove(layer)
-                        : _hidden.add(layer);
-                  }),
-                ),
+        ListView(
+          // Нижнее поле держит место под липкую полосу подтверждения: иначе
+          // последняя карточка ленты навсегда остаётся под ней.
+          padding: const EdgeInsets.fromLTRB(S.screen, 12, S.screen, 132),
+          children: [
+            if (widget.showBack) ...[
+              _BackButton(onTap: controller.back),
               const SizedBox(height: 12),
-              if (idea != null)
-                ThesisCard(
-                  idea: idea,
-                  selectedEvidenceId: _selectedEvidence,
-                  onSelect: (id) => setState(() {
-                    _selectedEvidence = id;
-                    // Подсвечивать метку выключенного слоя бессмысленно:
-                    // включаем его вместе с подсветкой.
-                    if (id != null) {
-                      for (final a in idea.annotations) {
-                        if (idea.evidence
-                            .where((e) => e.id == id)
-                            .any((e) => e.annotationIds.contains(a.id))) {
-                          _hidden.remove(a.layer);
-                        }
-                      }
-                    }
-                  }),
-                )
-              else
-                Text(
-                  _lead(signal.note),
-                  style: T.body(12.5, color: C.textSecondary, height: 1.5),
-                ),
-              const SizedBox(height: 12),
-              _LevelsRow(signal: signal),
-              const SizedBox(height: 12),
-              SegmentedControl(
-                items: const ['План', 'Оценка', 'События'],
-                index: _tab,
-                onSelect: (i) => setState(() => _tab = i),
-              ),
-              const SizedBox(height: 12),
-              ...switch (_tab) {
-                0 => [
-                    _TakeProfitsCard(signal: signal),
-                    const SizedBox(height: 12),
-                    _SmartRiskCard(signal: signal, risk: widget.risk),
-                    const SizedBox(height: 12),
-                    if (idea != null) ...[
-                      InvalidationCard(idea: idea),
-                      const SizedBox(height: 12),
-                    ],
-                    _ManagementCard(signal: signal),
-                  ],
-                1 => [
-                    if (idea != null)
-                      ScoreBreakdownCard(score: idea.score)
-                    else
-                      _FactorsCard(signal: signal),
-                  ],
-                _ => [_SignalEventsCard(events: signal.events)],
-              },
-              const SizedBox(height: 12),
-              if (controller.paperAvailable) ...[
-                _PaperCard(signal: signal),
-                const SizedBox(height: 12),
-              ],
-              // Пока подтверждения не было — проверка; после него ход
-              // исполнения. Показывать проверку поверх открытой позиции
-              // значит отвечать на вопрос, который уже не задают.
-              if (execution != null) ...[
-                ExecutionStrip(execution: execution, now: DateTime.now()),
-                const SizedBox(height: 12),
-              ] else if (checks.isNotEmpty) ...[
-                FinalCheckCard(results: checks),
-                const SizedBox(height: 12),
-              ],
-              if (signal.status.canConfirm)
-                Row(
-                  children: [
-                    Expanded(
-                      child: Pressable(
-                        pressedScale: .98,
-                        // ТЗ §11.1: проваленная или непроверенная проверка не
-                        // пускает к деньгам. Кнопка гаснет вместе с причиной
-                        // выше, а не молча ничего не делает.
-                        onTap: blocked ? null : controller.openSheet,
-                        child: Container(
-                          padding: const EdgeInsets.all(14),
-                          decoration: BoxDecoration(
-                            color: blocked ? C.inset : C.accent,
-                            borderRadius: BorderRadius.circular(R.button),
-                          ),
-                          child: Center(
-                            child: Text(
-                              blocked
-                                  ? 'Вход заблокирован проверкой'
-                                  : 'Отправить на биржу',
-                              style: T.body(14,
-                                  weight: 800,
-                                  color: blocked ? C.faint : C.onAccent),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 9),
-                    Pressable(
-                      // Пропуск без причины журналу бесполезен: ТЗ §12
-                      // требует код из справочника. Кнопка ведёт в лист
-                      // выбора, а не просто закрывает карточку.
-                      onTap: idea != null && controller.skipJournalAvailable
-                          ? () => setState(() => _skipping = true)
-                          : controller.back,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                        decoration: BoxDecoration(
-                          color: C.card,
-                          border: Border.all(color: C.border),
-                          borderRadius: BorderRadius.circular(R.button),
-                        ),
-                        child: Text('Пропустить', style: T.body(14, weight: 700, color: C.muted)),
-                      ),
-                    ),
-                  ],
-                )
-              else
-                Container(
-                  padding: const EdgeInsets.all(13),
-                  decoration: BoxDecoration(
-                    color: C.greenFaint,
-                    border: Border.all(color: const Color(0x4D2FD575)),
-                    borderRadius: BorderRadius.circular(R.button),
-                  ),
-                  child: Center(
-                    child: Text(
-                      'В работе · лимитный ордер и OCO (SL + ${signal.takeProfits.length} TP) выставлены',
-                      textAlign: TextAlign.center,
-                      style: T.body(13, weight: 700, color: C.green),
-                    ),
-                  ),
-                ),
             ],
+            IdeaDetailHead(signal: signal, idea: idea, now: now),
+            const SizedBox(height: 14),
+            IdeaChartCard(
+              signal: signal,
+              idea: idea,
+              available: available,
+              visible: visible,
+              highlight: _highlightKeys(idea, _selectedEvidence),
+              onToggle: (layer) => setState(() {
+                _hidden.contains(layer) ? _hidden.remove(layer) : _hidden.add(layer);
+              }),
+            ),
+            const SizedBox(height: 12),
+            _Pair(
+              left: idea == null
+                  ? _PlainThesis(note: signal.note)
+                  : ThesisCard(
+                      idea: idea,
+                      selectedEvidenceId: _selectedEvidence,
+                      onSelect: (id) => setState(() {
+                        _selectedEvidence = id;
+                        // Подсвечивать метку выключенного слоя бессмысленно:
+                        // включаем его вместе с подсветкой.
+                        if (id != null) {
+                          for (final a in idea.annotations) {
+                            if (idea.evidence
+                                .where((e) => e.id == id)
+                                .any((e) => e.annotationIds.contains(a.id))) {
+                              _hidden.remove(a.layer);
+                            }
+                          }
+                        }
+                      }),
+                    ),
+              right: PlanCard(signal: signal, idea: idea, risk: widget.risk),
+            ),
+            const SizedBox(height: 12),
+            if (idea != null)
+              ScoreBreakdownCard(score: idea.score)
+            else
+              _FactorsCard(signal: signal),
+            const SizedBox(height: 12),
+            _Pair(
+              left: _EventRiskCard(signal: signal, idea: idea, now: now),
+              right: idea != null
+                  ? InvalidationCard(idea: idea)
+                  : _PlainInvalidation(signal: signal),
+            ),
+            // Пока подтверждения не было — проверка; после него ход
+            // исполнения. Показывать проверку поверх открытой позиции значит
+            // отвечать на вопрос, который уже не задают.
+            if (execution != null) ...[
+              const SizedBox(height: 12),
+              ExecutionStrip(execution: execution, now: now),
+            ] else if (checks.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              FinalCheckCard(results: checks),
+            ],
+            if (controller.paperAvailable) ...[
+              const SizedBox(height: 12),
+              _PaperCard(signal: signal),
+            ],
+          ],
+        ),
+        Positioned(
+          left: S.screen,
+          right: S.screen,
+          bottom: 12,
+          child: _ConfirmBar(
+            signal: signal,
+            state: idea?.state,
+            blocked: blocked,
+            onConfirm: controller.openSheet,
+            onSkip: idea != null && controller.skipJournalAvailable
+                ? () => setState(() => _skipping = true)
+                : controller.back,
           ),
         ),
       ],
@@ -279,24 +195,455 @@ class _IdeaDetailScreenState extends State<IdeaDetailScreen> {
       children: [
         screen,
         Positioned.fill(
-          child: ColoredBox(color: const Color(0x99000000), child: SkipSheet(
-            idea: idea,
-            onClose: () => setState(() => _skipping = false),
-            onSkip: (reason, comment) {
-              setState(() => _skipping = false);
-              controller.skipIdea(idea, reason: reason, comment: comment);
-            },
-          )),
+          child: ColoredBox(
+            color: const Color(0x99000000),
+            child: SkipSheet(
+              idea: idea,
+              onClose: () => setState(() => _skipping = false),
+              onSkip: (reason, comment) {
+                setState(() => _skipping = false);
+                controller.skipIdea(idea, reason: reason, comment: comment);
+              },
+            ),
+          ),
         ),
       ],
     );
   }
 }
 
-/// Ключи разметки для подсветки выбранного доказательства (ТЗ §9.1).
+/// Две карточки рядом, когда хватает ширины, и колонкой, когда не хватает.
 ///
-/// Идентификаторы аннотаций строятся как `<id идеи>_<ключ>`; график знает
-/// именно хвост — `entry`, `stop`, `tp1`, `zone0`, `break`.
+/// Прототип ставит тезис рядом с планом и событийный риск рядом с отменой —
+/// это пары, которые читаются вместе. На телефоне пара разворачивается в
+/// колонку: две карточки по 170 пикселей не читаются вовсе.
+class _Pair extends StatelessWidget {
+  const _Pair({required this.left, required this.right});
+
+  final Widget left;
+  final Widget right;
+
+  static const gap = 12.0;
+
+  /// Ширина, с которой пара встаёт в две колонки.
+  ///
+  /// Прототип переводит `idea-summary-grid` в одну колонку при экране ≤1180,
+  /// где под разбор остаётся около 780 пикселей. Порог здесь именно про
+  /// разбор, а не про экран: на планшете он живёт во второй колонке.
+  static const breakpoint = 720.0;
+
+  @override
+  Widget build(BuildContext context) => LayoutBuilder(
+        builder: (context, constraints) {
+          if (constraints.maxWidth < breakpoint) {
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [left, const SizedBox(height: gap), right],
+            );
+          }
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(flex: 6, child: left),
+              const SizedBox(width: gap),
+              Expanded(flex: 5, child: right),
+            ],
+          );
+        },
+      );
+}
+
+/// Возврат к списку идей (прототип: `back-mobile`).
+class _BackButton extends StatelessWidget {
+  const _BackButton({required this.onTap});
+
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) => Align(
+        alignment: Alignment.centerLeft,
+        child: Pressable(
+          onTap: onTap,
+          child: Container(
+            padding: const EdgeInsets.fromLTRB(10, 8, 13, 8),
+            decoration: BoxDecoration(
+              color: C.card,
+              border: Border.all(color: C.border),
+              borderRadius: BorderRadius.circular(R.button),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const VectorIcon(Icons.chevronLeft, size: 15, color: C.textSecondary),
+                const SizedBox(width: 6),
+                Text('К списку идей',
+                    style: T.body(12, weight: 700, color: C.textSecondary)),
+              ],
+            ),
+          ),
+        ),
+      );
+}
+
+/// Липкая полоса подтверждения (прототип: `sticky-confirm`).
+///
+/// Раньше кнопки стояли последней строкой ленты: чтобы подтвердить план,
+/// приходилось долистать разбор до конца, а чтобы понять, почему кнопка
+/// погасла, — вернуться к проверке. Полоса всегда на экране и всегда говорит,
+/// что произойдёт по нажатию.
+class _ConfirmBar extends StatelessWidget {
+  const _ConfirmBar({
+    required this.signal,
+    required this.state,
+    required this.blocked,
+    required this.onConfirm,
+    required this.onSkip,
+  });
+
+  final TradingSignal signal;
+
+  /// Состояние идеи движка. null — разбор не приехал, идём по статусу сигнала.
+  final IdeaState? state;
+
+  /// Финальная проверка не пускает к деньгам (ТЗ §11.1).
+  final bool blocked;
+
+  final VoidCallback onConfirm;
+  final VoidCallback onSkip;
+
+  bool get _working => state == IdeaState.active || signal.status.isWorking;
+
+  bool get _canConfirm => state == null
+      ? signal.status.canConfirm
+      : state!.canConfirm && signal.status.canConfirm;
+
+  @override
+  Widget build(BuildContext context) => Container(
+        padding: const EdgeInsets.all(11),
+        decoration: BoxDecoration(
+          color: C.sheet,
+          border: Border.all(color: C.borderStrong),
+          borderRadius: BorderRadius.circular(R.card),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(_headline(), style: T.body(12.5, weight: 800, color: _headlineColor())),
+            const SizedBox(height: 3),
+            Text(_sub(), style: T.body(10.5, color: C.faint, height: 1.4)),
+            if (!_working) ...[
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  Expanded(
+                    child: ActionButton(
+                      label: blocked ? 'Вход заблокирован проверкой' : 'Подтвердить план',
+                      primary: true,
+                      // ТЗ §11.1: проваленная или непроверенная проверка не
+                      // пускает к деньгам. Кнопка гаснет вместе с причиной
+                      // выше, а не молча ничего не делает.
+                      onTap: _canConfirm && !blocked ? onConfirm : null,
+                    ),
+                  ),
+                  const SizedBox(width: 9),
+                  // Пропуск без причины журналу бесполезен: ТЗ §12 требует код
+                  // из справочника. Кнопка ведёт в лист выбора, а не просто
+                  // закрывает карточку.
+                  SizedBox(
+                    width: 118,
+                    child: ActionButton(label: 'Пропустить', onTap: onSkip),
+                  ),
+                ],
+              ),
+            ],
+          ],
+        ),
+      );
+
+  String _headline() {
+    if (_working) return 'Позиция сопровождается автоматически';
+    if (blocked) return 'Проверка перед входом не пройдена';
+    return switch (state) {
+      IdeaState.watch => 'Ждём подтверждения структуры',
+      IdeaState.ready => 'Зона известна, триггер ещё не сработал',
+      IdeaState.expired => 'Срок сигнала истёк — исполнять нельзя',
+      IdeaState.invalidated => 'Замысел сломан kill-условием',
+      IdeaState.skipped => 'Идея пропущена, причина записана в журнал',
+      IdeaState.closed => 'Сделка закрыта',
+      _ => 'После одного подтверждения сопровождение будет автоматическим',
+    };
+  }
+
+  Color _headlineColor() {
+    if (_working) return C.green;
+    if (blocked) return C.red;
+    return _canConfirm ? C.text : C.textSecondary;
+  }
+
+  String _sub() {
+    if (_working) {
+      return 'Лимитный ордер и OCO (стоп + ${signal.takeProfits.length} TP) '
+          'выставлены на бирже.';
+    }
+    if (!_canConfirm) {
+      return 'Подтверждение доступно только у сработавшего сигнала — '
+          'на остальных состояниях кнопка не работает по построению.';
+    }
+    return 'Перед отправкой сверяются цена, R:R, отпечаток показанного плана '
+        'и лимиты риска. Дальше — отпечаток или ПИН устройства.';
+  }
+}
+
+/// Событийный риск идеи и календарь по инструменту (прототип: `event-scenario`).
+class _EventRiskCard extends StatelessWidget {
+  const _EventRiskCard({required this.signal, required this.idea, required this.now});
+
+  final TradingSignal signal;
+  final Idea? idea;
+  final DateTime now;
+
+  @override
+  Widget build(BuildContext context) {
+    final risk = idea?.eventRisk;
+    final events = signal.events;
+    return SectionCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Expanded(child: SectionLabel('Внешние события')),
+              if (risk != null)
+                OutlineBadge(
+                  label: risk.blocksEntry ? 'вход закрыт' : 'event risk',
+                  color: risk.blocksEntry ? C.red : C.warning,
+                  borderColor: (risk.blocksEntry ? C.red : C.warning)
+                      .withValues(alpha: 0.35),
+                  background: (risk.blocksEntry ? C.red : C.warning)
+                      .withValues(alpha: 0.12),
+                  fontWeight: 700,
+                  radius: R.pill,
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                ),
+            ],
+          ),
+          if (risk != null) ...[
+            const SizedBox(height: 9),
+            InsetBox(
+              padding: const EdgeInsets.fromLTRB(11, 9, 11, 10),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(risk.title, style: T.body(12, weight: 700)),
+                  const SizedBox(height: 3),
+                  Text(
+                    '${_when(risk.until(now))} · ${risk.policy}',
+                    style: T.body(11, color: C.muted, height: 1.4),
+                  ),
+                ],
+              ),
+            ),
+          ],
+          if (events.isEmpty && risk == null)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text(
+                'Событий по инструменту в окне идеи не найдено. Это результат '
+                'проверки календаря, а не отсутствие данных.',
+                style: T.body(11.5, color: C.muted, height: 1.45),
+              ),
+            ),
+          for (final event in events) ...[
+            const SizedBox(height: 9),
+            Row(
+              children: [
+                Container(
+                  width: 7,
+                  height: 7,
+                  decoration: BoxDecoration(
+                    color: impactColor(event.impact),
+                    shape: BoxShape.circle,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                SizedBox(
+                  width: 44,
+                  child: Text(event.time, style: T.mono(11, color: C.muted)),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(event.text, style: T.body(12, color: C.textSoft)),
+                ),
+              ],
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  static String _when(Duration until) => until.isNegative
+      ? 'уже прошло'
+      : 'через ${formatDuration(until)}';
+}
+
+/// Обоснование без разбора движка: показываем то, что записал расчёт.
+class _PlainThesis extends StatelessWidget {
+  const _PlainThesis({required this.note});
+
+  final String note;
+
+  @override
+  Widget build(BuildContext context) => SectionCard(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const SectionLabel('Почему идея появилась'),
+            const SizedBox(height: 8),
+            Text(
+              note.isEmpty ? 'Обоснование не пришло вместе с идеей.' : note,
+              style: T.body(12.5, color: C.textSecondary, height: 1.5),
+            ),
+          ],
+        ),
+      );
+}
+
+/// Условия отмены у сигнала без плана движка: есть только стоп и цена
+/// инвалидации, и придумывать остальное нечем.
+class _PlainInvalidation extends StatelessWidget {
+  const _PlainInvalidation({required this.signal});
+
+  final TradingSignal signal;
+
+  @override
+  Widget build(BuildContext context) => SectionCard(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const SectionLabel('Когда идея отменяется'),
+            const SizedBox(height: 8),
+            Text(
+              signal.invalidationPrice == null
+                  ? 'Жёсткие условия отмены не заданы: расчёт дал только стоп. '
+                      'Выход по стопу — единственное правило этой идеи.'
+                  : 'Замысел считается сломанным при уходе цены за '
+                      '${fmtPrice(signal.invalidationPrice!, signal.priceDecimals)}. '
+                      'До этого уровня идея ведётся по стопу.',
+              style: T.body(11.5, color: C.muted, height: 1.45),
+            ),
+          ],
+        ),
+      );
+}
+
+/// Шесть блоков оценки старого скринера — для идей без разбора движка.
+class _FactorsCard extends StatelessWidget {
+  const _FactorsCard({required this.signal});
+
+  final TradingSignal signal;
+
+  @override
+  Widget build(BuildContext context) => SectionCard(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Expanded(child: SectionLabel('Из чего собрана оценка')),
+                Text(
+                  'конфлюэнс ${signal.score}/100',
+                  style: T.body(11, weight: 700, color: C.accent),
+                ),
+              ],
+            ),
+            const SizedBox(height: 11),
+            TileGrid(
+              minTileWidth: 132,
+              tiles: [
+                for (final factor in signal.factors) _FactorTile(factor: factor),
+              ],
+            ),
+          ],
+        ),
+      );
+}
+
+class _FactorTile extends StatelessWidget {
+  const _FactorTile({required this.factor});
+
+  final SignalFactor factor;
+
+  @override
+  Widget build(BuildContext context) => Container(
+        padding: const EdgeInsets.fromLTRB(10, 9, 10, 10),
+        decoration: BoxDecoration(
+          color: C.inset,
+          border: Border.all(color: C.divider),
+          borderRadius: BorderRadius.circular(R.inset),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              factor.name,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: T.body(11, weight: 700, height: 1.3),
+            ),
+            const SizedBox(height: 6),
+            StrengthBar(strength: factor.weight),
+            const SizedBox(height: 6),
+            Text(factor.text, style: T.body(10, color: C.muted, height: 1.35)),
+          ],
+        ),
+      );
+}
+
+/// Ведение идеи на бумаге — отдельно от отправки на биржу.
+///
+/// Это разные вещи, и раньше их путала одна кнопка: «Подтвердить и
+/// исполнить» упиралась в ключи, режим и подтверждение, а завести ту же идею
+/// в журнал было нечем — при том что бумажному журналу не нужно ничего из
+/// этого. Здесь видно, ведётся ли идея уже, и её можно завести одним нажатием.
+class _PaperCard extends StatelessWidget {
+  const _PaperCard({required this.signal});
+
+  final TradingSignal signal;
+
+  @override
+  Widget build(BuildContext context) {
+    final controller = AppScope.read(context);
+    final note = controller.paperNote(signal);
+    return SectionCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const SectionLabel('На бумаге'),
+          const SizedBox(height: 6),
+          Text(
+            note == null
+                ? 'Идея в журнале не ведётся. Бумажная сделка проживается по '
+                    'реальным свечам — без ключей, биржи и подтверждения: '
+                    'именно она набирает выборку для допуска к живым деньгам.'
+                : 'Ведётся в журнале: $note. Результат считается по реальным '
+                    'свечам, уровни задним числом не правятся.',
+            style: T.body(11.5, color: note == null ? C.muted : C.green, height: 1.5),
+          ),
+          if (note == null) ...[
+            const SizedBox(height: 10),
+            ActionButton(
+              label: 'Вести на бумаге',
+              onTap: controller.trackCurrentSignalOnPaper,
+              dense: true,
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
 /// Метки, которые подсвечивает выбранное доказательство (§9.1).
 ///
 /// Связь берётся со стороны разметки: каждая метка знает своё доказательство
@@ -332,8 +679,7 @@ List<CheckResult> _checks(AppController controller, Idea idea) {
       freeMargin: null,
       // Кластер считается после сделки: занятое сейчас плюс то, что займёт
       // эта идея. Проверять «до» бессмысленно — превышение создаём мы.
-      clusterRiskAfterPercent:
-          center.clusterRisk.usedPercent + plan.riskPercent,
+      clusterRiskAfterPercent: center.clusterRisk.usedPercent + plan.riskPercent,
       shownPlanHash: plan.hash,
       paperMode: !controller.liveTradingOn,
     ),
@@ -343,407 +689,4 @@ List<CheckResult> _checks(AppController controller, Idea idea) {
 double? _parsePrice(String? raw) {
   if (raw == null || raw.isEmpty) return null;
   return double.tryParse(raw.replaceAll(' ', '').replaceAll(',', '.'));
-}
-
-/// Первое предложение обоснования — вывод, а не весь абзац.
-///
-/// Скринер пишет обоснование целиком: сетап, инвалидация, план ведения,
-/// происхождение расчёта. Наверху нужен только сетап; остальное дословно
-/// показано в сегменте «План», ничего не теряется.
-String _lead(String note) {
-  final end = note.indexOf('. ');
-  return end < 0 ? note : note.substring(0, end + 1);
-}
-
-/// Хвост обоснования: всё, кроме первого предложения.
-String _tail(String note) {
-  final end = note.indexOf('. ');
-  return end < 0 ? '' : note.substring(end + 2);
-}
-
-/// План ведения сделки — дословно то, что записал скринер.
-class _ManagementCard extends StatelessWidget {
-  const _ManagementCard({required this.signal});
-
-  final TradingSignal signal;
-
-  @override
-  Widget build(BuildContext context) {
-    final tail = _tail(signal.note);
-    if (tail.isEmpty) return const SizedBox.shrink();
-    return SectionCard(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const SectionLabel('План ведения'),
-          const SizedBox(height: 8),
-          Text(tail, style: T.body(12, color: C.textSecondary, height: 1.55)),
-        ],
-      ),
-    );
-  }
-}
-
-/// Шесть блоков оценки: имя, сила 1–3 делениями, одна строка объяснения.
-class _FactorsCard extends StatelessWidget {
-  const _FactorsCard({required this.signal});
-
-  final TradingSignal signal;
-
-  @override
-  Widget build(BuildContext context) => SectionCard(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                const Expanded(child: SectionLabel('Из чего собрана оценка')),
-                Text(
-                  'конфлюэнс ${signal.score}/100',
-                  style: T.body(11, weight: 700, color: C.accent),
-                ),
-              ],
-            ),
-            for (final factor in signal.factors) ...[
-              const SizedBox(height: 11),
-              _FactorRow(factor: factor),
-            ],
-          ],
-        ),
-      );
-}
-
-/// Ведение идеи на бумаге — отдельно от отправки на биржу.
-///
-/// Это разные вещи, и раньше их путала одна кнопка: «Подтвердить и
-/// исполнить» упиралась в ключи, режим и подтверждение, а завести ту же идею
-/// в журнал было нечем — при том что бумажному журналу не нужно ничего из
-/// этого. Здесь видно, ведётся ли идея уже, и её можно завести одним нажатием.
-class _PaperCard extends StatelessWidget {
-  const _PaperCard({required this.signal});
-
-  final TradingSignal signal;
-
-  @override
-  Widget build(BuildContext context) {
-    final controller = AppScope.read(context);
-    final note = controller.paperNote(signal);
-    return SectionCard(
-      margin: EdgeInsets.zero,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const SectionLabel('На бумаге'),
-          const SizedBox(height: 6),
-          Text(
-            note == null
-                ? 'Идея в журнале не ведётся. Бумажная сделка проживается по '
-                    'реальным свечам — без ключей, биржи и подтверждения: '
-                    'именно она набирает выборку для допуска к живым деньгам.'
-                : 'Ведётся в журнале: $note. Результат считается по реальным '
-                    'свечам, уровни задним числом не правятся.',
-            style: T.body(11.5, color: note == null ? C.muted : C.green, height: 1.5),
-          ),
-          if (note == null) ...[
-            const SizedBox(height: 10),
-            Pressable(
-              onTap: controller.trackCurrentSignalOnPaper,
-              child: Container(
-                padding: const EdgeInsets.symmetric(vertical: 11),
-                decoration: BoxDecoration(
-                  border: Border.all(color: C.borderHover),
-                  borderRadius: BorderRadius.circular(R.inner),
-                ),
-                child: Center(
-                  child: Text(
-                    'Вести на бумаге',
-                    style: T.body(12.5, weight: 800, color: C.accent),
-                  ),
-                ),
-              ),
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-}
-
-class _DetailHeader extends StatelessWidget {
-  const _DetailHeader({
-    required this.signal,
-    required this.onBack,
-    this.showBack = true,
-  });
-
-  final TradingSignal signal;
-  final VoidCallback onBack;
-  final bool showBack;
-
-  @override
-  Widget build(BuildContext context) => Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-        decoration: const BoxDecoration(
-          color: C.headerBg,
-          border: Border(bottom: BorderSide(color: C.dividerSoft)),
-        ),
-        child: Row(
-          children: [
-            if (showBack) ...[
-              Pressable(
-                onTap: onBack,
-                child: Container(
-                  width: 36,
-                  height: 36,
-                  decoration: BoxDecoration(
-                    color: C.card,
-                    shape: BoxShape.circle,
-                    border: Border.all(color: C.border),
-                  ),
-                  child: const Center(
-                    child: VectorIcon(Icons.chevronLeft, size: 18, color: C.text),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 10),
-            ],
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Flexible(
-                        child: Text(
-                          signal.symbol,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: T.jost(18),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      DirectionBadge(
-                        label: signal.direction.label,
-                        color: directionColor(signal.direction),
-                        background: directionBackground(signal.direction),
-                      ),
-                      const SizedBox(width: 8),
-                      Text(
-                        '${signal.score}/100',
-                        style: T.mono(12, weight: 600, color: C.accent),
-                      ),
-                    ],
-                  ),
-                  Text(
-                    signal.name,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: T.body(11, color: C.muted),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(width: 8),
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                Text(signal.lastPrice, style: T.mono(15, weight: 600)),
-                Text(
-                  signal.changeLabel,
-                  style: T.mono(11, color: signal.changeUp ? C.green : C.red),
-                ),
-              ],
-            ),
-          ],
-        ),
-      );
-}
-
-class _LevelsRow extends StatelessWidget {
-  const _LevelsRow({required this.signal});
-
-  final TradingSignal signal;
-
-  @override
-  Widget build(BuildContext context) => MetricRow(
-        tiles: [
-          MetricTile(
-            // Вход бывает лимитным (ретест зоны) и стоповым (пробой) — подпись
-            // обязана это различать, иначе ордер уйдёт не тот.
-            label: signal.entryIsStop ? 'Вход · стоп' : 'Вход · лимит',
-            value: fmtPrice(signal.entry, signal.priceDecimals),
-            color: C.accent,
-          ),
-          MetricTile(
-            label: 'Стоп-лосс',
-            value: fmtPrice(signal.stopLoss, signal.priceDecimals),
-            color: C.red,
-          ),
-          MetricTile(
-            label: 'R:R до TP2',
-            value: signal.riskReward,
-          ),
-        ],
-      );
-}
-
-class _TakeProfitsCard extends StatelessWidget {
-  const _TakeProfitsCard({required this.signal});
-
-  final TradingSignal signal;
-
-  @override
-  Widget build(BuildContext context) => SectionCard(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const SectionLabel('Тейк-профиты'),
-            for (final tp in signal.takeProfits) ...[
-              const SizedBox(height: 8),
-              Row(
-                children: [
-                  SizedBox(
-                    width: 32,
-                    child: Text(tp.label, style: T.mono(11, weight: 600, color: C.green)),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      fmtPrice(tp.price, signal.priceDecimals),
-                      style: T.mono(13, weight: 600),
-                    ),
-                  ),
-                  Text('${tp.sharePercent}% объёма', style: T.body(11, color: C.muted)),
-                  const SizedBox(width: 10),
-                  Text(
-                    PositionSizing.takeProfitR(signal, tp),
-                    style: T.mono(11, color: C.green),
-                  ),
-                ],
-              ),
-            ],
-          ],
-        ),
-      );
-}
-
-class _FactorRow extends StatelessWidget {
-  const _FactorRow({required this.factor});
-
-  final SignalFactor factor;
-
-  @override
-  Widget build(BuildContext context) => Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.baseline,
-            textBaseline: TextBaseline.alphabetic,
-            children: [
-              Expanded(child: Text(factor.name, style: T.body(12, weight: 700))),
-              const SizedBox(width: 8),
-              StrengthBar(strength: factor.weight),
-            ],
-          ),
-          const SizedBox(height: 3),
-          Text(factor.text, style: T.body(11, color: C.muted, height: 1.45)),
-        ],
-      );
-}
-
-/// Смарт-риск: сколько рублей на сделку и какой объём это даёт (ТЗ §6.2).
-class _SmartRiskCard extends StatelessWidget {
-  const _SmartRiskCard({required this.signal, required this.risk});
-
-  final TradingSignal signal;
-  final RiskProfile risk;
-
-  @override
-  Widget build(BuildContext context) => SectionCard(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                const VectorIcon(Icons.shield, size: 15, color: C.accent),
-                const SizedBox(width: 8),
-                const SectionLabel('Смарт-риск'),
-              ],
-            ),
-            const SizedBox(height: 10),
-            MetricRow(
-              tiles: [
-                MetricTile(
-                  label: 'Риск на сделку',
-                  value: '${fmt(risk.riskRub, 0)} ₽',
-                  hint: '${riskPercentLabel(risk.riskPercent)} от ${fmt(risk.deposit, 0)} ₽',
-                ),
-                MetricTile(
-                  label: 'Объём позиции',
-                  value: PositionSizing.quantityLabel(signal, risk),
-                  color: C.accent,
-                  hint: signal.unitRiskLabel,
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            // Потенциал сделки в деньгах: сколько принесут все тейки с их
-            // долями и сколько заберёт стоп — при рассчитанном объёме.
-            MetricRow(
-              tiles: [
-                MetricTile(
-                  label: 'Прибыль по целям',
-                  value: '+${fmt(PositionSizing.potentialProfitRub(signal, risk), 0)} ₽',
-                  color: C.green,
-                  hint: 'все тейки с долями объёма',
-                ),
-                MetricTile(
-                  label: 'Убыток по стопу',
-                  value: '−${fmt(PositionSizing.potentialLossRub(signal, risk), 0)} ₽',
-                  color: C.red,
-                  hint: 'если сработает стоп-лосс',
-                ),
-              ],
-            ),
-          ],
-        ),
-      );
-}
-
-class _SignalEventsCard extends StatelessWidget {
-  const _SignalEventsCard({required this.events});
-
-  final List<MarketEvent> events;
-
-  @override
-  Widget build(BuildContext context) => SectionCard(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const SectionLabel('События по идее'),
-            for (final event in events) ...[
-              const SizedBox(height: 9),
-              Row(
-                children: [
-                  Container(
-                    width: 7,
-                    height: 7,
-                    decoration: BoxDecoration(
-                      color: impactColor(event.impact),
-                      shape: BoxShape.circle,
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  SizedBox(
-                    width: 44,
-                    child: Text(event.time, style: T.mono(11, color: C.muted)),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(child: Text(event.text, style: T.body(12, color: C.textSoft))),
-                ],
-              ),
-            ],
-          ],
-        ),
-      );
 }
