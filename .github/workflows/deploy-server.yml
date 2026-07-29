@@ -19,7 +19,7 @@ on:
         description: 'IP, с которого вы ходите по SSH (firewall оставит 22 только ему)'
         required: true
       acme_email:
-        description: 'Почта для Let'"'"'s Encrypt'
+        description: "Почта для Let's Encrypt"
         required: false
         default: ''
       action:
