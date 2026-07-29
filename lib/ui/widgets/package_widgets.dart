@@ -129,3 +129,107 @@ class RebalanceBlock extends StatelessWidget {
         ),
       );
 }
+
+/// Таблица состава пакета (ТЗ §7).
+///
+/// Шесть колонок ТЗ — инструмент, роль, текущая доля, целевая, действие,
+/// тезис — на телефон в строку не помещаются, поэтому строка складывается в
+/// две: сверху инструмент с ролью и долями, снизу действие и тезис. Ни одна
+/// колонка при этом не выброшена: «действие» без «почему» — приказ, а
+/// «почему» без «действия» — эссе.
+class PackageTable extends StatelessWidget {
+  const PackageTable({super.key, required this.plan, this.positions});
+
+  final PackagePlan plan;
+
+  /// Фактические веса из книги. null — книга пуста, показываем только цели.
+  final List<ClassPosition>? positions;
+
+  @override
+  Widget build(BuildContext context) {
+    final actual = {
+      for (final p in positions ?? const <ClassPosition>[]) p.assetClass: p,
+    };
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        for (final target in plan.targets) ...[
+          _Row(target: target, position: actual[target.assetClass]),
+          if (target != plan.targets.last) const SizedBox(height: 9),
+        ],
+      ],
+    );
+  }
+}
+
+class _Row extends StatelessWidget {
+  const _Row({required this.target, required this.position});
+
+  final PackageTarget target;
+  final ClassPosition? position;
+
+  /// Что делать с классом. Без фактических весов — «нет данных», а не
+  /// «держать»: «держать» читается как проверенный вывод.
+  (String, Color) get _action {
+    final p = position;
+    if (p == null) return ('доля не посчитана', C.faint);
+    if (!p.outOfBand) return ('в полосе — не трогаем', C.green);
+    return p.drift > 0
+        ? ('сократить до ${target.weightPercent.round()}%', C.red)
+        : ('докупить до ${target.weightPercent.round()}%', C.accent);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final (action, actionColor) = _action;
+    final p = position;
+    return Container(
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: C.inset,
+        borderRadius: BorderRadius.circular(R.inset),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 8,
+                height: 8,
+                decoration: BoxDecoration(
+                  color: classColor(target.assetClass),
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  '${target.assetClass.label} · ${target.assetClass.proxy}',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: T.body(12, weight: 700),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                p == null
+                    ? '${target.weightPercent.round()}%'
+                    : '${p.actualPercent.toStringAsFixed(1).replaceAll('.', ',')}% '
+                        '→ ${target.weightPercent.round()}%',
+                style: T.mono(11, color: C.textSecondary),
+              ),
+            ],
+          ),
+          const SizedBox(height: 5),
+          Text(action, style: T.body(11, weight: 700, color: actionColor)),
+          const SizedBox(height: 3),
+          Text(
+            target.assetClass.thesis,
+            style: T.body(11, color: C.muted, height: 1.4),
+          ),
+        ],
+      ),
+    );
+  }
+}

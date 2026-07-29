@@ -640,35 +640,14 @@ class _PackagePlanCard extends StatelessWidget {
             const SizedBox(height: 12),
             CompositionBar(plan: plan),
             const SizedBox(height: 10),
-            for (final target in plan.targets)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 6),
-                child: Row(
-                  children: [
-                    Container(
-                      width: 8,
-                      height: 8,
-                      decoration: BoxDecoration(
-                        color: classColor(target.assetClass),
-                        borderRadius: BorderRadius.circular(2),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        '${target.assetClass.label} · ${target.assetClass.proxy}',
-                        style: T.body(11.5, color: C.textSecondary),
-                      ),
-                    ),
-                    Text(
-                      '${target.weightPercent.round()}% '
-                      '±${target.bandPercent.round()}',
-                      style: T.mono(11, weight: 600),
-                    ),
-                  ],
-                ),
-              ),
-            const SizedBox(height: 4),
+            // Таблица ТЗ §7: инструмент, роль, текущая доля, целевая,
+            // действие и тезис. Фактические доли берутся из книги; пока её
+            // нет, показываются только цели — выдумывать текущий вес нельзя.
+            PackageTable(
+              plan: plan,
+              positions: controller.rebalance(plan)?.positions,
+            ),
+            const SizedBox(height: 10),
             Row(
               children: [
                 Expanded(
