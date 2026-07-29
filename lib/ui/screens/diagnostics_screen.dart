@@ -58,6 +58,10 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
     final bybit = BybitClient(http: HttpJson(timeout: const Duration(seconds: 7)));
 
     Future<void> check(String name, Future<_CheckResult> Function() body) async {
+      // Проверка ходит в сеть по семь секунд на источник, а владелец за это
+      // время успевает уйти с экрана. Обновлять состояние снятого виджета
+      // нельзя: в релизе это падение вместо диагностики.
+      if (!mounted) return;
       setState(() => _stage = name);
       _CheckResult result;
       try {
@@ -65,6 +69,7 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
       } on Exception catch (e) {
         result = _CheckResult(name: name, ok: false, details: ['ошибка: $e']);
       }
+      if (!mounted) return;
       setState(() => _results.add(result));
     }
 
@@ -382,6 +387,7 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
       );
     });
 
+    if (!mounted) return;
     setState(() {
       _running = false;
       _stage = null;

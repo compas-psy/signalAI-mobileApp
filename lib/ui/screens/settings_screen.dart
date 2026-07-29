@@ -45,10 +45,19 @@ class SettingsScreen extends StatelessWidget {
             children: [
               CardGrid(children: [
               // Режим: paper / shadow / live и допуск к живым деньгам.
-              if (_show(SettingsPill.mode) && snapshot.trading != null) ...[
-                _TradingStatusCard(trading: snapshot.trading!),
-                _TradingControlsCard(trading: snapshot.trading!),
-              ],
+              if (_show(SettingsPill.mode))
+                if (snapshot.trading != null) ...[
+                  _TradingStatusCard(trading: snapshot.trading!),
+                  _TradingControlsCard(trading: snapshot.trading!),
+                ] else
+                  // Пустой экран без объяснения — худшее, что может показать
+                  // раздел настроек: непонятно, сломалось или так задумано.
+                  const _NothingHere(
+                    title: 'Торговый контур не поднят',
+                    note: 'Режим исполнения появляется, когда приложение '
+                        'считает само и умеет ходить к брокеру. В режиме '
+                        'данных макета исполнять нечего.',
+                  ),
 
               // Риск: лимиты ТЗ §20 и правила размера позиции.
               if (_show(SettingsPill.risk)) _RiskCard(risk: snapshot.risk),
@@ -79,7 +88,17 @@ class SettingsScreen extends StatelessWidget {
               ],
 
               // Уведомления: расписание и доставка.
-              if (_show(SettingsPill.notifications)) ...[
+              if (_show(SettingsPill.notifications) &&
+                  snapshot.channels.isEmpty &&
+                  snapshot.notifications.isEmpty)
+                const _NothingHere(
+                  title: 'Каналы доставки не заданы',
+                  note: 'Список появится, когда приложение узнает, куда '
+                      'отправлять сигналы.',
+                ),
+              if (_show(SettingsPill.notifications) &&
+                  (snapshot.channels.isNotEmpty ||
+                      snapshot.notifications.isNotEmpty)) ...[
                 _TogglesCard(
                   title: 'Доставка сигналов',
                   items: snapshot.channels,
@@ -955,4 +974,28 @@ class _TinvestAccountsCardState extends State<_TinvestAccountsCard> {
       ),
     );
   }
+}
+
+/// Честная заглушка подраздела.
+///
+/// Пустой экран без единого слова читается как поломка: владелец не может
+/// отличить «здесь пока нечего показывать» от «приложение сломалось». Раздел
+/// настроек обязан отвечать на этот вопрос сам.
+class _NothingHere extends StatelessWidget {
+  const _NothingHere({required this.title, required this.note});
+
+  final String title;
+  final String note;
+
+  @override
+  Widget build(BuildContext context) => SectionCard(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(title, style: T.body(13, weight: 800)),
+            const SizedBox(height: 6),
+            Text(note, style: T.body(11.5, color: C.muted, height: 1.5)),
+          ],
+        ),
+      );
 }
