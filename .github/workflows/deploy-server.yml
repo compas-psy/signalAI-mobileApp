@@ -189,6 +189,26 @@ jobs:
           DOMAIN="${SIGNALAI_DOMAIN:-}"
           [ -n "$DOMAIN" ] || { echo "::error::нужен параметр domain"; exit 1; }
 
+          echo "──────── кто держит 80 и 443 ────────"
+          # Главный вопрос. Пока он без ответа, любая правка nginx —
+          # угадывание: системный nginx может быть не при делах вовсе, а
+          # порты держать другой веб-сервер, в том числе в контейнере.
+          $SUDO ss -tlnp 2>/dev/null | grep -E ':(80|443)\s' | sed 's/^/  /' \
+            || echo "  ss недоступен"
+          echo
+          echo "· systemd nginx:"
+          $SUDO systemctl is-active nginx 2>/dev/null | sed 's/^/  /'
+          echo "· контейнеры с публикацией портов:"
+          $SUDO docker ps --format '  {{.Names}} | {{.Image}} | {{.Ports}}' 2>/dev/null \
+            || echo "  docker недоступен"
+          echo
+          echo "· другие веб-серверы:"
+          for s in apache2 caddy traefik httpd; do
+            state="$($SUDO systemctl is-active "$s" 2>/dev/null || true)"
+            [ "$state" = "active" ] && echo "  $s: активен"
+          done
+
+          echo
           echo "──────── что сейчас ────────"
           echo "· сайты nginx:"
           $SUDO ls -1 /etc/nginx/sites-enabled/ 2>/dev/null || echo "  каталога нет"
@@ -208,6 +228,22 @@ jobs:
 
           echo
           echo "──────── чиню ────────"
+
+          # Порты держит не системный nginx — значит правкой его конфигурации
+          # ничего не изменится, а перезапуск ещё и уронил бы чужой сайт.
+          # Останавливаемся и говорим, кто владелец: гадать на боевом сервере
+          # владельца дороже, чем сделать второй заход.
+          OWNER="$($SUDO ss -tlnp 2>/dev/null | grep -E ':80\s' | head -1)"
+          if [ -n "$OWNER" ] && ! printf '%s' "$OWNER" | grep -q nginx; then
+            echo "::error::порт 80 держит не nginx: $OWNER"
+            echo "Сертификат нужно выпускать там же, где стоит этот сервер."
+            exit 1
+          fi
+          if [ "$($SUDO systemctl is-active nginx 2>/dev/null)" != "active" ] && [ -n "$OWNER" ]; then
+            echo "::error::системный nginx не работает, но порт 80 занят: $OWNER"
+            exit 1
+          fi
+
           $SUDO apt-get install -y -qq --no-install-recommends certbot python3-certbot-nginx </dev/null >/dev/null 2>&1 || true
 
           # Битый ssl-блок ломает handshake для своего SNI и при этом
