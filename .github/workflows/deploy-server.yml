@@ -102,41 +102,55 @@ jobs:
           ADMIN_IP: ${{ inputs.admin_ip }}
           ACME_EMAIL: ${{ inputs.acme_email }}
         run: |
-          ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$USER_NAME@$HOST" \
-            "SIGNALAI_DOMAIN='$DOMAIN' SIGNALAI_ADMIN_IP='$ADMIN_IP' \
-             SIGNALAI_ACME_EMAIL='$ACME_EMAIL' bash -s" <<'REMOTE'
-          set -euo pipefail
+          # Скрипт передаётся ФАЙЛОМ, а не потоком в `bash -s`.
+          #
+          # Первая версия отправляла его через heredoc на стандартный ввод
+          # ssh. Любая команда внутри — git, apt — наследует тот же ввод и
+          # может съесть остаток собственного скрипта. Именно это и вышло:
+          # клонирование прошло, а дальше обрыв с кодом 1 и без единой
+          # строки объяснения. Отладить такое почти невозможно, поэтому
+          # чинится не симптом, а способ передачи.
+          cat > /tmp/remote.sh <<'REMOTE'
+          set -euxo pipefail
           REPO=https://github.com/compas-psy/signalAI-mobileApp.git
+          BRANCH=claude/release-y40hk5
           DIR="$HOME/signalai"
 
-          # Под root sudo не нужен и может отсутствовать вовсе; под обычным
-          # пользователем он обязателен. Определяем один раз.
           SUDO=""
           if [ "$(id -u)" -ne 0 ]; then
             command -v sudo >/dev/null || { echo "нужен sudo либо вход под root"; exit 1; }
             SUDO="sudo"
           fi
 
-          # На чистой Ubuntu git нередко отсутствует, а без него нечего
-          # клонировать. Ставим до первого обращения, а не после отказа.
           if ! command -v git >/dev/null; then
-            $SUDO apt-get update -qq
-            $SUDO apt-get install -y -qq --no-install-recommends git
+            $SUDO apt-get update -qq </dev/null
+            $SUDO apt-get install -y -qq --no-install-recommends git </dev/null
           fi
 
           if [ -d "$DIR/.git" ]; then
-            git -C "$DIR" fetch --depth 1 origin claude/release-y40hk5
-            git -C "$DIR" reset --hard FETCH_HEAD
+            git -C "$DIR" fetch --depth 1 origin "$BRANCH" </dev/null
+            git -C "$DIR" reset --hard FETCH_HEAD </dev/null
           else
-            git clone --depth 1 -b claude/release-y40hk5 "$REPO" "$DIR"
+            rm -rf "$DIR"
+            git clone --depth 1 -b "$BRANCH" "$REPO" "$DIR" </dev/null
           fi
 
+          test -f "$DIR/server/deploy/bootstrap.sh" || {
+            echo "в клоне нет server/deploy/bootstrap.sh — ветка или репозиторий не те"
+            ls -la "$DIR" || true
+            exit 1
+          }
+
           cd "$DIR/server"
-          $SUDO env SIGNALAI_DOMAIN="$SIGNALAI_DOMAIN" \
-                    SIGNALAI_ADMIN_IP="$SIGNALAI_ADMIN_IP" \
-                    SIGNALAI_ACME_EMAIL="$SIGNALAI_ACME_EMAIL" \
-                    bash deploy/bootstrap.sh
+          $SUDO env SIGNALAI_DOMAIN="${SIGNALAI_DOMAIN:-}" \
+                    SIGNALAI_ADMIN_IP="${SIGNALAI_ADMIN_IP:-}" \
+                    SIGNALAI_ACME_EMAIL="${SIGNALAI_ACME_EMAIL:-}" \
+                    bash deploy/bootstrap.sh </dev/null
           REMOTE
+
+          scp -i ~/.ssh/id_deploy -o BatchMode=yes /tmp/remote.sh "$USER_NAME@$HOST:/tmp/signalai-deploy.sh"
+          ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$USER_NAME@$HOST" \
+            "SIGNALAI_DOMAIN='$DOMAIN' SIGNALAI_ADMIN_IP='$ADMIN_IP' SIGNALAI_ACME_EMAIL='$ACME_EMAIL' bash /tmp/signalai-deploy.sh"
 
       - name: Обновить код и перезапустить
         if: ${{ inputs.action == 'update' }}
