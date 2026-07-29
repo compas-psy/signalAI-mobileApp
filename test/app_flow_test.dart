@@ -213,4 +213,24 @@ void main() {
     expect(find.text('Binance подключена по API-ключу'), findsOneWidget);
     expect(find.text('Подключено'), findsNWidgets(3));
   });
+
+  testWidgets('на планшете лента и разбор стоят рядом', (tester) async {
+    // Двухколоночный путь отдельный от телефонного: сломать его правкой
+    // навигации легко, а заметить — только на планшете.
+    tester.view.physicalSize = const Size(1100, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(SignalAiApp(repository: DemoRepository()));
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.pump(const Duration(milliseconds: 400));
+
+    await tester.tap(find.text('Идеи').last);
+    await tester.pump(const Duration(milliseconds: 300));
+
+    // Слева карточка идеи, справа её разбор — без единого перехода.
+    expect(find.text('SiU6'), findsWidgets);
+    expect(find.text('Доллар/Рубль · сент 2026'), findsOneWidget);
+  });
 }

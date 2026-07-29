@@ -51,13 +51,21 @@ class SideNav extends StatelessWidget {
                   const BrandMark(size: 36),
                   if (extended) ...[
                     const SizedBox(width: 9),
-                    Text.rich(
-                      TextSpan(
-                        text: 'Signal',
-                        style: T.jost(17),
-                        children: [
-                          TextSpan(text: 'AI', style: T.jost(17, color: C.accent)),
-                        ],
+                    // Строка обязана ужиматься: рейл фиксированной ширины, а
+                    // название набрано крупно — без Flexible оно вылезало за
+                    // край полосой переполнения.
+                    Flexible(
+                      child: Text.rich(
+                        TextSpan(
+                          text: 'Signal',
+                          style: T.jost(17),
+                          children: [
+                            TextSpan(
+                                text: 'AI', style: T.jost(17, color: C.accent)),
+                          ],
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                       ),
                     ),
                   ],
