@@ -108,6 +108,14 @@ class TradeIdea(UuidPk, Versioned, Base):
     # Ровно тот JSON, что уходит в приложение. LLM его пересказывает, но не
     # меняет ни одного числа (§0.4, §24).
     explanation_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+
+    # ── Доказательства и разметка (§9.1, §10.6) ──────────────────────────
+    # Хранятся в снимке идеи, а не пересчитываются при показе: пересчёт на
+    # свежих барах нарисовал бы не ту разметку, по которой принималось
+    # решение, и разбор сделки перестал бы соответствовать сделке.
+    evidence_json: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    annotations_json: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+
     data_warnings: Mapped[list[str]] = mapped_column(
         ARRAY(String(40)), nullable=False, default=list
     )

@@ -138,6 +138,51 @@ class IdeaSummary(ApiModel):
     expires_at: datetime
 
 
+class EvidenceOut(ApiModel):
+    """Доказательство, на которое ссылаются оценка и разметка (§9.1).
+
+    ``conflicts_with`` не украшение: ТЗ требует **показывать** конфликт
+    детекторов, а не сглаживать его. Поле существовало в модели приложения
+    с самого начала и никогда не заполнялось — панель конфликтов была пуста,
+    чем бы ни противоречили друг другу показания.
+    """
+
+    id: str
+    kind: str
+    title: str
+    detail: str = ""
+    summary: str = ""
+    confidence: float = 0.0
+    detector_version: str = ""
+    measured: bool = True
+    missing_terms: list[str] = Field(default_factory=list)
+    measures: list[dict] = Field(default_factory=list)
+    conflicts_with: list[str] = Field(default_factory=list)
+
+
+class AnnotationOut(ApiModel):
+    """Метка на графике (§10.6).
+
+    Имена полей — snake_case, как во всём остальном API. А вот **значение**
+    ``type`` остаётся из словаря §10.6 (``smcOrderBlock``, ``wyckoffSpring``):
+    это не имя поля, а термин интерфейса, и переименовывать его вслед за
+    внутренними именами движка значит связать несвязанное.
+    """
+
+    id: str
+    type: str
+    timeframe: str
+    start_time: datetime
+    end_time: datetime
+    price_low: float | None = None
+    price_high: float | None = None
+    confidence: float = 1.0
+    evidence_id: str
+    detector_version: str = ""
+    label: str = ""
+    display_priority: int = 50
+
+
 class IdeaDetail(IdeaSummary):
     """Полная карточка (§25 Idea detail)."""
 
@@ -149,6 +194,9 @@ class IdeaDetail(IdeaSummary):
     sizing: SizingBlock
     score_breakdown: ScoreBlock
     explanation: ExplanationBlock
+    # §9.1: тезис, оценка и график ссылаются на одни и те же объекты.
+    evidence: list[EvidenceOut] = Field(default_factory=list)
+    annotations: list[AnnotationOut] = Field(default_factory=list)
     config_hash: str
     engine_version: str
     feature_version: str

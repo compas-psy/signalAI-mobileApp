@@ -23,7 +23,9 @@ from ...models import Instrument, TradeIdea
 from ...models.enums import IdeaStatus, QualityStatus, Strategy
 from ...schemas.common import ApiModel
 from ...schemas.ideas import (
+    AnnotationOut,
     DailyCards,
+    EvidenceOut,
     ExplanationBlock,
     IdeaDetail,
     IdeaEventOut,
@@ -189,6 +191,8 @@ def get_idea(idea_id: UUID, db: Session = Depends(get_db)) -> IdeaDetail:
                      "и не подтверждается (§20.1)"
             ),
         ),
+        evidence=[EvidenceOut(**e) for e in (idea.evidence_json or [])],
+        annotations=[AnnotationOut(**a) for a in (idea.annotations_json or [])],
         score_breakdown=ScoreBlock(
             total=idea.score,
             data_quality=idea.data_quality,

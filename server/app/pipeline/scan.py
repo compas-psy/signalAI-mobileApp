@@ -58,6 +58,7 @@ from ..scoring.score import Component, compute
 from ..scoring.selection import RankedIdea, select_daily
 from ..strategies import breakout_retest, trend_pullback, wyckoff_reversal
 from ..strategies.base import Candidate, Rejection, SetupContext
+from .presentation import build_annotations, build_evidence
 from ..version import ENGINE_VERSION, FEATURE_VERSION
 
 # Роли таймфреймов §7 для среднего горизонта: контекст 1D, сетап 4H,
@@ -498,6 +499,19 @@ def scan_instrument(
             ],
             "sizing_note": sizing.reason,
         },
+        evidence_json=build_evidence(
+            readings, candidate,
+            regime_summary=(
+                f"{regime.trend.value}, волатильность {regime.volatility.value}, "
+                f"ликвидность {regime.liquidity.value}"
+            ),
+        ),
+        annotations_json=build_annotations(
+            readings, candidate,
+            signal_time=now,
+            expires_at=now + timedelta(days=ctx.horizon_days),
+            trigger_timeframe=ctx.trigger_tf,
+        ),
         data_warnings=list(quality.missing),
         signal_time=now,
         expires_at=now + timedelta(days=ctx.horizon_days),
