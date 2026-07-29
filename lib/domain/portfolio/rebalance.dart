@@ -11,6 +11,7 @@ class RebalanceOrder {
     this.instrument,
     this.lots,
     this.lotPrice,
+    this.fromContribution = false,
   });
 
   final AssetClass assetClass;
@@ -31,6 +32,10 @@ class RebalanceOrder {
   final int? lots;
 
   final Money? lotPrice;
+
+  /// Оплачивается ли покупка новым пополнением, а не продажей другого
+  /// класса (ТЗ §7.2). Такая заявка не фиксирует прибыль и не создаёт налога.
+  final bool fromContribution;
 }
 
 /// Предложение по ребалансировке пакета.
@@ -48,6 +53,14 @@ class RebalancePlan {
 
   /// Классы, которые сознательно не трогали, и почему.
   final List<String> skipped;
+
+  /// Покупки — то, что можно оплатить пополнением, не продавая ничего.
+  List<RebalanceOrder> get buys =>
+      [for (final o in orders) if (o.buy) o];
+
+  /// Продажи — то, что придётся фиксировать, а значит и платить налог.
+  List<RebalanceOrder> get sells =>
+      [for (final o in orders) if (!o.buy) o];
 
   bool get isEmpty => orders.isEmpty;
 
@@ -105,10 +118,18 @@ abstract final class Rebalancer {
     required Map<AssetClass, Money> values,
     required Money total,
     Map<AssetClass, Money> prices = const {},
+    Money? contribution,
   }) {
     final positions = Rebalancer.positions(plan: plan, values: values, total: total);
     final orders = <RebalanceOrder>[];
     final skipped = <String>[];
+
+    // ТЗ §7.2: сначала новые деньги, потом продажи. Продажа фиксирует
+    // прибыль и налог с неё; докупка на пополнение выравнивает тот же вес
+    // бесплатно. Остаток пополнения считаем по ходу.
+    var freeCash = contribution == null || contribution.isZero
+        ? null
+        : contribution;
 
     if (total.isZero) {
       return RebalancePlan(
@@ -150,15 +171,29 @@ abstract final class Rebalancer {
         }
       }
 
+      final amount = lots == null ? delta.abs : price!.scaleBy(lots.toDouble());
+
+      // Покупку, покрытую пополнением, помечаем отдельно: она не требует
+      // ничего продавать и не создаёт налога.
+      var fromContribution = false;
+      if (delta.isPositive && freeCash != null && !freeCash.isZero) {
+        if (freeCash.minor >= amount.minor) {
+          fromContribution = true;
+          freeCash -= amount;
+        }
+      }
+
       orders.add(RebalanceOrder(
         assetClass: position.assetClass,
         buy: delta.isPositive,
-        amount: lots == null ? delta.abs : price!.scaleBy(lots.toDouble()),
+        amount: amount,
         instrument: position.assetClass.examples.first,
         lots: lots,
         lotPrice: price,
+        fromContribution: fromContribution,
         reason: delta.isPositive
-            ? 'вес ${_pct(position.actualPercent)} ниже полосы '
+            ? '${fromContribution ? 'оплачиваем пополнением: ' : ''}'
+                'вес ${_pct(position.actualPercent)} ниже полосы '
                 '${_pct(target.lowerBound)} — докупаем до цели '
                 '${_pct(target.weightPercent)}'
             : 'вес ${_pct(position.actualPercent)} выше полосы '
@@ -166,6 +201,16 @@ abstract final class Rebalancer {
                 '${_pct(target.weightPercent)}',
       ));
     }
+
+    // Покупки идут первыми: сначала то, что можно оплатить деньгами, потом
+    // то, ради чего придётся продавать.
+    orders.sort((a, b) {
+      if (a.fromContribution != b.fromContribution) {
+        return a.fromContribution ? -1 : 1;
+      }
+      if (a.buy != b.buy) return a.buy ? -1 : 1;
+      return b.amount.minor.abs().compareTo(a.amount.minor.abs());
+    });
 
     return RebalancePlan(
       orders: orders,

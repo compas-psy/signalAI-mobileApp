@@ -192,6 +192,56 @@ void main() {
       expect(result.skipped.any((s) => s.contains('не окупает издержек')), isTrue);
     });
 
+    test('пополнение оплачивает докупку и помечает её (ТЗ §7.2)', () {
+      // Продажа фиксирует прибыль и налог с неё. Докупка на свежие деньги
+      // выравнивает тот же вес бесплатно — поэтому ТЗ требует сначала
+      // потратить пополнение и только потом предлагать продажи.
+      final result = Rebalancer.plan(
+        plan: plan,
+        values: {AssetClass.stocks: rub(700000), AssetClass.ofz: rub(300000)},
+        total: rub(1000000),
+        contribution: rub(150000),
+      );
+      final buy = result.buys.single;
+      expect(buy.assetClass, AssetClass.ofz);
+      expect(buy.fromContribution, isTrue);
+      expect(buy.reason, contains('оплачиваем пополнением'));
+    });
+
+    test('пополнения не хватило — покупка не притворяется бесплатной', () {
+      final result = Rebalancer.plan(
+        plan: plan,
+        values: {AssetClass.stocks: rub(700000), AssetClass.ofz: rub(300000)},
+        total: rub(1000000),
+        contribution: rub(10000),
+      );
+      expect(result.buys.single.fromContribution, isFalse);
+    });
+
+    test('без пополнения ничего не помечается оплаченным', () {
+      final result = Rebalancer.plan(
+        plan: plan,
+        values: {AssetClass.stocks: rub(700000), AssetClass.ofz: rub(300000)},
+        total: rub(1000000),
+      );
+      expect(result.orders.every((o) => !o.fromContribution), isTrue);
+    });
+
+    test('покупки идут раньше продаж', () {
+      // Порядок в списке — это порядок исполнения: сначала то, что не
+      // требует ничего продавать.
+      final result = Rebalancer.plan(
+        plan: plan,
+        values: {AssetClass.stocks: rub(700000), AssetClass.ofz: rub(300000)},
+        total: rub(1000000),
+        contribution: rub(150000),
+      );
+      expect(result.orders.first.buy, isTrue);
+      expect(result.orders.last.buy, isFalse);
+      expect(result.buys.length, 1);
+      expect(result.sells.length, 1);
+    });
+
     test('количество считается в лотах и округляется вниз', () {
       // Заявка «на 143 217 ₽» неисполнима: округляем вниз, потому что недобор
       // остаётся деньгами, а перебор требует ещё одной сделки.
