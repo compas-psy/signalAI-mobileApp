@@ -12,6 +12,7 @@ import '../domain/analysis/trend_screener.dart';
 import '../domain/analysis/trade_simulator.dart';
 import '../domain/enums.dart';
 import '../domain/invest/invest_models.dart';
+import '../domain/idea/execution.dart';
 import '../domain/idea/skip_record.dart';
 import '../domain/ledger/signal_ledger.dart';
 import '../domain/models/digest.dart';
@@ -186,6 +187,12 @@ class LocalAnalysisRepository
 
   /// Пропущенные идеи с причинами (ТЗ §12) — от новых к старым.
   final List<SkipRecord> skips = [];
+
+  /// Исполнения планов по идеям (ТЗ §11.3, §17).
+  ///
+  /// Ключ — идея: одна идея исполняется один раз. Повторный вход по той же
+  /// идее — это новая идея с новым решением, а не продолжение старой.
+  final Map<String, Execution> executions = {};
 
   /// Риск-гейты перед публикацией идеи.
   final RiskEngine riskEngine = const RiskEngine(limits: _limits);
@@ -1053,6 +1060,18 @@ class LocalAnalysisRepository
       }
     }
 
+    final storedExecutions = await _store.read('executions');
+    if (storedExecutions != null) {
+      try {
+        for (final item in storedExecutions['items'] as List? ?? const []) {
+          final execution = Execution.fromJson(item as Map<String, dynamic>);
+          executions[execution.ideaId] = execution;
+        }
+      } on Exception {
+        // Битая запись исполнения не должна ломать запуск.
+      }
+    }
+
     final storedSkips = await _store.read('skips');
     if (storedSkips != null) {
       try {
@@ -1214,6 +1233,18 @@ class LocalAnalysisRepository
     skips.insert(0, record);
     await _store.write('skips', {
       'items': [for (final s in skips) s.toJson()],
+    });
+  }
+
+  /// Сохранить состояние исполнения.
+  ///
+  /// Пишется на каждом шаге машины §11.3: без этого перезапуск приложения
+  /// теряет знание о том, что позиция открыта, а защита ещё не встала.
+  Future<void> saveExecution(Execution execution) async {
+    await _ensureLoaded();
+    executions[execution.ideaId] = execution;
+    await _store.write('executions', {
+      'items': [for (final e in executions.values) e.toJson()],
     });
   }
 

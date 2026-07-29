@@ -14,6 +14,7 @@ import '../../theme/typography.dart';
 import '../tone.dart';
 import '../widgets/chart_layers.dart';
 import '../widgets/common.dart';
+import '../widgets/execution_strip.dart';
 import '../widgets/idea_verdict.dart';
 import '../widgets/skip_sheet.dart';
 import '../widgets/segmented.dart';
@@ -91,6 +92,7 @@ class _IdeaDetailScreenState extends State<IdeaDetailScreen> {
         if (!_hidden.contains(layer)) layer,
     };
     final highlight = _highlightKeys(idea, _selectedEvidence);
+    final execution = controller.execution(signal.id);
     final screen = Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -189,7 +191,13 @@ class _IdeaDetailScreenState extends State<IdeaDetailScreen> {
                 _PaperCard(signal: signal),
                 const SizedBox(height: 12),
               ],
-              if (checks.isNotEmpty) ...[
+              // Пока подтверждения не было — проверка; после него ход
+              // исполнения. Показывать проверку поверх открытой позиции
+              // значит отвечать на вопрос, который уже не задают.
+              if (execution != null) ...[
+                ExecutionStrip(execution: execution, now: DateTime.now()),
+                const SizedBox(height: 12),
+              ] else if (checks.isNotEmpty) ...[
                 FinalCheckCard(results: checks),
                 const SizedBox(height: 12),
               ],

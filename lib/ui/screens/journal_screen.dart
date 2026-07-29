@@ -8,6 +8,7 @@ import '../../state/navigation.dart';
 import '../../theme/tokens.dart';
 import '../../theme/typography.dart';
 import '../widgets/common.dart';
+import '../widgets/execution_strip.dart';
 import 'trades_screen.dart';
 
 /// Раздел «Журнал» (ТЗ §12).
@@ -26,7 +27,7 @@ class JournalScreen extends StatelessWidget {
     final section =
         JournalPill.values[pill.clamp(0, JournalPill.values.length - 1)];
     return switch (section) {
-      JournalPill.trades => TradesScreen(summary: summary),
+      JournalPill.trades => _TradesWithExecutions(summary: summary),
       JournalPill.skips => const SkipsView(),
       JournalPill.metrics => const MetricsView(),
     };
@@ -381,6 +382,41 @@ class _BucketRow extends StatelessWidget {
                       ? C.green
                       : C.red),
         ),
+      ],
+    );
+  }
+}
+
+/// Сделки с ходом незавершённых исполнений сверху (ТЗ §11.3).
+///
+/// Открытая позиция без защиты — то, что владелец обязан увидеть первым,
+/// раньше кривой капитала и статистики.
+class _TradesWithExecutions extends StatelessWidget {
+  const _TradesWithExecutions({required this.summary});
+
+  final TradesSummary summary;
+
+  @override
+  Widget build(BuildContext context) {
+    final live = AppScope.of(context).liveExecutions;
+    if (live.isEmpty) return TradesScreen(summary: summary);
+
+    final now = DateTime.now();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(S.screen, 12, S.screen, 0),
+          child: Column(
+            children: [
+              for (final execution in live) ...[
+                ExecutionStrip(execution: execution, now: now),
+                const SizedBox(height: S.gap),
+              ],
+            ],
+          ),
+        ),
+        Expanded(child: TradesScreen(summary: summary)),
       ],
     );
   }

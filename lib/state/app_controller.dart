@@ -25,6 +25,8 @@ import 'navigation.dart';
 import '../domain/broker/broker.dart';
 import '../domain/broker/trading_diagnostics.dart';
 import '../domain/enums.dart';
+import '../domain/idea/execution.dart';
+import '../domain/idea/final_check.dart';
 import '../domain/idea/idea.dart';
 import '../domain/idea/idea_mapper.dart';
 import '../domain/idea/quality_score.dart';
@@ -1227,7 +1229,41 @@ class AppController extends ChangeNotifier {
 
     _confirming = true;
     notifyListeners();
+
+    // Исполнение ведётся машиной состояний ТЗ §11.3, а не одним вызовом
+    // брокера. Между показом плана и нажатием кнопки проходит время: цена
+    // уходит, срок истекает, лимит выбирается соседней сделкой. Поэтому
+    // предпроверка считается заново, а не берётся с экрана.
+    final idea = ideas.where((i) => i.id == signal.id).firstOrNull;
+    var execution = Execution(
+      ideaId: signal.id,
+      planHash: idea?.plan?.hash ?? '',
+      plannedQuantity: idea?.plan?.quantity ?? 0,
+      state: ExecutionState.pendingConfirmation,
+    );
+
     try {
+      execution = execution.moveTo(ExecutionState.precheck);
+      await _saveExecution(execution);
+
+      final blockers = idea == null
+          ? const <CheckResult>[]
+          : FinalCheck.blockers(_finalCheck(idea));
+      if (blockers.isNotEmpty) {
+        // Отказ до денег: позиции нет, сверять нечего — закрываем.
+        execution = execution.moveTo(
+          ExecutionState.closed,
+          note: 'предпроверка не пропустила: ${blockers.first.detail}',
+        );
+        await _saveExecution(execution);
+        _sheetOpen = false;
+        showToast('Проверка не пропустила: ${blockers.first.kind.label}');
+        return;
+      }
+
+      execution = execution.moveTo(ExecutionState.submitEntry);
+      await _saveExecution(execution);
+
       await _repository.confirmSignal(signal.id);
       _applySignalStatus(signal.id, SignalStatus.working);
       _sheetOpen = false;
@@ -1237,12 +1273,71 @@ class AppController extends ChangeNotifier {
       // запись «на всякий случай»: капитал не должен меняться от намерения.
       unawaited(refreshCapital(sync: true));
     } catch (e) {
+      // Ошибка на пути к бирже — безопасное состояние и сверка, а не тихий
+      // тост: заявка могла уйти, и знать об этом важнее, чем закрыть шит.
+      await _saveExecution(execution.toSafeState(_errorText(e)));
       _sheetOpen = false;
       showToast(_errorText(e));
     } finally {
       _confirming = false;
       notifyListeners();
     }
+  }
+
+  /// Финальная проверка идеи в текущих условиях (ТЗ §11.1).
+  List<CheckResult> _finalCheck(Idea idea) {
+    final center = riskCenter;
+    final plan = idea.plan;
+    if (center == null || plan == null) return const [];
+    return FinalCheck.run(
+      idea,
+      ExecutionContext(
+        now: DateTime.now(),
+        lastPrice: _parsePrice(currentSignal?.lastPrice),
+        budget: center.budgetFor(idea.score),
+        freeMargin: null,
+        clusterRiskAfterPercent:
+            center.clusterRisk.usedPercent + plan.riskPercent,
+        shownPlanHash: plan.hash,
+        paperMode: !liveTradingOn,
+      ),
+    );
+  }
+
+  static double? _parsePrice(String? raw) {
+    if (raw == null || raw.isEmpty) return null;
+    return double.tryParse(raw.replaceAll(' ', '').replaceAll(',', '.'));
+  }
+
+  /// Исполнение по идее. null — подтверждения ещё не было.
+  Execution? execution(String ideaId) {
+    final repository = _repository;
+    return repository is LocalAnalysisRepository
+        ? repository.executions[ideaId]
+        : _memoryExecutions[ideaId];
+  }
+
+  /// Исполнения, которые ещё не завершены.
+  List<Execution> get liveExecutions {
+    final repository = _repository;
+    final all = repository is LocalAnalysisRepository
+        ? repository.executions.values
+        : _memoryExecutions.values;
+    return [for (final e in all) if (!e.state.isTerminal) e];
+  }
+
+  /// Исполнения режима без диска: приложение обязано вести состояние даже
+  /// там, где его некуда записать, иначе экран врёт после первого же шага.
+  final Map<String, Execution> _memoryExecutions = {};
+
+  Future<void> _saveExecution(Execution execution) async {
+    final repository = _repository;
+    if (repository is LocalAnalysisRepository) {
+      await repository.saveExecution(execution);
+    } else {
+      _memoryExecutions[execution.ideaId] = execution;
+    }
+    notifyListeners();
   }
 
   // ── Бумажный журнал ────────────────────────────────────────────────────
