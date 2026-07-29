@@ -164,13 +164,22 @@ jobs:
           set -euo pipefail
           SUDO=""; [ "$(id -u)" -eq 0 ] || SUDO="sudo"
           cd "$HOME/signalai"
-          git fetch --depth 1 origin claude/release-y40hk5
-          git reset --hard FETCH_HEAD
+          git fetch --depth 1 origin claude/release-y40hk5 </dev/null
+          git reset --hard FETCH_HEAD </dev/null
           cd server
-          # Миграции до перезапуска: сервер не должен стартовать на схеме,
-          # которой ещё нет.
-          $SUDO docker compose --env-file /etc/signalai/.env run --rm api alembic upgrade head
-          $SUDO docker compose --env-file /etc/signalai/.env up -d --build
+
+          # `-T` и `</dev/null` здесь не украшение. Скрипт приезжает к bash
+          # через stdin, а `docker compose run` без `-T` этот же stdin
+          # забирает себе — и молча съедает весь остаток скрипта. Ровно так
+          # прошлый прогон применил миграции, не выполнил `up` и завершился
+          # успехом: сервер остался на старом коде, планировщик не создался,
+          # а в логах не было ни строчки об ошибке.
+          $SUDO docker compose --env-file /etc/signalai/.env \
+            run --rm -T api alembic upgrade head </dev/null
+          $SUDO docker compose --env-file /etc/signalai/.env up -d --build </dev/null
+
+          echo "── что поднято ──"
+          $SUDO docker compose --env-file /etc/signalai/.env ps </dev/null
           REMOTE
 
       - name: Сертификат
