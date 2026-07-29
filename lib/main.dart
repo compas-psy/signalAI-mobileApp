@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import 'data/api/api_config.dart';
 import 'data/api/rest_repository.dart';
 import 'data/local_analysis_repository.dart';
 import 'data/mock/demo_repository.dart';
@@ -32,17 +31,26 @@ void main() {
   ]);
 
   // Режим сборки:
-  //   server — тонкий клиент, всё считает сервер (ТЗ §2);
+  //   server — весь репозиторий по HTTP к гейтвею старого контракта /v1/*;
   //   local  — автономный анализ на устройстве по публичным данным бирж;
   //   demo   — данные макета, без сети.
-  // Если адрес гейтвея задан, он всегда выигрывает.
+  //
+  // Адрес движка §18 (`SIGNALAI_API_BASE_URL`) на этот выбор **не влияет** и
+  // влиять не должен. Раньше влиял — и стоил приложению запуска: движок
+  // реализует контракт §18 (`/api/v1/ideas`, `/api/v1/market`), а
+  // `RestRepository` ходит за настройками, журналом и портфелем по старым
+  // адресам `/v1/settings`, `/v1/trades`, `/v1/strategies`. Их у движка нет,
+  // первый же запрос падал, и приложение показывало «Не удалось запуститься»
+  // вместо экрана — при полностью исправном сервере.
+  //
+  // Идеи берёт `EngineClient` по адресу движка; остальное пока живёт на
+  // устройстве и переедет на сервер вместе со своими эндпоинтами §18.
   const mode = String.fromEnvironment('SIGNALAI_MODE', defaultValue: 'local');
-  final SignalAiRepository repository = ApiConfig.isConfigured
-      ? RestRepository()
-      : switch (mode) {
-          'demo' => DemoRepository(),
-          _ => LocalAnalysisRepository(),
-        };
+  final SignalAiRepository repository = switch (mode) {
+    'server' => RestRepository(),
+    'demo' => DemoRepository(),
+    _ => LocalAnalysisRepository(),
+  };
 
   runApp(SignalAiApp(repository: repository));
 }
