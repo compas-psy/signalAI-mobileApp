@@ -1,0 +1,65 @@
+# Развёртывание MVP (engine-ТЗ §3, §29.1).
+#
+# Секретов в файле нет: пароли и ключи приходят из /etc/signalai/.env,
+# который создаёт bootstrap на сервере с правами 0600 (§21).
+#
+# Наружу открыт только api, и только на localhost: снаружи к нему пускает
+# reverse proxy с TLS. База и Redis не имеют публикуемых портов вовсе —
+# ходить к ним можно лишь из этой сети.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?нужен POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?нужен POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-signalai}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "60", "1", "--appendonly", "no"]
+    volumes:
+      - redisdata:/data
+
+  api:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SIGNALAI_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-signalai}
+      SIGNALAI_REDIS_URL: redis://redis:6379/0
+    ports:
+      - "127.0.0.1:8000:8000"
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000"
+
+  # Исполнение вынесено в отдельный контейнер (UX-ТЗ §16.1, §19.1): у него
+  # нет входящих портов, и только он видит exec-токены брокеров. Пока движок
+  # исполнения не написан, сервис объявлен, но не поднимается (профиль).
+  execution:
+    build: .
+    restart: unless-stopped
+    profiles: ["execution"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SIGNALAI_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-signalai}
+      SIGNALAI_ROLE: execution
+    command: ["python", "-m", "app.execution.worker"]
+
+volumes:
+  pgdata:
+  redisdata:

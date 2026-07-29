@@ -1,0 +1,264 @@
+"""API: контракт §23 и честность ответов.
+
+Проверяется не «эндпоинт вернул 200», а то, ради чего он существует:
+
+* деньги и вероятности уходят строками и не теряют точность;
+* незакрытая свеча не попадает в расчётные данные по умолчанию;
+* то, за чем ещё нет движка, отвечает 503 с причиной, а не пустотой;
+* панель риска отличает «лимит свободен» от «данных нет».
+"""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+
+import pytest
+from fastapi.testclient import TestClient
+
+from app.db import get_db
+from app.main import app
+from app.models import Bar, IdeaEvent, TradeIdea
+from tests.conftest import idea_kwargs
+
+
+@pytest.fixture
+def client(session):
+    """Клиент, работающий в той же откатываемой транзакции, что и тест."""
+    app.dependency_overrides[get_db] = lambda: session
+    with TestClient(app) as c:
+        yield c
+    app.dependency_overrides.clear()
+
+
+# ─── Служебное ────────────────────────────────────────────────────────────
+
+
+def test_health_reports_config_hash_and_paper_mode(client):
+    """По /health видно, какими числами считает движок и закрыта ли биржа."""
+    body = client.get("/health").json()
+    assert len(body["config_hash"]) == 64
+    assert body["paper_only"] is True
+    assert body["execution_mode"] in ("PAPER", "ANALYTICS_ONLY")
+    assert body["engine_version"]
+
+
+def test_openapi_is_valid_and_covers_contract(client):
+    spec = client.get("/openapi.json").json()
+    assert spec["openapi"].startswith("3.")
+    paths = set(spec["paths"])
+    for required in (
+        "/api/v1/instruments",
+        "/api/v1/ideas",
+        "/api/v1/ideas/{idea_id}",
+        "/api/v1/ideas/{idea_id}/events",
+        "/api/v1/ideas/scan",
+        "/api/v1/risk/dashboard",
+        "/api/v1/risk/halt",
+    ):
+        assert required in paths, required
+
+
+# ─── Инструменты и свечи ──────────────────────────────────────────────────
+
+
+def test_instrument_specification_is_exact(client, instrument):
+    """Шаг цены и стоимость шага — множители в формуле размера (§17.1).
+
+    Они обязаны доехать до клиента без округления, поэтому едут строками.
+    """
+    body = client.get("/api/v1/instruments").json()
+    item = next(i for i in body if i["instrument_id"] == instrument.instrument_id)
+    # Строка, а не JSON-число: double по дороге превратил бы шаг в 0.999…
+    assert isinstance(item["tick_size"], str)
+    assert Decimal(item["tick_size"]) == Decimal("1")
+    assert Decimal(item["contract_multiplier"]) == Decimal("1000")
+    assert item["lot_size"] == 1
+
+
+def test_forming_bar_is_excluded_by_default(client, session, instrument):
+    """§4.4: незакрытую свечу нельзя использовать как закрытую.
+
+    Расчёт, случайно захвативший формирующийся бар, меняется сам по себе
+    между двумя запросами — поэтому по умолчанию его не отдаём.
+    """
+    base = datetime(2026, 7, 29, 9, tzinfo=UTC)
+    for i, closed in enumerate([True, True, False]):
+        session.add(
+            Bar(
+                instrument_id=instrument.instrument_id,
+                timeframe="1h",
+                open_time=base + timedelta(hours=i),
+                open=Decimal("90000"),
+                high=Decimal("90500"),
+                low=Decimal("89800"),
+                close=Decimal("90200"),
+                is_closed=closed,
+                source="moex",
+            )
+        )
+    session.flush()
+
+    url = f"/api/v1/market/{instrument.instrument_id}/bars?timeframe=1h"
+    closed_only = client.get(url).json()
+    assert len(closed_only) == 2
+    assert all(b["is_closed"] for b in closed_only)
+
+    everything = client.get(url + "&closed_only=false").json()
+    assert len(everything) == 3
+    assert everything[-1]["is_closed"] is False
+
+
+def test_unknown_instrument_is_404(client):
+    assert client.get("/api/v1/market/MOEX:FUT:NOPE/bars?timeframe=1h").status_code == 404
+
+
+def test_regime_absence_explains_itself(client, instrument):
+    """Нет режима — есть причина. Пустой объект читался бы как «флэт»."""
+    r = client.get(f"/api/v1/market/{instrument.instrument_id}/regime")
+    assert r.status_code == 404
+    assert "не рассчитан" in r.json()["detail"]
+
+
+# ─── Идеи ─────────────────────────────────────────────────────────────────
+
+
+def test_idea_detail_carries_probability_definition(client, session, instrument, now):
+    """§32: вероятность без строгого определения — приглашение прочитать её неверно."""
+    idea = TradeIdea(**idea_kwargs(instrument.instrument_id, now))
+    session.add(idea)
+    session.flush()
+
+    body = client.get(f"/api/v1/ideas/{idea.id}").json()
+    prob = body["probability"]
+    assert "TP1" in prob["definition"] and "SL" in prob["definition"]
+    assert isinstance(prob["p_tp1_before_sl"], str)
+    assert Decimal(prob["p_tp1_before_sl"]) == Decimal("0.58")
+    assert Decimal(prob["confidence"]) == Decimal("0.52")
+    assert prob["confidence_band"] == "MEDIUM"
+    # Статистики нет — вероятность обязана признать, что она ограничена.
+    assert prob["capped"] is True
+    assert "OOS" in prob["cap_reason"]
+
+
+def test_idea_detail_separates_confidence_from_probability(
+    client, session, instrument, now
+):
+    """§15.4: уверенность в оценке и сама оценка — разные числа."""
+    idea = TradeIdea(
+        **idea_kwargs(
+            instrument.instrument_id,
+            now,
+            p_tp1_before_sl=Decimal("0.62"),
+            confidence=Decimal("0.30"),
+        )
+    )
+    session.add(idea)
+    session.flush()
+    prob = client.get(f"/api/v1/ideas/{idea.id}").json()["probability"]
+    assert prob["p_tp1_before_sl"] != prob["confidence"]
+    assert prob["confidence_band"] == "LOW"
+
+
+def test_idea_without_tradable_size_says_so(client, session, instrument, now):
+    """§20.1: объём меньше лота → идея информационная, а не «с нулевым риском»."""
+    idea = TradeIdea(
+        **idea_kwargs(instrument.instrument_id, now, quantity=Decimal("0"))
+    )
+    session.add(idea)
+    session.flush()
+    sizing = client.get(f"/api/v1/ideas/{idea.id}").json()["sizing"]
+    assert sizing["tradable"] is False
+    assert "минимального лота" in sizing["not_tradable_reason"]
+
+
+def test_events_are_returned_in_order(client, session, instrument, now):
+    idea = TradeIdea(**idea_kwargs(instrument.instrument_id, now))
+    session.add(idea)
+    session.flush()
+    for i, status in enumerate(["DISCOVERED", "WATCH", "TRIGGERED"], start=1):
+        session.add(
+            IdeaEvent(
+                idea_id=idea.id,
+                sequence=i,
+                new_status=status,
+                reason_code=f"step-{i}",
+                config_hash="0" * 64,
+                engine_version="0.1.0",
+            )
+        )
+    session.flush()
+    body = client.get(f"/api/v1/ideas/{idea.id}/events").json()
+    assert [e["sequence"] for e in body] == [1, 2, 3]
+    assert [e["new_status"] for e in body] == ["DISCOVERED", "WATCH", "TRIGGERED"]
+
+
+def test_unpresented_ideas_are_still_listed(client, session, instrument, now):
+    """UX-ТЗ §12: хранить надо любую идею, включая не показанную владельцу."""
+    session.add(TradeIdea(**idea_kwargs(instrument.instrument_id, now)))
+    session.flush()
+    assert len(client.get("/api/v1/ideas").json()) == 1
+    assert client.get("/api/v1/ideas?presented_only=true").json() == []
+
+
+def test_today_says_why_there_is_nothing(client):
+    """«Сделок нет» — валидный результат и обязан быть назван (§0.7, §32)."""
+    body = client.get("/api/v1/ideas/today").json()
+    assert body["trade_now"] == [] and body["wait_for_trigger"] == []
+    assert "не создаёт сделки ради нормы" in body["no_trade_reason"]
+
+
+def test_scan_refuses_instead_of_returning_empty(client):
+    """Движка ещё нет — эндпоинт обязан это сказать, а не отдать пустой список."""
+    r = client.post("/api/v1/ideas/scan")
+    assert r.status_code == 503
+    assert "движок стратегий ещё не подключён" in r.json()["detail"]
+
+
+def test_paper_approval_is_closed_until_execution_engine(client, session, instrument, now):
+    idea = TradeIdea(**idea_kwargs(instrument.instrument_id, now))
+    session.add(idea)
+    session.flush()
+    r = client.post(f"/api/v1/ideas/{idea.id}/approve-paper")
+    assert r.status_code == 503
+    assert "paper_only=true" in r.json()["detail"]
+
+
+# ─── Риск ─────────────────────────────────────────────────────────────────
+
+
+def test_risk_dashboard_distinguishes_empty_from_free(client):
+    """Ноль расхода без данных — не «лимит свободен», и панель это говорит."""
+    body = client.get("/api/v1/risk/dashboard").json()
+    assert body["has_data"] is False
+    assert "не свободный лимит" in body["note"]
+    assert body["paper_only"] is True
+
+
+def test_risk_limits_match_engine_tz(client):
+    body = client.get("/api/v1/risk/dashboard").json()
+    limits = {row["name"]: row["limit"] for row in body["limits"]}
+    assert Decimal(limits["daily"]) == Decimal("0.015")
+    assert Decimal(limits["weekly"]) == Decimal("0.035")
+    assert Decimal(limits["monthly"]) == Decimal("0.06")
+    assert Decimal(limits["open"]) == Decimal("0.02")
+    assert Decimal(limits["cluster"]) == Decimal("0.01")
+
+
+def test_halt_and_resume_are_audited(client, session):
+    """Каждое действие с деньгами оставляет след (§23 UX-ТЗ)."""
+    from sqlalchemy import text
+
+    on = client.post("/api/v1/risk/halt", json={"reason": "проверка"}).json()
+    assert on["kill_switch"] is True and on["kill_switch_reason"] == "проверка"
+
+    off = client.post("/api/v1/risk/resume", json={"reason": "отбой"}).json()
+    assert off["kill_switch"] is False
+
+    actions = [
+        r[0]
+        for r in session.execute(
+            text("SELECT action FROM audit_events ORDER BY occurred_at")
+        )
+    ]
+    assert actions == ["kill_switch_on", "kill_switch_off"]

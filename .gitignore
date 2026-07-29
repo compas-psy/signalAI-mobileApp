@@ -50,3 +50,10 @@ android/key.properties
 **/*.keystore
 *.base64
 .env
+
+# --- SignalAI server (Python) ---
+server/.venv/
+server/__pycache__/
+server/**/__pycache__/
+server/.pytest_cache/
+*.py[cod]
