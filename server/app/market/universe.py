@@ -154,7 +154,11 @@ class FuturesCandidate:
 
 
 def futures_candidates(
-    rows: list[moex.FortsRow], today: date, *, min_days_to_expiry: int
+    rows: list[moex.FortsRow],
+    today: date,
+    *,
+    min_days_to_expiry: int,
+    min_snapshot_turnover: Decimal = Decimal(0),
 ) -> list[FuturesCandidate]:
     """Ближняя торгуемая серия каждого корня и серия под роллирование.
 
@@ -162,14 +166,28 @@ def futures_candidates(
     истекающем контракте — отдельный риск, не имеющий отношения к сетапу.
     Следующая серия ищется **среди всех** более дальних, включая те, что не
     прошли бы порог сами: для роллирования важно её существование.
+
+    ``min_snapshot_turnover`` — грубый предварительный отсев, а **не** проверка
+    §5.2. Настоящий критерий — медиана за 30 дней, и посчитать её можно только
+    по загруженной истории; отсев нужен, чтобы не тянуть эту историю по паре
+    сотен заведомо мёртвых контрактов.
+
+    На закрытом рынке оборот за день равен нулю у всех — это факт о времени
+    суток, а не о ликвидности. Поэтому условие оборота применяется, только
+    если оборот есть **хоть у одной** серии на доске; иначе ночной прогон
+    вычистил бы вселенную целиком.
     """
+    board_trades = any((r.turnover or Decimal(0)) > 0 for r in rows)
+    floor = min_snapshot_turnover if board_trades else Decimal(0)
+
     result: list[FuturesCandidate] = []
     for root, series in moex.series_by_root(rows).items():
         tradable = [
             r for r in series
             if r.last_trade_date is not None
             and (r.last_trade_date - today).days > min_days_to_expiry
-            and (r.turnover or Decimal(0)) > 0
+            and (r.turnover or Decimal(0)) >= floor
+            and (not board_trades or (r.turnover or Decimal(0)) > 0)
         ]
         if not tradable:
             continue
@@ -280,7 +298,21 @@ def sync_futures(
     min_days = int(config.get("universe.futures.min_days_to_expiry"))
 
     rows, _ = moex.forts_board(**kwargs)
-    candidates = futures_candidates(rows, moment.date(), min_days_to_expiry=min_days)
+    # Предварительный отсев — десятая часть порога §5.2. Настоящую проверку
+    # делает второй проход по истории; здесь задача скромнее — не тянуть
+    # историю по паре сотен контрактов, торгующихся на сотни рублей в день.
+    prefilter = config.decimal("universe.futures.min_median_daily_notional_rub") / 10
+    candidates = futures_candidates(
+        rows, moment.date(),
+        min_days_to_expiry=min_days,
+        min_snapshot_turnover=prefilter,
+    )
+    if not candidates:
+        # Пустой снимок — это отказ источника или закрытая биржа, а не
+        # «инструментов больше нет». Снимать вселенную по нему нельзя:
+        # загрузка встала бы, а в журнале осталась бы дыра без причины.
+        _record_empty_board(session, len(rows))
+        return []
 
     # Корень, который есть на доске, но не дал ни одной годной серии, обязан
     # оставить след. Иначе исчезновение инструмента из выдачи неотличимо от
@@ -343,6 +375,20 @@ def sync_futures(
     _retire_missing(session, kept, Venue.MOEX, AssetClass.FUTURES)
     session.flush()
     return kept
+
+
+def _record_empty_board(session: Session, rows_seen: int) -> None:
+    session.add(
+        DataQualityEvent(
+            source="moex",
+            flag=QualityFlag.SOURCE_CONFLICT.value,
+            detail=(
+                f"доска вернула {rows_seen} строк и ни одного кандидата — "
+                "вселенная оставлена как была"
+            )[:512],
+        )
+    )
+    session.flush()
 
 
 def _retire_missing(
@@ -411,6 +457,33 @@ def crypto_candidates(
     return [*chosen, *rest[: max(0, max_active - len(chosen))]]
 
 
+def crypto_candidate_pool(
+    tickers: list[crypto.Ticker],
+    specs: dict[str, crypto.InstrumentInfo],
+    *,
+    min_turnover: Decimal,
+    max_active: int,
+    depth: int = 3,
+) -> list[crypto.Ticker]:
+    """Расширенный список претендентов на активную вселенную §5.3.
+
+    «Active universe максимум 12» — про **допущенные** инструменты, а не про
+    претендентов. Разница обнаружилась на живой бирже: у Bybit в категории
+    linear теперь торгуются токенизированные акции и золото (SOXL, MU,
+    SKHYNIX, XAU). По суточному обороту они обходят половину криптовалют и
+    занимали все двенадцать мест, вытесняя настоящую крипту, — а потом всё
+    равно отсеивались вторым проходом за нехваткой годовой истории.
+
+    Поэтому претендентов берётся втрое больше предела, а до двенадцати список
+    режет допуск, где история и открытый интерес уже измерены.
+    """
+    return crypto_candidates(
+        tickers, specs,
+        min_turnover=min_turnover,
+        max_active=max_active * depth,
+    )
+
+
 def admit_crypto(
     session: Session,
     instrument: Instrument,
@@ -476,7 +549,7 @@ def sync_crypto(
     specs_list, _ = crypto.instruments_info(**kwargs)
     specs = {s.symbol: s for s in specs_list}
 
-    chosen = crypto_candidates(
+    chosen = crypto_candidate_pool(
         snapshot, specs, min_turnover=min_turnover, max_active=max_active
     )
 
@@ -577,10 +650,52 @@ def review_universe(
             "admission": verdict.measured,
         }
         report.verdicts[instrument.instrument_id] = verdict
-        report.admitted += int(verdict.admitted)
 
+    _cap_active_crypto(session, instruments, report, cfg=config)
+
+    report.admitted = sum(1 for v in report.verdicts.values() if v.admitted)
     session.flush()
     return report
+
+
+def _cap_active_crypto(
+    session: Session,
+    instruments: list[Instrument],
+    report: AdmissionReport,
+    *,
+    cfg: EngineConfig,
+) -> None:
+    """Ограничить активную вселенную крипты пределом §5.3.
+
+    Предел применяется здесь, а не при отборе кандидатов: до загрузки истории
+    неизвестно, кто вообще пройдёт допуск, и двенадцать мест доставались бы
+    тому, у кого просто больше суточный оборот. Обязательные BTC и ETH места
+    не уступают.
+    """
+    max_active = int(cfg.get("universe.crypto.max_active"))
+    admitted = [
+        i for i in instruments
+        if i.venue is Venue.CRYPTO
+        and report.verdicts.get(i.instrument_id, Verdict(False)).admitted
+    ]
+    if len(admitted) <= max_active:
+        return
+
+    def rank(item: Instrument) -> tuple[int, Decimal]:
+        mandatory = 1 if item.symbol in MANDATORY_CRYPTO else 0
+        measured = report.verdicts[item.instrument_id].measured
+        turnover = Decimal(measured.get("median_daily_notional_usdt", "0"))
+        return (mandatory, turnover)
+
+    admitted.sort(key=rank, reverse=True)
+    for item in admitted[max_active:]:
+        verdict = report.verdicts[item.instrument_id]
+        verdict.admitted = False
+        verdict.reasons.append(
+            f"за пределом активной вселенной §5.3 ({max_active} инструментов)"
+        )
+        item.is_tradable = False
+        item.universe_note = verdict.note
 
 
 # Кластеры корреляции §17.2. Корень, которого нет в справочнике, получает

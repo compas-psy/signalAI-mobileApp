@@ -14,6 +14,7 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import select
 
+from app.config import get_config
 from app.market import crypto, moex, universe
 from app.market.http import FetchReport
 from app.models import Bar, DataQualityEvent, Instrument
@@ -125,9 +126,48 @@ def test_lonely_series_cannot_be_rolled():
     assert not candidate.can_roll
 
 
-def test_series_without_turnover_is_not_a_candidate():
-    rows = [forts_row("SiU6", TODAY + timedelta(days=50), turnover="0")]
-    assert universe.futures_candidates(rows, TODAY, min_days_to_expiry=5) == []
+def test_dead_series_is_dropped_while_the_board_trades():
+    """На торгующейся доске нулевой оборот — свойство контракта."""
+    rows = [
+        forts_row("SiU6", TODAY + timedelta(days=50), turnover="0"),
+        forts_row("BRV6", TODAY + timedelta(days=50), turnover="500000000"),
+    ]
+    roots = {c.root for c in universe.futures_candidates(rows, TODAY, min_days_to_expiry=5)}
+    assert roots == {"BR"}
+
+
+def test_closed_market_does_not_empty_the_universe():
+    """Ночью оборот за день ноль у всех — это про время суток, а не про рынок.
+
+    Без этого различия ночной прогон вычистил бы вселенную целиком: загрузка
+    встала бы до утра, а в истории осталась бы дыра без объяснения.
+    """
+    rows = [
+        forts_row("SiU6", TODAY + timedelta(days=50), turnover="0"),
+        forts_row("BRV6", TODAY + timedelta(days=50), turnover="0"),
+    ]
+    roots = {
+        c.root for c in universe.futures_candidates(
+            rows, TODAY, min_days_to_expiry=5,
+            min_snapshot_turnover=Decimal("10000000"),
+        )
+    }
+    assert roots == {"SI", "BR"}
+
+
+def test_prefilter_drops_contracts_trading_on_pennies():
+    """Предварительный отсев — чтобы не тянуть историю по мёртвым контрактам."""
+    rows = [
+        forts_row("SiU6", TODAY + timedelta(days=50), turnover="500000000"),
+        forts_row("UTV6", TODAY + timedelta(days=50), turnover="1200"),
+    ]
+    roots = {
+        c.root for c in universe.futures_candidates(
+            rows, TODAY, min_days_to_expiry=5,
+            min_snapshot_turnover=Decimal("10000000"),
+        )
+    }
+    assert roots == {"SI"}
 
 
 # ─── Синхронизация справочника ────────────────────────────────────────────
@@ -422,3 +462,80 @@ def test_crypto_admission_requires_a_year_of_history(session):
     )
     assert not verdict.admitted
     assert any("истории 198 дней" in r for r in verdict.reasons)
+
+
+# ─── Предел активной вселенной §5.3 ───────────────────────────────────────
+
+
+def test_candidate_pool_is_wider_than_the_active_limit():
+    """Предел §5.3 — про допущенные, а не про претендентов.
+
+    На живой бирже у Bybit в linear торгуются токенизированные акции и золото
+    (SOXL, MU, SKHYNIX, XAU). По суточному обороту они обходили половину
+    криптовалют, занимали все двенадцать мест и вытесняли настоящую крипту —
+    а потом всё равно отсеивались за нехваткой годовой истории.
+    """
+    tickers = [ticker(f"C{i}USDT", str(10_000_000_000 - i)) for i in range(50)]
+    specs = {t.symbol: spec(t.symbol) for t in tickers}
+    pool = universe.crypto_candidate_pool(
+        tickers, specs, min_turnover=Decimal("1"), max_active=12
+    )
+    assert len(pool) == 36
+
+
+def test_active_crypto_universe_is_capped_after_admission(session):
+    """Допущенных больше предела — лишние выбывают с названной причиной."""
+    instruments = []
+    for i in range(15):
+        item = Instrument(
+            instrument_id=f"CRYPTO:PERP:C{i}USDT", venue=Venue.CRYPTO,
+            asset_class=AssetClass.CRYPTO_PERPETUAL, symbol=f"C{i}USDT",
+            tick_size=Decimal("0.1"), tick_value=Decimal("0.1"), in_universe=True,
+        )
+        session.add(item)
+        instruments.append(item)
+    session.flush()
+
+    report = universe.AdmissionReport()
+    for i, item in enumerate(instruments):
+        report.verdicts[item.instrument_id] = universe.Verdict(
+            admitted=True,
+            measured={"median_daily_notional_usdt": str(1000 + i)},
+        )
+        item.is_tradable = True
+
+    universe._cap_active_crypto(session, instruments, report, cfg=get_config())
+    tradable = [i.symbol for i in instruments if i.is_tradable]
+    assert len(tradable) == 12
+    # Отсечены самые тонкие по обороту, а не случайные.
+    assert set(tradable).isdisjoint({"C0USDT", "C1USDT", "C2USDT"})
+    dropped = report.verdicts["CRYPTO:PERP:C0USDT"]
+    assert any("предел" in r for r in dropped.reasons)
+
+
+def test_mandatory_pair_keeps_its_place_when_capping(session):
+    """BTC и ETH обязательны по §5.3 — предел их не выталкивает."""
+    instruments = []
+    for symbol in ["BTCUSDT", "ETHUSDT", *[f"C{i}USDT" for i in range(13)]]:
+        item = Instrument(
+            instrument_id=f"CRYPTO:PERP:{symbol}", venue=Venue.CRYPTO,
+            asset_class=AssetClass.CRYPTO_PERPETUAL, symbol=symbol,
+            tick_size=Decimal("0.1"), tick_value=Decimal("0.1"), in_universe=True,
+        )
+        session.add(item)
+        instruments.append(item)
+    session.flush()
+
+    report = universe.AdmissionReport()
+    for i, item in enumerate(instruments):
+        # У обязательных оборот наименьший — проверяем, что это не важно.
+        turnover = "1" if item.symbol in universe.MANDATORY_CRYPTO else str(1000 + i)
+        report.verdicts[item.instrument_id] = universe.Verdict(
+            admitted=True, measured={"median_daily_notional_usdt": turnover},
+        )
+        item.is_tradable = True
+
+    universe._cap_active_crypto(session, instruments, report, cfg=get_config())
+    tradable = {i.symbol for i in instruments if i.is_tradable}
+    assert {"BTCUSDT", "ETHUSDT"} <= tradable
+    assert len(tradable) == 12
