@@ -423,25 +423,12 @@ jobs:
           HOST: ${{ inputs.host_override || secrets.VPS_HOST || secrets.SERVER_HOST }}
           USER_NAME: ${{ secrets.VPS_USER || inputs.ssh_user }}
         run: |
-          ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$USER_NAME@$HOST" 'bash -s' <<'REMOTE' \
-            || echo "логи получить не удалось"
-          SUDO=""; [ "$(id -u)" -eq 0 ] || SUDO=sudo
-          COMPOSE="$SUDO docker compose --env-file /etc/signalai/.env -f $HOME/signalai/server/docker-compose.yml"
-
-          echo "──────── API ────────"
-          $COMPOSE logs --tail 40 api
-
-          echo
-          echo "──────── планировщик ────────"
-          # Ради этих строк логи и смотрят: по ним видно, дошла ли загрузка
-          # до биржи и что именно она принесла.
-          $COMPOSE logs --tail 60 scheduler 2>/dev/null || echo "сервис не запущен"
-
-          echo
-          echo "──────── что загружено ────────"
-          curl -fsS --max-time 20 http://127.0.0.1:8000/api/v1/market/status 2>/dev/null \
-            | python3 -c '
+          # Разбор статуса — отдельным файлом, а не строкой в -c: кавычки
+          # внутри вложенного heredoc внутри ssh экранируются трижды, и
+          # первая же попытка стоила прогона.
+          cat > /tmp/show_status.py <<'PY'
           import json, sys
+
           d = json.load(sys.stdin)
           print("инструментов:", d["instruments_total"],
                 "| во вселенной:", d["in_universe"],
@@ -449,11 +436,40 @@ jobs:
                 "| с данными:", d["with_data"])
           print("самый свежий бар:", d["last_bar_time"])
           for r in d["instruments"][:12]:
-              print(f"  {r[\"instrument_id\"]:26} 1d={r[\"daily_bars\"]:>5} 1h={r[\"hourly_bars\"]:>5}"
-                    f"  {r[\"universe_note\"][:70]}")
+              print("  {:26} 1d={:>5} 1h={:>5}  {}".format(
+                  r["instrument_id"], r["daily_bars"], r["hourly_bars"],
+                  r["universe_note"][:70]))
           for e in d["recent_quality_events"][:8]:
-              print(f"  ! {e[\"flag\"]}: {e[\"detail\"][:90]}")
-          ' || echo "статус недоступен"
+              print("  ! {}: {}".format(e["flag"], e["detail"][:90]))
+          PY
+          scp -i ~/.ssh/id_deploy -o BatchMode=yes /tmp/show_status.py "$USER_NAME@$HOST:/tmp/show_status.py"
+
+          ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$USER_NAME@$HOST" 'bash -s' <<'REMOTE' \
+            || echo "логи получить не удалось"
+          SUDO=""; [ "$(id -u)" -eq 0 ] || SUDO=sudo
+          COMPOSE="$SUDO docker compose --env-file /etc/signalai/.env -f $HOME/signalai/server/docker-compose.yml"
+
+          echo "──────── контейнеры ────────"
+          # Первый вопрос — существует ли контейнер вообще. Пустые логи у
+          # незапущенного сервиса выглядят точно так же, как у молчащего.
+          $COMPOSE ps -a
+
+          echo
+          echo "──────── API ────────"
+          $COMPOSE logs --tail 25 api
+
+          echo
+          echo "──────── планировщик ────────"
+          # Ради этих строк логи и смотрят: по ним видно, дошла ли загрузка
+          # до биржи и что именно она принесла.
+          out="$($COMPOSE logs --tail 60 scheduler 2>&1)"
+          [ -n "$out" ] && printf '%s\n' "$out" || echo "контейнера планировщика нет"
+
+          echo
+          echo "──────── что загружено ────────"
+          curl -fsS --max-time 20 http://127.0.0.1:8000/api/v1/market/status 2>/dev/null \
+            > /tmp/status.json && python3 /tmp/show_status.py < /tmp/status.json \
+            || echo "статус недоступен"
           REMOTE
 
       - name: Убрать ключ
