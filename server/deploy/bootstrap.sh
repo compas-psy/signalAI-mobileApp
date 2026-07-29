@@ -41,24 +41,47 @@ DOMAIN="${SIGNALAI_DOMAIN:-}"
 ADMIN_IP="${SIGNALAI_ADMIN_IP:-}"
 EMAIL="${SIGNALAI_ACME_EMAIL:-}"
 
-if [ -z "$DOMAIN" ]; then
+# Скрипт запускают двумя способами: руками в терминале и из CI. Во втором
+# случае терминала нет, и `read` не просто не может спросить — bash даже не
+# печатает приглашение, а `set -e` обрывает выполнение. Снаружи это выглядит
+# как мгновенная смерть без единой строки объяснения, и найти причину почти
+# невозможно.
+#
+# Поэтому спрашиваем только когда есть у кого.
+interactive() { [ -t 0 ]; }
+
+if [ -z "$DOMAIN" ] && interactive; then
   read -rp "Домен сервера (например signalai.example.com), пусто — без TLS: " DOMAIN
 fi
 if [ -z "$ADMIN_IP" ]; then
-  CURRENT_SSH_IP="$(who am i 2>/dev/null | awk -F'[()]' '{print $2}' || true)"
-  read -rp "IP, с которого вы ходите по SSH [${CURRENT_SSH_IP:-не определён}]: " ADMIN_IP
-  ADMIN_IP="${ADMIN_IP:-$CURRENT_SSH_IP}"
+  if interactive; then
+    CURRENT_SSH_IP="$(who am i 2>/dev/null | awk -F'[()]' '{print $2}' || true)"
+    read -rp "IP, с которого вы ходите по SSH [${CURRENT_SSH_IP:-не определён}]: " ADMIN_IP
+    ADMIN_IP="${ADMIN_IP:-$CURRENT_SSH_IP}"
+  else
+    # Из CI адрес приходит параметром. Если его не передали — не гадаем:
+    # SSH остаётся открытым для всех, что и требуется для развёртывания с
+    # раннера, приходящего каждый раз с нового адреса.
+    ADMIN_IP="0.0.0.0/0"
+  fi
 fi
-[ -n "$ADMIN_IP" ] || die "без вашего IP закрывать SSH нельзя — вы потеряете доступ к серверу"
+
+if [ -z "$DOMAIN" ]; then
+  warn "домен не задан — TLS настраиваться не будет, API останется на 127.0.0.1:8000"
+fi
 
 # ── Пакеты ────────────────────────────────────────────────────────────────
 
 say "Системные пакеты"
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq
+# Один недоступный сторонний репозиторий возвращает ненулевой код и под
+# `set -e` обрывает всё развёртывание. На сервере, где живёт чужой сайт,
+# посторонних PPA обычно хватает, а к нашим пакетам они отношения не имеют.
+apt-get update -qq || warn "часть репозиториев недоступна — ставим из того, что есть"
 apt-get install -y -qq --no-install-recommends \
   ca-certificates curl gnupg ufw fail2ban unattended-upgrades \
-  postgresql-client jq >/dev/null
+  postgresql-client jq >/dev/null \
+  || die "не удалось поставить базовые пакеты — проверьте apt на сервере"
 ok "базовые пакеты"
 
 if ! command -v docker >/dev/null 2>&1; then
