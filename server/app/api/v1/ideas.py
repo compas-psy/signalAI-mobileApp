@@ -1,8 +1,11 @@
 """Идеи (engine-ТЗ §23, блок Ideas).
 
-Эндпоинты, которым нужен ещё не построенный движок, отвечают 503 с внятной
-причиной, а не пустым списком. Пустой список читается как «сегодня нет
-сетапов», и это ложь, если движка просто нет.
+Сканирование работает: конвейер §7 связывает данные, детекторы, три стратегии
+§10–§12, оценку §15.1 и риск §17.
+
+Эндпоинты, за которыми движка ещё нет, по-прежнему отвечают 503 с внятной
+причиной, а не пустым списком: пустой список читается как «сегодня нет
+сетапов», и это ложь, если считать было нечем.
 """
 
 from __future__ import annotations
@@ -12,11 +15,13 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
+from pydantic import Field
 from sqlalchemy.orm import Session
 
 from ...db import get_db
 from ...models import Instrument, TradeIdea
 from ...models.enums import IdeaStatus, QualityStatus, Strategy
+from ...schemas.common import ApiModel
 from ...schemas.ideas import (
     DailyCards,
     ExplanationBlock,
@@ -34,9 +39,8 @@ from ...schemas.ideas import (
 router = APIRouter(tags=["ideas"])
 
 ENGINE_NOT_READY = (
-    "движок стратегий ещё не подключён: детекторы и три стратегии "
-    "engine-ТЗ §10–§12 реализуются отдельным этапом. Сканирование по запросу "
-    "недоступно, чтобы не выдавать пустой результат за отсутствие сетапов."
+    "движок исполнения ещё не подключён: бумажное сопровождение сделки "
+    "(engine-ТЗ §21) реализуется отдельным этапом."
 )
 
 
@@ -216,9 +220,59 @@ def get_events(idea_id: UUID, db: Session = Depends(get_db)) -> list[IdeaEventOu
     return [IdeaEventOut.model_validate(e) for e in idea.events]
 
 
-@router.post("/ideas/scan", status_code=503)
-def scan(db: Session = Depends(get_db)):
-    raise HTTPException(503, ENGINE_NOT_READY)
+class ScanReport(ApiModel):
+    """Отчёт о сканировании (§16).
+
+    Отказы возвращаются вместе с идеями намеренно. «Сегодня ничего нет» без
+    списка причин неотличимо от сломанного движка, а это разные решения —
+    ждать или чинить.
+    """
+
+    started_at: datetime
+    finished_at: datetime
+    scanned: int
+    produced: int
+    trade_now: list[IdeaSummary] = Field(default_factory=list)
+    wait_for_trigger: list[IdeaSummary] = Field(default_factory=list)
+    no_trade_reason: str = ""
+    skipped: list[dict] = Field(default_factory=list)
+    rejected: list[dict] = Field(default_factory=list)
+
+
+@router.post("/ideas/scan", response_model=ScanReport)
+def run_scan(db: Session = Depends(get_db)) -> ScanReport:
+    """Прогнать вселенную по конвейеру §7 и записать найденное."""
+    from ...pipeline.scan import scan as run_pipeline
+
+    result = run_pipeline(db)
+    daily = result.daily
+    return ScanReport(
+        started_at=result.started_at,
+        finished_at=result.finished_at or datetime.now(UTC),
+        scanned=result.scanned,
+        produced=result.produced,
+        trade_now=[
+            _summary(next(i for i in result.ideas if str(i.id) == r.idea.idea_id))
+            for r in (daily.trade_now if daily else [])
+        ],
+        wait_for_trigger=[
+            _summary(next(i for i in result.ideas if str(i.id) == r.idea.idea_id))
+            for r in (daily.wait_for_trigger if daily else [])
+        ],
+        no_trade_reason=daily.no_trade_reason if daily else "",
+        skipped=[
+            {"instrument_id": s.instrument_id, "stage": s.stage, "reason": s.reason}
+            for s in result.skipped
+        ],
+        rejected=[
+            {
+                "strategy": r.strategy.value,
+                "reason": r.reason,
+                "failed": [c.name for c in r.failed],
+            }
+            for r in result.rejections
+        ],
+    )
 
 
 @router.post("/ideas/{idea_id}/approve-paper", status_code=503)

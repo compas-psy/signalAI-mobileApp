@@ -208,11 +208,26 @@ def test_today_says_why_there_is_nothing(client):
     assert "не создаёт сделки ради нормы" in body["no_trade_reason"]
 
 
-def test_scan_refuses_instead_of_returning_empty(client):
-    """Движка ещё нет — эндпоинт обязан это сказать, а не отдать пустой список."""
-    r = client.post("/api/v1/ideas/scan")
-    assert r.status_code == 503
-    assert "движок стратегий ещё не подключён" in r.json()["detail"]
+def test_scan_reports_what_it_did(client, instrument):
+    """Скан обязан отчитаться, а не просто вернуть список.
+
+    Пустая выдача без числа просмотренных инструментов и без причин отказа
+    неотличима от сломанного движка.
+    """
+    body = client.post("/api/v1/ideas/scan").json()
+    assert body["scanned"] >= 1
+    assert "started_at" in body and "finished_at" in body
+    # Инструмент без истории обязан попасть в пропуски с причиной.
+    assert body["skipped"], "инструмент без данных исчез молча"
+    assert any("баров" in s["reason"] for s in body["skipped"])
+
+
+def test_scan_with_no_setups_says_why(client):
+    """«Сделок нет» остаётся результатом, а не пустотой."""
+    body = client.post("/api/v1/ideas/scan").json()
+    assert body["produced"] == 0
+    assert body["trade_now"] == []
+    assert "не создаёт сделки ради нормы" in body["no_trade_reason"]
 
 
 def test_paper_approval_is_closed_until_execution_engine(client, session, instrument, now):
