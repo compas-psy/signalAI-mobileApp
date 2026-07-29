@@ -1,0 +1,171 @@
+name: Развернуть сервер на VPS
+
+# Только по кнопке. Ни push, ни pull_request здесь быть не должно:
+#
+#   * push — потому что развёртывание боевого сервера не может быть побочным
+#     эффектом коммита;
+#   * pull_request — потому что на публичном репозитории это открыло бы
+#     доступ к секретам любому, кто пришлёт PR. GitHub не отдаёт секреты
+#     форкам, но полагаться на это, имея root на сервере с торговым
+#     доступом, нельзя.
+on:
+  workflow_dispatch:
+    inputs:
+      domain:
+        description: 'Домен сервера (пусто — без TLS, телефон не подключится)'
+        required: false
+        default: ''
+      admin_ip:
+        description: 'IP, с которого вы ходите по SSH (firewall оставит 22 только ему)'
+        required: true
+      acme_email:
+        description: 'Почта для Let'"'"'s Encrypt'
+        required: false
+        default: ''
+      action:
+        description: 'Что сделать'
+        required: true
+        default: 'bootstrap'
+        type: choice
+        options:
+          - bootstrap      # первичная установка
+          - update         # обновить код и перезапустить
+          - health         # только проверить состояние
+          - logs           # показать последние логи
+
+# Два развёртывания одновременно — это гонка за один и тот же docker-compose.
+concurrency:
+  group: deploy-server
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # Права минимальны: workflow ничего не пишет в репозиторий.
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Проверить, что секреты заданы
+        env:
+          HOST: ${{ secrets.VPS_HOST }}
+          USER_NAME: ${{ secrets.VPS_USER }}
+          KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          missing=""
+          [ -n "$HOST" ] || missing="$missing VPS_HOST"
+          [ -n "$USER_NAME" ] || missing="$missing VPS_USER"
+          [ -n "$KEY" ] || missing="$missing VPS_SSH_KEY"
+          if [ -n "$missing" ]; then
+            echo "::error::не заданы секреты:$missing"
+            echo "Задать: Settings → Secrets and variables → Actions → New repository secret"
+            exit 1
+          fi
+          echo "Секреты на месте. Значения не печатаются намеренно."
+
+      - name: Подготовить ключ
+        env:
+          KEY: ${{ secrets.VPS_SSH_KEY }}
+          HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          # Отпечаток хоста берётся сейчас и фиксируется: без этого первое
+          # соединение согласится на любой ключ, включая подменённый.
+          ssh-keyscan -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          echo "Отпечаток хоста записан."
+
+      - name: Первичная установка
+        if: ${{ inputs.action == 'bootstrap' }}
+        env:
+          HOST: ${{ secrets.VPS_HOST }}
+          USER_NAME: ${{ secrets.VPS_USER }}
+          DOMAIN: ${{ inputs.domain }}
+          ADMIN_IP: ${{ inputs.admin_ip }}
+          ACME_EMAIL: ${{ inputs.acme_email }}
+        run: |
+          ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$USER_NAME@$HOST" \
+            "SIGNALAI_DOMAIN='$DOMAIN' SIGNALAI_ADMIN_IP='$ADMIN_IP' \
+             SIGNALAI_ACME_EMAIL='$ACME_EMAIL' bash -s" <<'REMOTE'
+          set -euo pipefail
+          REPO=https://github.com/compas-psy/signalAI-mobileApp.git
+          DIR="$HOME/signalai"
+
+          if [ -d "$DIR/.git" ]; then
+            git -C "$DIR" fetch --depth 1 origin claude/release-y40hk5
+            git -C "$DIR" reset --hard origin/claude/release-y40hk5
+          else
+            git clone --depth 1 -b claude/release-y40hk5 "$REPO" "$DIR"
+          fi
+
+          cd "$DIR/server"
+          sudo -E SIGNALAI_DOMAIN="$SIGNALAI_DOMAIN" \
+                  SIGNALAI_ADMIN_IP="$SIGNALAI_ADMIN_IP" \
+                  SIGNALAI_ACME_EMAIL="$SIGNALAI_ACME_EMAIL" \
+                  bash deploy/bootstrap.sh
+          REMOTE
+
+      - name: Обновить код и перезапустить
+        if: ${{ inputs.action == 'update' }}
+        env:
+          HOST: ${{ secrets.VPS_HOST }}
+          USER_NAME: ${{ secrets.VPS_USER }}
+        run: |
+          ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$USER_NAME@$HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          cd "$HOME/signalai"
+          git fetch --depth 1 origin claude/release-y40hk5
+          git reset --hard origin/claude/release-y40hk5
+          cd server
+          # Миграции до перезапуска: сервер не должен стартовать на схеме,
+          # которой ещё нет.
+          sudo docker compose --env-file /etc/signalai/.env run --rm api alembic upgrade head
+          sudo docker compose --env-file /etc/signalai/.env up -d --build
+          REMOTE
+
+      - name: Состояние сервера
+        if: ${{ always() && inputs.action != 'logs' }}
+        env:
+          HOST: ${{ secrets.VPS_HOST }}
+          USER_NAME: ${{ secrets.VPS_USER }}
+        run: |
+          ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$USER_NAME@$HOST" \
+            'curl -fsS http://127.0.0.1:8000/health' > health.json 2>/dev/null \
+            || { echo "::error::сервер не отвечает на /health"; exit 1; }
+
+          # Секретов в ответе нет: health отдаёт версии, режим и отпечаток
+          # конфигурации, но не адреса и не токены.
+          python3 - <<'PY'
+          import json
+          data = json.load(open("health.json"))
+          print("Движок:        ", data["engine_version"])
+          print("Конфигурация:  ", data["config_hash"][:16], "…")
+          print("Режим:         ", data["execution_mode"])
+          print("paper_only:    ", data["paper_only"])
+          print("Kill switch:   ", data["kill_switch"])
+          print("База:          ", data["database"])
+          print("Состояние:     ", data["status"])
+          for note in data.get("notes", []):
+              print("  замечание:", note)
+          PY
+
+          if [ "$(python3 -c 'import json;print(json.load(open("health.json"))["paper_only"])')" != "True" ]; then
+            echo "::warning::paper_only выключен — боевые заявки разрешены"
+          fi
+
+      - name: Логи
+        if: ${{ inputs.action == 'logs' || failure() }}
+        env:
+          HOST: ${{ secrets.VPS_HOST }}
+          USER_NAME: ${{ secrets.VPS_USER }}
+        run: |
+          ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$USER_NAME@$HOST" \
+            'sudo docker compose --env-file /etc/signalai/.env -f "$HOME/signalai/server/docker-compose.yml" logs --tail 120 api' \
+            || echo "логи получить не удалось"
+
+      - name: Убрать ключ
+        if: always()
+        run: shred -u ~/.ssh/id_deploy 2>/dev/null || rm -f ~/.ssh/id_deploy
