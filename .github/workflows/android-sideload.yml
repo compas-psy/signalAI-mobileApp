@@ -28,6 +28,11 @@ name: Android sideload APK
 # flutter analyze, flutter test и tool/build_apk.sh.
 on:
   workflow_dispatch:
+    inputs:
+      api_base_url:
+        description: 'Адрес движка (пусто — возьмётся секрет SIGNALAI_API_BASE_URL)'
+        required: false
+        default: ''
   push:
     tags:
       - 'sideload-*'
@@ -167,7 +172,27 @@ jobs:
         # Номер версии растёт с каждой сборкой: установка поверх всегда
         # выглядит обновлением, а не переустановкой той же версии — у части
         # прошивок «та же версия» вызывает лишние вопросы установщика.
-        run: flutter build apk --release --build-number=${{ github.run_number }}
+        #
+        # Адрес движка передаётся в сборку. Без него приложение показывает
+        # «движок не ответил» и не может показать ни одной идеи: считает их
+        # сервер (§18), а адрес зашивается на этапе сборки, чтобы ни его, ни
+        # токен устройства не лежало в репозитории.
+        env:
+          API_BASE_URL: ${{ inputs.api_base_url || secrets.SIGNALAI_API_BASE_URL }}
+          DEVICE_TOKEN: ${{ secrets.SIGNALAI_DEVICE_TOKEN }}
+        run: |
+          if [ -z "$API_BASE_URL" ]; then
+            echo "::warning::Адрес движка не задан — APK соберётся, но идей не покажет."
+            echo "Задайте секрет SIGNALAI_API_BASE_URL либо параметр api_base_url."
+          else
+            # Значение не печатается: адрес не тайна, но и в логах публичного
+            # репозитория ему делать нечего.
+            echo "Адрес движка задан (${#API_BASE_URL} символов)."
+          fi
+          flutter build apk --release \
+            --build-number=${{ github.run_number }} \
+            --dart-define=SIGNALAI_API_BASE_URL="$API_BASE_URL" \
+            --dart-define=SIGNALAI_DEVICE_TOKEN="$DEVICE_TOKEN"
 
       # Отпечаток ключа печатается в лог намеренно: если он вдруг изменился,
       # обновление поверх не встанет — и это видно здесь, а не на телефоне.
