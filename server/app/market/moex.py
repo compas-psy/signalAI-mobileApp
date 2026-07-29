@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -101,6 +101,50 @@ def _int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+# Биржа отдаёт время **по Москве** и без указания зоны. С 2014 года в России
+# нет перехода на летнее время, поэтому смещение постоянное.
+MOSCOW = timezone(timedelta(hours=3))
+
+
+def _moscow_to_utc(value: str) -> datetime:
+    """Время ISS в UTC.
+
+    Раньше здесь стояло ``replace(tzinfo=UTC)`` — то есть московское время
+    просто объявлялось UTC. Ряд MOEX уезжал на три часа вперёд, и на живых
+    данных это выглядело как бар из будущего: свежайший бар был помечен
+    19:00 UTC, когда на сервере было 16:29 UTC.
+
+    Сдвиг ломает не только вид. Склейка 4H с якорем на открытие сессии
+    попадала бы не на те свечи, «устарели ли данные» считалось бы с ошибкой в
+    три часа, а крипта и срочный рынок легли бы на одну шкалу времени
+    несовпадающими — то есть любое их сопоставление было бы ложным.
+    """
+    naive = datetime.fromisoformat(value)
+    if naive.tzinfo is not None:
+        return naive.astimezone(UTC)
+    return naive.replace(tzinfo=MOSCOW).astimezone(UTC)
+
+
+def _open_time(begin: str, timeframe: Timeframe) -> datetime:
+    """Начало свечи в канонической шкале §4.4.
+
+    Внутридневная свеча — это момент, и он переводится в UTC.
+
+    Дневная свеча — это **торговая сессия**, а не момент. Перевод московской
+    полуночи в UTC дал бы 21:00 предыдущего дня, и дневной бар за 29 июля
+    оказался бы датирован 28-м: открытый интерес перестал бы находиться по
+    дате, а недельные и месячные склейки поехали бы на день. Поэтому день
+    остаётся днём — торговой датой в полночь UTC.
+    """
+    moment = _moscow_to_utc(begin)
+    if timeframe is not Timeframe.D1:
+        return moment
+    trading_day = datetime.fromisoformat(begin).date()
+    return datetime(
+        trading_day.year, trading_day.month, trading_day.day, tzinfo=UTC
+    )
 
 
 def _day(value: Any) -> date | None:
@@ -264,7 +308,7 @@ def candles(
             # что по нему считается.
             continue
         try:
-            open_time = datetime.fromisoformat(begin).replace(tzinfo=UTC)
+            open_time = _open_time(begin, timeframe)
         except ValueError:
             continue
         result.append(

@@ -148,7 +148,8 @@ CANDLES = {
 
 def test_candles_are_chronological_and_decimal():
     rows, _ = moex.candles("SiU6", Timeframe.H1, date(2026, 7, 1), fetch=fixed(CANDLES))
-    assert [c.open_time.hour for c in rows] == [10, 11]
+    # Биржа отдаёт 10:00 и 11:00 по Москве — в канонической шкале это 07 и 08.
+    assert [c.open_time.hour for c in rows] == [7, 8]
     assert rows[0].close == Decimal("90200")
     assert isinstance(rows[0].close, Decimal)
 
@@ -170,7 +171,7 @@ def test_candle_without_time_or_price_is_dropped():
     }
     rows, _ = moex.candles("SiU6", Timeframe.H1, date(2026, 7, 1), fetch=fixed(broken))
     assert len(rows) == 1
-    assert rows[0].open_time.hour == 11
+    assert rows[0].open_time.hour == 8      # 11:00 по Москве
 
 
 def test_moex_refuses_four_hour_timeframe():
@@ -339,3 +340,50 @@ def test_fetch_error_carries_kind():
     err = FetchError("timeout", "http://x", "нет ответа за 20 с")
     assert err.kind == "timeout"
     assert "нет ответа" in str(err)
+
+
+# ─── Часовой пояс биржи ───────────────────────────────────────────────────
+
+
+def test_intraday_candles_are_converted_from_moscow_time():
+    """ISS отдаёт время по Москве без указания зоны.
+
+    Пока оно просто объявлялось UTC, весь ряд MOEX уезжал на три часа вперёд.
+    На живом сервере это выглядело как бар из будущего: свежайший бар был
+    помечен 19:00 UTC при серверном времени 16:29 UTC.
+    """
+    payload = {
+        "candles": {
+            "columns": ["open", "close", "high", "low", "value", "volume", "begin", "end"],
+            "data": [["90000", "90100", "90200", "89900", "1000", "10",
+                      "2026-07-29 19:00:00", "2026-07-29 19:59:59"]],
+        }
+    }
+    result, _ = moex.candles(
+        "SiU6", Timeframe.H1, date(2026, 7, 1),
+        fetch=lambda url: (payload, FetchReport(url=url, status=200, elapsed_ms=1,
+                                                bytes_read=1, ok=True)),
+    )
+    assert result[0].open_time == datetime(2026, 7, 29, 16, tzinfo=UTC)
+
+
+def test_daily_candle_keeps_its_trading_date():
+    """День — это сессия, а не момент.
+
+    Перевод московской полуночи в UTC датировал бы дневной бар за 29 июля
+    двадцать восьмым: открытый интерес перестал бы находиться по дате.
+    """
+    payload = {
+        "candles": {
+            "columns": ["open", "close", "high", "low", "value", "volume", "begin", "end"],
+            "data": [["90000", "90100", "90200", "89900", "1000", "10",
+                      "2026-07-29 00:00:00", "2026-07-29 23:59:59"]],
+        }
+    }
+    result, _ = moex.candles(
+        "SiU6", Timeframe.D1, date(2026, 7, 1),
+        fetch=lambda url: (payload, FetchReport(url=url, status=200, elapsed_ms=1,
+                                                bytes_read=1, ok=True)),
+    )
+    assert result[0].open_time == datetime(2026, 7, 29, 0, tzinfo=UTC)
+    assert result[0].open_time.date() == date(2026, 7, 29)
