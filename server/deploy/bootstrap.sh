@@ -121,25 +121,52 @@ fi
 # Postgres и Redis не публикуются вовсе: к ним можно только из docker-сети.
 
 say "Firewall"
-ufw --force reset >/dev/null
-ufw default deny incoming >/dev/null
-ufw default allow outgoing >/dev/null
-ufw allow from "$ADMIN_IP" to any port 22 proto tcp comment "SSH владельца" >/dev/null
-if [ -n "$DOMAIN" ]; then
-  ufw allow 80/tcp comment "ACME" >/dev/null
-  ufw allow 443/tcp comment "HTTPS" >/dev/null
+#
+# Правила ДОБАВЛЯЮТСЯ, а не пересоздаются. На этом сервере может уже жить
+# чужой сайт, и `ufw --force reset` снёс бы разрешения, о которых мы не
+# знаем, — сайт лёг бы молча, а причину искали бы днями.
+#
+# Порты 80 и 443 открываются всегда, независимо от того, задан ли домен:
+# если на машине уже есть сайт, закрыть их значит его выключить.
+ufw allow 80/tcp comment "HTTP" >/dev/null 2>&1 || true
+ufw allow 443/tcp comment "HTTPS" >/dev/null 2>&1 || true
+ufw allow 22/tcp comment "SSH" >/dev/null 2>&1 || true
+if [ -n "$ADMIN_IP" ] && [ "$ADMIN_IP" != "0.0.0.0/0" ]; then
+  ufw allow from "$ADMIN_IP" comment "адрес владельца" >/dev/null 2>&1 || true
 fi
-ufw --force enable >/dev/null
-ok "открыты: 22 только с ${ADMIN_IP}$([ -n "$DOMAIN" ] && echo ', 80/443')"
+
+if ufw status | head -1 | grep -qi inactive; then
+  ufw default deny incoming >/dev/null
+  ufw default allow outgoing >/dev/null
+  ufw --force enable >/dev/null
+  ok "firewall включён: 22, 80, 443"
+else
+  ok "firewall уже работал — правила добавлены, прежние не тронуты"
+fi
+
+# SSH оставляем открытым для всех адресов намеренно. Развёртывание идёт
+# через GitHub Actions, а её раннеры приходят каждый раз с нового адреса:
+# ограничение по IP сделало бы автоматическое обновление невозможным.
+# Безопасность обеспечивается ключом, отключёнными паролями и fail2ban.
 
 say "Защита доступа"
-sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
-sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
-if sshd -t 2>/dev/null; then
-  systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
-  ok "вход только по ключу, root-логин запрещён"
+#
+# Пароли отключаем только если вход по ключу уже работает. Иначе можно
+# закрыть единственную дверь: bootstrap выполняется по SSH, и если ключ
+# лежит не у того пользователя, следующего подключения не будет.
+if [ -s "${HOME}/.ssh/authorized_keys" ] || [ -s /root/.ssh/authorized_keys ]; then
+  cp -n /etc/ssh/sshd_config /etc/ssh/sshd_config.signalai.bak 2>/dev/null || true
+  sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config
+  sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+  if sshd -t 2>/dev/null; then
+    systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
+    ok "вход по ключу, пароли отключены (копия конфигурации: sshd_config.signalai.bak)"
+  else
+    cp /etc/ssh/sshd_config.signalai.bak /etc/ssh/sshd_config 2>/dev/null || true
+    warn "конфигурация sshd не прошла проверку — возвращена прежняя"
+  fi
 else
-  warn "конфигурация sshd не прошла проверку — оставлена прежней"
+  warn "ключей в authorized_keys не нашлось — пароли НЕ отключены, чтобы не потерять доступ"
 fi
 systemctl enable --now fail2ban >/dev/null 2>&1 || true
 dpkg-reconfigure -f noninteractive unattended-upgrades >/dev/null 2>&1 || true
@@ -191,7 +218,9 @@ server {
 }
 NGINX
   ln -sf /etc/nginx/sites-available/signalai /etc/nginx/sites-enabled/signalai
-  rm -f /etc/nginx/sites-enabled/default
+  # Чужие конфигурации не трогаем. Здесь может уже стоять сайт владельца, и
+  # снос «стандартного» узла выключил бы его без предупреждения. Наш узел
+  # отвечает только на свой server_name, остальные продолжают работать.
   if [ -n "$EMAIL" ]; then
     certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos -m "$EMAIL" --redirect \
       || warn "certbot не выдал сертификат — проверьте, что домен указывает на этот сервер"
