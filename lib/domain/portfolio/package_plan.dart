@@ -133,6 +133,42 @@ class PackageTarget {
 
 /// Замысел пакета: состав, горизонт и правило, по которому он считается
 /// сломанным.
+/// Горизонт пакета (ТЗ §7.1). От него зависят ограничения оптимизации.
+enum PackageHorizon {
+  oneYear('1Y', '1 год', 1),
+  fivePlus('5Y_PLUS', '5+ лет', 5);
+
+  const PackageHorizon(this.code, this.label, this.years);
+
+  final String code;
+  final String label;
+
+  /// Нижняя граница горизонта в годах.
+  final int years;
+
+  static PackageHorizon parse(String? code) => PackageHorizon.values
+      .where((h) => h.code == code)
+      .firstOrNull ??
+      PackageHorizon.fivePlus;
+}
+
+/// Профиль риска пакета (ТЗ §7.1).
+enum PackageRiskProfile {
+  conservative('CONSERVATIVE', 'Консервативный'),
+  optimal('OPTIMAL', 'Оптимальный'),
+  aggressive('AGGRESSIVE', 'Рискованный');
+
+  const PackageRiskProfile(this.code, this.label);
+
+  final String code;
+  final String label;
+
+  static PackageRiskProfile parse(String? code) => PackageRiskProfile.values
+      .where((p) => p.code == code)
+      .firstOrNull ??
+      PackageRiskProfile.optimal;
+}
+
 class PackagePlan {
   const PackagePlan({
     required this.id,
@@ -141,6 +177,9 @@ class PackagePlan {
     required this.horizonYears,
     required this.targets,
     required this.invalidation,
+    this.horizon = PackageHorizon.fivePlus,
+    this.riskProfile = PackageRiskProfile.optimal,
+    this.killConditions = const [],
   });
 
   final String id;
@@ -156,11 +195,61 @@ class PackagePlan {
   /// вечно и превращается в кладбище решений.
   final String invalidation;
 
+  /// Горизонт по ТЗ §7.1: 1 год или 5+ лет.
+  final PackageHorizon horizon;
+
+  /// Профиль риска по ТЗ §7.1.
+  final PackageRiskProfile riskProfile;
+
+  /// Условия пересмотра отдельных инструментов (ТЗ §7.1, killConditions).
+  final List<String> killConditions;
+
   /// Сумма весов. Должна быть 100 — иначе план не про весь капитал.
   double get totalWeight =>
       targets.fold(0.0, (sum, t) => sum + t.weightPercent);
 
-  /// Три пакета по умолчанию.
+  /// Потолок доли криптовалюты (ТЗ §7.1).
+  static const cryptoCapPercent = 5.0;
+
+  /// Доля криптовалюты в пакете.
+  double get cryptoPercent => targets
+      .where((t) => t.assetClass == AssetClass.crypto)
+      .fold(0.0, (sum, t) => sum + t.weightPercent);
+
+  /// Нарушения ограничений ТЗ §7.1.
+  ///
+  /// Возвращается список, а не bool: пакет с суммой весов 97% и криптой 10%
+  /// сломан двумя разными способами, и чинить их надо по отдельности.
+  List<String> violations() {
+    final issues = <String>[];
+    if ((totalWeight - 100).abs() > 0.01) {
+      issues.add('сумма весов ${_pct(totalWeight)} вместо 100%');
+    }
+    if (cryptoPercent > cryptoCapPercent + 1e-9) {
+      issues.add('крипта ${_pct(cryptoPercent)} выше потолка '
+          '${_pct(cryptoCapPercent)}');
+    }
+    final seen = <AssetClass>{};
+    for (final target in targets) {
+      if (!seen.add(target.assetClass)) {
+        issues.add('класс «${target.assetClass.label}» указан дважды');
+      }
+      if (target.weightPercent <= 0) {
+        issues.add('нулевой вес у «${target.assetClass.label}»');
+      }
+    }
+    return issues;
+  }
+
+  static String _pct(double v) =>
+      '${v.toStringAsFixed(v == v.roundToDouble() ? 0 : 1).replaceAll('.', ',')}%';
+
+  /// Пакеты по умолчанию: три профиля риска на каждый горизонт (ТЗ §7).
+  ///
+  /// Горизонт — не косметика. На годовом сроке просадку рынка акций
+  /// пересидеть нельзя, поэтому доля акций во всех трёх профилях резко ниже,
+  /// а несущая часть — короткий долг. На пятилетнем сроке всё наоборот:
+  /// консервативный профиль может позволить себе длинные облигации.
   ///
   /// Веса обоснованы **структурой рисков**, а не исторической доходностью.
   /// Подгонять состав под прошлое значит получить пакет, который отлично
@@ -185,6 +274,13 @@ class PackagePlan {
         PackagePlan(
           id: 'conservative',
           title: 'Консервативный',
+          horizon: PackageHorizon.oneYear,
+          riskProfile: PackageRiskProfile.conservative,
+          killConditions: [
+            'Ключевая ставка развернулась — доля флоатеров пересматривается',
+            'Кредитный рейтинг эмитента в корпоративной части снижен',
+            'Инфляция обгоняет доходность портфеля два квартала подряд',
+          ],
           thesis: 'Сохранить капитал и обогнать вклад. Просадка важнее '
               'доходности: из −10% выходят за год, из −40% — за пять лет.',
           horizonYears: 2,
@@ -201,8 +297,95 @@ class PackagePlan {
           ],
         ),
         PackagePlan(
+          id: 'conservative_long',
+          title: 'Консервативный',
+          horizon: PackageHorizon.fivePlus,
+          riskProfile: PackageRiskProfile.conservative,
+          thesis: 'Тот же приоритет — сохранить, — но горизонт позволяет '
+              'держать длинные облигации и небольшую долю акций: пять лет '
+              'достаточно, чтобы пересидеть процентный цикл, а год — нет.',
+          horizonYears: 5,
+          invalidation: 'Инфляция устойчиво выше доходности портфеля два '
+              'квартала подряд — состав пересматривается.',
+          killConditions: [
+            'Кредитный рейтинг эмитента в корпоративной части снижен',
+            'Дюрация портфеля выросла выше горизонта владельца',
+            'Инфляция обгоняет доходность портфеля два квартала подряд',
+          ],
+          targets: [
+            PackageTarget(assetClass: AssetClass.ofz, weightPercent: 25),
+            PackageTarget(assetClass: AssetClass.corpBonds, weightPercent: 20),
+            PackageTarget(assetClass: AssetClass.stocks, weightPercent: 15),
+            PackageTarget(assetClass: AssetClass.fxBonds, weightPercent: 13),
+            PackageTarget(assetClass: AssetClass.gold, weightPercent: 12),
+            PackageTarget(assetClass: AssetClass.floaters, weightPercent: 10),
+            PackageTarget(assetClass: AssetClass.dividendStocks, weightPercent: 5),
+          ],
+        ),
+        PackagePlan(
+          id: 'balanced_short',
+          title: 'Оптимальный',
+          horizon: PackageHorizon.oneYear,
+          riskProfile: PackageRiskProfile.optimal,
+          thesis: 'Год — слишком короткий срок, чтобы пересидеть падение '
+              'рынка акций. Поэтому доля акций здесь втрое меньше, чем на '
+              'горизонте пяти лет, а несущая часть — короткий долг.',
+          horizonYears: 1,
+          invalidation: 'Деньги понадобились раньше срока — горизонт был '
+              'выбран неверно, состав пересматривается под факт.',
+          killConditions: [
+            'Срок использования денег сдвинулся — горизонт пересматривается',
+            'Ключевая ставка развернулась — доля флоатеров пересматривается',
+            'Доля акций вышла за полосу — восстанавливается, а не догоняется',
+          ],
+          targets: [
+            PackageTarget(assetClass: AssetClass.moneyMarket, weightPercent: 25),
+            PackageTarget(assetClass: AssetClass.floaters, weightPercent: 20),
+            PackageTarget(assetClass: AssetClass.corpBonds, weightPercent: 15),
+            PackageTarget(assetClass: AssetClass.ofz, weightPercent: 12),
+            PackageTarget(assetClass: AssetClass.gold, weightPercent: 10),
+            PackageTarget(assetClass: AssetClass.fxBonds, weightPercent: 10),
+            PackageTarget(assetClass: AssetClass.stocks, weightPercent: 8),
+          ],
+        ),
+        PackagePlan(
+          id: 'aggressive_short',
+          title: 'Рискованный',
+          horizon: PackageHorizon.oneYear,
+          riskProfile: PackageRiskProfile.aggressive,
+          thesis: 'Рискованный на годовом горизонте — это не «много акций», '
+              'а «много того, что не зависит от одной ставки»: золото, '
+              'валютный долг и небольшая крипта. Акции ограничены пятой '
+              'частью: из их просадки за год выходят не всегда.',
+          horizonYears: 1,
+          invalidation: 'Просадка заставила продавать вне плана — профиль '
+              'риска выбран неверно, переходим на оптимальный.',
+          killConditions: [
+            'Просадка заставила продавать вне плана',
+            'Крипта превысила потолок 5% — восстанавливается вес, а не потолок',
+            'Срок использования денег сдвинулся — горизонт пересматривается',
+          ],
+          targets: [
+            PackageTarget(assetClass: AssetClass.stocks, weightPercent: 20),
+            PackageTarget(assetClass: AssetClass.gold, weightPercent: 15),
+            PackageTarget(assetClass: AssetClass.corpBonds, weightPercent: 15),
+            PackageTarget(assetClass: AssetClass.floaters, weightPercent: 15),
+            PackageTarget(assetClass: AssetClass.fxBonds, weightPercent: 12),
+            PackageTarget(assetClass: AssetClass.moneyMarket, weightPercent: 10),
+            PackageTarget(assetClass: AssetClass.ofz, weightPercent: 8),
+            PackageTarget(assetClass: AssetClass.crypto, weightPercent: 5),
+          ],
+        ),
+        PackagePlan(
           id: 'balanced',
           title: 'Оптимальный',
+          horizon: PackageHorizon.fivePlus,
+          riskProfile: PackageRiskProfile.optimal,
+          killConditions: [
+            'Доля акций дважды за год вышла за полосу без ребалансировки',
+            'Ключевая ставка развернулась — облигационная часть пересматривается',
+            'Крипта превысила потолок 5% — восстанавливается вес, а не потолок',
+          ],
           thesis: 'Расти вместе с рынком акций, но переживать его падения без '
               'вынужденных продаж. Защита здесь — не доходность, а запас '
               'прочности, из которого докупают на просадке. Она стоит на трёх '
@@ -223,6 +406,13 @@ class PackagePlan {
         PackagePlan(
           id: 'aggressive',
           title: 'Рискованный',
+          horizon: PackageHorizon.fivePlus,
+          riskProfile: PackageRiskProfile.aggressive,
+          killConditions: [
+            'Просадка заставила продавать вне плана — профиль выбран неверно',
+            'Индекс акций сузился до нескольких эмитентов — состав пересматривается',
+            'Крипта превысила потолок 5% — восстанавливается вес, а не потолок',
+          ],
           thesis: 'Максимум роста на горизонте десяти лет. Цена — просадки, '
               'которые придётся пересидеть не продавая; если продадите на дне, '
               'пакет не подходит. Проверка приходит в месяцы, когда индекс на '
@@ -235,9 +425,12 @@ class PackagePlan {
             PackageTarget(assetClass: AssetClass.stocks, weightPercent: 45),
             PackageTarget(assetClass: AssetClass.gold, weightPercent: 12),
             PackageTarget(assetClass: AssetClass.fxBonds, weightPercent: 10),
-            PackageTarget(assetClass: AssetClass.dividendStocks, weightPercent: 10),
-            PackageTarget(assetClass: AssetClass.crypto, weightPercent: 10),
-            PackageTarget(assetClass: AssetClass.ofz, weightPercent: 8),
+            PackageTarget(assetClass: AssetClass.dividendStocks, weightPercent: 13),
+            // ТЗ §7.1 ставит жёсткий потолок 5% на криптовалюту. Прежние 10%
+            // его нарушали; освободившиеся 5% ушли в дивидендные акции —
+            // ближайший по роли класс, а не в тот, где красивее история.
+            PackageTarget(assetClass: AssetClass.crypto, weightPercent: 5),
+            PackageTarget(assetClass: AssetClass.ofz, weightPercent: 10),
             PackageTarget(assetClass: AssetClass.floaters, weightPercent: 5),
           ],
         ),
@@ -248,16 +441,29 @@ class PackagePlan {
         'title': title,
         'thesis': thesis,
         'horizon': horizonYears,
+        'horizon_code': horizon.code,
+        'risk_profile': riskProfile.code,
         'invalidation': invalidation,
+        'kill_conditions': killConditions,
         'targets': [for (final t in targets) t.toJson()],
       };
+
+  /// Пакеты выбранного горизонта — по одному на профиль риска.
+  static List<PackagePlan> forHorizon(PackageHorizon horizon) =>
+      [for (final p in defaults()) if (p.horizon == horizon) p];
 
   static PackagePlan fromJson(Map<String, dynamic> json) => PackagePlan(
         id: json['id'] as String? ?? '',
         title: json['title'] as String? ?? '',
         thesis: json['thesis'] as String? ?? '',
         horizonYears: (json['horizon'] as num?)?.toInt() ?? 5,
+        horizon: PackageHorizon.parse(json['horizon_code'] as String?),
+        riskProfile: PackageRiskProfile.parse(json['risk_profile'] as String?),
         invalidation: json['invalidation'] as String? ?? '',
+        killConditions: [
+          for (final c in json['kill_conditions'] as List? ?? const [])
+            c as String,
+        ],
         targets: [
           for (final t in json['targets'] as List? ?? const [])
             PackageTarget.fromJson(t as Map<String, dynamic>),

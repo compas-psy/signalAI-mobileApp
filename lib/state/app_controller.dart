@@ -701,7 +701,18 @@ class AppController extends ChangeNotifier {
   final Set<String> _packageLoading = {};
 
   /// Замыслы пакетов.
-  List<PackagePlan> get packagePlans => PackagePlan.defaults();
+  /// Выбранный горизонт портфеля (ТЗ §7).
+  PackageHorizon get packageHorizon => _packageHorizon;
+  PackageHorizon _packageHorizon = PackageHorizon.fivePlus;
+
+  void setPackageHorizon(PackageHorizon horizon) {
+    if (_packageHorizon == horizon) return;
+    _packageHorizon = horizon;
+    notifyListeners();
+  }
+
+  /// Пакеты выбранного горизонта — по одному на профиль риска.
+  List<PackagePlan> get packagePlans => PackagePlan.forHorizon(_packageHorizon);
 
   /// Историческая симуляция пакета. null — ещё не считали.
   PackageBacktest? packageHistory(String id) => _packageHistory[id];
