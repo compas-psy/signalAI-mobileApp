@@ -423,9 +423,38 @@ jobs:
           HOST: ${{ inputs.host_override || secrets.VPS_HOST || secrets.SERVER_HOST }}
           USER_NAME: ${{ secrets.VPS_USER || inputs.ssh_user }}
         run: |
-          ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$USER_NAME@$HOST" \
-            'SUDO=""; [ "$(id -u)" -eq 0 ] || SUDO=sudo; $SUDO docker compose --env-file /etc/signalai/.env -f "$HOME/signalai/server/docker-compose.yml" logs --tail 120 api' \
+          ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$USER_NAME@$HOST" 'bash -s' <<'REMOTE' \
             || echo "логи получить не удалось"
+          SUDO=""; [ "$(id -u)" -eq 0 ] || SUDO=sudo
+          COMPOSE="$SUDO docker compose --env-file /etc/signalai/.env -f $HOME/signalai/server/docker-compose.yml"
+
+          echo "──────── API ────────"
+          $COMPOSE logs --tail 40 api
+
+          echo
+          echo "──────── планировщик ────────"
+          # Ради этих строк логи и смотрят: по ним видно, дошла ли загрузка
+          # до биржи и что именно она принесла.
+          $COMPOSE logs --tail 60 scheduler 2>/dev/null || echo "сервис не запущен"
+
+          echo
+          echo "──────── что загружено ────────"
+          curl -fsS --max-time 20 http://127.0.0.1:8000/api/v1/market/status 2>/dev/null \
+            | python3 -c '
+          import json, sys
+          d = json.load(sys.stdin)
+          print("инструментов:", d["instruments_total"],
+                "| во вселенной:", d["in_universe"],
+                "| допущено:", d["tradable"],
+                "| с данными:", d["with_data"])
+          print("самый свежий бар:", d["last_bar_time"])
+          for r in d["instruments"][:12]:
+              print(f"  {r[\"instrument_id\"]:26} 1d={r[\"daily_bars\"]:>5} 1h={r[\"hourly_bars\"]:>5}"
+                    f"  {r[\"universe_note\"][:70]}")
+          for e in d["recent_quality_events"][:8]:
+              print(f"  ! {e[\"flag\"]}: {e[\"detail\"][:90]}")
+          ' || echo "статус недоступен"
+          REMOTE
 
       - name: Убрать ключ
         if: always()
