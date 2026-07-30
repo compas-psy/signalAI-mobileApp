@@ -9,6 +9,7 @@ import '../../state/navigation.dart';
 import '../../theme/tokens.dart';
 import '../../theme/typography.dart';
 import '../widgets/common.dart';
+import 'engine_idea_screen.dart';
 import 'ideas_screen.dart';
 
 /// Экран «Сегодня» (ТЗ §6).
@@ -50,7 +51,10 @@ class TodayScreen extends StatelessWidget {
             IdeaCard(
               idea: idea,
               now: now,
-              onTap: () => controller.openSignal(idea.id),
+              // Не отправляем ID серверной идеи в legacy-разбор локального
+              // дайджеста: при несовпадении он показывал первый попавшийся
+              // локальный сигнал. Разбор открывается из того же Engine API.
+              onTap: () => openEngineIdea(context, idea),
             ),
             if (idea != top.last) const SizedBox(height: S.gap),
           ],
