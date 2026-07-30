@@ -26,7 +26,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..models import Bar, DataQualityEvent
+from ..models import Bar, DataQualityEvent, PortfolioModel
 from ..models.enums import Timeframe
 
 log = logging.getLogger("signalai.scheduler")
@@ -216,6 +216,22 @@ def build_default_scheduler(
         )
 
     def portfolio(session: Session) -> str:
+        # Прогон тяжёлый — сотня оптимизаций на каждый вариант, — а
+        # планировщик последователен: пока он идёт, скан идей не работает.
+        # Поэтому сначала дешёвый вопрос: появились ли вообще новые данные
+        # с прошлой сборки. Не появились — считать нечего, тот же состав
+        # получится тот же.
+        newest = session.execute(
+            select(func.max(Bar.open_time)).where(
+                Bar.timeframe == Timeframe.D1, Bar.is_closed.is_(True)
+            )
+        ).scalar_one_or_none()
+        built = session.execute(
+            select(func.min(PortfolioModel.generated_at))
+        ).scalar_one_or_none()
+        if newest is not None and built is not None and built > newest:
+            return f"новых дневок с {newest.date().isoformat()} нет — пересчёт пропущен"
+
         # Класс фонда уточняется перед сборкой, а не при загрузке: он
         # выводится из накопленного ряда цен, и до первой истории мерить
         # нечего. Дешёвая операция, ошибиться порядком запуска дороже.

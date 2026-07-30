@@ -51,7 +51,7 @@ def main() -> int:
         ingest_every=_minutes("SIGNALAI_INGEST_EVERY_MINUTES", 15),
         review_every=_minutes("SIGNALAI_REVIEW_EVERY_MINUTES", 360),
         scan_every=_minutes("SIGNALAI_SCAN_EVERY_MINUTES", 15),
-        portfolio_every=_minutes("SIGNALAI_PORTFOLIO_EVERY_MINUTES", 180),
+        portfolio_every=_minutes("SIGNALAI_PORTFOLIO_EVERY_MINUTES", 60),
     )
 
     stopping = {"now": False}

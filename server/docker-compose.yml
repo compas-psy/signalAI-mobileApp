@@ -85,7 +85,7 @@ services:
       # месяцами, а прогон — сотня оптимизаций на каждый вариант. Пересчёт
       # каждые пятнадцать минут не сделал бы состав точнее, а нагрузку
       # поднял бы на порядок.
-      SIGNALAI_PORTFOLIO_EVERY_MINUTES: ${SIGNALAI_PORTFOLIO_EVERY_MINUTES:-180}
+      SIGNALAI_PORTFOLIO_EVERY_MINUTES: ${SIGNALAI_PORTFOLIO_EVERY_MINUTES:-60}
     command: ["python", "-m", "app.scheduler"]
 
   # Исполнение вынесено в отдельный контейнер (UX-ТЗ §16.1, §19.1): у него
