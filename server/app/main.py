@@ -12,6 +12,9 @@
 * Эндпоинты, за которыми ещё нет движка, отвечают 503 с причиной. Пустой
   список вместо этого читался бы как «сегодня нет сетапов» (§32: приложение
   не создаёт иллюзию точности).
+* Все внешние ``/api/*`` требуют токен устройства. APK и так передаёт его в
+  заголовке Bearer; сервер обязан проверять этот заголовок, а не оставлять
+  торговый контур публичным.
 """
 
 from __future__ import annotations
@@ -28,6 +31,7 @@ from .config import get_config
 from .db import get_engine
 from .models.enums import ExecutionMode
 from .schemas.common import HealthResponse
+from .security import DeviceTokenMiddleware
 from .version import API_VERSION, ENGINE_VERSION, FEATURE_VERSION
 
 app = FastAPI(
@@ -40,6 +44,7 @@ app = FastAPI(
         "определение: P(TP1 раньше SL в пределах горизонта)."
     ),
 )
+app.add_middleware(DeviceTokenMiddleware)
 
 v1 = APIRouter(prefix="/api/v1")
 v1.include_router(market_routes.router)
