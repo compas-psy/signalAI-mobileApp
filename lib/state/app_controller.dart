@@ -6,6 +6,7 @@ import '../data/api/api_client.dart';
 import '../data/api/engine_client.dart';
 import '../data/broker/tinvest_broker.dart';
 import '../data/local_analysis_repository.dart';
+import '../data/market/idea_chart_source.dart';
 import '../data/market/iss_client.dart';
 import '../data/mock/demo_ideas.dart';
 import '../data/mock/demo_repository.dart';
@@ -295,7 +296,8 @@ class AppController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Свечи графика по идеям — те, что отдал движок (§23).
+  /// Свечи графика по идеям: движок, а если он молчит — биржа напрямую.
+  final IdeaChartSource _chartSource = IdeaChartSource();
   final Map<String, SignalChart> _ideaCharts = {};
   final Set<String> _ideaChartsAsked = {};
 
@@ -313,7 +315,12 @@ class AppController extends ChangeNotifier {
     final timeframe = idea.timeframes.length >= 2
         ? idea.timeframes[1]
         : (idea.timeframes.isEmpty ? '1h' : idea.timeframes.first);
-    final chart = await _engine.bars(idea.instrumentId, timeframe: timeframe);
+    // Движок первый: он считал идею и знает, под какими барами лежит её
+    // разметка. Биржа вторая — но она есть всегда, ключа не требует и
+    // работает, когда сервер молчит. Решение владельца: подключённые
+    // источники данных годятся не только для расчёта, но и для картинки.
+    final chart = await _engine.bars(idea.instrumentId, timeframe: timeframe) ??
+        await _chartSource.load(idea);
     if (chart == null) return;
     _ideaCharts[idea.id] = chart;
     notifyListeners();
