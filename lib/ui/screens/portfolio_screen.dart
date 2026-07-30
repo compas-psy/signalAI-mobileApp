@@ -6,13 +6,13 @@ import '../../state/navigation.dart';
 import '../../theme/tokens.dart';
 import '../widgets/segmented.dart';
 import 'capital_screen.dart';
+import 'rebalance_screen.dart';
 
 /// Раздел «Портфель» (ТЗ §7).
 ///
-/// Пакеты, черновик ребалансировки и счета. Содержимое пока берётся из
-/// прежнего раздела «Капитал»: он читает те же книгу, счета и цены, и
-/// выбрасывать рабочий код ради переименования было бы вредительством.
-/// Экраны переводятся на модель ТЗ §7.1 по одному, а не разом.
+/// Пакеты, фактическая ребалансировка и счета. Старый экран капитала остаётся
+/// источником учёта и счетов, но подпункт «Ребалансировка» больше не маскирует
+/// обзор P&L под список торговых действий.
 class PortfolioScreen extends StatelessWidget {
   const PortfolioScreen({super.key, required this.pill});
 
@@ -23,18 +23,17 @@ class PortfolioScreen extends StatelessWidget {
     final controller = AppScope.of(context);
     final section =
         PortfolioPill.values[pill.clamp(0, PortfolioPill.values.length - 1)];
-    final body = CapitalScreen(
-      pill: switch (section) {
-        PortfolioPill.packages => CapitalPill.packages.index,
-        PortfolioPill.rebalance => CapitalPill.overview.index,
-        PortfolioPill.accounts => CapitalPill.accounts.index,
-      },
-    );
+    final Widget body = switch (section) {
+      PortfolioPill.packages =>
+        CapitalScreen(pill: CapitalPill.packages.index),
+      PortfolioPill.rebalance => const RebalanceScreen(),
+      PortfolioPill.accounts =>
+        CapitalScreen(pill: CapitalPill.accounts.index),
+    };
 
-    // Горизонт переключает не оформление, а состав: на годовом сроке
-    // просадку рынка акций пересидеть нельзя, и веса другие во всех трёх
-    // профилях. Поэтому переключатель стоит над пакетами, а не внутри.
-    if (section != PortfolioPill.packages) return body;
+    // Горизонт переключает не оформление, а состав пакетов и предложения по
+    // ребалансировке. Поэтому выбор виден и на пакетах, и на действиях.
+    if (section == PortfolioPill.accounts) return body;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
