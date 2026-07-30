@@ -39,6 +39,9 @@ services:
     environment:
       SIGNALAI_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-signalai}
       SIGNALAI_REDIS_URL: redis://redis:6379/0
+      # Тот же токен зашивается в sideload APK. Без него внешний API должен
+      # закрыться, а не работать публично.
+      SIGNALAI_DEVICE_TOKEN: ${SIGNALAI_DEVICE_TOKEN:?нужен SIGNALAI_DEVICE_TOKEN}
     ports:
       - "127.0.0.1:8000:8000"
     command: >
