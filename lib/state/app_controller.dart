@@ -7,6 +7,8 @@ import '../data/api/engine_client.dart';
 import '../data/broker/tinvest_broker.dart';
 import '../data/local_analysis_repository.dart';
 import '../data/market/iss_client.dart';
+import '../data/mock/demo_ideas.dart';
+import '../data/mock/demo_repository.dart';
 import '../data/native_bridge.dart';
 import '../data/ledger/capital_desk.dart';
 import '../data/repository.dart';
@@ -115,6 +117,15 @@ class AppController extends ChangeNotifier {
 
   final SignalAiRepository _repository;
   final NativeBridge _bridge;
+
+  /// Данные — из макета, а не с рынка.
+  ///
+  /// Демо-сборка нужна, чтобы смотреть интерфейс без движка и без сети. Но
+  /// приложение отправляет заявки, и цифры в нём читаются как торговые: тикер,
+  /// уровни, риск в рублях выглядят одинаково независимо от происхождения.
+  /// Поэтому демо-режим обязан назвать себя на экране — иначе выдуманный
+  /// уровень входа однажды будет исполнен руками.
+  bool get demoData => _repository is DemoRepository;
 
   /// Блокировка состояния. null — режим без фонового контура (демо).
   StateLock? get _lock {
@@ -269,14 +280,52 @@ class AppController extends ChangeNotifier {
   Map<String, dynamic>? get engineDataStatus => _engineDataStatus;
 
   /// Обновить выдачу движка.
+  ///
+  /// В демо-режиме движка нет и быть не должно: идеи берутся из макета. Без
+  /// этой ветки демо-сборка показывала «движок не ответил» на всех экранах —
+  /// то есть ровно ничего, хотя её единственная задача показать интерфейс.
   Future<void> refreshIdeas() async {
+    if (demoData) {
+      _engineIdeas = EngineIdeas(ideas: DemoIdeas.all(DateTime.now()));
+      notifyListeners();
+      return;
+    }
     _engineIdeas = await _engine.today();
     _engineDataStatus = await _engine.dataStatus();
     notifyListeners();
   }
 
+  /// Свечи графика по идеям — те, что отдал движок (§23).
+  final Map<String, SignalChart> _ideaCharts = {};
+  final Set<String> _ideaChartsAsked = {};
+
+  /// График идеи. null — ещё не загружен или движок его не отдал.
+  SignalChart? ideaChart(String ideaId) => _ideaCharts[ideaId];
+
+  /// Загрузить свечи для идеи. Повторный вызов ничего не делает: разбор
+  /// перестраивается на каждом кадре анимации, и запрос на кадр положил бы и
+  /// сервер, и батарею.
+  Future<void> loadIdeaChart(Idea idea) async {
+    if (_ideaChartsAsked.contains(idea.id)) return;
+    _ideaChartsAsked.add(idea.id);
+    // Таймфрейм сетапа — тот, на котором идея построена. Контекстный слишком
+    // крупен для зоны входа, триггерный слишком мелок для структуры.
+    final timeframe = idea.timeframes.length >= 2
+        ? idea.timeframes[1]
+        : (idea.timeframes.isEmpty ? '1h' : idea.timeframes.first);
+    final chart = await _engine.bars(idea.instrumentId, timeframe: timeframe);
+    if (chart == null) return;
+    _ideaCharts[idea.id] = chart;
+    notifyListeners();
+  }
+
   /// Полная карточка идеи: план, разбор оценки, доказательства, разметка.
-  Future<Idea?> ideaDetail(String id) => _engine.detail(id);
+  Future<Idea?> ideaDetail(String id) async {
+    if (demoData) {
+      return _engineIdeas.ideas.where((i) => i.id == id).firstOrNull;
+    }
+    return _engine.detail(id);
+  }
 
   /// Показатели журнала (ТЗ §12.1). null — журнала нет вовсе.
   JournalMetrics? get journalMetrics {

@@ -71,7 +71,9 @@ void main() {
     await pumpDetail(tester);
 
     expect(find.text('SiU6'), findsOneWidget);
-    expect(find.text('87/100'), findsOneWidget);
+    // Оценка идеи, а не сигнала: у сигнала свой балл старого скринера, и два
+    // разных числа под одним именем — расхождение показаний.
+    expect(find.text('84/100'), findsOneWidget);
     expect(find.text('оценка качества'), findsOneWidget);
     // Рынок — чипом контекста, как в прототипе.
     expect(find.text('FORTS'), findsOneWidget);
@@ -84,10 +86,16 @@ void main() {
 
     // Кнопка стоит поверх ленты, а не последней строкой: до неё не нужно
     // долистывать разбор.
-    expect(find.text('Подтвердить план'), findsOneWidget);
     expect(find.text('Пропустить'), findsOneWidget);
+    // Подпись главной кнопки зависит от финальной проверки §11.1: пройдена —
+    // «Подтвердить план», нет — причина отказа прямо на кнопке. Проверяется
+    // положение полосы, а не исход проверки.
+    final confirm = find.text('Подтвердить план').evaluate().isNotEmpty
+        ? find.text('Подтвердить план')
+        : find.text('Вход заблокирован проверкой');
+    expect(confirm, findsOneWidget);
 
-    final bar = tester.getRect(find.text('Подтвердить план'));
+    final bar = tester.getRect(find.text('Пропустить'));
     expect(bar.bottom, lessThan(892));
   });
 

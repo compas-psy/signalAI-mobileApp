@@ -27,7 +27,15 @@ class TradeChart extends StatefulWidget {
     this.annotations = const [],
     this.visibleLayers = allLayers,
     this.highlight = const {},
+    this.chart,
   });
+
+  /// Свечи, загруженные с движка (§23, `market/{id}/bars`).
+  ///
+  /// null — рисуем те, что пришли вместе с сигналом. Раньше второго источника
+  /// не было вовсе: идеи считает движок, а свечи умел строить только скринер
+  /// на устройстве — и разбор идеи всегда показывал заглушку.
+  final SignalChart? chart;
 
   /// Слои, которые этот график умеет рисовать.
   ///
@@ -89,7 +97,9 @@ class _TradeChartState extends State<TradeChart> with SingleTickerProviderStateM
 
   @override
   Widget build(BuildContext context) {
-    final chart = widget.signal.chart;
+    // Свечи движка приоритетнее сигнальных: идею считал он, и рисовать под
+    // его разметкой чужие бары нельзя.
+    final chart = widget.chart ?? widget.signal.chart;
     if (chart == null || chart.candles.length < 2) {
       return const _ChartUnavailable();
     }

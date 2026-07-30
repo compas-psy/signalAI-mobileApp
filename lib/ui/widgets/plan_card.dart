@@ -71,10 +71,13 @@ class PlanCard extends StatelessWidget {
         label: plan == null
             ? (signal.entryIsStop ? 'Вход · стоп' : 'Вход · лимит')
             : 'Вход · ${plan.orderType.label.toLowerCase()}',
-        value: plan == null
-            ? fmtPrice(signal.entry, decimals)
-            : '${fmtPrice(plan.entryLow, decimals)}–${fmtPrice(plan.entryHigh, decimals)}',
+        // Зона входа двумя числами в одну плитку не помещается и обрезается
+        // многоточием — а обрезанная цена хуже отсутствующей. Нижняя граница
+        // это цена заявки, верхняя — предел, за которым сделка уже другая;
+        // вторая уходит подписью и остаётся на экране целиком.
+        value: fmtPrice(plan?.entryLow ?? signal.entry, decimals),
         color: C.accent,
+        hint: plan == null ? null : 'до ${fmtPrice(plan.entryHigh, decimals)}',
       ),
       MetricTile(
         label: 'Стоп',
@@ -135,15 +138,21 @@ class PlanCard extends StatelessWidget {
       ),
       // Потенциал сделки в деньгах: сколько принесут все тейки с их долями и
       // сколько заберёт стоп — при рассчитанном объёме.
+      //
+      // Когда план есть, обе цифры считаются по нему, а не по профилю риска.
+      // Иначе на одной карточке стояло «риск 2 920 ₽» и «убыток по стопу
+      // 17 600 ₽»: первое — из плана движка, второе — из процента депозита,
+      // и они относятся к разным объёмам. Одна карточка, два ответа на один
+      // вопрос — это не мелочь оформления, это потеря доверия к числам.
       MetricTile(
         label: 'Прибыль',
-        value: '+${fmt(PositionSizing.potentialProfitRub(signal, risk), 0)} ₽',
+        value: '+${fmt(plan == null ? PositionSizing.potentialProfitRub(signal, risk) : plan.weightedR * plan.riskRubles, 0)} ₽',
         color: C.green,
         hint: 'все тейки с долями',
       ),
       MetricTile(
         label: 'Убыток',
-        value: '−${fmt(PositionSizing.potentialLossRub(signal, risk), 0)} ₽',
+        value: '−${fmt(plan?.riskRubles ?? PositionSizing.potentialLossRub(signal, risk), 0)} ₽',
         color: C.red,
         hint: 'если сработает стоп',
       ),

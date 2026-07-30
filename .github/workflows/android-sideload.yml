@@ -33,6 +33,18 @@ on:
         description: 'Адрес движка (пусто — возьмётся секрет SIGNALAI_API_BASE_URL)'
         required: false
         default: ''
+      mode:
+        # Идеи считает движок (§18); на устройстве они не собираются. Значит
+        # без адреса движка лента пуста по построению — и посмотреть на ней
+        # нечего, даже когда сам интерфейс готов. Демо-режим существует ровно
+        # для этого случая: данные макета, без сети и без сервера. Сборка
+        # называет себя полосой «ДЕМО» на каждом экране — выдуманные уровни
+        # обязаны быть отличимы от рыночных.
+        description: 'Данные: local — считает устройство, demo — макет (для просмотра интерфейса)'
+        required: false
+        default: local
+        type: choice
+        options: [local, demo, server]
   push:
     tags:
       - 'sideload-*'
@@ -180,8 +192,12 @@ jobs:
         env:
           API_BASE_URL: ${{ inputs.api_base_url || secrets.SIGNALAI_API_BASE_URL }}
           DEVICE_TOKEN: ${{ secrets.SIGNALAI_DEVICE_TOKEN }}
+          MODE: ${{ inputs.mode || 'local' }}
         run: |
-          if [ -z "$API_BASE_URL" ]; then
+          echo "Режим данных: ${MODE}"
+          if [ "$MODE" = "demo" ]; then
+            echo "::warning::Демо-сборка: данные из макета, не с рынка. Для просмотра интерфейса, не для торговли."
+          elif [ -z "$API_BASE_URL" ]; then
             echo "::warning::Адрес движка не задан — APK соберётся, но идей не покажет."
             echo "Задайте секрет SIGNALAI_API_BASE_URL либо параметр api_base_url."
           else
@@ -191,6 +207,7 @@ jobs:
           fi
           flutter build apk --release \
             --build-number=${{ github.run_number }} \
+            --dart-define=SIGNALAI_MODE="$MODE" \
             --dart-define=SIGNALAI_API_BASE_URL="$API_BASE_URL" \
             --dart-define=SIGNALAI_DEVICE_TOKEN="$DEVICE_TOKEN"
 

@@ -346,7 +346,10 @@ class InvalidationCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const SectionLabel('Когда идея сломана'),
+          // Формулировка прототипа: «Когда идея отменяется». Заголовок один и
+          // тот же и здесь, и у идеи без плана — иначе один и тот же блок
+          // называется на экране двумя именами.
+          const SectionLabel('Когда идея отменяется'),
           const SizedBox(height: 8),
           if (conditions.isEmpty)
             Text(

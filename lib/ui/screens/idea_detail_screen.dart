@@ -97,6 +97,12 @@ class _IdeaDetailScreenState extends State<IdeaDetailScreen> {
         if (!_hidden.contains(layer)) layer,
     };
     final execution = controller.execution(signal.id);
+    // Свечи движка тянутся при первом показе разбора: до этого график идеи
+    // не наполнялся ничем, потому что идеи приходят с сервера, а свечи умел
+    // строить только скринер на устройстве.
+    if (idea != null && controller.ideaChart(idea.id) == null) {
+      controller.loadIdeaChart(idea);
+    }
 
     final screen = Stack(
       children: [
@@ -114,6 +120,7 @@ class _IdeaDetailScreenState extends State<IdeaDetailScreen> {
             IdeaChartCard(
               signal: signal,
               idea: idea,
+              chart: idea == null ? null : controller.ideaChart(idea.id),
               available: available,
               visible: visible,
               highlight: _highlightKeys(idea, _selectedEvidence),

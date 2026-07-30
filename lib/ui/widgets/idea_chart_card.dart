@@ -23,10 +23,14 @@ class IdeaChartCard extends StatelessWidget {
     required this.visible,
     required this.highlight,
     required this.onToggle,
+    this.chart,
   });
 
   final TradingSignal signal;
   final Idea? idea;
+
+  /// Свечи с движка. null — рисуем то, что пришло с сигналом.
+  final SignalChart? chart;
 
   /// Слои, за которыми стоит доказательство этой идеи.
   final Set<ChartLayer> available;
@@ -41,7 +45,8 @@ class IdeaChartCard extends StatelessWidget {
       for (final layer in ChartLayer.values)
         if (available.contains(layer)) layer,
     ];
-    final hasChart = signal.chart != null;
+    final drawn = chart ?? signal.chart;
+    final hasChart = drawn != null;
     return Container(
       clipBehavior: Clip.antiAlias,
       decoration: BoxDecoration(
@@ -55,8 +60,8 @@ class IdeaChartCard extends StatelessWidget {
           // Без свечей переключать нечего: панель слоёв там была бы
           // управлением без объекта.
           if (hasChart) _Toolbar(
-            timeframes: _timeframes(),
-            active: signal.chart!.timeframeLabel,
+            timeframes: _timeframes(drawn.timeframeLabel),
+            active: drawn.timeframeLabel,
             layers: layers,
             visible: visible,
             onToggle: onToggle,
@@ -65,6 +70,7 @@ class IdeaChartCard extends StatelessWidget {
             children: [
               TradeChart(
                 signal: signal,
+                chart: chart,
                 // Разметка §10.6 — та, что нашли детекторы движка.
                 annotations: idea?.annotations ?? const [],
                 visibleLayers: visible,
@@ -79,11 +85,12 @@ class IdeaChartCard extends StatelessWidget {
                   alignment: WrapAlignment.end,
                   spacing: 5,
                   runSpacing: 5,
+                  // Оценка и R:R — те же числа, что в шапке и в плане: у
+                  // сигнала и у идеи они свои, и показывать здесь сигнальные
+                  // значило бы подписать график чужими цифрами.
                   children: [
-                    if (idea != null) _LegendPill(idea!.strategy.role),
-                    _LegendPill('Оценка ${signal.score}'),
-                    if (signal.riskReward.isNotEmpty)
-                      _LegendPill('R:R ${signal.riskReward}'),
+                    _LegendPill('Оценка ${idea?.score.value ?? signal.score}'),
+                    ?_rrPill(),
                   ],
                 ),
               ),
@@ -107,13 +114,24 @@ class IdeaChartCard extends StatelessWidget {
     );
   }
 
+  /// Пилюля R:R. Значение плана точнее сигнального: план и есть то, что
+  /// подписывают. Нет ни того, ни другого — пилюли нет.
+  Widget? _rrPill() {
+    final plan = idea?.plan;
+    if (plan != null) {
+      return _LegendPill(
+        'R:R ${plan.rrToSecondTarget.toStringAsFixed(1).replaceAll('.', ',')}',
+      );
+    }
+    return signal.riskReward.isEmpty ? null : _LegendPill('R:R ${signal.riskReward}');
+  }
+
   /// Таймфреймы для переключателя.
   ///
   /// Свечи приходят одним таймфреймом — тем, на котором считался сигнал.
   /// Остальные участвовали в анализе, но графика по ним нет, и рисовать
   /// работающую на вид кнопку, которая ничего не меняет, нельзя.
-  List<String> _timeframes() {
-    final chartTf = signal.chart?.timeframeLabel ?? '';
+  List<String> _timeframes(String chartTf) {
     final all = [...?idea?.timeframes];
     if (chartTf.isNotEmpty && !all.contains(chartTf)) all.insert(0, chartTf);
     return all;

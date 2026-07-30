@@ -4,7 +4,9 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:signalai/data/mock/demo_repository.dart';
 import 'package:signalai/main.dart';
+import 'package:signalai/data/api/engine_client.dart';
 import 'package:signalai/state/app_scope.dart';
+import 'package:signalai/ui/app_shell.dart';
 
 void main() {
   /// Экран телефона из макета — 412×892.
@@ -117,16 +119,36 @@ void main() {
     ));
   });
 
-  testWidgets('без движка лента честно говорит, что движок не ответил',
-      (tester) async {
+  test('без адреса движка выдача объясняет молчание, а не пустоту', () async {
     // Идеи считает сервер (§18). В сборке без его адреса показывать нечего —
     // и это обязано читаться как «движок молчит», а не как «сетапов нет»
     // (§24). Разница в действиях: чинить связь или ждать рынок.
+    //
+    // Проверяется на клиенте движка, а не через приложение: демо-сборка
+    // намеренно подставляет идеи макета, и через неё этот случай больше не
+    // воспроизвести.
+    final ideas = await EngineClient().today();
+
+    expect(ideas.isAvailable, isFalse);
+    expect(ideas.ideas, isEmpty);
+    expect(ideas.unavailableReason, contains('Адрес движка не задан'));
+    // Ключевое: причина «нет сетапов» пуста. Заполни её здесь — и обрыв
+    // связи стал бы на экране спокойным днём.
+    expect(ideas.noSetupsReason, isNull);
+  });
+
+  testWidgets('демо-сборка называет себя и показывает идеи макета',
+      (tester) async {
+    // Демо-режим существует, чтобы смотреть интерфейс без движка. Но
+    // приложение отправляет заявки, и выдуманный уровень входа выглядит как
+    // настоящий — поэтому сборка обязана сказать о себе на экране.
     await pumpApp(tester);
     await goTo(tester, 'Идеи', 'Все');
 
-    expect(find.text('Движок не ответил'), findsOneWidget);
-    expect(find.textContaining('идеи считает сервер'), findsOneWidget);
+    expect(find.byType(DemoBanner), findsOneWidget);
+    expect(find.textContaining('данные макета'), findsOneWidget);
+    // И ради чего всё: лента не пуста, разбор есть что открыть.
+    expect(find.text('SiU6'), findsWidgets);
   });
 
   testWidgets('«Сегодня» отвечает на три вопроса: деньги, риск, решения',

@@ -1,6 +1,6 @@
+import '../../domain/models/signal.dart';
 import '../../domain/idea/idea.dart';
 import 'api_client.dart';
-import 'api_config.dart';
 import 'engine_contract.dart';
 
 /// Клиент движка по контракту §18.
@@ -43,7 +43,7 @@ class EngineClient {
 
   static const _base = '/api/v1';
 
-  bool get isConfigured => ApiConfig.isConfigured;
+  bool get isConfigured => _api.baseUrl.isNotEmpty;
 
   /// Карточки дня (§16): не больше трёх, с причиной, если торговать нечего.
   Future<EngineIdeas> today() async {
@@ -104,6 +104,65 @@ class EngineClient {
       return EngineIdeas.unavailable(_reason(error));
     }
   }
+
+  /// Свечи инструмента (§23, `GET /api/v1/market/{id}/bars`).
+  ///
+  /// До этого график идеи не наполнялся ничем: свечи умел строить только
+  /// скринер на устройстве, а идеи приходят с движка — и разбор всегда
+  /// показывал заглушку «живой график недоступен». Два конца одной картинки
+  /// были подключены к разным источникам.
+  ///
+  /// Цены приходят строками намеренно (`Money` в схемах сервера): JSON-число
+  /// это double, и шаг цены 0,005 на другом конце становится
+  /// 0,004999999999999999. Разбираем строку, а не число.
+  ///
+  /// `closed_only` не трогаем — сервер по умолчанию отдаёт только закрытые
+  /// бары (§4.4). Незакрытый бар на графике живёт своей жизнью между двумя
+  /// запросами, и разметка по нему уезжает.
+  Future<SignalChart?> bars(
+    String instrumentId, {
+    required String timeframe,
+    int limit = 200,
+  }) async {
+    if (!isConfigured) return null;
+    try {
+      final raw = await _api.getList(
+        '$_base/market/$instrumentId/bars?timeframe=$timeframe&limit=$limit',
+      );
+      final candles = <ChartCandle>[];
+      for (final item in raw) {
+        if (item is! Map<String, dynamic>) continue;
+        final open = _price(item['open']);
+        final high = _price(item['high']);
+        final low = _price(item['low']);
+        final close = _price(item['close']);
+        // Свеча без полной цены не рисуется вовсе: дорисованный нулём бар
+        // выглядит как обвал, которого не было.
+        if (open == null || high == null || low == null || close == null) {
+          continue;
+        }
+        candles.add(ChartCandle(
+          open,
+          high,
+          low,
+          close,
+          DateTime.tryParse('${item['open_time']}')?.toLocal(),
+        ));
+      }
+      if (candles.isEmpty) return null;
+      return SignalChart(timeframeLabel: timeframe, candles: candles);
+    } catch (_) {
+      // Молча: график — не то, ради чего стоит рушить разбор идеи. Его
+      // отсутствие видно на самом графике, и там же написана причина.
+      return null;
+    }
+  }
+
+  static double? _price(Object? raw) => switch (raw) {
+        num n => n.toDouble(),
+        String s => double.tryParse(s),
+        _ => null,
+      };
 
   /// Состояние загрузки данных: без него пустая выдача неотличима от
   /// «данные не приехали».

@@ -315,8 +315,12 @@ class ActionButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final enabled = onTap != null;
+    // Погашенная главная кнопка заливается тёмным — значит и текст на ней
+    // тёмным быть не может. Раньше `C.onAccent` (почти чёрный) оставался и
+    // здесь: кнопка «Вход заблокирован проверкой» выглядела пустым
+    // прямоугольником, то есть причина отказа не читалась вовсе.
     final foreground = primary
-        ? C.onAccent
+        ? (enabled ? C.onAccent : C.faint)
         : (enabled ? color : C.faint);
     return Pressable(
       onTap: onTap,

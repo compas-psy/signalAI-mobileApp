@@ -73,6 +73,7 @@ class AppShell extends StatelessWidget {
     if (!pane.usesSideNav) {
       return Column(
         children: [
+          if (controller.demoData) const DemoBanner(),
           Expanded(child: _content(controller, pane)),
           if (!controller.sheetOpen)
             BottomNav(
@@ -82,6 +83,15 @@ class AppShell extends StatelessWidget {
         ],
       );
     }
+    return Column(
+      children: [
+        if (controller.demoData) const DemoBanner(),
+        Expanded(child: _sideNavBody(controller, pane)),
+      ],
+    );
+  }
+
+  Widget _sideNavBody(AppController controller, Pane pane) {
     return Row(
       children: [
         SideNav(
@@ -233,6 +243,30 @@ class AppShell extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Полоса «данные из макета» для демо-сборки.
+///
+/// Демо-сборка существует ради одного: посмотреть интерфейс, когда движка нет
+/// под рукой. Но приложение отправляет заявки, и выдуманный уровень входа
+/// выглядит на экране ровно так же, как настоящий. Полоса стоит над всеми
+/// разделами и не убирается: спрятать её значит однажды исполнить руками
+/// цену, которой на рынке не было.
+class DemoBanner extends StatelessWidget {
+  const DemoBanner({super.key});
+
+  @override
+  Widget build(BuildContext context) => Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(horizontal: S.screen, vertical: 7),
+        color: C.warningFaint,
+        child: Text(
+          'ДЕМО · данные макета, а не рынок. Уровни, риск и результаты '
+          'выдуманы — исполнять их нельзя.',
+          textAlign: TextAlign.center,
+          style: T.body(10.5, weight: 700, color: C.warning, height: 1.35),
+        ),
+      );
 }
 
 /// Правая колонка планшета, пока идея не выбрана.

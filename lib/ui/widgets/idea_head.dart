@@ -176,7 +176,11 @@ class IdeaDetailHead extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.end,
           children: [
             Text(
-              '${signal.score}/100',
+              // Оценка берётся у идеи, если разбор приехал: у сигнала свой
+              // балл старого скринера, и рядом в ленте стоит идейный. Два
+              // разных числа под одним именем — расхождение показаний, а не
+              // мелочь оформления.
+              '${idea?.score.value ?? signal.score}/100',
               style: T.mono(23, weight: 600, color: C.accent),
             ),
             Text('оценка качества', style: T.body(10, color: C.faint)),
