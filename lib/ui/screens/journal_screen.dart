@@ -1,5 +1,6 @@
 import 'package:flutter/widgets.dart';
 
+import '../../core/format.dart';
 import '../../domain/idea/journal_metrics.dart';
 import '../../domain/idea/skip_record.dart';
 import '../../domain/models/portfolio.dart';
@@ -9,6 +10,7 @@ import '../../theme/tokens.dart';
 import '../../theme/typography.dart';
 import '../widgets/common.dart';
 import '../widgets/execution_strip.dart';
+import '../widgets/segmented.dart';
 import 'trades_screen.dart';
 
 /// Раздел «Журнал» (ТЗ §12).
@@ -235,6 +237,11 @@ class MetricsView extends StatelessWidget {
     return ListView(
       padding: const EdgeInsets.fromLTRB(S.screen, 12, S.screen, 18),
       children: [
+        // Прототип открывает журнал четырьмя числами: expectancy, profit
+        // factor, винрейт и просадка. Раньше они лежали строками внутри
+        // карточки «Итого» — сравнить их взглядом было нельзя.
+        _HeadlineMetrics(slice: metrics.overall),
+        const SizedBox(height: 12),
         _SliceCard(slice: metrics.overall, title: 'Итого'),
         const SizedBox(height: 12),
         SectionCard(
@@ -276,6 +283,79 @@ class MetricsView extends StatelessWidget {
       ],
     );
   }
+}
+
+/// Четыре главных числа журнала (прототип: блок `cards`).
+///
+/// Каждое с подписью, что оно означает и с чем сравнивается. Отсутствие
+/// значения показывается прочерком с причиной, а не нулём: «ноль» и «не из
+/// чего посчитать» — разные утверждения, и второе здесь встречается чаще.
+class _HeadlineMetrics extends StatelessWidget {
+  const _HeadlineMetrics({required this.slice});
+
+  final MetricSlice slice;
+
+  @override
+  Widget build(BuildContext context) {
+    final expectancy = slice.expectancyR;
+    final pf = slice.profitFactor;
+    final win = slice.winRate;
+    final avgWin = slice.averageWinR;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        TileGrid(
+          minTileWidth: 148,
+          tiles: [
+            MetricTile(
+              label: 'Матожидание',
+              value: expectancy == null ? '—' : rMultiple(expectancy),
+              color: expectancy == null
+                  ? C.text
+                  : (expectancy < 0 ? C.red : C.green),
+              hint: 'на сделку, после издержек',
+            ),
+            MetricTile(
+              label: 'Профит-фактор',
+              // null — убытков не было вовсе. «Бесконечность» как достижение
+              // показывать нельзя: делить не на что.
+              value: pf == null ? '—' : _num(pf),
+              color: pf == null ? C.text : (pf < 1 ? C.red : C.green),
+              hint: pf == null ? 'убытков ещё не было' : 'цель ≥ 1,5',
+            ),
+            MetricTile(
+              label: 'Винрейт',
+              value: win == null ? '—' : '${(win * 100).round()}%',
+              hint: avgWin == null
+                  ? '${slice.trades} сделок'
+                  : 'средний плюс ${rMultiple(avgWin)}',
+            ),
+            MetricTile(
+              label: 'Просадка',
+              value: slice.maxDrawdownR <= 0
+                  ? '—'
+                  : '−${_num(slice.maxDrawdownR)}R',
+              color: slice.maxDrawdownR <= 0 ? C.text : C.red,
+              hint: 'максимальная по кривой',
+            ),
+          ],
+        ),
+        if (!slice.conclusive) ...[
+          const SizedBox(height: 8),
+          Text(
+            // ТЗ §22: до 200 сделок выводы не делаются. Прятать числа нельзя
+            // — это единственная обратная связь; выдавать за истину тоже.
+            'Выборка ${slice.trades} из ${MetricSlice.minimumForConclusions}: '
+            'числа показаны, но выводов по ним делать рано.',
+            style: T.body(11, color: C.warning, height: 1.45),
+          ),
+        ],
+      ],
+    );
+  }
+
+  static String _num(double v) =>
+      v.toStringAsFixed(2).replaceAll('.', ',');
 }
 
 class _SliceCard extends StatelessWidget {

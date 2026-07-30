@@ -157,9 +157,14 @@ void main() {
     // счётчик решений — всё остальное живёт в своих разделах.
     await pumpApp(tester);
 
+    // Четыре числа дня стоят плитками наверху — прототип открывает экран
+    // ими, а не тремя карточками во всю ширину.
     expect(find.text('Капитал'.toUpperCase()), findsOneWidget);
-    expect(find.text('Риск'.toUpperCase()), findsOneWidget);
+    expect(find.text('Риск дня'.toUpperCase()), findsOneWidget);
     expect(find.text('Нужны решения'.toUpperCase()), findsOneWidget);
+    // И то, ради чего экран существует: что решать сегодня.
+    expect(find.text('Идеи на контроле'.toUpperCase()), findsOneWidget);
+    expect(find.text('Все идеи →'), findsOneWidget);
   });
 
   testWidgets('разделы и подразделы переключаются', (tester) async {
