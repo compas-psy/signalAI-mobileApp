@@ -1,0 +1,103 @@
+name: Deploy release to VPS
+
+on:
+  push:
+    branches:
+      - 'claude/release-y40hk5'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: signalai-production-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Проверить секреты
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          USER_NAME: ${{ secrets.VPS_USER }}
+          KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
+          DEVICE_TOKEN: ${{ secrets.SIGNALAI_DEVICE_TOKEN }}
+        run: |
+          set -eu
+          missing=''
+          [ -n "$HOST" ] || missing="$missing VPS_HOST|SERVER_HOST"
+          [ -n "$USER_NAME" ] || missing="$missing VPS_USER"
+          [ -n "$KEY" ] || missing="$missing VPS_SSH_KEY|SSH_SECRET"
+          [ -n "$DEVICE_TOKEN" ] || missing="$missing SIGNALAI_DEVICE_TOKEN"
+          if [ -n "$missing" ]; then
+            echo "::error::не заданы секреты:$missing"
+            exit 1
+          fi
+
+      - name: Подготовить SSH
+        env:
+          KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+        run: |
+          set -eu
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -T 10 -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Обновить код, секрет API и контейнеры
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          USER_NAME: ${{ secrets.VPS_USER }}
+          DEVICE_TOKEN: ${{ secrets.SIGNALAI_DEVICE_TOKEN }}
+        run: |
+          set -eu
+          TOKEN_B64="$(printf '%s' "$DEVICE_TOKEN" | base64 -w0)"
+
+          cat > /tmp/signalai-update.sh <<'REMOTE'
+          set -euxo pipefail
+          BRANCH='claude/release-y40hk5'
+          DIR="$HOME/signalai"
+          ENV_FILE='/etc/signalai/.env'
+          SUDO=''
+          [ "$(id -u)" -eq 0 ] || SUDO='sudo'
+
+          cd "$DIR"
+          git fetch --depth 1 origin "$BRANCH" </dev/null
+          git reset --hard FETCH_HEAD </dev/null
+
+          test -f "$ENV_FILE"
+          token="$(printf '%s' "$TOKEN_B64" | base64 -d)"
+          $SUDO sed -i '/^SIGNALAI_DEVICE_TOKEN=/d' "$ENV_FILE"
+          printf 'SIGNALAI_DEVICE_TOKEN=%s\n' "$token" | $SUDO tee -a "$ENV_FILE" >/dev/null
+          $SUDO chmod 600 "$ENV_FILE"
+
+          cd server
+          $SUDO docker compose --env-file "$ENV_FILE" config >/dev/null
+          $SUDO docker compose --env-file "$ENV_FILE" run --rm -T api alembic upgrade head </dev/null
+          $SUDO docker compose --env-file "$ENV_FILE" up -d --build --remove-orphans </dev/null
+
+          echo '── контейнеры ──'
+          $SUDO docker compose --env-file "$ENV_FILE" ps
+
+          echo '── health ──'
+          ok=''
+          for _ in $(seq 1 30); do
+            if curl --fail --silent --show-error http://127.0.0.1:8000/health; then
+              ok=1
+              echo
+              break
+            fi
+            sleep 2
+          done
+          [ -n "$ok" ] || {
+            $SUDO docker compose --env-file "$ENV_FILE" logs --tail=150 api scheduler
+            exit 1
+          }
+          REMOTE
+
+          scp -i ~/.ssh/id_deploy -o BatchMode=yes \
+            /tmp/signalai-update.sh "$USER_NAME@$HOST:/tmp/signalai-update.sh"
+          ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$USER_NAME@$HOST" \
+            "TOKEN_B64='$TOKEN_B64' bash /tmp/signalai-update.sh"
