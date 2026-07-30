@@ -12,21 +12,28 @@ import 'common.dart';
 Future<void> showEngineAddressSheet(
   BuildContext context, {
   required String current,
-  required ValueChanged<String> onSubmit,
+  required String currentToken,
+  required void Function(String url, String token) onSubmit,
 }) =>
     showModalBottomSheet<void>(
       context: context,
       backgroundColor: const Color(0x00000000),
       barrierColor: const Color(0x99000000),
       isScrollControlled: true,
-      builder: (context) => _EngineAddressSheet(current: current, onSubmit: onSubmit),
+      builder: (context) => _EngineAddressSheet(
+          current: current, currentToken: currentToken, onSubmit: onSubmit),
     );
 
 class _EngineAddressSheet extends StatefulWidget {
-  const _EngineAddressSheet({required this.current, required this.onSubmit});
+  const _EngineAddressSheet({
+    required this.current,
+    required this.currentToken,
+    required this.onSubmit,
+  });
 
   final String current;
-  final ValueChanged<String> onSubmit;
+  final String currentToken;
+  final void Function(String url, String token) onSubmit;
 
   @override
   State<_EngineAddressSheet> createState() => _EngineAddressSheetState();
@@ -35,10 +42,13 @@ class _EngineAddressSheet extends StatefulWidget {
 class _EngineAddressSheetState extends State<_EngineAddressSheet> {
   late final TextEditingController _field =
       TextEditingController(text: widget.current);
+  late final TextEditingController _token =
+      TextEditingController(text: widget.currentToken);
 
   @override
   void dispose() {
     _field.dispose();
+    _token.dispose();
     super.dispose();
   }
 
@@ -60,7 +70,7 @@ class _EngineAddressSheetState extends State<_EngineAddressSheet> {
 
   void _submit() {
     if (_problem != null) return;
-    widget.onSubmit(_field.text.trim());
+    widget.onSubmit(_field.text.trim(), _token.text.trim());
     Navigator.of(context).pop();
   }
 
@@ -121,6 +131,31 @@ class _EngineAddressSheetState extends State<_EngineAddressSheet> {
                   border: InputBorder.none,
                   hintText: 'https://engine.example.ru',
                   hintStyle: T.mono(13, color: C.dim),
+                ),
+              ),
+            ),
+            const SizedBox(height: 10),
+            // Токен устройства: развёрнутый движок отвечает 401 без него.
+            // Такая же оперативная настройка, как адрес, — пересборка APK
+            // ради вставки токена недопустима.
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+              decoration: BoxDecoration(
+                color: C.inset,
+                border: Border.all(color: C.border),
+                borderRadius: BorderRadius.circular(R.inner),
+              ),
+              child: TextField(
+                controller: _token,
+                autocorrect: false,
+                obscureText: true,
+                style: T.mono(13, weight: 600),
+                cursorColor: C.accent,
+                onSubmitted: (_) => _submit(),
+                decoration: InputDecoration(
+                  border: InputBorder.none,
+                  hintText: 'токен устройства (если движок требует)',
+                  hintStyle: T.mono(12, color: C.dim),
                 ),
               ),
             ),

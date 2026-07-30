@@ -36,9 +36,22 @@ abstract final class ApiConfig {
   /// Задан ли адрес руками, а не сборкой.
   static bool get isOverridden => _override.isNotEmpty;
 
-  /// Токен устройства. В боевом сценарии выдаётся при привязке устройства и
-  /// хранится в Android Keystore; здесь — только для отладочных сборок.
-  static const deviceToken = String.fromEnvironment('SIGNALAI_DEVICE_TOKEN');
+  /// Токен устройства из сборки.
+  static const compiledDeviceToken =
+      String.fromEnvironment('SIGNALAI_DEVICE_TOKEN');
+
+  /// Токен, заданный владельцем в «Подключениях».
+  ///
+  /// Развёрнутый движок начал отвечать 401 «устройство не авторизовано», а
+  /// токен существовал только как параметр сборки: чтобы вставить его,
+  /// требовалась пересборка APK. Токен — такая же оперативная настройка, как
+  /// адрес, и меняется он чаще.
+  static String _tokenOverride = '';
+
+  static String get deviceToken =>
+      _tokenOverride.isNotEmpty ? _tokenOverride : compiledDeviceToken;
+
+  static void setDeviceToken(String value) => _tokenOverride = value.trim();
 
   /// Есть ли настроенный бэкенд.
   static bool get isConfigured => baseUrl.isNotEmpty;

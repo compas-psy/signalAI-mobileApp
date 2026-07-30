@@ -23,7 +23,7 @@ class ApiException implements Exception {
 class ApiClient {
   ApiClient({String? baseUrl, String? deviceToken, HttpClient? httpClient})
       : _explicitBaseUrl = baseUrl,
-        _deviceToken = deviceToken ?? ApiConfig.deviceToken,
+        _explicitToken = deviceToken,
         _client = httpClient ?? resilientHttpClient() {
     _client.connectionTimeout = ApiConfig.requestTimeout;
   }
@@ -36,8 +36,13 @@ class ApiClient {
   /// один раз — и после смены адреса запросы продолжили бы уходить на
   /// старый сервер до перезапуска.
   final String? _explicitBaseUrl;
-  final String _deviceToken;
+
+  /// Токен, заданный явно (тесты). null — общий токен приложения, читается
+  /// на каждом запросе: он меняется из «Подключений» без перезапуска.
+  final String? _explicitToken;
   final HttpClient _client;
+
+  String get _deviceToken => _explicitToken ?? ApiConfig.deviceToken;
 
   /// Адрес, по которому клиент реально ходит.
   ///

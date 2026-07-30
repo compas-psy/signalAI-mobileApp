@@ -928,9 +928,12 @@ class _EngineCard extends StatelessWidget {
                 ),
                 const SizedBox(height: 3),
                 Text(
-                  controller.engineFromSettings
-                      ? 'задан здесь, в приложении'
-                      : (set ? 'зашит при сборке' : 'ни в сборке, ни здесь'),
+                  [
+                    controller.engineFromSettings
+                        ? 'задан здесь, в приложении'
+                        : (set ? 'зашит при сборке' : 'ни в сборке, ни здесь'),
+                    controller.engineTokenSet ? 'токен задан' : 'токена нет',
+                  ].join(' · '),
                   style: T.body(10.5, color: C.dim),
                 ),
               ],
@@ -957,7 +960,11 @@ class _EngineCard extends StatelessWidget {
                   onTap: () => showEngineAddressSheet(
                     context,
                     current: controller.engineBaseUrl,
-                    onSubmit: controller.setEngineBaseUrl,
+                    currentToken: '',
+                    onSubmit: (url, token) => controller.setEngineBaseUrl(
+                      url,
+                      token: token,
+                    ),
                   ),
                 ),
               ),

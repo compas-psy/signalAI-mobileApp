@@ -370,21 +370,30 @@ class AppController extends ChangeNotifier {
   /// значило бы платить эту задержку всегда, а не один раз за запуск.
   Future<void> _loadEngineAddress() async {
     final saved = await _prefs.read('engine');
-    final url = saved?['base_url'] as String?;
-    if (url == null || url.isEmpty || url == ApiConfig.baseUrl) return;
-    ApiConfig.setBaseUrl(url);
-    await refreshIdeas();
+    final url = saved?['base_url'] as String? ?? '';
+    final token = saved?['device_token'] as String? ?? '';
+    if (token.isNotEmpty) ApiConfig.setDeviceToken(token);
+    final urlChanged = url.isNotEmpty && url != ApiConfig.baseUrl;
+    if (urlChanged) ApiConfig.setBaseUrl(url);
+    if (urlChanged || token.isNotEmpty) await refreshIdeas();
   }
+
+  /// Задан ли токен устройства (сборкой или здесь).
+  bool get engineTokenSet => ApiConfig.deviceToken.isNotEmpty;
 
   /// Задать адрес движка из «Подключений».
   ///
   /// Пустая строка возвращает приложение к адресу из сборки. Сразу после
   /// записи идеи перечитываются: смена адреса без перезагрузки ленты
   /// выглядела бы как «не сработало».
-  Future<void> setEngineBaseUrl(String url) async {
+  Future<void> setEngineBaseUrl(String url, {String? token}) async {
     final value = url.trim();
     ApiConfig.setBaseUrl(value);
-    await _prefs.write('engine', {'base_url': value});
+    if (token != null) ApiConfig.setDeviceToken(token);
+    await _prefs.write('engine', {
+      'base_url': value,
+      'device_token': token?.trim() ?? ApiConfig.deviceToken,
+    });
     _engineProbe = null;
     notifyListeners();
     await refreshIdeas();
