@@ -1,5 +1,8 @@
 import 'package:flutter/widgets.dart';
 
+import '../../domain/idea/idea.dart';
+import '../../domain/idea/quality_score.dart';
+import '../../domain/idea/trade_plan.dart';
 import '../../domain/models/strategy.dart';
 import '../../state/app_scope.dart';
 import '../../theme/tokens.dart';
@@ -41,6 +44,14 @@ class StrategiesScreen extends StatelessWidget {
             children: [
               CardGrid(
                 children: [
+                  // Методика движка стоит первой: именно по ней считаются
+                  // идеи, которые видит владелец. Пакеты ниже — скринер на
+                  // устройстве, он ленту больше не наполняет, и путать их
+                  // нельзя: экран «Стратегии» показывал только их, из-за чего
+                  // читался как список действующих стратегий.
+                  const _MethodologyCard(),
+                  const _EngineLimitsCard(),
+                  if (snapshot.packs.isNotEmpty) const _LocalScreenerNote(),
                   for (final pack in snapshot.packs)
                     _PackCard(
                       pack: pack,
@@ -70,6 +81,196 @@ class StrategiesScreen extends StatelessWidget {
     );
   }
 }
+
+/// Стратегии методики §14 — те, по которым движок ищет сетапы.
+///
+/// Показываются как справка, а не как переключатели: стратегии живут на
+/// сервере, и тумблер здесь обещал бы влияние, которого у приложения нет.
+/// Доля потока — из ТЗ: отклонение от неё повод для разбора, а не для тихой
+/// подгонки. Если разворотов больше половины, движок торгует не то, что
+/// заявлено.
+class _MethodologyCard extends StatelessWidget {
+  const _MethodologyCard();
+
+  @override
+  Widget build(BuildContext context) => SectionCard(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Expanded(child: SectionLabel('Методика движка')),
+                Text('§14', style: T.mono(11, color: C.faint)),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Text(
+              'Сетапы ищет сервер. Приложение показывает то, что он нашёл, и '
+              'не считает идеи само.',
+              style: T.body(11, color: C.muted, height: 1.45),
+            ),
+            for (final strategy in SetupStrategy.values) ...[
+              const SizedBox(height: 10),
+              InsetBox(
+                padding: const EdgeInsets.fromLTRB(11, 10, 11, 11),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(strategy.label,
+                              style: T.body(12.5, weight: 700)),
+                        ),
+                        Text(
+                          '${(strategy.expectedShare * 100).round()}% потока',
+                          style: T.mono(11, color: C.accent),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 3),
+                    Text(strategy.role,
+                        style: T.body(11, color: C.muted, height: 1.4)),
+                  ],
+                ),
+              ),
+            ],
+          ],
+        ),
+      );
+}
+
+/// Пороги и лимиты, которыми движок распоряжается риском (§15.1, §17).
+///
+/// Числа не декоративные: по ним гаснет кнопка подтверждения и считается
+/// объём позиции. Они же разобраны в `docs/TZ_PRIORITY.md` — там, где
+/// UX-ТЗ и engine-ТЗ расходились, применено engine-ТЗ как более строгое.
+class _EngineLimitsCard extends StatelessWidget {
+  const _EngineLimitsCard();
+
+  @override
+  Widget build(BuildContext context) => SectionCard(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Expanded(child: SectionLabel('Пороги и риск движка')),
+                Text('§15.1 · §17', style: T.mono(11, color: C.faint)),
+              ],
+            ),
+            const SizedBox(height: 10),
+            TileGrid(
+              minTileWidth: 116,
+              // Проценты печатаются с запятой: цифра, которую сравнивают
+              // глазами, оформляется по-русски одинаково везде.
+              tiles: [
+                const MetricTile(
+                  label: 'Показывать от',
+                  value: '${QualityScore.minimumToShow}',
+                  hint: 'ниже — не показываем',
+                ),
+                const MetricTile(
+                  label: 'Торговать от',
+                  value: '${QualityScore.minimumToTrade}',
+                  hint: 'ниже — наблюдение',
+                ),
+                const MetricTile(
+                  label: 'A-grade от',
+                  value: '${QualityScore.aGradeScore}',
+                  hint: 'риск 0,75%',
+                ),
+                const MetricTile(
+                  label: 'Риск на сделку',
+                  value: '0,50 / 0,75%',
+                  hint: 'по оценке идеи',
+                ),
+                MetricTile(
+                  label: 'День',
+                  value: _pct(RiskBudget.dailyLossPercent),
+                  hint: 'предел убытка',
+                ),
+                MetricTile(
+                  label: 'Неделя',
+                  value: _pct(RiskBudget.weeklyLossPercent),
+                  hint: 'предел убытка',
+                ),
+                MetricTile(
+                  label: 'Месяц',
+                  value: _pct(RiskBudget.monthlyLossPercent),
+                  hint: 'предел убытка',
+                ),
+                MetricTile(
+                  label: 'Открытый риск',
+                  value: _pct(RiskBudget.openRiskPercent),
+                  hint: 'сумма по позициям',
+                ),
+                MetricTile(
+                  label: 'Кластер',
+                  value: _pct(RiskBudget.clusterRiskPercent),
+                  hint: 'одна группа риска',
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Text(
+              'Жёсткие лимиты сильнее оценки: высокий балл не пробивает '
+              'дневной предел. Числа взяты из engine-ТЗ — там, где оно '
+              'расходилось с UX-ТЗ, применено более строгое (docs/TZ_PRIORITY.md).',
+              style: T.body(11, color: C.faint, height: 1.45),
+            ),
+          ],
+        ),
+      );
+}
+
+/// Что такое пакеты ниже и почему их тумблеры не влияют на ленту.
+///
+/// Скринер на устройстве идеи больше не собирает: оценку §15.1 из
+/// одиннадцати компонентов из шести факторов легаси-скринера не составить.
+/// Но он остался рабочим инструментом исследования — бэктест и walk-forward
+/// гоняются именно им. Без этой оговорки экран читается как список
+/// действующих стратегий, а он не он.
+class _LocalScreenerNote extends StatelessWidget {
+  const _LocalScreenerNote();
+
+  @override
+  Widget build(BuildContext context) => SectionCard(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Expanded(child: SectionLabel('Скринер на устройстве')),
+                OutlineBadge(
+                  label: 'не наполняет ленту',
+                  color: C.warning,
+                  borderColor: C.warningBorder,
+                  background: C.warningFaint,
+                  fontWeight: 700,
+                  radius: R.pill,
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Пакеты ниже — старый скринер, который считал идеи прямо на '
+              'телефоне. Ленту идей он больше не наполняет: её считает движок '
+              'по методике выше. Скринер остался инструментом исследования — '
+              'бэктест и подбор параметров гоняются им, и его тумблеры влияют '
+              'только на эти прогоны.',
+              style: T.body(11.5, color: C.muted, height: 1.5),
+            ),
+          ],
+        ),
+      );
+}
+
+/// Процент с запятой: «1.5» → «1,5%».
+String _pct(double value) =>
+    '${value.toStringAsFixed(value == value.roundToDouble() ? 0 : 1)}%'
+        .replaceAll('.', ',');
 
 class _PackCard extends StatelessWidget {
   const _PackCard({required this.pack, required this.onToggle});
