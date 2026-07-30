@@ -34,14 +34,30 @@ jobs:
       - run: flutter analyze
       - run: flutter test
 
-      - name: Проверить секреты приложения
+      - name: Подготовить адрес и токен движка
         env:
           API_BASE_URL: ${{ secrets.SIGNALAI_API_BASE_URL }}
-          DEVICE_TOKEN: ${{ secrets.SIGNALAI_DEVICE_TOKEN }}
+          EXPLICIT_TOKEN: ${{ secrets.SIGNALAI_DEVICE_TOKEN }}
+          KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
         run: |
           set -eu
-          [ -n "$API_BASE_URL" ] || { echo '::error::не задан SIGNALAI_API_BASE_URL'; exit 1; }
-          [ -n "$DEVICE_TOKEN" ] || { echo '::error::не задан SIGNALAI_DEVICE_TOKEN'; exit 1; }
+          [ -n "$API_BASE_URL" ] || {
+            echo '::error::не задан SIGNALAI_API_BASE_URL'
+            exit 1
+          }
+          if [ -n "$EXPLICIT_TOKEN" ]; then
+            token="$EXPLICIT_TOKEN"
+          else
+            [ -n "$KEY" ] || {
+              echo '::error::нет ни SIGNALAI_DEVICE_TOKEN, ни VPS_SSH_KEY|SSH_SECRET'
+              exit 1
+            }
+            token="$(printf '%s' "$KEY" | openssl dgst -sha256 \
+              -hmac 'signalai-device-token-v1' | awk '{print $2}')"
+          fi
+          echo "::add-mask::$token"
+          printf 'RUNTIME_DEVICE_TOKEN=%s\n' "$token" >> "$GITHUB_ENV"
+          unset token
 
       - name: Определить источник ключа подписи
         id: signing
@@ -102,12 +118,11 @@ jobs:
       - name: Собрать APK
         env:
           API_BASE_URL: ${{ secrets.SIGNALAI_API_BASE_URL }}
-          DEVICE_TOKEN: ${{ secrets.SIGNALAI_DEVICE_TOKEN }}
         run: |
           flutter build apk --release \
             --build-number=${{ github.run_number }} \
             --dart-define=SIGNALAI_API_BASE_URL="$API_BASE_URL" \
-            --dart-define=SIGNALAI_DEVICE_TOKEN="$DEVICE_TOKEN"
+            --dart-define=SIGNALAI_DEVICE_TOKEN="$RUNTIME_DEVICE_TOKEN"
           rm -f android/key.properties
 
       - name: Проверить подпись
