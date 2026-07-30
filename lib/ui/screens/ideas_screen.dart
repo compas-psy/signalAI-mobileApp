@@ -9,6 +9,7 @@ import '../../theme/typography.dart';
 import '../tone.dart';
 import '../widgets/common.dart';
 import '../widgets/confluence_ring.dart';
+import 'engine_idea_screen.dart';
 
 /// Лента идей (ТЗ §8).
 ///
@@ -27,16 +28,10 @@ class IdeasScreen extends StatelessWidget {
     final now = DateTime.now();
     final filter = IdeasPill.values[pill.clamp(0, IdeasPill.values.length - 1)];
 
-    if (controller.digest == null) {
-      return _Pending(
-        loading: controller.digestLoading,
-        stage: controller.analysisStage,
-        error:
-            controller.digestError == null ? null : controller.digestErrorText,
-        onRetry: controller.refreshDigest,
-      );
-    }
-
+    // Идеи приходят с Engine API и не зависят от старого локального дайджеста.
+    // Прежде экран ждал `controller.digest`, хотя серверная выдача уже была
+    // загружена. В итоге исправный сервер выглядел как зависший локальный
+    // скринер, а тап по карточке открывал объект из другого источника.
     final all = controller.ideas;
     final visible = filterIdeas(all, filter, now);
     if (visible.isEmpty) {
@@ -45,6 +40,7 @@ class IdeasScreen extends StatelessWidget {
         total: all.length,
         unavailableReason: controller.ideasUnavailableReason,
         noSetupsReason: controller.noSetupsReason,
+        onRetry: controller.refreshIdeas,
       );
     }
 
@@ -56,7 +52,10 @@ class IdeasScreen extends StatelessWidget {
         child: IdeaCard(
           idea: visible[i],
           now: now,
-          onTap: () => controller.openSignal(visible[i].id),
+          // Открываем ту же серверную идею напрямую. `openSignal` относится к
+          // старому TradingSignal и при несовпадении ID молча выбирал первый
+          // локальный сигнал — опасная подмена торгового плана.
+          onTap: () => openEngineIdea(context, visible[i]),
         ),
       ),
     );
@@ -111,7 +110,9 @@ class IdeaCard extends StatelessWidget {
                         children: [
                           Flexible(
                             child: Text(
-                              idea.instrumentId,
+                              idea.instrumentName.isEmpty
+                                  ? idea.instrumentId
+                                  : idea.instrumentName,
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                               style: T.jost(17),
@@ -148,7 +149,7 @@ class IdeaCard extends StatelessWidget {
               children: [
                 TagChip(idea.market.label),
                 TagChip(plan == null
-                    ? 'плана нет'
+                    ? 'ждём план'
                     : 'R/R ${_rr(plan.rrToSecondTarget)}'),
                 TagChip(riskLabel(idea)),
                 TagChip(ttlLabel(idea, now)),
@@ -224,16 +225,17 @@ class _Empty extends StatelessWidget {
   const _Empty({
     required this.filter,
     required this.total,
+    required this.onRetry,
     this.unavailableReason,
     this.noSetupsReason,
   });
 
   final IdeasPill filter;
   final int total;
+  final VoidCallback onRetry;
 
   /// Почему движок не ответил. Это **не** «сетапов нет» (§24): обрыв связи и
-  /// спокойный рынок выглядят на экране одинаково, если разницу не назвать,
-  /// и владелец спокойно ждёт сигналов от сервера, который лежит.
+  /// спокойный рынок выглядят на экране одинаково, если разницу не назвать.
   final String? unavailableReason;
 
   /// Почему движок ответил пустым списком.
@@ -257,24 +259,25 @@ class _Empty extends StatelessWidget {
               ),
               const SizedBox(height: 8),
               Text(
-                'Это не «сегодня нет сетапов»: идеи считает сервер, и пока он '
-                'молчит, сказать про рынок нечего.',
+                'Это не «сегодня нет сетапов». Пока сервер недоступен, '
+                'приложение не делает вывод о рынке и не подставляет локальные идеи.',
                 textAlign: TextAlign.center,
                 style: T.body(12, color: C.muted, height: 1.5),
               ),
+              const SizedBox(height: 16),
+              ActionButton(label: 'Повторить', onTap: onRetry, primary: true),
             ],
           ),
         ),
       );
     }
 
-    // Честный пустой экран (ТЗ §6): называет, чего именно нет и почему.
     final (title, note) = switch (filter) {
       IdeasPill.decisions => (
           'Решений нет',
           total == 0
-              ? 'Расчёт не нашёл ни одной идеи выше порога показа. Это не '
-                  'сбой: в узком рынке сетапов может не быть неделями.'
+              ? 'Движок отработал, но ни одна идея не прошла допуск. Это '
+                  'нормальный результат — сделка не создаётся ради заполнения экрана.'
               : 'Ни одна идея не дошла до состояния, требующего решения. '
                   'Остальные — на вкладках «Наблюдение» и «Все».'
         ),
@@ -283,13 +286,13 @@ class _Empty extends StatelessWidget {
           'Идей с контекстом, но без триггера, сейчас нет.'
         ),
       IdeasPill.active => (
-          'Открытых позиций нет',
-          'Подтверждённые идеи появятся здесь вместе с заявками.'
+          'Открытых paper-позиций нет',
+          'Здесь появятся идеи после подключения серверного paper-исполнения.'
         ),
       IdeasPill.all => (
           'Идей нет',
           noSetupsReason ??
-              'Движок не нашёл ни одной идеи выше порога показа 65.'
+              'Движок не нашёл идей, проходящих формальные условия стратегии.'
         ),
     };
     return Center(
@@ -310,50 +313,4 @@ class _Empty extends StatelessWidget {
       ),
     );
   }
-}
-
-class _Pending extends StatelessWidget {
-  const _Pending({
-    required this.loading,
-    required this.stage,
-    required this.error,
-    required this.onRetry,
-  });
-
-  final bool loading;
-  final String? stage;
-  final String? error;
-  final VoidCallback onRetry;
-
-  @override
-  Widget build(BuildContext context) => Center(
-        child: Padding(
-          padding: const EdgeInsets.all(28),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (loading || error == null) ...[
-                BusyLine(label: stage ?? 'Подключаемся к биржам…'),
-                const SizedBox(height: 12),
-                Text(
-                  'Идёт расчёт по котировкам MOEX ISS и Bybit. Остальные '
-                  'разделы уже работают — расчёт не прервётся.',
-                  textAlign: TextAlign.center,
-                  style: T.body(11.5, color: C.muted, height: 1.5),
-                ),
-              ] else ...[
-                Text('Данные бирж недоступны', style: T.jost(18)),
-                const SizedBox(height: 8),
-                Text(
-                  error!,
-                  textAlign: TextAlign.center,
-                  style: T.body(12, color: C.muted, height: 1.5),
-                ),
-                const SizedBox(height: 16),
-                ActionButton(label: 'Повторить', onTap: onRetry, primary: true),
-              ],
-            ],
-          ),
-        ),
-      );
 }
