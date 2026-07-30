@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: write
+  issues: write
 
 concurrency:
   group: signalai-sideload-release
@@ -131,3 +132,16 @@ jobs:
           name: signalai-sideload-${{ github.run_number }}
           path: signalai-sideload.apk
           retention-days: 7
+
+      - name: Записать итог сборки
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESULT: ${{ job.status }}
+        run: |
+          if [ "$RESULT" = success ]; then icon='✅'; else icon='❌'; fi
+          gh issue comment 1 --repo "$GITHUB_REPOSITORY" --body "$icon **Sideload APK: $RESULT**
+
+          Commit: \`$GITHUB_SHA\`
+          Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
+          APK: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/sideload"
