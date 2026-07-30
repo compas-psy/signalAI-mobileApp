@@ -327,23 +327,56 @@ def ingest_instrument(
     return reports
 
 
+def _has_history(session: Session, instrument_id: str, timeframe: Timeframe) -> bool:
+    return (
+        session.execute(
+            select(Bar.open_time)
+            .where(Bar.instrument_id == instrument_id, Bar.timeframe == timeframe)
+            .limit(1)
+        ).first()
+        is not None
+    )
+
+
 def ingest_universe(
     session: Session,
     *,
     timeframes: list[Timeframe] | None = None,
     now: datetime | None = None,
     fetch=None,
+    first_load_budget: int = 10,
 ) -> list[IngestReport]:
     """Загрузить всю вселенную.
 
     Отказ одного инструмента не прекращает загрузку остальных: одна
     недоступная бумага не должна лишать владельца выдачи дня.
+
+    Первая загрузка бумаги — это шесть лет дневок, то есть полтора десятка
+    страниц у биржи. Появление инвестиционной вселенной добавило семьдесят
+    таких бумаг разом, и один проход растянулся бы на тысячу запросов.
+    Планировщик последователен: пока идёт такой проход, скан идей не
+    выполняется — то есть наполнение портфеля отняло бы у владельца выдачу
+    дня. Поэтому за проход берётся не больше [first_load_budget] новых бумаг,
+    и вселенная наполняется за несколько тиков. Уже загруженные бумаги
+    догружаются хвостом и в бюджет не входят.
     """
     instruments = list(
         session.execute(
             select(Instrument).where(Instrument.in_universe.is_(True))
         ).scalars()
     )
+    budget = first_load_budget
+    fresh: list[Instrument] = []
+    for instrument in instruments:
+        if _has_history(session, instrument.instrument_id, Timeframe.D1):
+            fresh.append(instrument)
+            continue
+        if budget <= 0:
+            continue
+        budget -= 1
+        fresh.append(instrument)
+    instruments = fresh
+
     reports: list[IngestReport] = []
     for instrument in instruments:
         try:
