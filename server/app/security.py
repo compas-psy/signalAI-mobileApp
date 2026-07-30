@@ -1,12 +1,12 @@
 """Аутентификация мобильного клиента по токену устройства.
 
-APK уже передаёт ``Authorization: Bearer <token>``, но прежде сервер этот
-заголовок не проверял. В результате любой, кто знал публичный домен, мог
-читать идеи, запускать сканирование и переключать kill switch.
+APK передаёт ``Authorization: Bearer <token>``. Прежде сервер этот заголовок
+не проверял, поэтому любой знающий публичный домен мог читать идеи, запускать
+сканирование и переключать kill switch.
 
-Локальный доступ с loopback оставлен для health/debug-команд на самом VPS.
-Все внешние запросы к ``/api/*`` fail-closed: если токен не настроен, API не
-работает, а не становится публичным молча.
+Все запросы к ``/api/*`` fail-closed: если токен не настроен, бизнес-API не
+работает, а не становится публичным молча. ``/health`` находится вне этого
+префикса и остаётся доступен для мониторинга без секрета.
 """
 
 from __future__ import annotations
@@ -31,12 +31,9 @@ class DeviceTokenMiddleware(BaseHTTPMiddleware):
         if not request.url.path.startswith("/api/"):
             return await call_next(request)
 
-        # Команды диагностики, выполненные непосредственно на VPS, не требуют
-        # вытаскивать токен из root-only /etc/signalai/.env в командную строку.
-        client_host = request.client.host if request.client else ""
-        if client_host in {"127.0.0.1", "::1"}:
-            return await call_next(request)
-
+        # Нельзя обходить проверку по request.client.host. Reverse proxy на том
+        # же VPS подключается к Uvicorn с 127.0.0.1, поэтому такой bypass сделал
+        # бы внешние запросы неотличимыми от локальных и снова открыл бы API.
         expected = os.environ.get("SIGNALAI_DEVICE_TOKEN", "").strip()
         if not expected:
             return JSONResponse(
