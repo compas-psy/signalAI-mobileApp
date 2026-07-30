@@ -184,12 +184,18 @@ class IdeaDetailHead extends StatelessWidget {
               style: T.mono(23, weight: 600, color: C.accent),
             ),
             Text('оценка качества', style: T.body(10, color: C.faint)),
-            const SizedBox(height: 7),
-            Text(signal.lastPrice, style: T.mono(14, weight: 600)),
-            Text(
-              signal.changeLabel,
-              style: T.mono(11, color: signal.changeUp ? C.green : C.red),
-            ),
+            // Котировки у идеи движка нет: он присылает уровни, а не цену
+            // последней сделки. Пустое место честнее прочерка, который
+            // читается как «цена не пришла, но должна была».
+            if (signal.lastPrice.isNotEmpty) ...[
+              const SizedBox(height: 7),
+              Text(signal.lastPrice, style: T.mono(14, weight: 600)),
+              if (signal.changeLabel.isNotEmpty)
+                Text(
+                  signal.changeLabel,
+                  style: T.mono(11, color: signal.changeUp ? C.green : C.red),
+                ),
+            ],
           ],
         ),
       ],

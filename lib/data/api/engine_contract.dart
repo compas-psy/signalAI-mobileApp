@@ -4,6 +4,7 @@ import '../../domain/idea/idea.dart';
 import '../../domain/idea/idea_state.dart';
 import '../../domain/idea/quality_score.dart';
 import '../../domain/idea/trade_plan.dart';
+import '../../domain/models/signal.dart';
 
 /// Разбор контракта §18: идея приходит с сервера целиком.
 ///
@@ -21,6 +22,108 @@ import '../../domain/idea/trade_plan.dart';
 /// Поля, которых в ответе нет, становятся **отсутствующими**, а не нулевыми.
 /// Ноль вместо пропуска — это утверждение о рынке, которого никто не делал.
 abstract final class EngineContract {
+  /// Сигнал для экранов, собранный из идеи движка.
+  ///
+  /// Разбор идеи устроен вокруг [TradingSignal]: шапка, график и уровни берут
+  /// данные оттуда. Сигналы приходят с дайджеста, а идеи — с движка, и
+  /// пересечения по идентификаторам между ними нет. Из-за этого нажатие по
+  /// карточке движка либо не открывало ничего (дайджест пуст), либо
+  /// открывало **чужой** инструмент — тот, что оказался в дайджесте первым.
+  /// Второе хуже: экран показывал тикер, цену и уровни другой сделки.
+  ///
+  /// Здесь идея переводится в сигнал один в один, без выдумывания. Чего у
+  /// идеи нет — цены последней сделки, дневного изменения — остаётся пустым,
+  /// и экран его не рисует.
+  static TradingSignal signalFrom(Idea idea) {
+    final plan = idea.plan;
+    final targets = plan?.targets ?? const <PlanTarget>[];
+    final decimals = _decimalsFor([
+      if (plan != null) ...[plan.entryLow, plan.entryHigh, plan.stop],
+      for (final t in targets) t.price,
+    ]);
+    return TradingSignal(
+      id: idea.id,
+      symbol: symbolOf(idea.instrumentId),
+      name: idea.instrumentName,
+      market: idea.market,
+      direction: idea.direction,
+      horizon: Horizon.swing,
+      horizonLabel: idea.timeframes.join(' / '),
+      score: idea.score.value,
+      entry: plan?.entry ?? 0,
+      stopLoss: plan?.stop ?? 0,
+      takeProfits: [
+        for (var i = 0; i < targets.length; i++)
+          TakeProfit(
+            index: i + 1,
+            price: targets[i].price,
+            sharePercent: (targets[i].fraction * 100).round(),
+          ),
+      ],
+      priceDecimals: decimals,
+      riskReward: plan == null
+          ? ''
+          : plan.rrToSecondTarget.toStringAsFixed(1).replaceAll('.', ','),
+      chips: const [],
+      note: idea.thesis,
+      factors: const [],
+      events: const [],
+      unitRisk: plan?.riskPerUnit ?? 0,
+      unitRiskLabel: '',
+      unitMultiplier: 1,
+      unitDecimals: 0,
+      unitName: '',
+      // Котировки идея не несёт: их место остаётся пустым, а не заполняется
+      // нулём. Ноль на месте цены читается как обвал.
+      lastPrice: '',
+      changeLabel: '',
+      changeUp: true,
+      status: idea.state == IdeaState.active
+          ? SignalStatus.working
+          : (idea.state.canConfirm ? SignalStatus.proposed : SignalStatus.expired),
+      validUntil: idea.validUntil,
+      strategyId: idea.strategy.name,
+      entryIsStop: plan?.orderType == PlanOrderType.stopLimit,
+    );
+  }
+
+  /// Тикер из канонического идентификатора: «CRYPTO:PERP:BTCUSDT» → «BTCUSDT».
+  ///
+  /// Движок называет инструмент площадкой, классом и кодом. Целиком эта
+  /// строка в заголовок карточки не помещается и обрезается на «CRYPTO:PER…»
+  /// — по такой подписи нельзя понять, о каком активе идея.
+  static String symbolOf(String instrumentId) {
+    final cut = instrumentId.lastIndexOf(':');
+    return cut < 0 ? instrumentId : instrumentId.substring(cut + 1);
+  }
+
+  /// Сколько знаков после запятой у цен инструмента.
+  ///
+  /// Считается по самим ценам, а не задаётся константой: у фьючерса на доллар
+  /// знаков нет, у нефти два, у крипты бывает больше. Округлить чужую цену до
+  /// целых значит показать не ту цену.
+  static int _decimalsFor(List<double> prices) {
+    var decimals = 0;
+    for (final price in prices) {
+      for (var d = decimals; d <= 4; d++) {
+        if ((price * _pow10(d)).roundToDouble() == price * _pow10(d)) {
+          if (d > decimals) decimals = d;
+          break;
+        }
+        if (d == 4) decimals = 4;
+      }
+    }
+    return decimals;
+  }
+
+  static double _pow10(int n) {
+    var result = 1.0;
+    for (var i = 0; i < n; i++) {
+      result *= 10;
+    }
+    return result;
+  }
+
   /// Идея из ответа `/api/v1/ideas/{id}`.
   ///
   /// [summaryOnly] — ответ ленты, где нет ни плана, ни разбора: карточка

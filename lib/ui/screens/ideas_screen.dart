@@ -1,5 +1,6 @@
 import 'package:flutter/widgets.dart';
 
+import '../../data/api/engine_contract.dart';
 import '../../domain/idea/idea.dart';
 import '../../domain/idea/idea_state.dart';
 import '../../state/app_scope.dart';
@@ -112,7 +113,11 @@ class IdeaCard extends StatelessWidget {
                         children: [
                           Flexible(
                             child: Text(
-                              idea.instrumentId,
+                              // Тикер, а не канонический идентификатор.
+                              // «CRYPTO:PERP:BTCUSDT» в заголовок не влезает и
+                              // обрезается на «CRYPTO:PER…» — по такой подписи
+                              // нельзя понять, о каком активе идея.
+                              EngineContract.symbolOf(idea.instrumentId),
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                               style: T.jost(17),
@@ -128,9 +133,28 @@ class IdeaCard extends StatelessWidget {
                           StateBadge(state: idea.state),
                         ],
                       ),
-                      const SizedBox(height: 7),
+                      const SizedBox(height: 5),
+                      // Имя инструмента: «BTCUSDT» знает не всякий, кто помнит,
+                      // что торгует биткоин к доллару бессрочным контрактом.
+                      if (idea.instrumentName.isNotEmpty &&
+                          idea.instrumentName !=
+                              EngineContract.symbolOf(idea.instrumentId)) ...[
+                        Text(
+                          idea.instrumentName,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: T.body(11.5, color: C.textSecondary),
+                        ),
+                        const SizedBox(height: 3),
+                      ],
                       Text(
-                        '${idea.strategy.label} · ${idea.timeframes.join(" / ")}',
+                        // Пустой список таймфреймов оставлял висящую точку
+                        // после названия стратегии: «Wyckoff Reversal ·».
+                        [
+                          idea.strategy.label,
+                          if (idea.timeframes.isNotEmpty)
+                            idea.timeframes.join(' / '),
+                        ].join(' · '),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: T.body(11.5, color: C.muted),

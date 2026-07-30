@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 
 import '../data/api/api_client.dart';
 import '../data/api/api_config.dart';
+import '../data/api/engine_contract.dart';
 import '../data/api/engine_client.dart';
 import '../data/broker/tinvest_broker.dart';
 import '../data/local_analysis_repository.dart';
@@ -230,12 +231,26 @@ class AppController extends ChangeNotifier {
 
   /// Текущая идея: выбранная либо первая в дайджесте.
   TradingSignal? get currentSignal {
-    final signals = _digest?.signals;
-    if (signals == null || signals.isEmpty) return null;
-    return signals.firstWhere(
-      (s) => s.id == _selectedSignalId,
-      orElse: () => signals.first,
-    );
+    final selected = _selectedSignalId;
+    final signals = _digest?.signals ?? const <TradingSignal>[];
+    if (selected != null) {
+      // Выбранная идея важнее любых умолчаний. Раньше при промахе сюда
+      // подставлялся первый сигнал дайджеста — и разбор открывался на чужом
+      // инструменте: тикер, цена и уровни принадлежали другой сделке.
+      for (final signal in signals) {
+        if (signal.id == selected) return signal;
+      }
+      // Идеи приходят с движка, сигналы — с дайджеста, и общих
+      // идентификаторов у них нет. Без этого перевода нажатие по карточке
+      // движка не открывало ничего: экран разбора требует сигнал.
+      for (final idea in _engineIdeas.ideas) {
+        if (idea.id == selected) return EngineContract.signalFrom(idea);
+      }
+      return null;
+    }
+    // Ничего не выбрано — вторая колонка планшета показывает первую идею
+    // дайджеста, чтобы не пустовать.
+    return signals.isEmpty ? null : signals.first;
   }
 
   RiskProfile? get risk => _settings?.risk;
