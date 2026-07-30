@@ -107,8 +107,12 @@ class VenueStatus {
 /// Никакой торговой логики здесь нет — только загрузка данных, навигация и
 /// оптимистичные переключатели. Решения принимает сервер (ТЗ §2).
 class AppController extends ChangeNotifier {
-  AppController(this._repository, {NativeBridge bridge = const NativeBridge()})
-      : _bridge = bridge {
+  AppController(
+    this._repository, {
+    NativeBridge bridge = const NativeBridge(),
+    LocalStore? prefs,
+  })  : _bridge = bridge,
+        _prefs = prefs ?? LocalStore() {
     // Часовой пульс: пока приложение живо, идеи не старше часа. Проверка
     // раз в минуту, пересчёт — когда дайджест реально устарел.
     _autoRefreshTimer = Timer.periodic(const Duration(minutes: 1), (_) {
@@ -118,10 +122,13 @@ class AppController extends ChangeNotifier {
       _autoRefreshIfStale();
     });
     _lock?.heartbeat(StateLock.ui);
-    // Адрес движка поднимается с диска в фоне и, если отличается от
-    // сборочного, сам перечитывает ленту. Запуск на него не смотрит.
-    unawaited(_loadEngineAddress());
+    // Адрес движка поднимается с диска сразу; все обращения к движку ждут
+    // этого обещания, а не гонятся с ним наперегонки.
+    _engineReady = _loadEngineAddress();
   }
+
+  /// Сохранённый адрес и токен движка применены. Ждут все, кто идёт к нему.
+  late final Future<void> _engineReady;
 
   final SignalAiRepository _repository;
   final NativeBridge _bridge;
@@ -325,6 +332,8 @@ class AppController extends ChangeNotifier {
     await Future<void>.microtask(() {});
     notifyListeners();
     try {
+      // Тот же порядок, что у идей: сначала адрес, потом запрос.
+      await _engineReady;
       _portfolio = await _engine.portfolio();
     } finally {
       _portfolioLoading = false;
@@ -343,6 +352,10 @@ class AppController extends ChangeNotifier {
       notifyListeners();
       return;
     }
+    // Сохранённый адрес обязан быть применён до первого запроса: иначе
+    // холодный старт уходит к движку с пустым адресом и показывает «адрес
+    // не задан» при полностью настроенном приложении.
+    await _engineReady;
     final fetched = await _engine.today();
     // Одна карточка на инструмент. Три стратегии, посмотревшие на BTCUSDT,
     // это не три сделки — это три мнения об одной, и показывать их рядом
@@ -377,7 +390,10 @@ class AppController extends ChangeNotifier {
 
   /// Настройки уровня приложения — те, что не принадлежат ни одному
   /// репозиторию. Пока это только адрес движка.
-  final LocalStore _prefs = LocalStore();
+  ///
+  /// Подменяется в тестах: порядок «сначала адрес, потом запрос к движку»
+  /// проверяется только тогда, когда чтение с диска можно задержать.
+  final LocalStore _prefs;
 
   /// Итог последней проверки связи с движком. null — не проверяли.
   String? _engineProbe;
@@ -394,20 +410,23 @@ class AppController extends ChangeNotifier {
 
   /// Чтение сохранённого адреса движка.
   ///
-  /// Никто его не ждёт, и это осознанно. Чтение идёт через нативный мост, а
-  /// запуск приложения не должен упираться в диск: оболочка поднимается на
-  /// быстрых данных, лента идей приходит следом. Если сохранённый адрес
-  /// приехал и отличается от того, с которым уже сходили, — идеи
-  /// перечитываются сами. Ждать хранилище перед каждым запросом к движку
-  /// значило бы платить эту задержку всегда, а не один раз за запуск.
+  /// Раньше его никто не ждал: запуск шёл на сборочном адресе, а
+  /// сохранённый догонял и перечитывал ленту. Для идей это работало, для
+  /// пакетов — нет: раздел «Портфель» спрашивает движок при первом показе,
+  /// и если адрес к тому моменту ещё не приехал, состояние «адреса нет»
+  /// оставалось до ручного нажатия. Одно и то же приложение при одинаковых
+  /// настройках вело себя по-разному в зависимости от того, кто успел
+  /// первым.
+  ///
+  /// Теперь чтение — обещание [_engineReady], которого дожидаются все, кто
+  /// собирается к движку. Это одно чтение с диска за запуск, а не задержка
+  /// на каждом запросе.
   Future<void> _loadEngineAddress() async {
     final saved = await _prefs.read('engine');
     final url = saved?['base_url'] as String? ?? '';
     final token = saved?['device_token'] as String? ?? '';
     if (token.isNotEmpty) ApiConfig.setDeviceToken(token);
-    final urlChanged = url.isNotEmpty && url != ApiConfig.baseUrl;
-    if (urlChanged) ApiConfig.setBaseUrl(url);
-    if (urlChanged || token.isNotEmpty) await refreshIdeas();
+    if (url.isNotEmpty && url != ApiConfig.baseUrl) ApiConfig.setBaseUrl(url);
   }
 
   /// Задан ли токен устройства (сборкой или здесь).
@@ -427,8 +446,13 @@ class AppController extends ChangeNotifier {
       'device_token': token?.trim() ?? ApiConfig.deviceToken,
     });
     _engineProbe = null;
+    // Ответ прежнего адреса выбрасывается целиком, включая «адреса нет».
+    // Оставить его значило бы показывать на «Портфеле» отказ старого
+    // сервера после переезда на новый — до ручного нажатия.
+    _portfolio = null;
     notifyListeners();
     await refreshIdeas();
+    await loadPortfolio(force: true);
   }
 
   /// Проверить связь с движком и показать, что он ответил.

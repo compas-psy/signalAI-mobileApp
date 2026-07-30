@@ -44,15 +44,21 @@ class EngineClient {
 
   static const _base = '/api/v1';
 
+  /// Адреса движка нет — и это чинится в приложении, без пересборки.
+  ///
+  /// Прежний текст сообщал диагноз («не задан в сборке») и молчал о
+  /// лечении. Владелец при этом упирался в пустой экран, хотя поле адреса
+  /// лежит через два касания. Причина без выхода из неё — половина ответа.
+  static const _noAddress =
+      'Адрес движка не задан. Идеи и пакеты считает сервер — задайте его '
+      'адрес в «Настройках» → «Подключения» → «Задать адрес».';
+
   bool get isConfigured => _api.baseUrl.isNotEmpty;
 
   /// Карточки дня (§16): не больше трёх, с причиной, если торговать нечего.
   Future<EngineIdeas> today() async {
     if (!isConfigured) {
-      return const EngineIdeas.unavailable(
-        'Адрес движка не задан в сборке. Идеи считает сервер — '
-        'без него показывать нечего.',
-      );
+      return const EngineIdeas.unavailable(_noAddress);
     }
     try {
       final json = await _api.get('$_base/ideas/today');
@@ -99,7 +105,7 @@ class EngineClient {
   /// вопрос, что система нашла, но не показала.
   Future<EngineIdeas> feed({int limit = 50}) async {
     if (!isConfigured) {
-      return const EngineIdeas.unavailable('Адрес движка не задан в сборке.');
+      return const EngineIdeas.unavailable(_noAddress);
     }
     try {
       // Лента отдаётся массивом верхнего уровня — оборачиваем его на
@@ -172,9 +178,7 @@ class EngineClient {
   /// именно его владелец и задаёт, открывая пустой экран.
   Future<PortfolioState> portfolio() async {
     if (!isConfigured) {
-      return const PortfolioState.unavailable(
-        'Адрес движка не задан в сборке. Состав считает сервер.',
-      );
+      return const PortfolioState.unavailable(_noAddress);
     }
     try {
       return EngineContract.portfolio(
