@@ -1,0 +1,136 @@
+name: Deploy release to VPS
+
+# Копия с ветки по умолчанию. Здесь: только вручную и деплоит эту ветку.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: signalai-production-deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Проверить секреты
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
+        run: |
+          set -eu
+          missing=''
+          [ -n "$HOST" ] || missing="$missing VPS_HOST|SERVER_HOST"
+          [ -n "$KEY" ] || missing="$missing VPS_SSH_KEY|SSH_SECRET"
+          if [ -n "$missing" ]; then
+            echo "::error::не заданы секреты:$missing"
+            exit 1
+          fi
+
+      - name: Подготовить SSH
+        env:
+          KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+        run: |
+          set -eu
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          if ! ssh-keyscan -T 10 -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null; then
+            echo '::error::не удалось получить SSH host key сервера'
+            exit 1
+          fi
+
+      - name: Подготовить закрытые файлы деплоя
+        env:
+          EXPLICIT_TOKEN: ${{ secrets.SIGNALAI_DEVICE_TOKEN }}
+          KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
+        run: |
+          set -eu
+          umask 077
+          if [ -n "$EXPLICIT_TOKEN" ]; then
+            token="$EXPLICIT_TOKEN"
+          else
+            # Отдельного секрета пока нет. Формируем стабильный bearer-token из
+            # уже существующего приватного SSH-ключа. В APK и на VPS попадёт
+            # только необратимый HMAC-отпечаток, сам SSH-ключ не раскрывается.
+            token="$(printf '%s' "$KEY" | openssl dgst -sha256 \
+              -hmac 'signalai-device-token-v1' | awk '{print $2}')"
+          fi
+          printf '%s' "$token" | base64 -w0 > /tmp/signalai-device-token.b64
+          unset token
+
+          cat > /tmp/signalai-update.sh <<'REMOTE'
+          set -euo pipefail
+          BRANCH='claude/ux-prototype-dark-theme-sv0euq'
+          DIR="$HOME/signalai"
+          ENV_FILE='/etc/signalai/.env'
+          TOKEN_FILE='/tmp/signalai-device-token.b64'
+          SUDO=''
+          [ "$(id -u)" -eq 0 ] || SUDO='sudo'
+
+          test -s "$TOKEN_FILE"
+          token="$(base64 -d < "$TOKEN_FILE")"
+          rm -f "$TOKEN_FILE"
+
+          cd "$DIR"
+          git fetch --depth 1 origin "$BRANCH" </dev/null
+          git reset --hard FETCH_HEAD </dev/null
+
+          test -f "$ENV_FILE"
+          $SUDO sed -i '/^SIGNALAI_DEVICE_TOKEN=/d' "$ENV_FILE"
+          printf 'SIGNALAI_DEVICE_TOKEN=%s\n' "$token" | $SUDO tee -a "$ENV_FILE" >/dev/null
+          unset token
+          $SUDO chmod 600 "$ENV_FILE"
+
+          cd server
+          $SUDO docker compose --env-file "$ENV_FILE" config >/dev/null
+          $SUDO docker compose --env-file "$ENV_FILE" run --rm -T api alembic upgrade head </dev/null
+          $SUDO docker compose --env-file "$ENV_FILE" up -d --build --remove-orphans </dev/null
+
+          echo '── контейнеры ──'
+          $SUDO docker compose --env-file "$ENV_FILE" ps
+
+          echo '── health ──'
+          ok=''
+          for _ in $(seq 1 30); do
+            if curl --fail --silent --show-error http://127.0.0.1:8000/health; then
+              ok=1
+              echo
+              break
+            fi
+            sleep 2
+          done
+          [ -n "$ok" ] || {
+            $SUDO docker compose --env-file "$ENV_FILE" logs --tail=150 api scheduler
+            exit 1
+          }
+          REMOTE
+
+      - name: Обновить код и контейнеры
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          USER_NAME: ${{ secrets.VPS_USER || 'root' }}
+        run: |
+          set -eu
+          scp -i ~/.ssh/id_deploy -o BatchMode=yes \
+            /tmp/signalai-update.sh \
+            /tmp/signalai-device-token.b64 \
+            "$USER_NAME@$HOST:/tmp/"
+          ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$USER_NAME@$HOST" \
+            'bash /tmp/signalai-update.sh'
+
+      - name: Записать итог деплоя
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESULT: ${{ job.status }}
+        run: |
+          if [ "$RESULT" = success ]; then icon='✅'; else icon='❌'; fi
+          gh issue comment 1 --repo "$GITHUB_REPOSITORY" --body "$icon **VPS deploy: $RESULT**
+
+          Commit: \`$GITHUB_SHA\`
+          Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
