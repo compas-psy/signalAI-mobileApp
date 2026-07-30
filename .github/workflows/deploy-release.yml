@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: read
+  issues: write
 
 concurrency:
   group: signalai-production-deploy
@@ -114,3 +115,15 @@ jobs:
             "$USER_NAME@$HOST:/tmp/"
           ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$USER_NAME@$HOST" \
             'bash /tmp/signalai-update.sh'
+
+      - name: Записать итог деплоя
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESULT: ${{ job.status }}
+        run: |
+          if [ "$RESULT" = success ]; then icon='✅'; else icon='❌'; fi
+          gh issue comment 1 --repo "$GITHUB_REPOSITORY" --body "$icon **VPS deploy: $RESULT**
+
+          Commit: \`$GITHUB_SHA\`
+          Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
