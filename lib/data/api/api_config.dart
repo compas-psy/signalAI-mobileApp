@@ -15,7 +15,26 @@
 /// Ключи бирж и брокеров сюда не попадают никогда (ТЗ §11): они живут
 /// зашифрованными на сервере, клиент оперирует только токеном устройства.
 abstract final class ApiConfig {
-  static const baseUrl = String.fromEnvironment('SIGNALAI_API_BASE_URL');
+  /// Адрес, зашитый при сборке. Остаётся значением по умолчанию.
+  static const compiledBaseUrl = String.fromEnvironment('SIGNALAI_API_BASE_URL');
+
+  /// Адрес, заданный владельцем в «Подключениях».
+  ///
+  /// До этого адрес движка существовал только как параметр сборки, и в
+  /// приложении его не было видно вовсе: все ключи бирж приняты, а лента
+  /// идей пуста — и объяснения этому на экране не находилось. Главная
+  /// зависимость приложения обязана быть и видимой, и исправимой без
+  /// пересборки.
+  static String _override = '';
+
+  static String get baseUrl =>
+      _override.isNotEmpty ? _override : compiledBaseUrl;
+
+  /// Пустая строка возвращает приложение к адресу из сборки.
+  static void setBaseUrl(String value) => _override = value.trim();
+
+  /// Задан ли адрес руками, а не сборкой.
+  static bool get isOverridden => _override.isNotEmpty;
 
   /// Токен устройства. В боевом сценарии выдаётся при привязке устройства и
   /// хранится в Android Keystore; здесь — только для отладочных сборок.

@@ -11,6 +11,7 @@ import '../../monitor/background_mode.dart';
 import '../../state/navigation.dart';
 import '../layout.dart';
 import '../../data/native_bridge.dart';
+import '../widgets/engine_address_sheet.dart';
 import '../widgets/broker_keys_sheet.dart';
 import '../widgets/common.dart';
 import '../widgets/risk_edit_sheet.dart';
@@ -64,6 +65,10 @@ class SettingsScreen extends StatelessWidget {
 
               // Интеграции: источники данных и площадки исполнения.
               if (_show(SettingsPill.connections)) ...[
+                // Движок стоит первым: от него зависят идеи, то есть весь
+                // смысл приложения. Пока его здесь не было, «все ключи
+                // приняты, а лента пуста» не имело на экране объяснения.
+                const _EngineCard(),
                 if (snapshot.exchanges.any((e) => e.isDataSource))
                   _ExchangesCard(
                     title: 'Источники данных',
@@ -866,6 +871,112 @@ class _AboutCardState extends State<_AboutCard> {
 /// фьючерсный счёт, и тот, где лежит основной капитал. Все они читаются для
 /// книги, но торговать приложение имеет право только с одного — выбранного
 /// здесь. Заявка, ушедшая не с того счёта, ломает и учёт, и налоги.
+/// Движок SignalAI — сервер, который считает идеи (§18).
+///
+/// Раньше его адрес существовал только как параметр сборки и в приложении не
+/// показывался нигде. Получалось непроходимое место: ключи бирж приняты,
+/// данные идут, а лента идей пуста — и объяснения этому на экране нет.
+/// Главная зависимость приложения обязана быть видимой и исправимой без
+/// пересборки.
+class _EngineCard extends StatelessWidget {
+  const _EngineCard();
+
+  @override
+  Widget build(BuildContext context) {
+    final controller = AppScope.of(context);
+    final url = controller.engineBaseUrl;
+    final set = url.isNotEmpty;
+    return SectionCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Expanded(child: SectionLabel('Движок SignalAI')),
+              OutlineBadge(
+                label: set ? 'адрес задан' : 'адреса нет',
+                color: set ? C.green : C.red,
+                borderColor: (set ? C.green : C.red).withValues(alpha: 0.35),
+                background: (set ? C.green : C.red).withValues(alpha: 0.12),
+                fontWeight: 700,
+                radius: R.pill,
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            set
+                ? 'Идеи, оценка §15.1 и разметка приходят отсюда. Ключи бирж '
+                    'к этому адресу отношения не имеют: они дают котировки и '
+                    'счёт, а идеи считает сервер.'
+                : 'Идеи считает сервер, и без его адреса лента пуста — сколько '
+                    'бы бирж ни было подключено. Это не «сегодня нет сетапов».',
+            style: T.body(11.5, color: set ? C.muted : C.warning, height: 1.5),
+          ),
+          const SizedBox(height: 10),
+          InsetBox(
+            padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 10),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const SectionLabel('Адрес', color: C.faint),
+                const SizedBox(height: 4),
+                Text(
+                  set ? url : 'не задан',
+                  style: T.mono(12, weight: 600, color: set ? C.text : C.faint),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  controller.engineFromSettings
+                      ? 'задан здесь, в приложении'
+                      : (set ? 'зашит при сборке' : 'ни в сборке, ни здесь'),
+                  style: T.body(10.5, color: C.dim),
+                ),
+              ],
+            ),
+          ),
+          if (controller.engineProbe != null) ...[
+            const SizedBox(height: 8),
+            Text(
+              controller.engineProbe!,
+              style: T.body(11, color: C.textSecondary, height: 1.45),
+            ),
+          ],
+          if (controller.engineProbing) ...[
+            const SizedBox(height: 8),
+            const BusyLine(label: 'Спрашиваем движок…'),
+          ],
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: ActionButton(
+                  label: set ? 'Изменить адрес' : 'Задать адрес',
+                  dense: true,
+                  onTap: () => showEngineAddressSheet(
+                    context,
+                    current: controller.engineBaseUrl,
+                    onSubmit: controller.setEngineBaseUrl,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: ActionButton(
+                  label: 'Проверить связь',
+                  dense: true,
+                  onTap: controller.engineProbing ? null : controller.probeEngine,
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _TinvestAccountsCard extends StatefulWidget {
   const _TinvestAccountsCard();
 

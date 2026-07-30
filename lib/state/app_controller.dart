@@ -3,9 +3,11 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import '../data/api/api_client.dart';
+import '../data/api/api_config.dart';
 import '../data/api/engine_client.dart';
 import '../data/broker/tinvest_broker.dart';
 import '../data/local_analysis_repository.dart';
+import '../data/local_store.dart';
 import '../data/market/idea_chart_source.dart';
 import '../data/market/iss_client.dart';
 import '../data/mock/demo_ideas.dart';
@@ -114,6 +116,9 @@ class AppController extends ChangeNotifier {
       _autoRefreshIfStale();
     });
     _lock?.heartbeat(StateLock.ui);
+    // Адрес движка поднимается с диска в фоне и, если отличается от
+    // сборочного, сам перечитывает ленту. Запуск на него не смотрит.
+    unawaited(_loadEngineAddress());
   }
 
   final SignalAiRepository _repository;
@@ -293,6 +298,76 @@ class AppController extends ChangeNotifier {
     }
     _engineIdeas = await _engine.today();
     _engineDataStatus = await _engine.dataStatus();
+    notifyListeners();
+  }
+
+  /// Настройки уровня приложения — те, что не принадлежат ни одному
+  /// репозиторию. Пока это только адрес движка.
+  final LocalStore _prefs = LocalStore();
+
+  /// Итог последней проверки связи с движком. null — не проверяли.
+  String? _engineProbe;
+  bool _engineProbing = false;
+
+  String? get engineProbe => _engineProbe;
+  bool get engineProbing => _engineProbing;
+
+  /// Адрес движка, по которому приложение ходит за идеями.
+  String get engineBaseUrl => ApiConfig.baseUrl;
+
+  /// Задан ли адрес руками, а не сборкой.
+  bool get engineFromSettings => ApiConfig.isOverridden;
+
+  /// Чтение сохранённого адреса движка.
+  ///
+  /// Никто его не ждёт, и это осознанно. Чтение идёт через нативный мост, а
+  /// запуск приложения не должен упираться в диск: оболочка поднимается на
+  /// быстрых данных, лента идей приходит следом. Если сохранённый адрес
+  /// приехал и отличается от того, с которым уже сходили, — идеи
+  /// перечитываются сами. Ждать хранилище перед каждым запросом к движку
+  /// значило бы платить эту задержку всегда, а не один раз за запуск.
+  Future<void> _loadEngineAddress() async {
+    final saved = await _prefs.read('engine');
+    final url = saved?['base_url'] as String?;
+    if (url == null || url.isEmpty || url == ApiConfig.baseUrl) return;
+    ApiConfig.setBaseUrl(url);
+    await refreshIdeas();
+  }
+
+  /// Задать адрес движка из «Подключений».
+  ///
+  /// Пустая строка возвращает приложение к адресу из сборки. Сразу после
+  /// записи идеи перечитываются: смена адреса без перезагрузки ленты
+  /// выглядела бы как «не сработало».
+  Future<void> setEngineBaseUrl(String url) async {
+    final value = url.trim();
+    ApiConfig.setBaseUrl(value);
+    await _prefs.write('engine', {'base_url': value});
+    _engineProbe = null;
+    notifyListeners();
+    await refreshIdeas();
+  }
+
+  /// Проверить связь с движком и показать, что он ответил.
+  ///
+  /// Отдельно от ленты идей: пустая лента и недоступный сервер — разные
+  /// новости, и проверять их надо разными способами (§24).
+  Future<void> probeEngine() async {
+    if (_engineProbing) return;
+    _engineProbing = true;
+    _engineProbe = null;
+    notifyListeners();
+    if (ApiConfig.baseUrl.isEmpty) {
+      _engineProbe = 'Адрес не задан — спрашивать нечего.';
+    } else {
+      final health = await _engine.health();
+      _engineProbe = health == null
+          ? 'Движок не ответил по адресу ${ApiConfig.baseUrl}.'
+          : 'Ответил: версия ${health['engine_version'] ?? '—'}, '
+              'режим ${health['execution_mode'] ?? '—'}, '
+              'состояние ${health['status'] ?? '—'}.';
+    }
+    _engineProbing = false;
     notifyListeners();
   }
 

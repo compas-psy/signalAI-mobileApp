@@ -362,13 +362,40 @@ void main() {
       expect(repository.tradingState.modeOf(BrokerId.bybit), TradingMode.live);
     });
 
-    test('Т-Инвестиции на live не переключаются, пока стоп не проверен', () async {
+    test('Т-Инвестиции на live переключаются: наблюдать боевой счёт можно',
+        () async {
+      // Токен Invest API бывает выдан только на боевой контур — песочницы у
+      // него нет вовсе. Запрет на переключение отрезал бы площадку целиком:
+      // приложение держало её в режиме «песочница», не находило по этой паре
+      // ключей и показывало виртуальный счёт вместо настоящего.
       final repository =
           LocalAnalysisRepository(store: LocalStore.inMemory(), vault: FakeVault());
 
+      await repository.setTradingMode(BrokerId.tinvest, TradingMode.live);
+
+      expect(repository.tradingState.modeOf(BrokerId.tinvest), TradingMode.live);
+    });
+
+    test('ордер в Т-Инвестиции на живом счёте не уходит: стоп не подтверждён',
+        () async {
+      // Запрет не снят, а переехал туда, где уходят деньги. Защитный стоп в
+      // Т-Инвестициях ставится отдельной заявкой, и пока не подтверждено,
+      // что он встаёт вместе с позицией, вход означал бы позицию без защиты.
+      final store = LocalStore.inMemory();
+      await seedDigest(store, [signal(market: Market.forts, symbol: 'TSTU6')]);
+      final vault = FakeVault();
+      vault.stored['tinvest.live.key'] = 'T';
+      final repository = LocalAnalysisRepository(store: store, vault: vault);
+      await repository.setTradingEnabled(true);
+      await repository.setTradingMode(BrokerId.tinvest, TradingMode.live);
+
       await expectLater(
-        repository.setTradingMode(BrokerId.tinvest, TradingMode.live),
-        throwsA(isA<FeatureUnavailableException>()),
+        repository.confirmSignal('sig-1'),
+        throwsA(isA<FeatureUnavailableException>().having(
+          (e) => e.message,
+          'message',
+          contains('стоп'),
+        )),
       );
     });
 

@@ -22,13 +22,20 @@ class ApiException implements Exception {
 /// которое подтверждает сделки, тем лучше (ТЗ §11).
 class ApiClient {
   ApiClient({String? baseUrl, String? deviceToken, HttpClient? httpClient})
-      : _baseUrl = baseUrl ?? ApiConfig.baseUrl,
+      : _explicitBaseUrl = baseUrl,
         _deviceToken = deviceToken ?? ApiConfig.deviceToken,
         _client = httpClient ?? resilientHttpClient() {
     _client.connectionTimeout = ApiConfig.requestTimeout;
   }
 
-  final String _baseUrl;
+  /// Адрес, заданный этому клиенту явно (тесты, особые случаи).
+  ///
+  /// null — берём общий адрес приложения. Читается **на каждом запросе**, а
+  /// не запоминается в конструкторе: адрес движка теперь меняется из
+  /// «Подключений», а клиент живёт всё время работы приложения. Запомни его
+  /// один раз — и после смены адреса запросы продолжили бы уходить на
+  /// старый сервер до перезапуска.
+  final String? _explicitBaseUrl;
   final String _deviceToken;
   final HttpClient _client;
 
@@ -38,7 +45,7 @@ class ApiClient {
   /// клиента, а не глобальной константы сборки. Пока проверка смотрела в
   /// `ApiConfig`, подставить клиент в тесте было нельзя: с пустой константой
   /// любой запрос обрывался до подстановки.
-  String get baseUrl => _baseUrl;
+  String get baseUrl => _explicitBaseUrl ?? ApiConfig.baseUrl;
 
   // `await` здесь обязателен, и это не стиль. Без него приведение типа
   // применяется к самому `Future`, а не к его результату, и любой запрос
@@ -71,7 +78,7 @@ class ApiClient {
     Map<String, dynamic>? body,
     String? idempotencyKey,
   }) async {
-    final uri = Uri.parse('$_baseUrl$path');
+    final uri = Uri.parse('$baseUrl$path');
     if (!uri.isScheme('https')) {
       throw ApiException('Гейтвей должен быть доступен только по HTTPS: $uri');
     }
