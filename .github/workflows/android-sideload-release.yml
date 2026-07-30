@@ -37,52 +37,13 @@ jobs:
       - name: Подготовить адрес и токен движка
         env:
           EXPLICIT_URL: ${{ secrets.SIGNALAI_API_BASE_URL }}
+          PUBLIC_API_URL: https://api.ilyamartynov.ru
           EXPLICIT_TOKEN: ${{ secrets.SIGNALAI_DEVICE_TOKEN }}
           KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
-          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
-          USER_NAME: ${{ secrets.VPS_USER || 'root' }}
         run: |
           set -eu
 
-          if [ -n "$EXPLICIT_URL" ]; then
-            api_url="$EXPLICIT_URL"
-          else
-            [ -n "$HOST" ] && [ -n "$KEY" ] || {
-              echo '::error::нет SIGNALAI_API_BASE_URL и невозможно прочитать домен с VPS'
-              exit 1
-            }
-            install -d -m 700 ~/.ssh
-            printf '%s\n' "$KEY" > ~/.ssh/id_deploy
-            chmod 600 ~/.ssh/id_deploy
-            ssh-keyscan -T 10 -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null
-
-            cat > /tmp/signalai-public-url.sh <<'REMOTE'
-            set -euo pipefail
-            SUDO=''
-            [ "$(id -u)" -eq 0 ] || SUDO='sudo'
-            file='/etc/nginx/sites-available/signalai'
-            [ -f "$file" ] || {
-              echo 'конфигурация публичного домена SignalAI не найдена' >&2
-              exit 1
-            }
-            domain="$($SUDO awk '
-              $1 == "server_name" {
-                gsub(/;/, "", $2)
-                if ($2 != "_") { print $2; exit }
-              }
-            ' "$file")"
-            [ -n "$domain" ] || {
-              echo 'server_name SignalAI пуст' >&2
-              exit 1
-            }
-            printf 'https://%s' "$domain"
-            REMOTE
-            scp -i ~/.ssh/id_deploy -o BatchMode=yes \
-              /tmp/signalai-public-url.sh "$USER_NAME@$HOST:/tmp/"
-            api_url="$(ssh -i ~/.ssh/id_deploy -o BatchMode=yes \
-              "$USER_NAME@$HOST" 'bash /tmp/signalai-public-url.sh')"
-          fi
-
+          api_url="${EXPLICIT_URL:-$PUBLIC_API_URL}"
           case "$api_url" in
             https://*) ;;
             *) echo '::error::API приложения обязан использовать HTTPS'; exit 1 ;;
@@ -102,7 +63,7 @@ jobs:
           printf 'RUNTIME_API_BASE_URL=%s\n' "$api_url" >> "$GITHUB_ENV"
           printf 'RUNTIME_DEVICE_TOKEN=%s\n' "$token" >> "$GITHUB_ENV"
           unset token
-          echo "Публичный HTTPS-адрес движка определён."
+          echo "Публичный HTTPS-адрес движка: $api_url"
 
       - name: Определить источник ключа подписи
         id: signing
