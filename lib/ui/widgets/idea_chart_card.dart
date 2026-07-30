@@ -246,10 +246,11 @@ class _LayerPill extends StatelessWidget {
             : C.muted;
     return Pressable(
       onTap: onTap,
+      // Без `alignment`: заданное выравнивание заставляет Container занять всю
+      // доступную ширину, и внутри Wrap пилюли встают одна под другой во всю
+      // строку вместо ряда чипов.
       child: Container(
-        constraints: const BoxConstraints(minHeight: 28),
-        alignment: Alignment.center,
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
         decoration: BoxDecoration(
           color: on && !locked ? C.accentFaint : C.inset,
           border: Border.all(color: on && !locked ? C.accentBorder : C.border),

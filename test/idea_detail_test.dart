@@ -48,11 +48,11 @@ void main() {
     // принимается по всем трём сразу, а вкладка прятала две трети ответа.
     expect(find.byType(SegmentedControl), findsNothing);
 
-    // Всё, что нужно для решения, лежит на одной ленте: до разбора оценки и
-    // событий доезжают прокруткой, а не переключателем.
-    expect(find.text('ПОЧЕМУ ИДЕЯ ПОЯВИЛАСЬ'), findsOneWidget);
-    expect(find.text('ПАРАМЕТРЫ СДЕЛКИ'), findsOneWidget);
+    // Всё, что нужно для решения, лежит на одной ленте: до дальних блоков
+    // доезжают прокруткой, а не переключателем вкладок.
     for (final label in const [
+      'ПОЧЕМУ ИДЕЯ ПОЯВИЛАСЬ',
+      'ПАРАМЕТРЫ СДЕЛКИ',
       'ИЗ ЧЕГО СОБРАНА ОЦЕНКА',
       'ВНЕШНИЕ СОБЫТИЯ',
       'КОГДА ИДЕЯ ОТМЕНЯЕТСЯ',
@@ -118,7 +118,20 @@ void main() {
     await pumpDetail(tester, size: const Size(1600, 1200));
 
     // Тезис и параметры сделки читаются вместе: на широком экране они рядом,
-    // а не друг под другом.
+    // а не друг под другом. Пара лежит под графиком — доезжаем до неё.
+    // На широком экране слева стоит лента идей со своим списком — прокрутить
+    // надо разбор, а не её.
+    await tester.scrollUntilVisible(
+      find.text('ПОЧЕМУ ИДЕЯ ПОЯВИЛАСЬ'),
+      300,
+      scrollable: find
+          .descendant(
+            of: find.byType(IdeaDetailScreen),
+            matching: find.byType(Scrollable),
+          )
+          .first,
+      duration: const Duration(milliseconds: 60),
+    );
     final thesis = tester.getRect(find.text('ПОЧЕМУ ИДЕЯ ПОЯВИЛАСЬ'));
     final plan = tester.getRect(find.text('ПАРАМЕТРЫ СДЕЛКИ'));
     expect(plan.left, greaterThan(thesis.left));

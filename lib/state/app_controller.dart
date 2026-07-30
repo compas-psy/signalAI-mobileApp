@@ -310,6 +310,12 @@ class AppController extends ChangeNotifier {
   Future<void> loadIdeaChart(Idea idea) async {
     if (_ideaChartsAsked.contains(idea.id)) return;
     _ideaChartsAsked.add(idea.id);
+    // Уступаем микрозадачу перед любой работой. Вызов приходит из `build`
+    // разбора, а демо-режим отвечает без единого `await` — и
+    // `notifyListeners` попадал внутрь построения дерева: «setState() called
+    // during build». Микрозадача, а не таймер: таймер переживает тест и
+    // роняет его на «A Timer is still pending».
+    await Future<void>.microtask(() {});
     // Таймфрейм сетапа — тот, на котором идея построена. Контекстный слишком
     // крупен для зоны входа, триггерный слишком мелок для структуры.
     final timeframe = idea.timeframes.length >= 2
@@ -319,8 +325,14 @@ class AppController extends ChangeNotifier {
     // разметка. Биржа вторая — но она есть всегда, ключа не требует и
     // работает, когда сервер молчит. Решение владельца: подключённые
     // источники данных годятся не только для расчёта, но и для картинки.
-    final chart = await _engine.bars(idea.instrumentId, timeframe: timeframe) ??
-        await _chartSource.load(idea);
+    //
+    // В демо-режиме за свечами на биржу не ходим: настоящие цены под
+    // выдуманным планом уводят зону входа и стоп за пределы графика, и
+    // картинка выглядит сломанной, хотя сломаны данные.
+    final chart = demoData
+        ? DemoIdeas.chartFor(idea)
+        : await _engine.bars(idea.instrumentId, timeframe: timeframe) ??
+            await _chartSource.load(idea);
     if (chart == null) return;
     _ideaCharts[idea.id] = chart;
     notifyListeners();

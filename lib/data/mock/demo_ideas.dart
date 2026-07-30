@@ -4,6 +4,7 @@ import '../../domain/idea/idea.dart';
 import '../../domain/idea/idea_state.dart';
 import '../../domain/idea/quality_score.dart';
 import '../../domain/idea/trade_plan.dart';
+import '../../domain/models/signal.dart';
 
 /// Идеи для демо-режима — данные макета, а не рынка.
 ///
@@ -49,7 +50,7 @@ abstract final class DemoIdeas {
             ScoreComponentKind.liquidityQuality: (93, 'Спред 1 пункт, стакан плотный'),
             ScoreComponentKind.volatilityFit: (69, 'ATR в верхней половине нормы'),
             ScoreComponentKind.levelConfluence: (77, 'OB, 0,5 отката и дневной минимум сошлись'),
-            ScoreComponentKind.riskRewardQuality: (90, 'R:R до TP2 равен 2,6'),
+            ScoreComponentKind.riskRewardQuality: (90, 'R:R до TP2 равен 2,3'),
           },
           // Неизмеренное показывается отдельно от слабого: отказ источника и
           // измеренная слабость — разные новости.
@@ -69,25 +70,25 @@ abstract final class DemoIdeas {
           instrumentId: 'SiU6',
           direction: Direction.long,
           orderType: PlanOrderType.limit,
-          entryLow: 91240,
-          entryHigh: 91420,
+          entryLow: 87400,
+          entryHigh: 87500,
           maxSlippagePercent: 0.05,
-          stop: 90680,
+          stop: 86900,
           targets: const [
-            PlanTarget(name: 'TP1', price: 92180, fraction: 0.4, afterFill: 'стоп в безубыток'),
-            PlanTarget(name: 'TP2', price: 92740, fraction: 0.4, afterFill: 'трейл по структуре 1H'),
-            PlanTarget(name: 'TP3', price: 93500, fraction: 0.2, afterFill: 'закрытие остатка'),
+            PlanTarget(name: 'TP1', price: 88200, fraction: 0.4, afterFill: 'стоп в безубыток'),
+            PlanTarget(name: 'TP2', price: 88700, fraction: 0.4, afterFill: 'трейл по структуре 1H'),
+            PlanTarget(name: 'TP3', price: 89400, fraction: 0.2, afterFill: 'закрытие остатка'),
           ],
-          quantity: 4,
+          quantity: 32,
           lotSize: 1,
           valuePerPoint: 1,
-          riskRubles: 2920,
-          riskPercent: 0.75,
-          marginEstimate: 46800,
+          riskRubles: 17600,
+          riskPercent: 0.73,
+          marginEstimate: 168000,
           expiry: now.add(const Duration(minutes: 42)),
           strategyVersion: 'v1.0.3',
           invalidation: const [
-            'Закрытие 1H ниже 90 680',
+            'Закрытие 1H ниже 86 900',
             'Рост открытого интереса при падении цены после входа',
             'R:R до TP2 падает ниже 1:1,8',
             'Новое событие высокой важности внутри 30 минут',
@@ -113,11 +114,11 @@ abstract final class DemoIdeas {
               const []),
         ],
         annotations: [
-          _annotation('si_trend', AnnotationType.trendline, '1D', 'ev-regime', now, 90200, 91800),
-          _annotation('si_wyckoff', AnnotationType.wyckoffSpring, '4H', 'ev-structure', now, 90600, 90900),
-          _annotation('si_ob', AnnotationType.smcOrderBlock, '4H', 'ev-smc', now, 91180, 91460),
-          _annotation('si_sweep', AnnotationType.smcSweep, '1H', 'ev-smc', now, 90640, 90760),
-          _annotation('si_engulf', AnnotationType.paEngulfing, '1H', 'ev-trigger', now, 91240, 91420),
+          _annotation('si_trend', AnnotationType.trendline, '1D', 'ev-regime', now, 86500, 89600),
+          _annotation('si_wyckoff', AnnotationType.wyckoffSpring, '4H', 'ev-structure', now, 86850, 87050),
+          _annotation('si_ob', AnnotationType.smcOrderBlock, '4H', 'ev-smc', now, 87380, 87520),
+          _annotation('si_sweep', AnnotationType.smcSweep, '1H', 'ev-smc', now, 86880, 86960),
+          _annotation('si_engulf', AnnotationType.paEngulfing, '1H', 'ev-trigger', now, 87400, 87500),
           _annotation('si_oi', AnnotationType.oiBuildup, '1H', 'ev-volume', now, null, null),
         ],
         eventRisk: EventRisk(
@@ -135,76 +136,77 @@ abstract final class DemoIdeas {
         instrumentId: 'BTCUSDT',
         instrumentName: 'Биткоин к доллару · бессрочный',
         market: Market.crypto,
-        direction: Direction.short,
-        strategy: SetupStrategy.wyckoffReversal,
+        direction: Direction.long,
+        strategy: SetupStrategy.breakoutRetest,
         strategyVersion: 'v1.0.3',
         state: IdeaState.ready,
         score: _score(
           total: 78,
           measured: const {
-            ScoreComponentKind.regimeFit: (76, '4H распределение'),
-            ScoreComponentKind.marketStructure: (84, 'UTAD и lower high'),
-            ScoreComponentKind.setupQuality: (79, 'Возврат под верхнюю границу диапазона'),
-            ScoreComponentKind.triggerQuality: (48, 'Ждём закрытие ниже 118 400'),
-            ScoreComponentKind.derivativesConfirmation: (86, 'Фандинг положительный, OI растёт без цены'),
-            ScoreComponentKind.volumeConfirmation: (72, 'Объём на росте падает'),
+            ScoreComponentKind.regimeFit: (76, '4H накопление после пробоя'),
+            ScoreComponentKind.marketStructure: (84, 'Higher low удержан, диапазон пройден вверх'),
+            ScoreComponentKind.setupQuality: (79, 'Ретест верхней границы сверху'),
+            ScoreComponentKind.triggerQuality: (48, 'Ждём закрытие выше 118 400'),
+            ScoreComponentKind.derivativesConfirmation: (86, 'Фандинг отрицательный, открытый интерес растёт'),
+            ScoreComponentKind.volumeConfirmation: (72, 'Объём на откате падает'),
             ScoreComponentKind.liquidityQuality: (95, 'Ликвидность высокая'),
             ScoreComponentKind.volatilityFit: (71, 'ATR в норме'),
-            ScoreComponentKind.levelConfluence: (74, 'Граница диапазона и медвежий OB'),
-            ScoreComponentKind.riskRewardQuality: (81, 'R:R до TP2 равен 2,1'),
+            ScoreComponentKind.levelConfluence: (74, 'Граница диапазона и бычий OB'),
+            ScoreComponentKind.riskRewardQuality: (81, 'R:R до TP2 равен 2,7'),
             ScoreComponentKind.executionQuality: (88, 'Проскальзывание в пределах 0,02%'),
           },
           dataQuality: 1.0,
         ),
         createdAt: now.subtract(const Duration(hours: 1)),
         validUntil: now.add(const Duration(hours: 3, minutes: 12)),
-        thesis: 'На 4H сформирован выброс вверх с возвратом в диапазон. На 1H '
-            'цена тестирует медвежий ордер-блок; нужен слабый ретест и '
-            'закрытие ниже 118 400. Открытый интерес растёт без прогресса '
-            'цены — риск сквиза повышен.',
+        thesis: 'На 4H диапазон пройден вверх, цена вернулась к его верхней '
+            'границе и держится над ней. На 1H идёт ретест бычьего '
+            'ордер-блока; нужен слабый откат и закрытие выше 118 400. '
+            'Фандинг отрицательный при растущем открытом интересе — рынок '
+            'платит за короткие позиции против движения.',
         timeframes: const ['1D', '4H', '1H'],
         plan: TradePlan(
           instrumentId: 'BTCUSDT',
-          direction: Direction.short,
+          direction: Direction.long,
           orderType: PlanOrderType.stopLimit,
-          entryLow: 118400,
-          entryHigh: 118850,
+          entryLow: 118100,
+          entryHigh: 118400,
           maxSlippagePercent: 0.1,
-          stop: 120240,
+          stop: 115800,
           targets: const [
-            PlanTarget(name: 'TP1', price: 116900, fraction: 0.4, afterFill: 'стоп в безубыток'),
-            PlanTarget(name: 'TP2', price: 115300, fraction: 0.4, afterFill: 'трейл по структуре 1H'),
-            PlanTarget(name: 'TP3', price: 112800, fraction: 0.2, afterFill: 'закрытие остатка'),
+            PlanTarget(name: 'TP1', price: 121400, fraction: 0.4, afterFill: 'стоп в безубыток'),
+            PlanTarget(name: 'TP2', price: 124800, fraction: 0.4, afterFill: 'трейл по структуре 1H'),
+            PlanTarget(name: 'TP3', price: 129000, fraction: 0.2, afterFill: 'закрытие остатка'),
           ],
-          quantity: 1,
+          quantity: 9,
           lotSize: 1,
-          valuePerPoint: 1,
-          riskRubles: 1950,
-          riskPercent: 0.5,
-          marginEstimate: 21000,
+          valuePerPoint: 0.78,
+          riskRubles: 17200,
+          riskPercent: 0.72,
+          marginEstimate: 96000,
           expiry: now.add(const Duration(hours: 3, minutes: 12)),
           strategyVersion: 'v1.0.3',
           invalidation: const [
-            'Закрепление 1H выше 120 240',
+            'Закрепление 1H ниже 115 800',
             'Снижение открытого интереса более чем на 8% до входа',
-            'Импульсный пробой диапазона вверх',
+            'Импульсный возврат в диапазон вниз',
           ],
         ),
         evidence: [
-          _evidence('ev-btc-regime', 'market_regime', 'Режим: 4H распределение',
-              'Диапазон отработан сверху, спрос слабеет.', ['btc_range']),
-          _evidence('ev-btc-structure', 'structure', 'Структура: выброс вверх и lower high',
-              'Верхняя граница пробита и не удержана.', ['btc_utad']),
+          _evidence('ev-btc-regime', 'market_regime', 'Режим: 4H накопление после пробоя',
+              'Диапазон пройден вверх, предложение исчерпано.', ['btc_range']),
+          _evidence('ev-btc-structure', 'structure', 'Структура: higher low над границей',
+              'Верхняя граница стала опорой, а не сопротивлением.', ['btc_break']),
           _evidence('ev-btc-trigger', 'entry_trigger', 'Триггера ещё нет',
-              'Нужно закрытие 1H ниже 118 400 — до него идея остаётся ожиданием.',
+              'Нужно закрытие 1H выше 118 400 — до него идея остаётся ожиданием.',
               const []),
-          _evidence('ev-btc-oi', 'position_building', 'Открытый интерес растёт без цены',
-              'Набор коротких позиций; обратная сторона — риск сквиза.',
+          _evidence('ev-btc-oi', 'position_building', 'Фандинг отрицательный при росте интереса',
+              'Рынок платит за короткие позиции против движения.',
               ['btc_oi']),
         ],
         annotations: [
-          _annotation('btc_range', AnnotationType.wyckoffRange, '4H', 'ev-btc-regime', now, 115300, 120240),
-          _annotation('btc_utad', AnnotationType.wyckoffUtad, '4H', 'ev-btc-structure', now, 119800, 120240),
+          _annotation('btc_range', AnnotationType.wyckoffRange, '4H', 'ev-btc-regime', now, 115800, 118400),
+          _annotation('btc_break', AnnotationType.smcBos, '4H', 'ev-btc-structure', now, 118100, 118400),
           _annotation('btc_oi', AnnotationType.oiBuildup, '1H', 'ev-btc-oi', now, null, null),
         ],
         eventRisk: EventRisk(
@@ -273,6 +275,49 @@ abstract final class DemoIdeas {
         ],
         dataFlags: const [DataQualityFlag.lowLiquidity],
       );
+
+  /// Свечи для графика демо-идеи.
+  ///
+  /// Считаются от её же уровней, а не тянутся с биржи. Настоящие цены под
+  /// выдуманным планом — худший из вариантов: зона входа и стоп улетают за
+  /// пределы графика, и картинка выглядит сломанной, хотя сломаны данные.
+  ///
+  /// Ряд детерминированный: одна и та же идея рисуется одинаково при каждом
+  /// открытии. Случайность здесь означала бы график, который меняется сам по
+  /// себе между двумя взглядами.
+  static SignalChart? chartFor(Idea idea) {
+    final plan = idea.plan;
+    // Идея без плана — наблюдение: рисовать зону входа и стоп нечем.
+    final low = plan?.stop ?? 0;
+    final high = plan == null ? 0.0 : plan.targets.last.price;
+    if (plan == null || low <= 0 || high <= low) return null;
+
+    final span = high - low;
+    final candles = <ChartCandle>[];
+    final start = DateTime(2026, 7, 29, 10);
+    var price = plan.direction.isLong ? low + span * 0.28 : high - span * 0.28;
+    for (var i = 0; i < 64; i++) {
+      // Пила с уклоном к зоне входа: ряд узнаваемо «рыночный», но полностью
+      // предсказуемый — ни одного случайного числа.
+      final wave = ((i * 37) % 17 - 8) / 8;
+      final drift = (plan.direction.isLong ? 1 : -1) * span * 0.004;
+      final open = price;
+      price = (price + drift + wave * span * 0.018).clamp(low * 0.995, high * 1.005);
+      final close = price;
+      final wick = span * 0.012;
+      candles.add(ChartCandle(
+        open,
+        (open > close ? open : close) + wick,
+        (open < close ? open : close) - wick,
+        close,
+        start.add(Duration(hours: i * 4)),
+      ));
+    }
+    return SignalChart(
+      timeframeLabel: idea.timeframes.length >= 2 ? idea.timeframes[1] : '4h',
+      candles: candles,
+    );
+  }
 
   static Evidence _evidence(
     String id,
