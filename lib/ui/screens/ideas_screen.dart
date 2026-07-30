@@ -210,7 +210,7 @@ class StateBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final color = colorOf(state);
+    final color = StateBadge.colorOf(state);
     return OutlineBadge(
       label: state.label,
       color: color,
@@ -259,8 +259,9 @@ class _Empty extends StatelessWidget {
               ),
               const SizedBox(height: 8),
               Text(
-                'Это не «сегодня нет сетапов». Пока сервер недоступен, '
-                'приложение не делает вывод о рынке и не подставляет локальные идеи.',
+                'Это не «сегодня нет сетапов»: идеи считает сервер. Пока он '
+                'недоступен, приложение не делает вывод о рынке и не '
+                'подставляет локальные идеи.',
                 textAlign: TextAlign.center,
                 style: T.body(12, color: C.muted, height: 1.5),
               ),
