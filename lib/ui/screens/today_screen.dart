@@ -48,11 +48,14 @@ class TodayScreen extends StatelessWidget {
         _IdeasBlock(controller: controller, ideas: top, now: now),
         const SizedBox(height: 16),
         // Пара «что мешает» и «где деньги»: на широком экране рядом, на
-        // телефоне колонкой.
-        _SideBySide(
-          left: _EventCard(controller: controller, now: now),
-          right: _PortfolioCard(controller: controller),
-        ),
+        // телефоне колонкой. Пустые обе — не показываются вовсе: экран дня
+        // не место для объяснений, чего в системе нет.
+        if ((controller.digest?.events.isNotEmpty ?? false) ||
+            !(controller.capital?.isEmpty ?? true))
+          _SideBySide(
+            left: _EventCard(controller: controller, now: now),
+            right: _PortfolioCard(controller: controller),
+          ),
       ],
     );
   }

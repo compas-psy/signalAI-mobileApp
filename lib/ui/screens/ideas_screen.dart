@@ -11,6 +11,7 @@ import '../tone.dart';
 import '../widgets/common.dart';
 import '../widgets/confluence_ring.dart';
 import '../widgets/idea_head.dart';
+import '../widgets/sparkline.dart';
 
 /// Лента идей (ТЗ §8).
 ///
@@ -96,6 +97,12 @@ class IdeaCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final plan = idea.plan;
+    final controller = AppScope.of(context);
+    // Мини-график цены — то, с чего трейдер начинает читать идею. Свечи
+    // тянутся лениво и кэшируются; пока их нет, карточка живёт без графика,
+    // а не ждёт его.
+    final chart = controller.ideaChart(idea.id);
+    if (chart == null) controller.loadIdeaChart(idea);
     return Pressable(
       onTap: onTap,
       child: SectionCard(
@@ -166,16 +173,26 @@ class IdeaCard extends StatelessWidget {
                 ConfluenceRing(score: idea.score.value),
               ],
             ),
+            if (chart != null && chart.candles.length >= 2) ...[
+              const SizedBox(height: 11),
+              Sparkline(
+                values: [for (final c in chart.candles) c.close],
+                height: 44,
+                color: directionColor(idea.direction),
+              ),
+            ],
             const SizedBox(height: 11),
+            // Чипы — только то, что несёт число или срок. «Плана нет» и
+            // «риск не выделен» текстом на каждой карточке — это шум:
+            // состояние Watch уже сказано бейджем в заголовке.
             Wrap(
               spacing: 6,
               runSpacing: 6,
               children: [
                 TagChip(idea.market.label),
-                TagChip(plan == null
-                    ? 'плана нет'
-                    : 'R/R ${_rr(plan.rrToSecondTarget)}'),
-                TagChip(riskLabel(idea)),
+                if (plan != null) TagChip('R/R ${_rr(plan.rrToSecondTarget)}'),
+                if (plan != null && plan.riskRubles > 0)
+                  TagChip(riskLabel(idea)),
                 TagChip(ttlLabel(idea, now)),
               ],
             ),

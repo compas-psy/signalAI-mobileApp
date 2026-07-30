@@ -97,6 +97,47 @@ abstract final class EngineContract {
     return cut < 0 ? instrumentId : instrumentId.substring(cut + 1);
   }
 
+  /// Человеческое имя инструмента, когда движок его не прислал.
+  ///
+  /// «BTCUSDT» и «SIU6» — это коды, а решение принимает человек. Словарь
+  /// покрывает вселенную движка; незнакомый код остаётся кодом — придумывать
+  /// имя хуже, чем не назвать.
+  static String humanName(String ticker) {
+    final upper = ticker.toUpperCase();
+    for (final entry in _names.entries) {
+      if (upper.startsWith(entry.key)) return entry.value;
+    }
+    return '';
+  }
+
+  static String _nameOf(String fromServer, String instrumentId) {
+    final ticker = symbolOf(instrumentId);
+    if (fromServer.isNotEmpty && fromServer != ticker) return fromServer;
+    return humanName(ticker);
+  }
+
+  static const _names = <String, String>{
+    'BTC': 'Биткоин · бессрочный',
+    'ETH': 'Эфириум · бессрочный',
+    'SOL': 'Солана · бессрочный',
+    'XRP': 'XRP · бессрочный',
+    'TON': 'Тонкоин · бессрочный',
+    'BNB': 'BNB · бессрочный',
+    'DOGE': 'Доджкоин · бессрочный',
+    'SI': 'Доллар/Рубль · фьючерс',
+    'CNY': 'Юань/Рубль · фьючерс',
+    'BR': 'Нефть Brent · фьючерс',
+    'NG': 'Природный газ · фьючерс',
+    'GOLD': 'Золото · фьючерс',
+    'GLD': 'Золото · фьючерс',
+    'SILV': 'Серебро · фьючерс',
+    'MX': 'Индекс МосБиржи · фьючерс',
+    'MIX': 'Индекс МосБиржи · фьючерс',
+    'RTS': 'Индекс РТС · фьючерс',
+    'SBRF': 'Сбербанк · фьючерс',
+    'GAZR': 'Газпром · фьючерс',
+  };
+
   /// Сколько знаков после запятой у цен инструмента.
   ///
   /// Считается по самим ценам, а не задаётся константой: у фьючерса на доллар
@@ -147,7 +188,12 @@ abstract final class EngineContract {
     return Idea(
       id: id,
       instrumentId: j['instrument_id'] as String? ?? '',
-      instrumentName: instrumentName ?? (j['symbol'] as String? ?? ''),
+      // Имя из ответа; если движок прислал тикер вместо имени (или ничего) —
+      // словарь. Карточка с «BTCUSDT» дважды не отвечает на вопрос «что это».
+      instrumentName: _nameOf(
+        instrumentName ?? (j['symbol'] as String? ?? ''),
+        j['instrument_id'] as String? ?? '',
+      ),
       market: _market(j['instrument_id'] as String? ?? ''),
       direction: direction,
       strategy: _strategy(j['strategy'] as String?),

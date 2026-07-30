@@ -311,9 +311,36 @@ class AppController extends ChangeNotifier {
       notifyListeners();
       return;
     }
-    _engineIdeas = await _engine.today();
+    final fetched = await _engine.today();
+    // Одна карточка на инструмент. Три стратегии, посмотревшие на BTCUSDT,
+    // это не три сделки — это три мнения об одной, и показывать их рядом
+    // значит предлагать войти трижды. Остаётся лучшее мнение; ТЗ §16 того же
+    // требует от сервера («до трёх карточек»), но пока он присылает всё,
+    // отбор делается здесь.
+    _engineIdeas = EngineIdeas(
+      ideas: bestPerInstrument(fetched.ideas),
+      unavailableReason: fetched.unavailableReason,
+      noSetupsReason: fetched.noSetupsReason,
+    );
     _engineDataStatus = await _engine.dataStatus();
     notifyListeners();
+  }
+
+  /// Лучшая идея на инструмент: дальше по конвейеру, при равенстве — выше
+  /// балл. Triggered с 76 важнее Watch с 84: у первого есть сделка сейчас,
+  /// у второго только контекст.
+  static List<Idea> bestPerInstrument(List<Idea> ideas) {
+    final best = <String, Idea>{};
+    for (final idea in ideas) {
+      final current = best[idea.instrumentId];
+      if (current == null ||
+          IdeaPriority.tier(idea) > IdeaPriority.tier(current) ||
+          (IdeaPriority.tier(idea) == IdeaPriority.tier(current) &&
+              idea.score.value > current.score.value)) {
+        best[idea.instrumentId] = idea;
+      }
+    }
+    return best.values.toList();
   }
 
   /// Настройки уровня приложения — те, что не принадлежат ни одному
