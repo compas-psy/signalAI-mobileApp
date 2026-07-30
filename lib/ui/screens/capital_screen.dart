@@ -5,7 +5,6 @@ import '../../data/ledger/capital_desk.dart';
 import '../../domain/ledger/account.dart';
 import '../../domain/ledger/ledger_event.dart';
 import '../../domain/ledger/money.dart';
-import '../../domain/portfolio/package_plan.dart';
 import '../../state/app_controller.dart';
 import '../../state/app_scope.dart';
 import '../../theme/tokens.dart';
@@ -13,9 +12,6 @@ import '../../theme/typography.dart';
 import '../layout.dart';
 import '../widgets/common.dart';
 import '../widgets/operation_sheet.dart';
-import '../widgets/package_widgets.dart';
-import '../widgets/vector_icon.dart';
-import 'package_detail_screen.dart';
 import '../widgets/segmented.dart';
 
 /// Раздел «Капитал»: обзор, счета, пакеты, книга операций, аналитика.
@@ -564,7 +560,12 @@ class _Packages extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final controller = AppScope.of(context);
+    // Решение владельца от 30.07: шаблонных пакетов не существует. Пакет
+    // обязан собираться движком после фундаментально-технического отбора и
+    // статистической проверки — на его данных, а не из заготовки. Пока
+    // портфельный контур сервера не считает, здесь честное состояние, а не
+    // корзина «как у всех»: заготовленный список фондов на экране читался бы
+    // как рекомендация, которой никто не давал.
     return ListView(
       padding: _pad,
       children: [
@@ -572,100 +573,31 @@ class _Packages extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const SectionLabel('Пакеты капитала'),
-              const SizedBox(height: 6),
+              Row(
+                children: [
+                  const Expanded(child: SectionLabel('Пакеты капитала')),
+                  OutlineBadge(
+                    label: 'считает движок',
+                    color: C.info,
+                    borderColor: C.infoBorder,
+                    background: C.infoFaint,
+                    fontWeight: 700,
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
               Text(
-                'Пакет — целевая корзина поверх книги, а не отдельный счёт: '
-                'горизонт, состав с полосами допуска и правило, при котором '
-                'замысел считается сломанным. Фактические веса считаются из '
-                'книги, доходность — историческая симуляция на реальных '
-                'данных, а не прогноз.',
+                'Пакет собирается сервером: фундаментальный и технический '
+                'отбор, оптимизация состава и проверка на истории — по вашей '
+                'книге и вашему горизонту. Портфельный контур движка ещё не '
+                'считает; когда посчитает, здесь появится состав с целями, '
+                'допусками и правилом пересмотра.',
                 style: T.body(11.5, color: C.muted, height: 1.5),
               ),
             ],
           ),
         ),
-        const SizedBox(height: 12),
-        for (final plan in controller.packagePlans) ...[
-          _PackagePlanCard(plan: plan, controller: controller),
-          const SizedBox(height: 12),
-        ],
       ],
-    );
-  }
-}
-
-class _PackagePlanCard extends StatelessWidget {
-  const _PackagePlanCard({required this.plan, required this.controller});
-
-  final PackagePlan plan;
-  final AppController controller;
-
-  @override
-  Widget build(BuildContext context) {
-    final history = controller.packageHistory(plan.id);
-
-    // Карточка — это анонс, а не сам пакет. Разбор до штук и денег живёт на
-    // отдельном экране: раньше карточка не открывалась вовсе, и состав
-    // пакета негде было увидеть.
-    return Pressable(
-      onTap: () => Navigator.of(context).push(
-        PageRouteBuilder<void>(
-          pageBuilder: (_, _, _) => PackageDetailScreen(plan: plan),
-          transitionsBuilder: (_, animation, _, child) =>
-              FadeTransition(opacity: animation, child: child),
-        ),
-      ),
-      child: SectionCard(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Expanded(child: Text(plan.title, style: T.jost(17))),
-                OutlineBadge(
-                  label: '${plan.horizonYears} ЛЕТ',
-                  color: C.info,
-                  borderColor: C.infoBorder,
-                  background: C.infoFaint,
-                  fontWeight: 800,
-                ),
-              ],
-            ),
-            const SizedBox(height: 6),
-            Text(plan.thesis,
-                maxLines: 3,
-                overflow: TextOverflow.ellipsis,
-                style: T.body(11.5, color: C.muted, height: 1.5)),
-            const SizedBox(height: 12),
-            CompositionBar(plan: plan),
-            const SizedBox(height: 10),
-            // Таблица ТЗ §7: инструмент, роль, текущая доля, целевая,
-            // действие и тезис. Фактические доли берутся из книги; пока её
-            // нет, показываются только цели — выдумывать текущий вес нельзя.
-            PackageTable(
-              plan: plan,
-              positions: controller.rebalance(plan)?.positions,
-            ),
-            const SizedBox(height: 10),
-            Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    history == null || history.isEmpty
-                        ? 'Открыть: состав в штуках и деньгах, история, заявки'
-                        : 'Годовых ${history.cagr >= 0 ? '+' : '−'}'
-                            '${history.cagr.abs().toStringAsFixed(1).replaceAll('.', ',')}%'
-                            ' · просадка ${history.maxDrawdown.toStringAsFixed(0)}%',
-                    style: T.body(11, color: C.accent, height: 1.4),
-                  ),
-                ),
-                const VectorIcon(Icons.chevronRight, size: 14, color: C.accent),
-              ],
-            ),
-          ],
-        ),
-      ),
     );
   }
 }

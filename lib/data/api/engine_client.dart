@@ -84,8 +84,14 @@ class EngineClient {
   /// Полная карточка с планом, разбором оценки, доказательствами и разметкой.
   Future<Idea?> detail(String id) async {
     if (!isConfigured) return null;
-    final json = await _api.get('$_base/ideas/$id');
-    return EngineContract.idea(json);
+    try {
+      final json = await _api.get('$_base/ideas/$id');
+      return EngineContract.idea(json);
+    } catch (_) {
+      // Сводка из ленты уже на экране; упавшая догрузка полной карточки не
+      // должна ронять разбор — просто останется меньше подробностей.
+      return null;
+    }
   }
 
   /// Лента идей, включая непоказанные (§12): журнал обязан отвечать на

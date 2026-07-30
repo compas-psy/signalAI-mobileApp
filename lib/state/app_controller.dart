@@ -1399,6 +1399,29 @@ class AppController extends ChangeNotifier {
   void openSignal(String id) {
     _selectedSignalId = id;
     notifyListeners();
+    // Лента приходит сводками: `/ideas/today` не несёт ни плана, ни
+    // доказательств, ни разметки — они живут в `/ideas/{id}`. Пока полная
+    // карточка не запрашивалась, разбор показывал «плана нет» и голый график
+    // у идей, у которых на сервере есть и то и другое.
+    unawaited(_hydrateIdea(id));
+  }
+
+  /// Догрузить полную карточку идеи и заменить ею сводку в ленте.
+  Future<void> _hydrateIdea(String id) async {
+    if (demoData) return;
+    final current = _engineIdeas.ideas.where((i) => i.id == id).firstOrNull;
+    // Уже полная — доказательства бывают только в детальном ответе.
+    if (current == null || current.evidence.isNotEmpty) return;
+    final full = await _engine.detail(id);
+    if (full == null) return;
+    _engineIdeas = EngineIdeas(
+      ideas: [
+        for (final idea in _engineIdeas.ideas) idea.id == id ? full : idea,
+      ],
+      unavailableReason: _engineIdeas.unavailableReason,
+      noSetupsReason: _engineIdeas.noSetupsReason,
+    );
+    notifyListeners();
   }
 
   void back() {
