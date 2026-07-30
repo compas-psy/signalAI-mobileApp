@@ -269,6 +269,116 @@ def shares_board(*, fetch=http_json) -> tuple[list[ShareRow], list[FetchReport]]
     return rows, [*r1, *r2]
 
 
+@dataclass(frozen=True, slots=True)
+class BoardRow:
+    """Строка любой доски фондового рынка: акции, фонды, облигации.
+
+    ``extra`` держит колонки, специфичные для рынка: доходность и дюрацию у
+    облигаций, размер выпуска у акций. Заводить под каждый рынок свой класс
+    незачем — различие ровно в наборе чисел, а не в устройстве строки.
+    """
+
+    sec_id: str
+    short_name: str
+    board: str
+    last: Decimal | None
+    turnover: Decimal | None
+    min_step: Decimal | None
+    lot_size: int | None
+    decimals: int | None
+    extra: dict[str, Any]
+
+    def number(self, key: str) -> Decimal | None:
+        return _dec(self.extra.get(key))
+
+
+# Наборы колонок по рынкам. Перечислять обязательно: без `columns` ISS
+# отдаёт по сорок полей на бумагу, и запрос доски рвётся по таймауту.
+_SEC_COLUMNS = {
+    "shares": "SECID,SHORTNAME,MINSTEP,DECIMALS,LOTSIZE,ISSUESIZE,SECTYPE",
+    "bonds": (
+        "SECID,SHORTNAME,MINSTEP,DECIMALS,LOTSIZE,MATDATE,COUPONPERCENT,"
+        "COUPONVALUE,FACEVALUE,SECTYPE"
+    ),
+}
+_MD_COLUMNS = {
+    "shares": "SECID,LAST,VALTODAY",
+    "bonds": "SECID,LAST,VALTODAY,YIELD,DURATION",
+}
+
+
+def stock_board(
+    market: str, board: str, *, fetch=http_json
+) -> tuple[list[BoardRow], list[FetchReport]]:
+    """Снимок доски фондового рынка (акции TQBR, фонды TQTF, ОФЗ TQOB).
+
+    Один вход на все три рынка. Инвестиционный контур отличается от срочного
+    не способом получения данных, а тем, какие числа у бумаги есть: у
+    облигации — доходность и дюрация, у акции — размер выпуска. Оба набора
+    приезжают одним запросом и складываются в ``extra``.
+    """
+    sec_columns = _SEC_COLUMNS.get(market)
+    md_columns = _MD_COLUMNS.get(market)
+    if sec_columns is None or md_columns is None:
+        raise ValueError(f"рынок {market!r} не описан: неизвестен набор колонок")
+
+    def url(start: int) -> str:
+        return (
+            f"{BASE}/engines/stock/markets/{market}/boards/{board}/securities.json"
+            "?iss.meta=off&iss.only=securities,marketdata"
+            f"&securities.columns={sec_columns}"
+            f"&marketdata.columns={md_columns}"
+            f"&limit={PAGE_SIZE}&start={start}"
+        )
+
+    securities, r1 = _paged(url, "securities", fetch=fetch)
+    market_data, r2 = _paged(url, "marketdata", fetch=fetch)
+    by_id = {row.get("SECID"): row for row in market_data}
+
+    rows: list[BoardRow] = []
+    for sec in securities:
+        sec_id = sec.get("SECID")
+        if not sec_id:
+            continue
+        md = by_id.get(sec_id, {})
+        extra = {k: v for k, v in {**sec, **md}.items() if k != "SECID"}
+        rows.append(
+            BoardRow(
+                sec_id=str(sec_id),
+                short_name=str(sec.get("SHORTNAME") or ""),
+                board=board,
+                last=_dec(md.get("LAST")),
+                turnover=_dec(md.get("VALTODAY")),
+                min_step=_dec(sec.get("MINSTEP")),
+                lot_size=_int(sec.get("LOTSIZE")),
+                decimals=_int(sec.get("DECIMALS")),
+                extra=extra,
+            )
+        )
+    return rows, [*r1, *r2]
+
+
+def dividends(sec_id: str, *, fetch=http_json) -> tuple[list[tuple[date, Decimal]], FetchReport]:
+    """История дивидендов бумаги.
+
+    Единственный фундаментальный ряд, который ISS отдаёт без ключей и без
+    оговорок. Он и берётся: дивидендная доходность считается по фактическим
+    выплатам за последние 12 месяцев, а не по обещаниям аналитиков.
+    """
+    payload, report = fetch(
+        f"{BASE}/securities/{sec_id}/dividends.json?iss.meta=off&iss.only=dividends"
+    )
+    result: list[tuple[date, Decimal]] = []
+    for row in iss_rows(payload, "dividends"):
+        day = _day(row.get("registryclosedate"))
+        value = _dec(row.get("value"))
+        if day is None or value is None or value <= 0:
+            continue
+        result.append((day, value))
+    result.sort(key=lambda item: item[0])
+    return result, report
+
+
 def candles(
     sec_id: str,
     timeframe: Timeframe,

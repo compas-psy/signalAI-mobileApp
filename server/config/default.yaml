@@ -204,6 +204,14 @@ universe:
     max_active: 12
   investments:
     min_history_days: 120
+    # Верхние границы вселенной. Не «сколько бумаг нравится», а сколько
+    # оптимизатор способен различить: на трёхстах рядах он находит связи,
+    # которых нет, а загрузка упирается в лимиты биржи.
+    max_equities: 40
+    max_funds: 15
+    max_bonds: 20
+    min_daily_turnover_rub: 20000000
+    min_bond_turnover_rub: 5000000
   options:
     dte_range: [7, 45]
     max_relative_spread: 0.07

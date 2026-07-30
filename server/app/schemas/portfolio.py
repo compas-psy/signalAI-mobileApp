@@ -1,0 +1,80 @@
+"""Схемы портфельного контура (§6, UX-ТЗ §7.1).
+
+Доли уходят строками, как и цены: 0.075 в JSON-числе на другом конце легко
+становится 0.07499999999999999, а из доли считается сумма покупки.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+
+from pydantic import Field
+
+from .common import ApiModel, Money
+
+
+class PositionOut(ApiModel):
+    """Позиция пакета вместе с тем, зачем она там и когда её выкидывать."""
+
+    instrument_id: str
+    symbol: str
+    title: str
+    asset_class: str
+    target_weight: Money
+    role: str
+    thesis: str
+    kill_conditions: str
+    score: Money | None = None
+    expected_return: Money | None = None
+
+
+class ClassSliceOut(ApiModel):
+    """Доля класса активов — то, что рисуется полосой, а не читается."""
+
+    asset_class: str
+    label: str
+    weight: Money
+
+
+class PackageOut(ApiModel):
+    id: str
+    profile: str
+    package: str
+    horizon_years: int
+    expected_return_low: Money
+    expected_return_high: Money
+    target_volatility: Money
+    drawdown_limit: Money
+    cvar_95: Money | None = None
+    rationale: str
+    stress: dict[str, str] = Field(default_factory=dict)
+    generated_at: datetime
+    valid_until: datetime
+    mix: list[ClassSliceOut] = Field(default_factory=list)
+    positions: list[PositionOut] = Field(default_factory=list)
+
+
+class StageOut(ApiModel):
+    """Шаг конвейера: сделан или нет, и чем измеряется.
+
+    Прогресс считается по факту, а не по флагу в базе: «есть» означает, что
+    в базе лежит результат шага, и число рядом — это он и есть.
+    """
+
+    key: str
+    name: str
+    done: bool
+    detail: str = ""
+
+
+class PortfolioStatusOut(ApiModel):
+    stages: list[StageOut]
+    packages_ready: int
+    universe: int
+    generated_at: datetime | None = None
+    reason: str = ""
+
+
+class PortfolioResponse(ApiModel):
+    status: PortfolioStatusOut
+    packages: list[PackageOut] = Field(default_factory=list)

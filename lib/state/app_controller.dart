@@ -22,6 +22,7 @@ import '../domain/ledger/money.dart';
 import '../domain/ledger/signal_ledger.dart';
 import '../domain/options/structure_builder.dart';
 import '../domain/portfolio/allocation.dart';
+import '../domain/portfolio/package.dart';
 import '../domain/portfolio/package_backtest.dart';
 import '../domain/portfolio/package_plan.dart';
 import '../domain/portfolio/rebalance.dart';
@@ -299,6 +300,37 @@ class AppController extends ChangeNotifier {
   /// Состояние загрузки данных на сервере: сколько инструментов во вселенной,
   /// сколько допущено, насколько свежи бары.
   Map<String, dynamic>? get engineDataStatus => _engineDataStatus;
+
+  // ── Портфель (§6) ──────────────────────────────────────────────────────
+
+  PortfolioState? _portfolio;
+  bool _portfolioLoading = false;
+
+  /// Пакеты капитала и состояние их сборки. null — ещё не запрашивали.
+  PortfolioState? get portfolio => _portfolio;
+  bool get portfolioLoading => _portfolioLoading;
+
+  /// Запросить пакеты у движка.
+  ///
+  /// Экран вызывает это при первом показе. Повторные вызовы во время
+  /// загрузки игнорируются: перерисовка списка не должна порождать второй
+  /// запрос, а пересборка на сервере — операция не бесплатная.
+  Future<void> loadPortfolio({bool force = false}) async {
+    if (_portfolioLoading) return;
+    if (_portfolio != null && !force) return;
+    _portfolioLoading = true;
+    // Уведомление о начале загрузки может прийти в момент построения
+    // экрана — отпускаем кадр, иначе Flutter справедливо ругается на
+    // setState во время build.
+    await Future<void>.microtask(() {});
+    notifyListeners();
+    try {
+      _portfolio = await _engine.portfolio();
+    } finally {
+      _portfolioLoading = false;
+      notifyListeners();
+    }
+  }
 
   /// Обновить выдачу движка.
   ///

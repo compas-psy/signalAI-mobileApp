@@ -1,5 +1,6 @@
 import '../../domain/models/signal.dart';
 import '../../domain/idea/idea.dart';
+import '../../domain/portfolio/package.dart';
 import 'api_client.dart';
 import 'engine_contract.dart';
 
@@ -161,6 +162,25 @@ class EngineClient {
       // Молча: график — не то, ради чего стоит рушить разбор идеи. Его
       // отсутствие видно на самом графике, и там же написана причина.
       return null;
+    }
+  }
+
+  /// Пакеты капитала (§6, `GET /api/v1/portfolio/packages`).
+  ///
+  /// Ответ несёт и состав, и состояние конвейера. Второе не менее важно:
+  /// пустой список пакетов сам по себе не отвечает на вопрос «почему», а
+  /// именно его владелец и задаёт, открывая пустой экран.
+  Future<PortfolioState> portfolio() async {
+    if (!isConfigured) {
+      return const PortfolioState.unavailable(
+        'Адрес движка не задан в сборке. Состав считает сервер.',
+      );
+    }
+    try {
+      return EngineContract.portfolio(
+          await _api.get('$_base/portfolio/packages'));
+    } catch (error) {
+      return PortfolioState.unavailable(_reason(error));
     }
   }
 

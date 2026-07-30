@@ -5,6 +5,7 @@ import '../../domain/idea/idea_state.dart';
 import '../../domain/idea/quality_score.dart';
 import '../../domain/idea/trade_plan.dart';
 import '../../domain/models/signal.dart';
+import '../../domain/portfolio/package.dart';
 
 /// Разбор контракта §18: идея приходит с сервера целиком.
 ///
@@ -408,6 +409,82 @@ abstract final class EngineContract {
       }
     }
     return out;
+  }
+
+  /// Разбор ответа портфельного контура (§6).
+  ///
+  /// Доли приходят строками — как и цены, и по той же причине: из доли
+  /// считается сумма покупки, а `0.075` в JSON-числе на другом конце легко
+  /// становится `0.07499999999999999`.
+  static PortfolioState portfolio(Map<String, dynamic> json) {
+    final status = json['status'];
+    final statusMap = status is Map<String, dynamic> ? status : const {};
+    return PortfolioState(
+      stages: [
+        for (final item in (statusMap['stages'] as List? ?? const []))
+          if (item is Map<String, dynamic>)
+            PortfolioStage(
+              key: '${item['key'] ?? ''}',
+              name: '${item['name'] ?? ''}',
+              done: item['done'] == true,
+              detail: '${item['detail'] ?? ''}',
+            ),
+      ],
+      packages: [
+        for (final item in (json['packages'] as List? ?? const []))
+          if (item is Map<String, dynamic>) _package(item),
+      ],
+      reason: '${statusMap['reason'] ?? ''}',
+      universe: (statusMap['universe'] as num?)?.toInt() ?? 0,
+      generatedAt: _time(statusMap['generated_at']),
+    );
+  }
+
+  static EnginePackage _package(Map<String, dynamic> json) {
+    final now = DateTime.now();
+    return EnginePackage(
+      id: '${json['id'] ?? ''}',
+      profile: '${json['profile'] ?? ''}',
+      size: PackageSize.parse('${json['package']}') ?? PackageSize.balanced,
+      horizonYears: (json['horizon_years'] as num?)?.toInt() ?? 1,
+      expectedLow: _num(json['expected_return_low']),
+      expectedHigh: _num(json['expected_return_high']),
+      volatility: _num(json['target_volatility']),
+      drawdown: _num(json['drawdown_limit']),
+      cvar95: _numOrNull(json['cvar_95']),
+      rationale: '${json['rationale'] ?? ''}',
+      stress: {
+        for (final entry in (json['stress'] as Map? ?? const {}).entries)
+          '${entry.key}': '${entry.value}',
+      },
+      mix: [
+        for (final item in (json['mix'] as List? ?? const []))
+          if (item is Map<String, dynamic>)
+            ClassSlice(
+              assetClass: '${item['asset_class'] ?? ''}',
+              label: '${item['label'] ?? ''}',
+              weight: _num(item['weight']),
+            ),
+      ],
+      positions: [
+        for (final item in (json['positions'] as List? ?? const []))
+          if (item is Map<String, dynamic>)
+            PackagePosition(
+              instrumentId: '${item['instrument_id'] ?? ''}',
+              symbol: '${item['symbol'] ?? ''}',
+              title: '${item['title'] ?? ''}',
+              assetClass: '${item['asset_class'] ?? ''}',
+              weight: _num(item['target_weight']),
+              role: '${item['role'] ?? ''}',
+              thesis: '${item['thesis'] ?? ''}',
+              killConditions: '${item['kill_conditions'] ?? ''}',
+              score: _numOrNull(item['score']),
+              expectedReturn: _numOrNull(item['expected_return']),
+            ),
+      ],
+      generatedAt: _time(json['generated_at']) ?? now,
+      validUntil: _time(json['valid_until']) ?? now,
+    );
   }
 
   static DateTime? _time(Object? raw) =>

@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -125,6 +125,59 @@ def store_candles(
     return len(rows) - updated, updated
 
 
+# Скользящая проверка портфеля требует обучения на двух годах и измерения
+# на следующем квартале — и так несколько окон подряд. Полгода истории для
+# этого не хватает физически, поэтому дневки инвестиционных бумаг грузятся
+# сразу за много лет. Один раз: дальше догружается только хвост.
+_FIRST_LOAD_DAYS = 2200
+
+
+def _board_path(instrument: Instrument) -> str:
+    """Адрес свечей ISS для инструмента.
+
+    У биржи свечи лежат под своим рынком и своей доской: акции и фонды — на
+    ``shares``, ОФЗ — на ``bonds``, фьючерсы — на ``forts``. Запрос акции по
+    адресу облигаций возвращает пустой список — то есть выглядит как «бумага
+    не торговалась», а не как ошибка адреса. Поэтому рынок и доска
+    записываются в справочник при синхронизации и читаются отсюда.
+    """
+    if instrument.asset_class is AssetClass.FUTURES:
+        return moex.FORTS
+    meta = instrument.metadata_json or {}
+    market, board = meta.get("market"), meta.get("board")
+    if market and board:
+        return f"engines/stock/markets/{market}/boards/{board}"
+    return moex.SHARES
+
+
+def _since(
+    session: Session,
+    instrument: Instrument,
+    timeframe: Timeframe,
+    *,
+    moment: datetime,
+    days: int,
+) -> date:
+    """С какой даты просить свечи.
+
+    Есть история — берётся её хвост с перекрытием: биржа уточняет последние
+    бары, и без перекрытия эти уточнения не приедут никогда. Истории нет —
+    берётся вся глубина, разная для инвестиций и для срочного рынка.
+    """
+    newest = session.execute(
+        select(func.max(Bar.open_time)).where(
+            Bar.instrument_id == instrument.instrument_id,
+            Bar.timeframe == timeframe,
+        )
+    ).scalar_one_or_none()
+    if newest is not None:
+        return (newest - timedelta(days=5)).date()
+    depth = days
+    if timeframe is Timeframe.D1 and instrument.asset_class in _DAILY_ONLY:
+        depth = _FIRST_LOAD_DAYS
+    return (moment - timedelta(days=depth)).date()
+
+
 def ingest_moex(
     session: Session,
     instrument: Instrument,
@@ -138,10 +191,10 @@ def ingest_moex(
     moment = now or datetime.now(UTC)
     report = IngestReport(instrument.instrument_id, timeframe)
     sec_id = instrument.symbol
-    since = (moment - timedelta(days=days)).date()
+    since = _since(session, instrument, timeframe, moment=moment, days=days)
 
     kwargs = {"fetch": fetch} if fetch else {}
-    path = moex.FORTS if instrument.asset_class is AssetClass.FUTURES else moex.SHARES
+    path = _board_path(instrument)
 
     try:
         candles, _ = moex.candles(sec_id, timeframe, since, path=path, **kwargs)
@@ -228,6 +281,26 @@ def ingest_crypto(
     return report
 
 
+# Инвестиционный контур живёт на дневках (§6): решение о составе принимается
+# по закрытиям дня, часовой ряд там не читает никто.
+_DAILY_ONLY = frozenset(
+    {
+        AssetClass.MONEY_MARKET,
+        AssetClass.BOND_FUND,
+        AssetClass.OFZ,
+        AssetClass.CORPORATE_BOND,
+        AssetClass.EQUITY,
+        AssetClass.GOLD,
+    }
+)
+
+
+def _timeframes_for(instrument: Instrument) -> list[Timeframe]:
+    if instrument.asset_class in _DAILY_ONLY:
+        return [Timeframe.D1]
+    return [Timeframe.D1, Timeframe.H1]
+
+
 def ingest_instrument(
     session: Session,
     instrument: Instrument,
@@ -236,8 +309,13 @@ def ingest_instrument(
     now: datetime | None = None,
     fetch=None,
 ) -> list[IngestReport]:
-    """Загрузить все нужные конвейеру таймфреймы одного инструмента."""
-    wanted = timeframes or [Timeframe.D1, Timeframe.H1]
+    """Загрузить все нужные конвейеру таймфреймы одного инструмента.
+
+    Инвестиционным бумагам часовой ряд не нужен: пакет держится месяцами и
+    считается по дневным закрытиям. Загружать его — это десятки лишних
+    запросов к бирже за данными, которые никто не прочитает.
+    """
+    wanted = timeframes or _timeframes_for(instrument)
     reports = []
     for timeframe in wanted:
         if instrument.venue is Venue.MOEX:

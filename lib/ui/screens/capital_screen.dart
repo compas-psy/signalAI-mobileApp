@@ -5,12 +5,14 @@ import '../../data/ledger/capital_desk.dart';
 import '../../domain/ledger/account.dart';
 import '../../domain/ledger/ledger_event.dart';
 import '../../domain/ledger/money.dart';
+import '../../domain/portfolio/package.dart';
 import '../../state/app_controller.dart';
 import '../../state/app_scope.dart';
 import '../../theme/tokens.dart';
 import '../../theme/typography.dart';
 import '../layout.dart';
 import '../widgets/common.dart';
+import '../widgets/engine_package_widgets.dart';
 import '../widgets/operation_sheet.dart';
 import '../widgets/segmented.dart';
 
@@ -34,15 +36,24 @@ class CapitalScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final controller = AppScope.of(context);
     final state = controller.capital;
+    final section =
+        CapitalPill.values[pill.clamp(0, CapitalPill.values.length - 1)];
+
+    // Пакеты живут не в книге операций, а на сервере: их состав не зависит
+    // ни от одной записи журнала. Пока эта ветка стояла после проверки
+    // книги, пустой журнал прятал посчитанный движком состав.
+    if (section == CapitalPill.packages) {
+      return _Packages(controller: controller);
+    }
 
     if (state == null) {
       return _Unavailable(loading: controller.capitalLoading);
     }
 
-    return switch (CapitalPill.values[pill.clamp(0, CapitalPill.values.length - 1)]) {
+    return switch (section) {
       CapitalPill.overview => _Overview(state: state),
       CapitalPill.accounts => _Accounts(state: state, controller: controller),
-      CapitalPill.packages => _Packages(state: state),
+      CapitalPill.packages => _Packages(controller: controller),
       CapitalPill.book => _Book(state: state, controller: controller),
       CapitalPill.analytics => _Analytics(state: state),
     };
@@ -54,10 +65,14 @@ EdgeInsets get _pad => const EdgeInsets.fromLTRB(S.screen, 12, S.screen, 90);
 /// Шаг конвейера: сделан или нет. Прогресс виден точкой и цветом, а не
 /// абзацем текста.
 class _Stage extends StatelessWidget {
-  const _Stage({required this.done, required this.name});
+  const _Stage({required this.done, required this.name, this.detail = ''});
 
   final bool done;
   final String name;
+
+  /// Чем шаг измеряется: «12 бумаг», «история есть у 9». Число рядом с
+  /// отметкой отличает сделанный шаг от объявленного сделанным.
+  final String detail;
 
   @override
   Widget build(BuildContext context) => Padding(
@@ -80,7 +95,7 @@ class _Stage extends StatelessWidget {
               ),
             ),
             Text(
-              done ? 'есть' : 'нет',
+              detail.isNotEmpty ? detail : (done ? 'есть' : 'нет'),
               style: T.mono(10.5, color: done ? C.green : C.faint),
             ),
           ],
@@ -589,62 +604,335 @@ class _Cell extends StatelessWidget {
       );
 }
 
-/// Пакеты: целевые корзины поверх книги.
-class _Packages extends StatelessWidget {
-  const _Packages({required this.state});
+/// Пакеты капитала: состав, посчитанный движком (§6).
+///
+/// Шаблонов здесь нет по решению владельца от 30.07: пакет обязан собираться
+/// после фундаментально-технического отбора и статистической проверки — на
+/// данных, а не из заготовки. Всё, что показано ниже, приезжает с сервера:
+/// доли, роли, тезисы, условия выхода и то, что состав уже переживал.
+class _Packages extends StatefulWidget {
+  const _Packages({required this.controller});
 
-  final CapitalState state;
+  final AppController controller;
+
+  @override
+  State<_Packages> createState() => _PackagesState();
+}
+
+class _PackagesState extends State<_Packages> {
+  /// Выбранный размер пакета. Профиль риска идёт с ним заодно — см. [_profile].
+  PackageSize _size = PackageSize.balanced;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.controller.loadPortfolio();
+  }
+
+  /// Профиль риска по размеру пакета.
+  ///
+  /// Движок считает три профиля × три размера, но на экране это была бы
+  /// сетка из девяти вариантов с двумя переключателями — владелец пришёл
+  /// сюда не за настройкой оптимизатора. Оси сведены: простой пакет — самый
+  /// спокойный, максимальный — самый рисковый. Так размер пакета означает
+  /// ровно то, что от него ждут.
+  static String _profile(PackageSize size) => switch (size) {
+        PackageSize.simple => 'CONSERVATIVE',
+        PackageSize.balanced => 'OPTIMAL',
+        PackageSize.maxPotential => 'AGGRESSIVE',
+      };
 
   @override
   Widget build(BuildContext context) {
-    // Решение владельца от 30.07: шаблонных пакетов не существует. Пакет
-    // обязан собираться движком после фундаментально-технического отбора и
-    // статистической проверки — на его данных, а не из заготовки. Пока
-    // портфельный контур сервера не считает, здесь честное состояние, а не
-    // корзина «как у всех»: заготовленный список фондов на экране читался бы
-    // как рекомендация, которой никто не давал.
+    final controller = widget.controller;
+    final portfolio = controller.portfolio;
+
+    if (portfolio == null) {
+      return _PackagesNote(
+        title: 'Пакеты капитала',
+        text: controller.portfolioLoading
+            ? 'Спрашиваю движок…'
+            : 'Состав считает сервер — запрос ещё не ушёл.',
+        busy: controller.portfolioLoading,
+      );
+    }
+    if (!portfolio.isAvailable) {
+      return _PackagesNote(
+        title: 'Движок не ответил',
+        text: portfolio.unavailableReason!,
+        onRetry: () => controller.loadPortfolio(force: true),
+      );
+    }
+
+    final years = controller.packageHorizon.years;
+    final matching = [
+      for (final p in portfolio.forHorizon(years))
+        if (p.profile == _profile(_size)) p,
+    ];
+    final package = matching.isEmpty ? null : matching.first;
+    final sizes = {
+      for (final p in portfolio.forHorizon(years))
+        if (p.profile == _profile(p.size)) p.size,
+    };
+
     return ListView(
       padding: _pad,
       children: [
-        SectionCard(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  const Expanded(child: SectionLabel('Пакеты капитала')),
+        SegmentedControl(
+          items: [for (final s in PackageSize.values) s.label],
+          index: PackageSize.values.indexOf(_size),
+          onSelect: (i) => setState(() => _size = PackageSize.values[i]),
+        ),
+        const SizedBox(height: 12),
+        if (package == null)
+          _Progress(
+            portfolio: portfolio,
+            note: sizes.isEmpty
+                ? portfolio.reason
+                : 'Для этого размера пакета состав не прошёл проверку на '
+                    'истории. Соседние размеры посчитаны.',
+            onRetry: () => controller.loadPortfolio(force: true),
+          )
+        else ...[
+          _PackageHead(package: package),
+          const SizedBox(height: 12),
+          _PackageComposition(package: package),
+          const SizedBox(height: 12),
+          _PackageEvidence(package: package),
+        ],
+      ],
+    );
+  }
+}
+
+/// Шапка пакета: диапазон доходности, риск, полоса состава.
+class _PackageHead extends StatelessWidget {
+  const _PackageHead({required this.package});
+
+  final EnginePackage package;
+
+  @override
+  Widget build(BuildContext context) => SectionCard(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(child: SectionLabel(package.size.label.toUpperCase())),
+                if (package.isStale)
                   OutlineBadge(
-                    label: 'считает движок',
+                    label: 'протух',
+                    color: C.warning,
+                    borderColor: C.warningBorder,
+                    background: C.warningFaint,
+                    fontWeight: 700,
+                  )
+                else
+                  OutlineBadge(
+                    label: '${package.positions.length} позиций',
                     color: C.info,
                     borderColor: C.infoBorder,
                     background: C.infoFaint,
                     fontWeight: 700,
                   ),
-                ],
-              ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            ExpectedBand(low: package.expectedLow, high: package.expectedHigh),
+            const SizedBox(height: 4),
+            Text(
+              'разброс по окнам проверки на истории',
+              style: T.body(10.5, color: C.faint),
+            ),
+            const SizedBox(height: 14),
+            MixBar(mix: package.mix),
+            const SizedBox(height: 10),
+            MixLegend(mix: package.mix),
+          ],
+        ),
+      );
+}
+
+/// Состав: позиции полосами. Нажатие раскрывает тезис и условия выхода.
+class _PackageComposition extends StatelessWidget {
+  const _PackageComposition({required this.package});
+
+  final EnginePackage package;
+
+  @override
+  Widget build(BuildContext context) {
+    final maximum = package.positions.isEmpty
+        ? 0.0
+        : package.positions.map((p) => p.weight).reduce((a, b) => a > b ? a : b);
+    return SectionCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const SectionLabel('Состав'),
+          const SizedBox(height: 6),
+          for (final position in package.positions)
+            PositionRow(position: position, maxWeight: maximum),
+          const SizedBox(height: 4),
+          Text(
+            'Нажмите позицию — покажу, за что она здесь и когда её выкидывать.',
+            style: T.body(10.5, color: C.faint),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+String _day(DateTime at) {
+  final local = at.toLocal();
+  return '${local.day.toString().padLeft(2, '0')}.'
+      '${local.month.toString().padLeft(2, '0')}.${local.year}';
+}
+
+/// Чем состав подтверждён: риск, стресс, способ счёта.
+class _PackageEvidence extends StatelessWidget {
+  const _PackageEvidence({required this.package});
+
+  final EnginePackage package;
+
+  @override
+  Widget build(BuildContext context) => SectionCard(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const SectionLabel('Чем подтверждён'),
+            const SizedBox(height: 8),
+            TileGrid(
+              minTileWidth: 118,
+              tiles: [
+                MetricTile(
+                  label: 'Колебания',
+                  value: sharePercent(package.volatility, decimals: 1),
+                  hint: 'годовых',
+                ),
+                MetricTile(
+                  label: 'Просадка',
+                  value: sharePercent(package.drawdown, decimals: 1),
+                  color: C.red,
+                  hint: 'вне обучения',
+                ),
+                if (package.cvar95 != null)
+                  MetricTile(
+                    label: 'Хвост 5%',
+                    value: sharePercent(package.cvar95!, decimals: 1),
+                    color: C.red,
+                    hint: 'средний убыток худших дней',
+                  ),
+              ],
+            ),
+            if (package.stress.isNotEmpty) ...[
               const SizedBox(height: 10),
-              // Не «скоро будет», а где именно стоит работа. Владелец спросил
-              // «где прогресс» — значит на экране должен быть прогресс, а не
-              // обещание. Этапы отражают то, что реально есть в движке.
-              const _Stage(done: true, name: 'Вселенная инструментов'),
-              const _Stage(done: true, name: 'Рыночные данные и режим'),
-              const _Stage(done: true, name: 'Отбор сделок и риск'),
-              const _Stage(done: false, name: 'Фундаментальный срез'),
-              const _Stage(done: false, name: 'Оптимизация состава'),
-              const _Stage(done: false, name: 'Проверка на истории'),
-              const SizedBox(height: 10),
+              const SectionLabel('Что уже случалось', color: C.faint),
+              const SizedBox(height: 6),
+              StressTiles(stress: package.stress),
+            ],
+            if (package.rationale.isNotEmpty) ...[
+              const SizedBox(height: 12),
               Text(
-                'Три первых шага движок делает — на них живут идеи. Портфельный '
-                'контур начинается с четвёртого; пока он не посчитан, состава '
-                'здесь нет и заготовки не показываются.',
+                package.rationale,
                 style: T.body(11, color: C.faint, height: 1.45),
               ),
             ],
-          ),
+            const SizedBox(height: 8),
+            Text(
+              'Пересчитан ${_day(package.generatedAt)}, '
+              'действует до ${_day(package.validUntil)}',
+              style: T.mono(10, color: C.dim),
+            ),
+          ],
         ),
-      ],
-    );
-  }
+      );
+}
+
+/// Прогресс сборки: где именно стоит работа.
+///
+/// Владелец спросил «если собираются, то где прогресс?» — значит на экране
+/// должен быть прогресс, а не обещание. Шаги приезжают с сервера и отмечены
+/// по факту: «есть» означает, что результат шага лежит в базе.
+class _Progress extends StatelessWidget {
+  const _Progress({
+    required this.portfolio,
+    required this.note,
+    required this.onRetry,
+  });
+
+  final PortfolioState portfolio;
+  final String note;
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) => SectionCard(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Expanded(child: SectionLabel('Сборка состава')),
+                OutlineBadge(
+                  label: 'считает движок',
+                  color: C.info,
+                  borderColor: C.infoBorder,
+                  background: C.infoFaint,
+                  fontWeight: 700,
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            for (final stage in portfolio.stages)
+              _Stage(done: stage.done, name: stage.name, detail: stage.detail),
+            if (note.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              Text(note, style: T.body(11, color: C.faint, height: 1.45)),
+            ],
+            const SizedBox(height: 12),
+            ActionButton(label: 'Спросить ещё раз', onTap: onRetry),
+          ],
+        ),
+      );
+}
+
+/// Короткое состояние экрана: ждём ответа либо движок не ответил.
+class _PackagesNote extends StatelessWidget {
+  const _PackagesNote({
+    required this.title,
+    required this.text,
+    this.busy = false,
+    this.onRetry,
+  });
+
+  final String title;
+  final String text;
+  final bool busy;
+  final VoidCallback? onRetry;
+
+  @override
+  Widget build(BuildContext context) => ListView(
+        padding: _pad,
+        children: [
+          SectionCard(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SectionLabel(title),
+                const SizedBox(height: 8),
+                if (busy)
+                  const BusyLine(label: 'считаю')
+                else
+                  Text(text, style: T.body(12, color: C.textSecondary, height: 1.45)),
+                if (onRetry != null) ...[
+                  const SizedBox(height: 12),
+                  ActionButton(label: 'Спросить ещё раз', onTap: onRetry!),
+                ],
+              ],
+            ),
+          ),
+        ],
+      );
 }
 
 /// Книга операций: список с фильтрами и ручной ввод.

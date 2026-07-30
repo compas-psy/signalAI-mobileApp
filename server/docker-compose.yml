@@ -81,6 +81,11 @@ services:
       SIGNALAI_INGEST_EVERY_MINUTES: ${SIGNALAI_INGEST_EVERY_MINUTES:-15}
       SIGNALAI_REVIEW_EVERY_MINUTES: ${SIGNALAI_REVIEW_EVERY_MINUTES:-360}
       SIGNALAI_SCAN_EVERY_MINUTES: ${SIGNALAI_SCAN_EVERY_MINUTES:-15}
+      # Пакеты капитала (§6). Реже остальных намеренно: состав держится
+      # месяцами, а прогон — сотня оптимизаций на каждый вариант. Пересчёт
+      # каждые пятнадцать минут не сделал бы состав точнее, а нагрузку
+      # поднял бы на порядок.
+      SIGNALAI_PORTFOLIO_EVERY_MINUTES: ${SIGNALAI_PORTFOLIO_EVERY_MINUTES:-180}
     command: ["python", "-m", "app.scheduler"]
 
   # Исполнение вынесено в отдельный контейнер (UX-ТЗ §16.1, §19.1): у него

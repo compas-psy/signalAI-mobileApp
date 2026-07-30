@@ -130,6 +130,7 @@ def build_default_scheduler(
     ingest_every: timedelta = timedelta(minutes=15),
     review_every: timedelta = timedelta(hours=6),
     scan_every: timedelta = timedelta(minutes=15),
+    portfolio_every: timedelta = timedelta(hours=24),
     fetch=None,
 ) -> Scheduler:
     """Расписание по умолчанию: вселенная → загрузка → допуск → скан.
@@ -147,8 +148,10 @@ def build_default_scheduler(
     раза в квартал, а каждый проход — это полная выгрузка доски.
     """
     from ..market.ingest import ingest_universe
+    from ..market.investments import classify_funds, sync_investments
     from ..market.universe import review_universe, sync_crypto, sync_futures
     from ..pipeline.scan import scan as run_scan
+    from ..portfolio.build import build_all
 
     scheduler = Scheduler()
     state: dict[str, datetime | None] = {"last_bar": None}
@@ -156,7 +159,11 @@ def build_default_scheduler(
     def universe(session: Session) -> str:
         parts = []
         errors = []
-        for name, sync in (("MOEX", sync_futures), ("crypto", sync_crypto)):
+        for name, sync in (
+            ("MOEX", sync_futures),
+            ("crypto", sync_crypto),
+            ("инвестиции", sync_investments),
+        ):
             try:
                 kept = sync(session, fetch=fetch)
                 parts.append(f"{name}: {len(kept)}")
@@ -208,10 +215,28 @@ def build_default_scheduler(
             f"пропущено {len(result.skipped)}, отказов {len(result.rejections)}"
         )
 
+    def portfolio(session: Session) -> str:
+        # Класс фонда уточняется перед сборкой, а не при загрузке: он
+        # выводится из накопленного ряда цен, и до первой истории мерить
+        # нечего. Дешёвая операция, ошибиться порядком запуска дороже.
+        classified = classify_funds(session)
+        report = build_all(session)
+        detail = (
+            f"вселенная {report.universe}, срез прошли {report.screened}, "
+            f"кандидатов {report.candidates}, пакетов допущено "
+            f"{report.admitted} из {len(report.packages)}"
+        )
+        if classified:
+            detail += f", классов фондов уточнено {len(classified)}"
+        if report.note:
+            detail += f"; {report.note}"
+        return detail
+
     scheduler.add("universe", universe_every, universe)
     scheduler.add("ingest", ingest_every, ingest)
     scheduler.add("review", review_every, review)
     scheduler.add("scan", scan_every, scan)
+    scheduler.add("portfolio", portfolio_every, portfolio)
     return scheduler
 
 
