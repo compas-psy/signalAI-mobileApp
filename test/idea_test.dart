@@ -179,16 +179,36 @@ void main() {
       annotations: [
         annotation('a1', AnnotationType.smcOrderBlock, 'e_smc', priority: 80),
         annotation('a2', AnnotationType.trendline, 'e_trend', priority: 40),
-        // Метка Вайкоффа без доказательства: детектор в оценке не участвовал.
-        annotation('a3', AnnotationType.wyckoffSpring, 'e_wyckoff'),
+        // Уровень плана: ссылается на «plan», отдельного доказательства для
+        // него не существует и существовать не должно.
+        annotation('a3', AnnotationType.levelEntry, 'plan'),
       ],
     );
 
-    test('метка без доказательства не рисуется', () {
+    test('метка рисуется вся, что прислал движок — включая уровни плана', () {
+      // §9.1 обеспечивает **сервер**: он строит разметку только из показаний,
+      // на которых стратегия собрала план. Второй такой же фильтр на клиенте
+      // был не страховкой, а поломкой: уровни плана ссылаются на «plan», и
+      // вход, стоп и цели не рисовались никогда. А пока лента отдаёт сводку
+      // без доказательств, фильтр гасил заодно Вайкоффа, SMC и трендовые —
+      // график оставался голыми свечами.
       final all = withEvidence.annotationsFor(ChartLayer.values.toSet());
-      expect(all.map((a) => a.id), ['a1', 'a2']);
+      expect(all.map((a) => a.id), containsAll(['a1', 'a2', 'a3']));
       expect(withEvidence.availableLayers, contains(ChartLayer.smc));
-      expect(withEvidence.availableLayers, isNot(contains(ChartLayer.wyckoff)));
+      expect(withEvidence.availableLayers, contains(ChartLayer.levels));
+    });
+
+    test('без доказательств разметка всё равно видна', () {
+      // Именно этот случай приезжает из ленты: сводка идёт без блока
+      // доказательств, а разметка в ней уже есть.
+      final summary = idea(
+        annotations: [
+          annotation('a1', AnnotationType.wyckoffSpring, 'e_wyckoff'),
+        ],
+      );
+
+      expect(summary.annotationsFor(ChartLayer.values.toSet()), hasLength(1));
+      expect(summary.availableLayers, contains(ChartLayer.wyckoff));
     });
 
     test('выключенный слой скрывает свои метки', () {

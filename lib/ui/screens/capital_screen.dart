@@ -51,6 +51,43 @@ class CapitalScreen extends StatelessWidget {
 
 EdgeInsets get _pad => const EdgeInsets.fromLTRB(S.screen, 12, S.screen, 90);
 
+/// Шаг конвейера: сделан или нет. Прогресс виден точкой и цветом, а не
+/// абзацем текста.
+class _Stage extends StatelessWidget {
+  const _Stage({required this.done, required this.name});
+
+  final bool done;
+  final String name;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: const EdgeInsets.only(bottom: 7),
+        child: Row(
+          children: [
+            Container(
+              width: 8,
+              height: 8,
+              decoration: BoxDecoration(
+                color: done ? C.green : C.borderStrong,
+                shape: BoxShape.circle,
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                name,
+                style: T.body(12, color: done ? C.textSoft : C.muted),
+              ),
+            ),
+            Text(
+              done ? 'есть' : 'нет',
+              style: T.mono(10.5, color: done ? C.green : C.faint),
+            ),
+          ],
+        ),
+      );
+}
+
 /// Обзор: четыре числа и разрезы капитала.
 class _Overview extends StatelessWidget {
   const _Overview({required this.state});
@@ -585,14 +622,22 @@ class _Packages extends StatelessWidget {
                   ),
                 ],
               ),
-              const SizedBox(height: 8),
+              const SizedBox(height: 10),
+              // Не «скоро будет», а где именно стоит работа. Владелец спросил
+              // «где прогресс» — значит на экране должен быть прогресс, а не
+              // обещание. Этапы отражают то, что реально есть в движке.
+              const _Stage(done: true, name: 'Вселенная инструментов'),
+              const _Stage(done: true, name: 'Рыночные данные и режим'),
+              const _Stage(done: true, name: 'Отбор сделок и риск'),
+              const _Stage(done: false, name: 'Фундаментальный срез'),
+              const _Stage(done: false, name: 'Оптимизация состава'),
+              const _Stage(done: false, name: 'Проверка на истории'),
+              const SizedBox(height: 10),
               Text(
-                'Пакет собирается сервером: фундаментальный и технический '
-                'отбор, оптимизация состава и проверка на истории — по вашей '
-                'книге и вашему горизонту. Портфельный контур движка ещё не '
-                'считает; когда посчитает, здесь появится состав с целями, '
-                'допусками и правилом пересмотра.',
-                style: T.body(11.5, color: C.muted, height: 1.5),
+                'Три первых шага движок делает — на них живут идеи. Портфельный '
+                'контур начинается с четвёртого; пока он не посчитан, состава '
+                'здесь нет и заготовки не показываются.',
+                style: T.body(11, color: C.faint, height: 1.45),
               ),
             ],
           ),

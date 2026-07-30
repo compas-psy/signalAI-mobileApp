@@ -143,15 +143,23 @@ abstract final class EngineContract {
   /// Считается по самим ценам, а не задаётся константой: у фьючерса на доллар
   /// знаков нет, у нефти два, у крипты бывает больше. Округлить чужую цену до
   /// целых значит показать не ту цену.
+  /// Сравнение идёт с допуском, а не точным равенством. Сервер отдаёт цены
+  /// строками Decimal («1849.100000000000»), при разборе в double они
+  /// становятся 1849.0999999999999 — точная проверка не сходилась ни на
+  /// одном знаке и всегда давала максимум. Отсюда «1 858,1200» вместо
+  /// «1 858,12»: четыре знака там, где значащих два.
   static int _decimalsFor(List<double> prices) {
     var decimals = 0;
     for (final price in prices) {
-      for (var d = decimals; d <= 4; d++) {
-        if ((price * _pow10(d)).roundToDouble() == price * _pow10(d)) {
+      final scale = price.abs() < 1 ? 1.0 : price.abs();
+      for (var d = 0; d <= 6; d++) {
+        final factor = _pow10(d);
+        final rounded = (price * factor).roundToDouble() / factor;
+        if ((price - rounded).abs() <= 1e-9 * scale) {
           if (d > decimals) decimals = d;
           break;
         }
-        if (d == 4) decimals = 4;
+        if (d == 6 && decimals < 4) decimals = 4;
       }
     }
     return decimals;

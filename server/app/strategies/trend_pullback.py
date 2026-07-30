@@ -23,7 +23,16 @@ from decimal import Decimal
 
 from ..detectors.price_action import PriceZone
 from ..models.enums import Direction, OrderIntent, Strategy, TrendRegime, VolatilityRegime
-from .base import Candidate, Check, Outcome, SetupContext, Target, reject, round_to_tick
+from .base import (
+    Candidate,
+    Check,
+    Outcome,
+    SetupContext,
+    Target,
+    price_text,
+    reject,
+    round_to_tick,
+)
 
 STRATEGY = Strategy.TREND_PULLBACK
 
@@ -263,7 +272,7 @@ def build(ctx: SetupContext, params: TrendPullbackParams | None = None) -> Outco
         used=used,
         zones=tuple(hit),
         invalidation=(
-            f"закрытие {ctx.trigger_tf} за {stop}; слом структуры против "
+            f"закрытие {ctx.trigger_tf} за {price_text(stop)}; слом структуры против "
             f"направления на {ctx.setup_tf}; смена режима рынка"
         ),
         thesis=(

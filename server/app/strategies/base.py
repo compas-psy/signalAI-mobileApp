@@ -116,6 +116,22 @@ class Rejection:
 Outcome = Candidate | Rejection
 
 
+def price_text(price: Decimal) -> str:
+    """Цена для человеческого текста: без хвоста нулей.
+
+    ``Decimal`` носит масштаб инструмента, и в f-строку он попадает целиком:
+    «1849.100000000000». В тезисе идеи такое число нечитаемо — двенадцать
+    нулей вместо цены. Формат нужен только для текста; в API цены уходят
+    строкой как есть, чтобы не потерять ни знака.
+    """
+    normalized = price.normalize()
+    # Экспонента появляется у больших нормализованных чисел (1E+3) — она
+    # здесь недопустима: цену читает человек, а не парсер.
+    if normalized == normalized.to_integral_value():
+        return f"{normalized:.0f}"
+    return format(normalized, "f")
+
+
 def first_failure(checks: Sequence[Check]) -> Check | None:
     return next((c for c in checks if not c.passed), None)
 

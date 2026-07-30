@@ -16,7 +16,16 @@ from decimal import Decimal
 
 from ..detectors.price_action import PriceZone
 from ..models.enums import Direction, OrderIntent, Strategy
-from .base import Candidate, Check, Outcome, SetupContext, Target, reject, round_to_tick
+from .base import (
+    Candidate,
+    Check,
+    Outcome,
+    SetupContext,
+    Target,
+    price_text,
+    reject,
+    round_to_tick,
+)
 
 STRATEGY = Strategy.WYCKOFF_REVERSAL
 
@@ -168,12 +177,12 @@ def build(ctx: SetupContext, params: WyckoffReversalParams | None = None) -> Out
         zones=(PriceZone(entry_zone_low, entry_zone_high, "range_boundary"),),
         risk_multiplier=p.risk_multiplier,
         invalidation=(
-            f"закрытие за экстремумом {sweep.kind} ({sweep.price}); "
+            f"закрытие за экстремумом {sweep.kind} ({price_text(sweep.price)}); "
             "возврат в фазу B диапазона"
         ),
         thesis=(
-            f"Разворот по Вайкоффу: {sweep.kind} на границе {sweep.price}, "
+            f"Разворот по Вайкоффу: {sweep.kind} на границе {price_text(sweep.price)}, "
             f"CHoCH после него, тест удержан. "
-            f"Цель — противоположная граница {tp2}"
+            f"Цель — противоположная граница {price_text(tp2)}"
         ),
     )

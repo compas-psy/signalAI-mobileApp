@@ -142,23 +142,25 @@ class Idea {
   ///
   /// Рисовать Wyckoff, если детектор не дал доказательства, запрещено:
   /// картинка обязана повторять текст, а не украшать его.
-  List<ChartAnnotation> annotationsFor(Set<ChartLayer> visible) {
-    final backed = {for (final e in evidence) e.id};
-    return annotations
-        .where((a) => visible.contains(a.layer) && backed.contains(a.evidenceId))
-        .toList()
-      ..sort((a, b) => b.displayPriority.compareTo(a.displayPriority));
-  }
+  /// Метки видимых слоёв.
+  ///
+  /// Отбор «только то, что участвовало в оценке» делает **движок**: он
+  /// строит разметку исключительно из показаний, на которых стратегия
+  /// собрала план (`candidate.used`). Второй такой же фильтр здесь был не
+  /// страховкой, а поломкой: уровни плана приходят со ссылкой `plan`, для
+  /// которой отдельного доказательства не существует, — и вход, стоп и цели
+  /// не рисовались никогда. А пока лента отдаёт сводку без доказательств,
+  /// этот фильтр гасил и Вайкоффа, и SMC, и трендовые: график оставался
+  /// голыми свечами.
+  List<ChartAnnotation> annotationsFor(Set<ChartLayer> visible) =>
+      annotations.where((a) => visible.contains(a.layer)).toList()
+        ..sort((a, b) => b.displayPriority.compareTo(a.displayPriority));
 
   /// Слои, которые вообще имеет смысл включать для этой идеи.
-  Set<ChartLayer> get availableLayers {
-    final backed = {for (final e in evidence) e.id};
-    return {
-      ChartLayer.candles,
-      for (final a in annotations)
-        if (backed.contains(a.evidenceId)) a.layer,
-    };
-  }
+  Set<ChartLayer> get availableLayers => {
+        ChartLayer.candles,
+        for (final a in annotations) a.layer,
+      };
 
   /// Переход состояния с проверкой машины (ТЗ §8).
   ///

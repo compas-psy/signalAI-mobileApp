@@ -239,6 +239,13 @@ class _ChartPainter extends CustomPainter {
   static const double _padBottom = 16;
   static const double _plotLeft = 8;
   static const double _plotRight = 302;
+
+  /// Правый край **свечей**. Уровни, зоны и сетка идут до `_plotRight`, а
+  /// свечи заканчиваются раньше: пустое поле справа — это ближайшее будущее,
+  /// куда тянутся вход, стоп и цели. Без него последняя свеча упиралась в
+  /// ценовую шкалу, и линии плана некуда было продолжить.
+  static const double _candlesRight =
+      _plotLeft + (_plotRight - _plotLeft) * 0.86;
   static const double _axisX = 308;
 
   @override
@@ -274,7 +281,7 @@ class _ChartPainter extends CustomPainter {
         _padTop + (hi - price) / (hi - lo) * (_h - _padTop - _padBottom);
 
     final n = candles.length;
-    final candleWidth = (_plotRight - _plotLeft) / n;
+    final candleWidth = (_candlesRight - _plotLeft) / n;
     double x(num i) => _plotLeft + i * candleWidth + candleWidth / 2;
 
     String label(double price) => fmt(price, signal.priceDecimals);
