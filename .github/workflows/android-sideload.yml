@@ -196,19 +196,9 @@ jobs:
           MODE: ${{ inputs.mode || 'local' }}
         run: |
           echo "Режим данных: ${MODE}"
-          # Токен устройства: движок закрыт авторизацией
-          # (server/app/security.py на ветке по умолчанию). Секрета может не
-          # быть — тогда токен выводится тем же правилом, каким деплой ставит
-          # его на сервер: HMAC от SSH-ключа. Правило и соль — из
-          # android-sideload-release.yml той же ветки, это один контракт.
-          if [ -z "$DEVICE_TOKEN" ] && [ -n "$SSH_KEY" ]; then
-            DEVICE_TOKEN="$(printf '%s' "$SSH_KEY" | openssl dgst -sha256 \
-              -hmac 'signalai-device-token-v1' | awk '{print $2}')"
-            echo "::add-mask::$DEVICE_TOKEN"
-            echo "Токен выведен из SSH-ключа — тем же правилом, что на сервере."
-          elif [ -z "$DEVICE_TOKEN" ]; then
-            echo "::warning::Токена нет: ни секрета, ни SSH-ключа — движок ответит 401."
-          fi
+          # Решение владельца от 30.07: авторизация по токену временно снята
+          # и на сервере. Если секрет появится — он подхватится сам; выводить
+          # токен из SSH-ключа больше не пытаемся.
           if [ "$MODE" = "demo" ]; then
             echo "::warning::Демо-сборка: данные из макета, не с рынка. Для просмотра интерфейса, не для торговли."
           elif [ -z "$API_BASE_URL" ]; then
