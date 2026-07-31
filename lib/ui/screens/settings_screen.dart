@@ -412,6 +412,21 @@ class _BrokersCard extends StatelessWidget {
                   style: T.body(10.5, color: C.muted, height: 1.4),
                 ),
               ),
+            // У Т-Инвестиций ключей три, и живут они в своей карточке ниже.
+            // Строка «Ключи» здесь спрашивала только один из трёх и отвечала
+            // «не заданы» при трёх принятых токенах: два места про одно и то
+            // же с разными ответами — это не подсказка, а путаница.
+            if (BrokerId.parse(broker.id) == BrokerId.tinvest)
+              Padding(
+                padding: const EdgeInsets.only(top: 2, bottom: 4),
+                child: Text(
+                  'Токены — в карточке «Токены Т-Инвестиций» ниже: их три, с '
+                  'разными правами. Режим выше выбирает, какой из них '
+                  'торгует: тренировка — песочница, live — торговый счёт.',
+                  style: T.body(10.5, color: C.muted, height: 1.4),
+                ),
+              )
+            else
             KeyValueRow(
               name: 'Ключи',
               // Три разных состояния, а не два: ключ может лежать в хранилище
@@ -437,7 +452,8 @@ class _BrokersCard extends StatelessWidget {
                     controller.saveBrokerKeys(BrokerId.parse(broker.id), key, secret),
               ),
             ),
-            if (broker.keyNote.isNotEmpty)
+            if (broker.keyNote.isNotEmpty &&
+                BrokerId.parse(broker.id) != BrokerId.tinvest)
               Padding(
                 padding: const EdgeInsets.only(top: 2, bottom: 4),
                 child: Text(
@@ -452,7 +468,8 @@ class _BrokersCard extends StatelessWidget {
             // Ключ привязан к паре «площадка + режим». Если ключи есть, но не
             // для выбранного режима, площадка выглядит как «ключей нет» — и
             // молча пропадает из капитала. Пишем это прямым текстом.
-            ?_modeMismatchNote(controller, BrokerId.parse(broker.id)),
+            if (BrokerId.parse(broker.id) != BrokerId.tinvest)
+              ?_modeMismatchNote(controller, BrokerId.parse(broker.id)),
             // Общая причина уже написана выше в блоке «Допуск» — здесь только
             // то, что относится именно к этой площадке.
             if (!broker.liveAllowed && broker.liveBlockedReason != trading.gateReason)

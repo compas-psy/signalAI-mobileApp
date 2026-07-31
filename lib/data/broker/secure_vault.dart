@@ -36,8 +36,21 @@ class SecureVault {
   }
 
   /// Заведены ли ключи для площадки и режима.
-  Future<bool> hasKeys({required String exchange, required String mode}) async {
+  /// Заведены ли ключи площадки.
+  ///
+  /// [needsSecret] — есть ли у площадки вообще секрет. У Bybit ключ и секрет
+  /// это пара, и без второго первый бесполезен. У Т-Инвестиций секрета нет:
+  /// авторизация одним токеном. Требовать его и там означало отвечать «ключей
+  /// нет» на принятый токен — ровно это и происходило: пустой секрет при
+  /// сохранении удаляется, проверка не находила его и объявляла ключи
+  /// отсутствующими, хотя брокер только что подтвердил токен.
+  Future<bool> hasKeys({
+    required String exchange,
+    required String mode,
+    bool needsSecret = true,
+  }) async {
     final key = await _bridge.vaultHas(apiKeyName(exchange, mode));
+    if (!needsSecret) return key;
     final secret = await _bridge.vaultHas(apiSecretName(exchange, mode));
     return key && secret;
   }

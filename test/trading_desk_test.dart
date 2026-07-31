@@ -51,7 +51,11 @@ class FakeVault extends SecureVault {
   }
 
   @override
-  Future<bool> hasKeys({required String exchange, required String mode}) async =>
+  Future<bool> hasKeys({
+    required String exchange,
+    required String mode,
+    bool needsSecret = true,
+  }) async =>
       stored.containsKey('$exchange.$mode.key');
 
   @override

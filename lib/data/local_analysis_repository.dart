@@ -277,6 +277,8 @@ class LocalAnalysisRepository
       return vault.hasKeys(
         exchange: id.name,
         mode: tinvestRoleFor(_trading.modeOf(id)).slot,
+        // У Т-Инвестиций авторизация одним токеном: секрета нет.
+        needsSecret: false,
       );
     }
     return vault.hasKeys(exchange: id.name, mode: _trading.modeOf(id).name);
@@ -286,7 +288,15 @@ class LocalAnalysisRepository
   Future<Set<TradingMode>> brokerKeyModes(BrokerId id) async {
     final result = <TradingMode>{};
     for (final mode in TradingMode.values) {
-      if (await vault.hasKeys(exchange: id.name, mode: mode.name)) {
+      // У Т-Инвестиций слот именуется ролью токена, а не режимом площадки, и
+      // секрета у него нет. Спрашивать по имени режима значило бы всегда
+      // получать «ключей нет» и прятать площадку из капитала.
+      final slot = id == BrokerId.tinvest ? tinvestRoleFor(mode).slot : mode.name;
+      if (await vault.hasKeys(
+        exchange: id.name,
+        mode: slot,
+        needsSecret: id != BrokerId.tinvest,
+      )) {
         result.add(mode);
       }
     }
@@ -309,12 +319,49 @@ class LocalAnalysisRepository
   /// ключом live, когда переключатель стоит на testnet, безопасно — запросы
   /// только читающие. Для отправки заявок компромисса нет.
   Future<(Broker, TradingMode)?> _readableBroker(BrokerId id) async {
+    // Т-Инвестиции читаются токеном «на чтение», если он заведён.
+    //
+    // Он для того и выдан: за ним стоит основной капитал, и именно его
+    // остатки владелец хочет видеть. Токен песочницы показал бы счёт
+    // песочницы, торговый — только счёт под идеи; ни тот ни другой не
+    // отвечают на вопрос «сколько у меня денег». Раньше этот токен
+    // использовался лишь для паспортов бумаг, и счета молчали.
+    if (id == BrokerId.tinvest) {
+      final invest = await _investReadBroker();
+      if (invest != null) return (invest, TradingMode.live);
+    }
     final mode = await readableMode(id);
     if (mode == null) return null;
     // Текущий режим отдаём тем же экземпляром — у него живёт выбранный
     // торговый счёт и кэш инструментов.
     if (mode == _trading.modeOf(id)) return (brokerOf(id), mode);
     return (_brokerFor(id, mode), mode);
+  }
+
+  /// Брокер Т-Инвестиций с токеном «на чтение». null — токена нет.
+  ///
+  /// Отдельный экземпляр, а не кэшированный: этот токен не участвует в
+  /// торговле, и складывать его в общий кэш брокеров значило бы однажды
+  /// отправить им заявку.
+  TInvestBroker? _investRead;
+
+  Future<TInvestBroker?> _investReadBroker() async {
+    if (_investRead != null) return _investRead;
+    final has = await vault.hasKeys(
+      exchange: BrokerId.tinvest.name,
+      mode: TInvestRole.invest.slot,
+      needsSecret: false,
+    );
+    if (!has) return null;
+    return _investRead = TInvestBroker(
+      mode: TradingMode.live,
+      role: TInvestRole.invest,
+      token: () => vault.apiKey(
+        exchange: BrokerId.tinvest.name,
+        mode: TInvestRole.invest.slot,
+      ),
+      instrumentCache: _instruments,
+    )..allowedAccountIds = _trading.allowedAccountIds;
   }
 
   @override
@@ -392,6 +439,7 @@ class LocalAnalysisRepository
     try {
       final answer = await probe.checkAccess();
       _brokers.remove(BrokerId.tinvest);
+      _investRead = null;
       return answer;
     } on BrokerException catch (e) {
       // Токен остаётся в хранилище: набирать его заново из-за секундного
@@ -404,7 +452,11 @@ class LocalAnalysisRepository
     await _ensureLoaded();
     final result = <TInvestRole>{};
     for (final role in TInvestRole.values) {
-      if (await vault.hasKeys(exchange: BrokerId.tinvest.name, mode: role.slot)) {
+      if (await vault.hasKeys(
+        exchange: BrokerId.tinvest.name,
+        mode: role.slot,
+        needsSecret: false,
+      )) {
         result.add(role);
       }
     }
@@ -427,6 +479,7 @@ class LocalAnalysisRepository
     _trading = _trading.copyWith(allowedAccountIds: next);
     await _store.write('trading', _trading.toJson());
     _brokers.remove(BrokerId.tinvest);
+    _investRead = null;
   }
 
   /// Проверка отвергнутого ключа Bybit на противоположной площадке.
