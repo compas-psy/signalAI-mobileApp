@@ -88,21 +88,6 @@ INCOME_CLASSES: frozenset[AssetClass] = frozenset(
 
 
 PROFILES: dict[RiskProfile, Profile] = {
-    # Сохранение капитала. Акций и золота здесь нет вовсе — не потому, что
-    # они плохи, а потому что вопрос другой: этот пакет обязан работать в
-    # год, когда рынок акций падает. Если рынок развернётся, состав меняет
-    # не он, а ребаланс в пользу профиля повыше.
-    RiskProfile.INCOME: Profile(
-        target_volatility=0.03,
-        drawdown_limit=0.04,
-        caps={
-            AssetClass.EQUITY: 0.0,
-            AssetClass.GOLD: 0.0,
-            AssetClass.CRYPTO_SPOT: 0.0,
-            AssetClass.CRYPTO_PERPETUAL: 0.0,
-        },
-        title="обогнать инфляцию, не глядя на рынок",
-    ),
     RiskProfile.CONSERVATIVE: Profile(
         target_volatility=0.06,
         drawdown_limit=0.08,
@@ -139,6 +124,16 @@ PROFILES: dict[RiskProfile, Profile] = {
 # текущий режим рынка; пятилетний — пережить смену режимов, поэтому смотрит
 # на всю доступную историю.
 HORIZON_WINDOW = {1: 504, 5: 0}  # торговых дней; 0 — вся история
+
+# Меньше двух бумаг — это не портфель, а ставка: диверсификации нет, и
+# портфельные показатели к ней неприменимы. Всё, что выше, решает
+# оптимизатор, а не заявленный размер пакета.
+MIN_POSITIONS = 2
+
+# Доля, ниже которой позиция не окупает собственного существования: комиссия
+# за вход и выход съедает её вклад, а на экране она занимает такую же строку,
+# как осмысленная позиция.
+DUST_WEIGHT = 0.02
 
 ROLE_BY_CLASS = {
     AssetClass.MONEY_MARKET: "денежная подушка",
@@ -203,7 +198,6 @@ class BuildReport:
     # «пакетов нет» из-за падающего рынка акций и «нет доходных бумаг во
     # вселенной» — разные поломки, и чинить их надо по-разному.
     income_candidates: int = 0
-    income_days: int = 0
     income_note: str = ""
 
     packages: list[Package] = field(default_factory=list)
@@ -276,7 +270,16 @@ def _panel_with_window(
         # важнее длины окна. Вырезав все облигации и денежный рынок, мы
         # оставим консервативный профиль без единого допустимого состава —
         # его потолок на акции просто не даст набрать 100%.
-        shortest = _next_to_drop(working, by_class)
+        #
+        # А как только минимального окна хватает, доходные бумаги не режутся
+        # вовсе. Длинное окно — это удобство оценки; бумага, которая растёт,
+        # когда рынок акций падает, — это единственное, из чего в такой год
+        # вообще собирается положительный состав. Менять второе на первое
+        # значит остаться без пакетов ровно тогда, когда они нужнее всего.
+        # Фонды денежного рынка и облигаций моложе акций, и в этом обмене
+        # они всегда проигрывали.
+        protect = INCOME_CLASSES if panel.periods >= needed else frozenset()
+        shortest = _next_to_drop(working, by_class, protect=protect)
         if shortest is None:
             break
         length = len(working[shortest])
@@ -299,13 +302,19 @@ def _panel_with_window(
 
 
 def _next_to_drop(
-    working: dict[str, list], by_class: dict[str, AssetClass]
+    working: dict[str, list],
+    by_class: dict[str, AssetClass],
+    *,
+    protect: frozenset[AssetClass] = frozenset(),
 ) -> str | None:
     """Какой ряд убрать следующим: самый короткий из тех, кого не жалко.
 
     «Не жалко» — значит его класс представлен ещё как минимум двумя другими
     бумагами. Класс, доживший до пары представителей, не режется: без него
     часть профилей перестаёт быть выполнимой в принципе.
+
+    ``protect`` — классы, которые не режутся вообще. Возвращается ``None``,
+    если резать больше некого: это не ошибка, а сигнал остановиться.
     """
     counts: dict[AssetClass, int] = {}
     for key in working:
@@ -316,12 +325,13 @@ def _next_to_drop(
     def length(key: str) -> int:
         return len(working[key])
 
+    allowed = [key for key in working if by_class.get(key) not in protect]
     spare = [
         key
-        for key in working
+        for key in allowed
         if by_class.get(key) is None or counts.get(by_class[key], 0) > 2
     ]
-    pool = spare or list(working)
+    pool = spare or allowed
     if not pool:
         return None
     return min(pool, key=length)
@@ -338,14 +348,29 @@ def _constraints(
     Потолок на бумагу выведен из размера пакета, а не назначен числом: в
     пакете на три позиции 20% — это мало, в пакете на двенадцать — это уже
     концентрация. Берётся полторы «равные доли», но не больше трети.
+
+    Денежный рынок из этого правила исключён, и это не послабление, а
+    исправление ошибки. Потолок на бумагу — защита от того, что один эмитент
+    подведёт. Фонд денежного рынка в этой роли — не ставка, а место, где
+    деньги ждут: держать в нём 80% не концентрация, а решение не покупать
+    остальное.
+
+    Пока он подчинялся общему потолку, происходило вот что: веса обязаны
+    давать 100%, доходных бумаг в отборе две, потолок на бумагу 18% — значит
+    ими закрывается 37%, а оставшиеся 63% **обязаны** уйти в акции. В
+    падающий рынок оптимизатор был вынужден покупать то, от чего профиль и
+    должен защищать, и состав честно терял 18% годовых вне обучения. Это не
+    свойство рынка, это ограничение, требующее покупки.
     """
     n = len(classes)
     per_name = min(0.34, max(0.12, 1.5 / max(1, positions)))
     lo = np.zeros(n)
     hi = np.full(n, per_name)
     for i, asset_class in enumerate(classes):
+        if asset_class is AssetClass.MONEY_MARKET:
+            hi[i] = 1.0
         cap = profile.caps.get(asset_class)
-        if cap is not None and cap < per_name:
+        if cap is not None and cap < hi[i]:
             hi[i] = cap
 
     groups: list[tuple[np.ndarray, float]] = []
@@ -395,12 +420,23 @@ def _trim(
     Если оставленных бумаг не хватает, чтобы набрать 100% под потолками
     классов, набор расширяется следующими по весу — пока не станет
     выполнимым. Недобранный портфель — не портфель.
+
+    Чего здесь **не** делается: добора до заявленного числа позиций. Раньше
+    состав, в котором оптимизатор дал вес трём бумагам, дополнялся до пяти
+    следующими по списку — то есть теми, которым веса не досталось. В
+    падающий рынок это затаскивало в консервативный пакет ровно те акции,
+    от которых он и должен защищать: у них вес был нулевой, а квота
+    требовала пятой строки. Позицию покупают потому, что она улучшает
+    состав, а не потому, что нужна пятая строка. Размер пакета — это
+    потолок широты, а не квота.
     """
-    low, high = count
+    _, high = count
     order = list(np.argsort(-weights))
     keep = [int(i) for i in order[:high] if weights[i] >= 0.005]
-    if len(keep) < low:
-        keep = [int(i) for i in order[:low]]
+    # Единственный настоящий минимум — два: одна бумага это не портфель, а
+    # ставка, и мерить её портфельными показателями бессмысленно.
+    if len(keep) < MIN_POSITIONS:
+        keep = [int(i) for i in order[:MIN_POSITIONS]]
 
     rest = [int(i) for i in order if int(i) not in keep]
     while True:
@@ -409,7 +445,13 @@ def _trim(
         # составе из трёх бумаг доля в треть — норма, а не концентрация.
         room = min(0.5, max(1.4 / max(1, len(keep)), 0.0))
         for i in keep:
-            hi[i] = min(0.5, max(float(constraints.hi[i]), room))
+            # Расширять потолок можно, сужать — нет. Здесь стояло
+            # `min(0.5, …)`, и оно резало обратно то, что ограничения
+            # разрешили осознанно: денежному рынку позволено 100%, а отбор
+            # позиций возвращал ему 50% — и вторую половину проекции
+            # приходилось класть в падающие акции. Ограничение, которое
+            # заставляет купить, — это не ограничение риска.
+            hi[i] = max(float(constraints.hi[i]), min(0.5, room))
         if _reachable(hi, constraints.groups) >= 1.0 - 1e-9 or not rest:
             break
         keep.append(rest.pop(0))
@@ -420,7 +462,21 @@ def _trim(
 
     seed = np.zeros_like(weights)
     seed[keep] = weights[keep]
-    return project_with_groups(seed, constraints.lo, hi, constraints.groups)
+    result = project_with_groups(seed, constraints.lo, hi, constraints.groups)
+
+    # Пыль срезается после проекции, а не до неё. Проекция раскладывает
+    # остаток по всем оставленным бумагам, и доли по полпроцента появляются
+    # именно на этом шаге: до него их не было. Такая позиция не переживает ни
+    # одного ребаланса — она только стоит комиссии и места в списке.
+    dust = result < DUST_WEIGHT
+    if dust.any() and not dust.all():
+        seed = np.where(dust, 0.0, result)
+        trimmed = np.where(dust, 0.0, hi)
+        if _reachable(trimmed, constraints.groups) >= 1.0 - 1e-9:
+            result = project_with_groups(
+                seed, constraints.lo, trimmed, constraints.groups
+            )
+    return result
 
 
 def _stress(panel: ReturnPanel, weights: np.ndarray) -> dict:
@@ -495,10 +551,10 @@ def build_package(
         admitted=False,
         reason="",
     )
-    if working.width < count[0] or working.periods < 120:
+    if working.width < MIN_POSITIONS or working.periods < 120:
         result.reason = (
             f"кандидатов {working.width}, истории {working.periods} дней — "
-            f"для пакета нужно минимум {count[0]} бумаг и 120 дней"
+            f"для пакета нужно минимум {MIN_POSITIONS} бумаги и 120 дней"
         )
         return result
 
@@ -700,60 +756,32 @@ def build_all(
             PROFILES[key].caps.get(AssetClass.CRYPTO_SPOT, crypto_cap), crypto_cap
         )
 
-    # Доходный контур считается на своей панели.
-    #
-    # Общая панель строится так, чтобы у всех бумаг было длинное общее окно,
-    # и короткие ряды из неё выпадают. Фонды денежного рынка и облигаций
-    # моложе акций — и вылетали первыми, ровно те, на которых доходный пакет
-    # только и держится. Своя панель снимает эту зависимость: окно у неё
-    # своё, и история акций на него не влияет.
-    income_ids = [
-        key for key in candidates
+    # Сколько доходных бумаг дошло до панели. Это и есть ответ на вопрос
+    # «почему в падающий год пусто»: пока в отборе только акции, ни один
+    # профиль не соберёт положительный состав — не потому, что оптимизатор
+    # плох, а потому, что расти нечему.
+    report.income_candidates = sum(
+        1 for key in panel.columns
         if key in by_id and by_id[key].asset_class in INCOME_CLASSES
-    ]
-    income_panel = None
-    if income_ids:
-        income_panel, income_dropped = _panel_with_window(
-            {k: v for k, v in series.items() if k in income_ids},
-            needed=needed,
-            target=needed + 5 * test_days,
-            min_width=2,
-            classes={key: by_id[key].asset_class for key in income_ids},
-        )
-        for instrument_id, why in income_dropped:
-            report.rejected.append((instrument_id, why))
-        report.income_candidates = income_panel.width
-        report.income_days = income_panel.periods
-    else:
+    )
+    if report.income_candidates == 0:
         report.income_note = (
-            "доходных бумаг среди кандидатов нет: ни фондов денежного рынка, "
-            "ни облигационных. Пакет сохранения капитала собирать не из чего"
+            "в отборе нет ни одной доходной бумаги — ни фондов денежного "
+            "рынка, ни облигационных, ни ОФЗ. В падающий рынок собрать "
+            "положительный состав не из чего"
         )
 
     now = datetime.now(UTC)
     for profile_key in profiles:
-        # У доходного профиля своя панель: на общей его состав зависел бы от
-        # того, сколько истории у акций.
-        source = income_panel if profile_key is RiskProfile.INCOME else panel
-        if source is None or source.width < 2:
-            continue
         for package_key, config_key in (
             (PackageSize.SIMPLE, "simple"),
             (PackageSize.BALANCED, "balanced"),
             (PackageSize.MAX_POTENTIAL, "max_potential"),
         ):
             low, high = packages[config_key]
-            # Доходных бумаг на бирже единицы: требовать от пакета
-            # сохранения капитала восьми позиций значит не собрать его
-            # никогда. Границы сжимаются под то, что есть.
-            if profile_key is RiskProfile.INCOME:
-                low = min(int(low), max(2, source.width))
-                high = min(int(high), source.width)
-                if high < low:
-                    continue
             for horizon in horizons:
                 built = build_package(
-                    source,
+                    panel,
                     card_by_id,
                     by_id,
                     profile_key=profile_key,

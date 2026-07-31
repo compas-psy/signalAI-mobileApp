@@ -262,16 +262,13 @@ def build_default_scheduler(
             f"кандидатов {report.candidates}, пакетов допущено "
             f"{report.admitted} из {len(report.packages)}"
         )
-        # Доходный контур отчитывается отдельно: «рынок акций падает» и
-        # «доходных бумаг нет во вселенной» — разные поломки, и по общему
+        # Сколько доходных бумаг дошло до отбора. «Рынок акций падает» и
+        # «доходных бумаг во вселенной нет» — разные поломки, и по общему
         # числу пакетов их не различить.
         if report.income_note:
-            detail += f"; доход: {report.income_note}"
-        elif report.income_candidates:
-            detail += (
-                f"; доходных бумаг {report.income_candidates}"
-                f", общее окно {report.income_days} дн."
-            )
+            detail += f"; {report.income_note}"
+        else:
+            detail += f", из них доходных {report.income_candidates}"
         if classified:
             detail += f", классов фондов уточнено {len(classified)}"
         if report.note:

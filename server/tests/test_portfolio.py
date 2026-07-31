@@ -384,89 +384,28 @@ def test_прогон_записывает_причину_а_не_только_�
         assert entry["reason"], "отказ без причины недопустим"
 
 
-# ── Доходный контур ──────────────────────────────────────────────────────
+# ── Доходные бумаги и падающий рынок ─────────────────────────────────────
 
 
-def test_доходный_пакет_собирается_на_падающем_рынке_акций(session):
-    """Падающий рынок акций может длиться годами — деньги ждать не должны.
-
-    Денежный рынок и облигации платят проценты независимо от того, куда
-    идёт индекс. Портфель, который в такие годы показывает пустой экран,
-    отвечает не на тот вопрос.
-    """
+def _falling_market(session, *, income_history: int = 900, equity_history: int = 900):
+    """Рынок, где акции падают, а денежный рынок и облигации растут."""
     rng = np.random.default_rng(5)
-    periods = 900
 
     _add_instrument(
         session, "MOEX:ETF:LQDT", AssetClass.MONEY_MARKET,
         symbol="LQDT", title="Ликвидность",
         meta={"market": "shares", "board": "TQTF"},
     )
-    _add_bars(session, "MOEX:ETF:LQDT", _walk(rng, periods, 0.00055, 0.00012))
+    _add_bars(session, "MOEX:ETF:LQDT", _walk(rng, income_history, 0.00055, 0.00012))
 
     _add_instrument(
         session, "MOEX:ETF:BONDS", AssetClass.BOND_FUND,
         symbol="BONDS", title="Фонд облигаций",
         meta={"market": "shares", "board": "TQTF"},
     )
-    _add_bars(session, "MOEX:ETF:BONDS", _walk(rng, periods, 0.0004, 0.0018))
+    _add_bars(session, "MOEX:ETF:BONDS", _walk(rng, income_history, 0.0004, 0.0018))
 
-    # Акции падают весь период — общий контур на них ничего не соберёт.
-    factor = rng.normal(-0.0009, 0.012, size=periods)
-    for name in ("SBER", "GAZP", "LKOH"):
-        _add_instrument(
-            session, f"MOEX:EQ:{name}", AssetClass.EQUITY,
-            symbol=name, title=name,
-            meta={"market": "shares", "board": "TQBR", "issuesize": "2.1e10"},
-        )
-        _add_bars(
-            session, f"MOEX:EQ:{name}",
-            _walk(rng, periods, -0.0009, 0.006, factor=factor, beta=1.0),
-        )
-    session.flush()
-
-    report = build_all(session, draws=12, fetch=_no_network)
-
-    income = [p for p in report.packages if p.profile is RiskProfile.INCOME]
-    assert income, "доходный профиль не посчитан вовсе"
-    admitted = [p for p in income if p.admitted]
-    assert admitted, (
-        "ни один доходный состав не допущен: "
-        + "; ".join(p.reason for p in income if p.reason)
-    )
-
-    # В доходном пакете нет акций — не потому что они плохи, а потому что
-    # этот пакет обязан работать в год, когда рынок акций падает.
-    for package in admitted:
-        classes = {p.asset_class for p in package.positions}
-        assert AssetClass.EQUITY not in classes
-        assert classes <= set(INCOME_CLASSES)
-
-
-def test_доходный_пакет_считается_на_своей_панели(session):
-    """Короткая история акций не должна выбрасывать фонды из отбора.
-
-    Общая панель строится по датам, общим для всех бумаг, и короткие ряды
-    из неё выпадают. Фонды денежного рынка моложе акций — вылетали первыми
-    ровно те, на которых доходный пакет только и держится.
-    """
-    rng = np.random.default_rng(7)
-
-    # У фондов истории меньше, чем у акций.
-    _add_instrument(
-        session, "MOEX:ETF:LQDT", AssetClass.MONEY_MARKET,
-        symbol="LQDT", title="Ликвидность",
-        meta={"market": "shares", "board": "TQTF"},
-    )
-    _add_bars(session, "MOEX:ETF:LQDT", _walk(rng, 700, 0.00055, 0.00012))
-    _add_instrument(
-        session, "MOEX:ETF:BONDS", AssetClass.BOND_FUND,
-        symbol="BONDS", title="Фонд облигаций",
-        meta={"market": "shares", "board": "TQTF"},
-    )
-    _add_bars(session, "MOEX:ETF:BONDS", _walk(rng, 700, 0.0004, 0.0018))
-
-    factor = rng.normal(0.0002, 0.011, size=1400)
+    factor = rng.normal(-0.0009, 0.012, size=equity_history)
     for name in ("SBER", "GAZP", "LKOH", "ROSN"):
         _add_instrument(
             session, f"MOEX:EQ:{name}", AssetClass.EQUITY,
@@ -475,16 +414,80 @@ def test_доходный_пакет_считается_на_своей_пане
         )
         _add_bars(
             session, f"MOEX:EQ:{name}",
-            _walk(rng, 1400, 0.0004, 0.006, factor=factor, beta=1.0),
+            _walk(rng, equity_history, -0.0009, 0.006, factor=factor, beta=1.0),
         )
     session.flush()
 
+
+def test_консервативный_пакет_собирается_на_падающем_рынке(session):
+    """Падающий рынок акций может длиться годами — деньги ждать не должны.
+
+    Отдельного «доходного» профиля для этого не нужно: денежный рынок и
+    облигации есть среди активов, и оптимизатор обязан прийти к ним сам.
+    """
+    _falling_market(session)
     report = build_all(session, draws=12, fetch=_no_network)
-    # Панель доходного контура своя, и фонды на ней остались.
-    assert report.income_candidates >= 2
-    assert report.income_days >= 400
-    income = [p for p in report.packages if p.profile is RiskProfile.INCOME]
-    assert any(p.positions for p in income)
+
+    conservative = [
+        p for p in report.packages if p.profile is RiskProfile.CONSERVATIVE
+    ]
+    admitted = [p for p in conservative if p.admitted]
+    assert admitted, (
+        "консервативный состав не допущен ни разу: "
+        + "; ".join(p.reason for p in conservative if p.reason)
+    )
+    # Состав пришёл к доходным бумагам сам — не потому, что ему их назначили.
+    for package in admitted:
+        income = sum(
+            p.weight for p in package.positions
+            if p.asset_class in INCOME_CLASSES
+        )
+        assert income > 0.5, f"доходных бумаг только {income:.0%}"
+
+
+def test_та_же_логика_работает_для_остальных_профилей(session):
+    """Оптимальный и агрессивный считаются из того же набора активов.
+
+    Профиль задаёт потолки и целевые колебания, а не отдельный список бумаг.
+    Если доходные бумаги дошли до отбора, ими вправе воспользоваться любой
+    профиль — и в падающий рынок он это и сделает.
+    """
+    _falling_market(session)
+    report = build_all(session, draws=12, fetch=_no_network)
+
+    for profile in (RiskProfile.OPTIMAL, RiskProfile.AGGRESSIVE):
+        packages = [p for p in report.packages if p.profile is profile]
+        admitted = [p for p in packages if p.admitted]
+        assert admitted, (
+            f"{profile.value}: ни один состав не допущен — "
+            + "; ".join(p.reason for p in packages if p.reason)
+        )
+        for package in admitted:
+            income = sum(
+                p.weight for p in package.positions
+                if p.asset_class in INCOME_CLASSES
+            )
+            assert income > 0, (
+                f"{profile.value}: доходных бумаг нет вовсе, хотя рынок падает"
+            )
+
+
+def test_доходные_бумаги_не_режутся_ради_длины_окна(session):
+    """Фонды моложе акций — и вылетали первыми ровно те, на которых держится
+    положительный состав в падающий год.
+
+    Длинное окно — удобство оценки; бумага, растущая при падающем рынке, —
+    единственное, из чего такой состав вообще собирается.
+    """
+    _falling_market(session, income_history=700, equity_history=1400)
+    report = build_all(session, draws=12, fetch=_no_network)
+
+    assert report.income_candidates >= 2, (
+        "доходные бумаги выброшены из панели: " + report.income_note
+    )
+    dropped = {key for key, _ in report.rejected}
+    assert "MOEX:ETF:LQDT" not in dropped
+    assert "MOEX:ETF:BONDS" not in dropped
 
 
 def test_без_доходных_бумаг_причина_названа_отдельно(session):
@@ -504,5 +507,5 @@ def test_без_доходных_бумаг_причина_названа_отд
     session.flush()
 
     report = build_all(session, draws=12, fetch=_no_network)
-    assert "доходных бумаг" in report.income_note
-    assert not [p for p in report.packages if p.profile is RiskProfile.INCOME]
+    assert report.income_candidates == 0
+    assert "доходной бумаги" in report.income_note

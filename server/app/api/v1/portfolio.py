@@ -277,21 +277,7 @@ def packages(
     models = list(session.execute(query).scalars())
 
     order = {PackageSize.SIMPLE: 0, PackageSize.BALANCED: 1, PackageSize.MAX_POTENTIAL: 2}
-    # Доходный профиль идёт первым: он единственный, который обязан
-    # существовать всегда, и владельцу проще найти его в начале списка.
-    by_profile = {
-        RiskProfile.INCOME: 0,
-        RiskProfile.CONSERVATIVE: 1,
-        RiskProfile.OPTIMAL: 2,
-        RiskProfile.AGGRESSIVE: 3,
-    }
-    models.sort(
-        key=lambda m: (
-            m.horizon_years,
-            by_profile.get(m.profile, 9),
-            order.get(m.package, 9),
-        )
-    )
+    models.sort(key=lambda m: (m.horizon_years, order.get(m.package, 9)))
 
     everything = list(session.execute(select(PortfolioModel)).scalars())
     run = _last_run(session)
