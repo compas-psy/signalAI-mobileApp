@@ -142,7 +142,7 @@ jobs:
           echo '── планировщик ──'
           for _ in $(seq 1 24); do
             if $SUDO docker compose --env-file "$ENV_FILE" logs --no-color scheduler \
-                 | grep -qE 'universe:|ingest:|review:|scan:|portfolio:'; then
+                 | grep -qE 'universe:|ingest:|review:|supervise:|scan:|portfolio:'; then
               break
             fi
             sleep 5
