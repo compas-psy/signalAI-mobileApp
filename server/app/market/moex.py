@@ -306,6 +306,17 @@ _MD_COLUMNS = {
     "bonds": "SECID,LAST,VALTODAY,YIELD,DURATION",
 }
 
+# Набор колонок, который есть на любой доске рынка.
+#
+# Перечень колонок обязателен: без него ISS отдаёт по сорок полей на бумагу.
+# Но у него есть цена — если запросить колонку, которой на **этой** доске
+# нет, биржа не ругается, а возвращает блок пустым. Именно так пропала вся
+# доска фондов TQTF: она живёт на рынке shares, где у акций есть ISSUESIZE,
+# а у паёв фонда — нет. Ответ приходил с нулём строк, класс активов исчезал
+# целиком, и снаружи это выглядело как «фондов на бирже не нашлось».
+_SEC_MINIMAL = "SECID,SHORTNAME,MINSTEP,DECIMALS,LOTSIZE"
+_MD_MINIMAL = "SECID,LAST,VALTODAY"
+
 
 def stock_board(
     market: str, board: str, *, fetch=http_json
@@ -322,17 +333,29 @@ def stock_board(
     if sec_columns is None or md_columns is None:
         raise ValueError(f"рынок {market!r} не описан: неизвестен набор колонок")
 
-    def url(start: int) -> str:
-        return (
-            f"{BASE}/engines/stock/markets/{market}/boards/{board}/securities.json"
-            "?iss.meta=off&iss.only=securities,marketdata"
-            f"&securities.columns={sec_columns}"
-            f"&marketdata.columns={md_columns}"
-            f"&limit={PAGE_SIZE}&start={start}"
-        )
+    def request(sec: str, md: str):
+        def url(start: int) -> str:
+            return (
+                f"{BASE}/engines/stock/markets/{market}/boards/{board}"
+                "/securities.json?iss.meta=off&iss.only=securities,marketdata"
+                f"&securities.columns={sec}"
+                f"&marketdata.columns={md}"
+                f"&limit={PAGE_SIZE}&start={start}"
+            )
 
-    securities, r1 = _paged(url, "securities", fetch=fetch)
-    market_data, r2 = _paged(url, "marketdata", fetch=fetch)
+        rows, reports = _paged(url, "securities", fetch=fetch)
+        data, more = _paged(url, "marketdata", fetch=fetch)
+        return rows, data, [*reports, *more]
+
+    securities, market_data, reports = request(sec_columns, md_columns)
+    if not securities:
+        # Пусто может значить и «доска закрыта», и «одной из колонок на этой
+        # доске нет». Второе неотличимо от первого по ответу, поэтому
+        # спрашиваем ещё раз тем набором, который есть везде. Дополнительные
+        # поля при этом теряются — но бумага без капитализации полезнее, чем
+        # отсутствующий класс активов.
+        securities, market_data, retry = request(_SEC_MINIMAL, _MD_MINIMAL)
+        reports = [*reports, *retry]
     by_id = {row.get("SECID"): row for row in market_data}
 
     rows: list[BoardRow] = []
@@ -355,7 +378,7 @@ def stock_board(
                 extra=extra,
             )
         )
-    return rows, [*r1, *r2]
+    return rows, reports
 
 
 def dividends(sec_id: str, *, fetch=http_json) -> tuple[list[tuple[date, Decimal]], FetchReport]:

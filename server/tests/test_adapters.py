@@ -387,3 +387,42 @@ def test_daily_candle_keeps_its_trading_date():
     )
     assert result[0].open_time == datetime(2026, 7, 29, 0, tzinfo=UTC)
     assert result[0].open_time.date() == date(2026, 7, 29)
+
+
+def test_доска_повторяет_запрос_безопасным_набором_колонок():
+    """Колонка, которой на доске нет, обнуляет весь ответ — молча.
+
+    Так пропала доска фондов TQTF: она живёт на рынке shares, где у акций
+    есть ISSUESIZE, а у паёв фонда — нет. Биржа не ругается, а возвращает
+    блок пустым, и целый класс активов исчезал из вселенной. Снаружи это
+    выглядело как «фондов на бирже не нашлось».
+    """
+    asked: list[str] = []
+
+    def fetch(url: str):
+        asked.append(url)
+        report = moex.FetchReport(
+            url=url, status=200, elapsed_ms=1, bytes_read=1, ok=True
+        )
+        if "ISSUESIZE" in url:
+            # Полный набор — биржа отдаёт пустоту, не сообщая причины.
+            return {"securities": {"columns": [], "data": []},
+                    "marketdata": {"columns": [], "data": []}}, report
+        return {
+            "securities": {
+                "columns": ["SECID", "SHORTNAME", "MINSTEP", "DECIMALS", "LOTSIZE"],
+                "data": [["LQDT", "Ликвидность", 0.0001, 4, 1]],
+            },
+            "marketdata": {
+                "columns": ["SECID", "LAST", "VALTODAY"],
+                "data": [["LQDT", 1.62, 8_000_000]],
+            },
+        }, report
+
+    rows, _ = moex.stock_board("shares", "TQTF", fetch=fetch)
+
+    assert [r.sec_id for r in rows] == ["LQDT"]
+    # Сначала спрашиваем полный набор — дополнительные поля нужны там, где
+    # они есть; безопасный набор идёт только вторым.
+    assert any("ISSUESIZE" in url for url in asked)
+    assert any("ISSUESIZE" not in url for url in asked)
