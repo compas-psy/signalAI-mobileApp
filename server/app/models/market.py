@@ -217,3 +217,22 @@ class DataQualityEvent(Base):
     payload_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
 
     __table_args__ = (Index("ix_dq_events_time", "occurred_at"),)
+
+
+class FxRate(Base):
+    """Курс валюты к рублю (§17.1).
+
+    Одна строка на валюту, а не история котировок: размеру позиции нужен
+    текущий курс, а ряд курсов — предмет отдельной задачи. Момент снятия
+    хранится рядом обязательно: курс без времени нельзя отличить от
+    прошлогоднего, а по нему считаются деньги.
+    """
+
+    __tablename__ = "fx_rates"
+
+    currency: Mapped[str] = mapped_column(String(8), primary_key=True)
+    rate_rub: Mapped[Money] = mapped_column(nullable=False)
+    as_of: Mapped[datetime] = utcnow_column()
+    source: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+
+    __table_args__ = (CheckConstraint("rate_rub > 0", name="rate_positive"),)

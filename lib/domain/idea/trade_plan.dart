@@ -67,6 +67,11 @@ class TradePlan {
     required this.marginEstimate,
     required this.expiry,
     required this.strategyVersion,
+    this.quantityStep = 1,
+    this.quantityUnit = '',
+    this.quoteCurrency = 'RUB',
+    this.quoteRateRub,
+    this.quoteNote = '',
     this.stopManagement = defaultStopManagement,
     this.invalidation = const [],
   });
@@ -85,13 +90,38 @@ class TradePlan {
   final double stop;
   final List<PlanTarget> targets;
 
-  /// Объём в единицах инструмента, уже округлённый до лота.
-  final int quantity;
+  /// Объём в **номинале инструмента**, уже округлённый вниз к его шагу.
+  ///
+  /// Дробный намеренно. У бессрочного контракта на эфир шаг объёма 0,001
+  /// монеты, и целое число здесь было бы не округлением, а другой позицией:
+  /// 0,348 ETH превращались в ноль, а «28» — в двадцать восемь монет, то
+  /// есть в два миллиона рублей при депозите в один.
+  final double quantity;
+
+  /// Шаг объёма — им же задаётся, сколько знаков показывать.
+  final double quantityStep;
+
+  /// Чем меряется объём: «ETH», «контр.», «шт.».
+  final String quantityUnit;
+
   final int lotSize;
 
-  /// Стоимость движения цены на один пункт для одной единицы.
+  /// Стоимость движения цены на один пункт для одной единицы, в валюте
+  /// котировки инструмента.
   final double valuePerPoint;
 
+  /// Валюта, в которой котируется инструмент. Цены плана — в ней.
+  final String quoteCurrency;
+
+  /// Курс этой валюты к рублю, по которому посчитан [riskRubles]. null —
+  /// инструмент рублёвый либо курс неизвестен и денег в рублях нет.
+  final double? quoteRateRub;
+
+  /// Подпись под курсом: откуда он и когда снят.
+  final String quoteNote;
+
+  /// Риск в рублях. Именно в рублях: бюджет задан ими, и убыток по стопу
+  /// считается по этому числу. Цены при этом остаются в валюте котировки.
   final double riskRubles;
   final double riskPercent;
   final double marginEstimate;
@@ -188,11 +218,19 @@ class TradePlan {
       issues.add('доли закрытия дают ${(fractions * 100).round()}% вместо 100%');
     }
 
-    if (quantity < lotSize) {
-      issues.add('объём меньше лота — идея остаётся информационной');
+    // Кратность проверяется шагу объёма, а не лоту: у крипты шаг 0,001
+    // монеты, и «кратно единице» забраковало бы каждую верную позицию.
+    final step = quantityStep > 0 ? quantityStep : lotSize.toDouble();
+    if (step > 0 && quantity < step) {
+      issues.add('объём меньше минимального — идея остаётся информационной');
     }
-    if (lotSize > 0 && quantity % lotSize != 0) {
-      issues.add('объём не кратен лоту');
+    if (step > 0 && quantity >= step) {
+      // Допуск нужен: 0,348 / 0,001 в double даёт 347,99999999999994, и
+      // точная проверка остатка забраковала бы верный объём.
+      final steps = quantity / step;
+      if ((steps - steps.roundToDouble()).abs() > 1e-6) {
+        issues.add('объём не кратен шагу $step');
+      }
     }
     if (riskRubles <= 0 || riskPercent <= 0) {
       issues.add('риск не рассчитан');
@@ -224,7 +262,7 @@ class TradePlan {
       ..write('|')
       ..write(_n(stop))
       ..write('|')
-      ..write(quantity)
+      ..write(_n(quantity))
       ..write('|')
       ..write(_n(riskRubles))
       ..write('|')
@@ -244,7 +282,7 @@ class TradePlan {
   }
 
   TradePlan copyWith({
-    int? quantity,
+    double? quantity,
     double? riskRubles,
     double? riskPercent,
     double? marginEstimate,
@@ -259,8 +297,13 @@ class TradePlan {
         stop: stop,
         targets: targets,
         quantity: quantity ?? this.quantity,
+        quantityStep: quantityStep,
+        quantityUnit: quantityUnit,
         lotSize: lotSize,
         valuePerPoint: valuePerPoint,
+        quoteCurrency: quoteCurrency,
+        quoteRateRub: quoteRateRub,
+        quoteNote: quoteNote,
         riskRubles: riskRubles ?? this.riskRubles,
         riskPercent: riskPercent ?? this.riskPercent,
         marginEstimate: marginEstimate ?? this.marginEstimate,
@@ -269,6 +312,22 @@ class TradePlan {
         stopManagement: stopManagement,
         invalidation: invalidation,
       );
+
+  /// Сколько знаков нужно объёму, чтобы шаг был виден целиком.
+  ///
+  /// Считается из шага, а не задаётся константой: у контракта шаг 1 и знаков
+  /// не нужно вовсе, у эфира 0,001 — нужно три. Округлить 0,348 до целых
+  /// значит показать ноль там, где позиция есть.
+  int get quantityDecimals {
+    var step = quantityStep;
+    if (step <= 0 || step >= 1) return 0;
+    var decimals = 0;
+    while (decimals < 8 && (step - step.roundToDouble()).abs() > 1e-9) {
+      step *= 10;
+      decimals++;
+    }
+    return decimals;
+  }
 
   static String _n(double v) => v.toStringAsFixed(6);
 

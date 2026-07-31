@@ -41,6 +41,7 @@ from ..config import EngineConfig, get_config
 from ..models import Bar, DataQualityEvent, Instrument
 from ..models.enums import AssetClass, QualityFlag, Timeframe, Venue
 from . import crypto, moex
+from .fx import record_rates
 from .http import FetchError
 
 # Обязательные по §5.3 — единственные тикеры во всём модуле.
@@ -298,6 +299,11 @@ def sync_futures(
     min_days = int(config.get("universe.futures.min_days_to_expiry"))
 
     rows, _ = moex.forts_board(**kwargs)
+    # Курс валюты к рублю снимается здесь же, с уже загруженной доски: Si
+    # торгуется на этом самом рынке, а второй проход по нему стоил бы ещё
+    # одной полной выгрузки. Делается до отсева кандидатов — валютный
+    # фьючерс может не пройти фильтр вселенной, но курс из него верен.
+    record_rates(session, rows, now=moment)
     # Предварительный отсев — десятая часть порога §5.2. Настоящую проверку
     # делает второй проход по истории; здесь задача скромнее — не тянуть
     # историю по паре сотен контрактов, торгующихся на сотни рублей в день.

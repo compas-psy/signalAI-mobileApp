@@ -152,7 +152,10 @@ class Fill {
     this.fee = 0,
   });
 
-  final int quantity;
+  /// Объём в номинале инструмента. Дробный намеренно: у бессрочного
+  /// контракта на эфир шаг 0,001 монеты, и целое число превращало бы
+  /// исполнение на 0,348 ETH в ноль.
+  final double quantity;
   final double price;
   final DateTime at;
   final double fee;
@@ -165,7 +168,7 @@ class Fill {
       };
 
   static Fill fromJson(Map<String, dynamic> j) => Fill(
-        quantity: (j['quantity'] as num?)?.toInt() ?? 0,
+        quantity: (j['quantity'] as num?)?.toDouble() ?? 0,
         price: (j['price'] as num?)?.toDouble() ?? 0,
         at: DateTime.tryParse(j['at'] as String? ?? '') ?? DateTime(2000),
         fee: (j['fee'] as num?)?.toDouble() ?? 0,
@@ -196,8 +199,8 @@ class Execution {
   /// Отпечаток подписанного плана. Сверка с брокером идёт по нему.
   final String planHash;
 
-  /// Объём, который планировалось набрать.
-  final int plannedQuantity;
+  /// Объём, который планировалось набрать, — в номинале инструмента.
+  final double plannedQuantity;
 
   final ExecutionState state;
   final ProtectionStatus protection;
@@ -213,9 +216,10 @@ class Execution {
   /// Когда набрался объём — от этого отсчитывается SLA на защиту.
   final DateTime? entryFilledAt;
 
-  int get filledQuantity => fills.fold(0, (sum, f) => sum + f.quantity);
+  double get filledQuantity =>
+      fills.fold(0.0, (sum, f) => sum + f.quantity);
 
-  int get remainingQuantity {
+  double get remainingQuantity {
     final left = plannedQuantity - filledQuantity;
     return left < 0 ? 0 : left;
   }
@@ -247,7 +251,7 @@ class Execution {
   /// ТЗ §21: частичное исполнение пересчитывает защиту, но **не увеличивает**
   /// исходный риск. Защита ставится на набранный объём, а не на плановый:
   /// стоп на десять контрактов при четырёх набранных — это шорт на шесть.
-  int get protectiveQuantity => filledQuantity;
+  double get protectiveQuantity => filledQuantity;
 
   Execution copyWith({
     ExecutionState? state,
@@ -289,7 +293,7 @@ class Execution {
   /// Добавить исполнение и перевести состояние по факту набранного объёма.
   Execution addFill(Fill fill, {DateTime? at}) {
     final next = [...fills, fill];
-    final filled = next.fold(0, (sum, f) => sum + f.quantity);
+    final filled = next.fold(0.0, (sum, f) => sum + f.quantity);
 
     // Перебор объёма — ошибка брокера или наша: продолжать нельзя.
     if (plannedQuantity > 0 && filled > plannedQuantity) {
@@ -338,7 +342,7 @@ class Execution {
   static Execution fromJson(Map<String, dynamic> j) => Execution(
         ideaId: j['idea_id'] as String? ?? '',
         planHash: j['plan_hash'] as String? ?? '',
-        plannedQuantity: (j['planned_quantity'] as num?)?.toInt() ?? 0,
+        plannedQuantity: (j['planned_quantity'] as num?)?.toDouble() ?? 0,
         state: ExecutionState.parse(j['state'] as String?),
         protection: ProtectionStatus.parse(j['protection'] as String?),
         version: (j['version'] as num?)?.toInt() ?? 0,

@@ -30,6 +30,7 @@ from ..detectors.base import Reading
 from ..detectors.price_action import PriceZone
 from ..features.indicators import atr
 from ..market.candles import Candle, resample_hours
+from ..market.fx import rate_note, rate_to_rub
 from ..models import Bar, IdeaEvent, Instrument, TradeIdea
 from ..models.enums import (
     Direction,
@@ -411,6 +412,11 @@ def scan_instrument(
         ),
         strategy_multiplier=candidate.risk_multiplier,
     )
+    # Курс котировочной валюты к рублю. У инструмента MOEX он равен единице,
+    # у бессрочного контракта — рыночный курс доллара: бюджет риска задан в
+    # рублях, а риск на единицу ETHUSDT — в USDT, и без пересчёта деление
+    # даёт объём, который не на что купить.
+    quote_rate = rate_to_rub(session, instrument.currency, now=now)
     sizing = size_position(
         budget=budget,
         entry=candidate.entry_reference,
@@ -423,6 +429,8 @@ def scan_instrument(
             min_notional=instrument.min_notional,
             contract_multiplier=instrument.contract_multiplier,
             is_linear=instrument.venue.value == "CRYPTO",
+            quote_currency=instrument.currency,
+            quote_to_account=quote_rate,
         ),
     )
 
@@ -498,6 +506,14 @@ def scan_instrument(
                 for c in quality.components
             ],
             "sizing_note": sizing.reason,
+            # Валюта котировки и курс, по которому посчитаны рубли. Хранится
+            # именно тот курс, что участвовал в расчёте: карточка идеи живёт
+            # днями, а курс меняется, и подписывать вчерашний объём сегодняшним
+            # курсом значит показывать риск, которого не считали.
+            "quote_currency": instrument.currency,
+            "quote_rate_rub": None if quote_rate is None else str(quote_rate),
+            "quote_note": rate_note(session, instrument.currency, now=now),
+            "quantity_step": str(instrument.quantity_step),
         },
         evidence_json=build_evidence(
             readings, candidate,

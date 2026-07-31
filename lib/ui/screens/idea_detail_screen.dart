@@ -100,7 +100,9 @@ class _IdeaDetailScreenState extends State<IdeaDetailScreen> {
     // Свечи движка тянутся при первом показе разбора: до этого график идеи
     // не наполнялся ничем, потому что идеи приходят с сервера, а свечи умел
     // строить только скринер на устройстве.
-    if (idea != null && controller.ideaChart(idea.id) == null) {
+    if (idea != null &&
+        controller.ideaChart(idea.id) == null &&
+        !controller.ideaChartFailed(idea)) {
       controller.loadIdeaChart(idea);
     }
 
@@ -121,6 +123,12 @@ class _IdeaDetailScreenState extends State<IdeaDetailScreen> {
               signal: signal,
               idea: idea,
               chart: idea == null ? null : controller.ideaChart(idea.id),
+              timeframe: idea == null ? '' : controller.ideaTimeframe(idea),
+              onTimeframe: idea == null
+                  ? null
+                  : (tf) => controller.selectIdeaTimeframe(idea, tf),
+              loading: idea != null && controller.ideaChartLoading(idea),
+              failed: idea != null && controller.ideaChartFailed(idea),
               available: available,
               visible: visible,
               highlight: _highlightKeys(idea, _selectedEvidence),

@@ -29,10 +29,12 @@ class IdeaChartSource {
   /// сетап, а не всю историю инструмента.
   static const bars = 160;
 
-  Future<SignalChart?> load(Idea idea) async {
+  /// [timeframe] — тот, что просит экран. Пустая строка означает «сетапный»:
+  /// именно на нём построена идея и лежит её разметка.
+  Future<SignalChart?> load(Idea idea, {String timeframe = ''}) async {
     final symbol = symbolOf(idea.instrumentId);
     if (symbol.isEmpty) return null;
-    final wanted = timeframeOf(idea);
+    final wanted = timeframe.isEmpty ? timeframeOf(idea) : parse(timeframe);
     try {
       final crypto = idea.market == Market.crypto;
       final actual = crypto ? _bybitTimeframe(wanted) : _issTimeframe(wanted);

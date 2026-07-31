@@ -78,6 +78,7 @@ class Idea {
     this.skipComment,
     this.riskChanged = false,
     this.stateChangedAt,
+    this.sizingBlocker = '',
   });
 
   final String id;
@@ -115,6 +116,14 @@ class Idea {
   final bool riskChanged;
 
   final DateTime? stateChangedAt;
+
+  /// Почему движок считает объём неисполнимым. Пустая строка — исполним.
+  ///
+  /// Приезжает с сервера и повторяется дословно: причины разные («объём
+  /// меньше лота», «курс USDT к рублю неизвестен», «объём посчитан до
+  /// пересчёта валют»), и требуют они разного. Пересказ на клиенте склеил
+  /// бы их в одно «нельзя».
+  final String sizingBlocker;
 
   /// Идея, которую нельзя показывать вовсе (ТЗ §14.2: ниже 65).
   bool get showable => score.value >= QualityScore.minimumToShow;

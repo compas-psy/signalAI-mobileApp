@@ -21,10 +21,12 @@ from app.risk.sizing import (
 LIM = RiskLimits()
 # Фьючерс Si: шаг 1 рубль, стоимость шага 1 рубль.
 SI = InstrumentSpec(tick_size=Decimal(1), tick_value=Decimal(1))
-# Крипта: объём считается прямо из разницы цен, шаг 0.001.
+# Крипта: объём считается прямо из разницы цен, шаг 0.001. Котировка в USDT,
+# и курс к рублю — часть спецификации, а не подразумеваемая единица.
 BTC = InstrumentSpec(
     tick_size=Decimal("0.1"), tick_value=Decimal("0.1"),
     quantity_step=Decimal("0.001"), min_quantity=Decimal("0.001"), is_linear=True,
+    quote_currency="USDT", quote_to_account=Decimal(80),
 )
 
 
@@ -178,9 +180,80 @@ def test_crypto_quantity_respects_step():
     sizing = size_position(
         budget=budget, entry=Decimal(60000), stop=Decimal(57000), spec=BTC
     )
-    # 5000 / 3000 = 1,666… → шаг 0.001 → 1.666
-    assert sizing.quantity == Decimal("1.666")
+    # Бюджет 5000 ₽ по курсу 80 — это 62,5 USDT; риск на монету 3000 USDT.
+    # 62,5 / 3000 = 0,0208… → шаг 0.001 → 0,020.
+    assert sizing.quantity == Decimal("0.020")
     assert sizing.tradable
+
+
+def test_ruble_budget_is_not_divided_by_dollar_risk():
+    """Валютное несоответствие §17.1 — та самая ошибка в восемьдесят раз.
+
+    Бюджет задан в рублях, риск на единицу ETHUSDT — в USDT. Деление одного
+    на другое давало «28 ETH» на депозит в миллион рублей: число выглядело
+    объёмом, но единиц измерения у него не было.
+    """
+    eth = InstrumentSpec(
+        tick_size=Decimal("0.01"), tick_value=Decimal("0.01"),
+        quantity_step=Decimal("0.001"), min_quantity=Decimal("0.001"),
+        is_linear=True, quote_currency="USDT", quote_to_account=Decimal("80"),
+    )
+    budget = compute_budget(score=Decimal(84), state=state())   # 0,75% = 7500 ₽
+    sizing = size_position(
+        budget=budget,
+        entry=Decimal("1866.07"),
+        stop=Decimal("1845.91"),
+        spec=eth,
+    )
+    # 7500 ₽ / 80 = 93,75 USDT; риск на монету 20,16 USDT → 4,650…
+    assert sizing.quantity == Decimal("4.650")
+    # Без пересчёта здесь стояло бы 372 монеты — на семьсот тысяч долларов.
+    assert sizing.quantity * Decimal("1866.07") * Decimal(80) < Decimal(1_000_000)
+
+
+def test_risk_amount_comes_back_in_rubles():
+    """Экран подписывает это число рублями — значит оно обязано быть рублями."""
+    eth = InstrumentSpec(
+        tick_size=Decimal("0.01"), tick_value=Decimal("0.01"),
+        quantity_step=Decimal("0.001"), min_quantity=Decimal("0.001"),
+        is_linear=True, quote_currency="USDT", quote_to_account=Decimal("80"),
+    )
+    budget = compute_budget(score=Decimal(84), state=state())
+    sizing = size_position(
+        budget=budget, entry=Decimal(2000), stop=Decimal(1900), spec=eth
+    )
+    # 7500 / 80 = 93,75 USDT / 100 = 0,9375 → шаг 0.001 → 0,937 монеты.
+    assert sizing.quantity == Decimal("0.937")
+    # 0,937 × 100 USDT × 80 = 7496 ₽ — не больше бюджета и не 93,7.
+    assert sizing.risk_amount == Decimal("7496.00000000")
+    assert sizing.risk_amount <= budget.amount
+
+
+def test_unknown_rate_stops_the_calculation_instead_of_assuming_one():
+    """Подставить единицу значит посчитать доллар по рублю — молча и неверно."""
+    spec = InstrumentSpec(
+        tick_size=Decimal("0.01"), tick_value=Decimal("0.01"),
+        quantity_step=Decimal("0.001"), min_quantity=Decimal("0.001"),
+        is_linear=True, quote_currency="USDT", quote_to_account=None,
+    )
+    budget = compute_budget(score=Decimal(84), state=state())
+    sizing = size_position(
+        budget=budget, entry=Decimal(2000), stop=Decimal(1900), spec=spec
+    )
+    assert not sizing.tradable
+    assert sizing.quantity == 0
+    assert "курс USDT" in sizing.reason
+
+
+def test_ruble_instrument_needs_no_conversion():
+    """У фьючерса MOEX стоимость шага уже в рублях — курс равен единице."""
+    budget = compute_budget(score=Decimal(70), state=state())
+    sizing = size_position(
+        budget=budget, entry=Decimal(90000), stop=Decimal(88800), spec=SI
+    )
+    assert SI.quote_currency == "RUB"
+    assert sizing.quantity == Decimal(4)
+    assert sizing.risk_amount == Decimal(4800)
 
 
 def test_too_small_size_makes_idea_informational():

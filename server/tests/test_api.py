@@ -18,7 +18,8 @@ from fastapi.testclient import TestClient
 
 from app.db import get_db
 from app.main import app
-from app.models import Bar, IdeaEvent, TradeIdea
+from app.models import Bar, IdeaEvent, Instrument, TradeIdea
+from app.models.enums import AssetClass, Venue
 from tests.conftest import idea_kwargs
 
 
@@ -172,6 +173,70 @@ def test_idea_without_tradable_size_says_so(client, session, instrument, now):
     assert "минимального лота" in sizing["not_tradable_reason"]
 
 
+def test_untradable_reason_comes_from_the_calculation(client, session, instrument, now):
+    """«Курс неизвестен» и «объём меньше лота» требуют разных действий."""
+    idea = TradeIdea(
+        **idea_kwargs(
+            instrument.instrument_id,
+            now,
+            quantity=Decimal("0"),
+            explanation_json={
+                "headline": "тест",
+                "sizing_note": "курс USDT к рублю неизвестен: размер позиции "
+                "по рублёвому бюджету не посчитать (§17.1)",
+            },
+        )
+    )
+    session.add(idea)
+    session.flush()
+    sizing = client.get(f"/api/v1/ideas/{idea.id}").json()["sizing"]
+    assert "курс USDT" in sizing["not_tradable_reason"]
+
+
+def test_sizing_says_what_the_quantity_is_measured_in(client, session, now):
+    """«28» без единицы измерения — не размер позиции, а число."""
+    coin = Instrument(
+        instrument_id="CRYPTO:PERP:ETHUSDT",
+        venue=Venue.CRYPTO,
+        asset_class=AssetClass.CRYPTO_PERPETUAL,
+        symbol="ETHUSDT",
+        title="Ethereum perpetual",
+        currency="USDT",
+        tick_size=Decimal("0.01"),
+        tick_value=Decimal("0.01"),
+        quantity_step=Decimal("0.001"),
+        min_quantity=Decimal("0.001"),
+        in_universe=True,
+    )
+    session.add(coin)
+    session.flush()
+    idea = TradeIdea(
+        **idea_kwargs(
+            coin.instrument_id,
+            now,
+            quantity=Decimal("0.348"),
+            risk_per_unit=Decimal("20.16"),
+            risk_amount=Decimal("561.42"),
+            explanation_json={
+                "headline": "тест",
+                "quote_currency": "USDT",
+                "quote_rate_rub": "80.0",
+                "quote_note": "USDT по курсу 80.0000 ₽",
+            },
+        )
+    )
+    session.add(idea)
+    session.flush()
+    sizing = client.get(f"/api/v1/ideas/{idea.id}").json()["sizing"]
+    # Номинал дробный и остаётся дробным: 0,348 монеты, а не «ноль штук».
+    assert Decimal(sizing["quantity"]) == Decimal("0.348")
+    assert Decimal(sizing["quantity_step"]) == Decimal("0.001")
+    assert sizing["quantity_unit"] == "ETH"
+    assert sizing["quote_currency"] == "USDT"
+    assert Decimal(sizing["quote_rate_rub"]) == Decimal("80")
+    assert "80" in sizing["quote_note"]
+
+
 def test_events_are_returned_in_order(client, session, instrument, now):
     idea = TradeIdea(**idea_kwargs(instrument.instrument_id, now))
     session.add(idea)
@@ -317,3 +382,59 @@ def test_status_reports_freshness_and_counts(client, session, instrument):
     assert row["hourly_bars"] == 0
     assert 23 <= row["stale_hours"] <= 25
     assert body["with_data"] == 1
+
+
+def test_idea_sized_before_the_currency_fix_stops_being_tradable(
+    client, session, now
+):
+    """Объём «28 ETH» на депозит в миллион рублей — не размер, а ошибка.
+
+    Идея неизменяема: пересчитать её задним числом нельзя, по ней могли
+    принять решение. Но и предлагать к исполнению объём, полученный делением
+    рублей на доллары, нельзя тем более.
+    """
+    coin = Instrument(
+        instrument_id="CRYPTO:PERP:ETHUSDT",
+        venue=Venue.CRYPTO,
+        asset_class=AssetClass.CRYPTO_PERPETUAL,
+        symbol="ETHUSDT",
+        currency="USDT",
+        tick_size=Decimal("0.01"),
+        tick_value=Decimal("0.01"),
+        quantity_step=Decimal("0.001"),
+        min_quantity=Decimal("0.001"),
+        in_universe=True,
+    )
+    session.add(coin)
+    session.flush()
+    idea = TradeIdea(
+        **idea_kwargs(
+            coin.instrument_id,
+            now,
+            quantity=Decimal("28"),
+            # Объяснение старого формата: про валюту котировки в нём ничего.
+            explanation_json={"headline": "старая идея"},
+        )
+    )
+    session.add(idea)
+    session.flush()
+    sizing = client.get(f"/api/v1/ideas/{idea.id}").json()["sizing"]
+    assert sizing["tradable"] is False
+    assert "до пересчёта валют" in sizing["not_tradable_reason"]
+
+
+def test_ruble_idea_of_the_old_format_is_untouched(client, session, instrument, now):
+    """У фьючерса MOEX пересчитывать было нечего — идея остаётся исполнимой."""
+    idea = TradeIdea(
+        **idea_kwargs(
+            instrument.instrument_id,
+            now,
+            quantity=Decimal("4"),
+            explanation_json={"headline": "старая идея"},
+        )
+    )
+    session.add(idea)
+    session.flush()
+    sizing = client.get(f"/api/v1/ideas/{idea.id}").json()["sizing"]
+    assert sizing["tradable"] is True
+    assert sizing["quote_currency"] == "RUB"

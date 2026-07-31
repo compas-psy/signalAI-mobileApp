@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -64,6 +65,90 @@ def _summary(idea: TradeIdea, symbol: str = "") -> IdeaSummary:
         risk_amount=idea.risk_amount,
         signal_time=idea.signal_time,
         expires_at=idea.expires_at,
+    )
+
+
+def _decimal_or_none(raw) -> Decimal | None:
+    """Число из объяснения. Курс хранится строкой — он и есть Decimal."""
+    if raw is None or raw == "":
+        return None
+    try:
+        return Decimal(str(raw))
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def _quantity_unit(instrument: Instrument | None) -> str:
+    """Чем меряется объём: монетой, контрактом или бумагой.
+
+    Подпись обязана быть настоящей. «28 шт.» под бессрочным контрактом на
+    эфир и «0,348 ETH» — это не разное оформление одного числа, а разные
+    утверждения о том, что владелец собирается купить.
+    """
+    if instrument is None:
+        return ""
+    venue = getattr(instrument.venue, "value", str(instrument.venue))
+    if venue == "CRYPTO":
+        symbol = instrument.symbol.upper()
+        quote = (instrument.currency or "").upper()
+        base = symbol[: -len(quote)] if quote and symbol.endswith(quote) else symbol
+        return base or symbol
+    asset = getattr(instrument.asset_class, "value", str(instrument.asset_class))
+    return "контр." if asset == "FUTURES" else "шт."
+
+
+def _sizing_block(
+    idea: TradeIdea, instrument: Instrument | None, explanation: dict
+) -> SizingBlock:
+    """Размер позиции вместе с тем, в чём он измерен.
+
+    Отдельная функция, а не выражение внутри карточки: здесь же ловится
+    идея, посчитанная до появления курса (§17.1). У такой объём получен
+    делением рублёвого бюджета на риск в USDT — число правдоподобное и
+    неверное в десятки раз. Пересчитывать её нельзя: идея неизменяема, по
+    ней уже могли принять решение. Значит, она перестаёт быть исполнимой и
+    прямо говорит почему.
+    """
+    currency = explanation.get("quote_currency") or (
+        instrument.currency if instrument else "RUB"
+    )
+    # Признак старого расчёта: валюта котировки не рублёвая, а в объяснении
+    # нет курса — значит его тогда и не спрашивали.
+    stale_fx = (
+        str(currency).upper() != "RUB" and "quote_currency" not in explanation
+    )
+    tradable = idea.quantity > 0 and not stale_fx
+    if stale_fx:
+        reason = (
+            f"объём посчитан до пересчёта валют: бюджет в рублях делился на "
+            f"риск в {currency}. Идея остаётся наблюдением — новая посчитается "
+            "с курсом (§17.1)"
+        )
+    elif idea.quantity > 0:
+        reason = ""
+    else:
+        # Причина берётся с расчёта, а не выводится из нуля: «объём меньше
+        # лота» и «курс USDT к рублю неизвестен» требуют разных действий,
+        # а выглядят одинаково — пустым размером.
+        reason = explanation.get("sizing_note") or (
+            "объём меньше минимального лота: идея информационная "
+            "и не подтверждается (§20.1)"
+        )
+    return SizingBlock(
+        risk_pct=idea.risk_pct,
+        risk_amount=idea.risk_amount,
+        quantity=idea.quantity,
+        risk_per_unit=idea.risk_per_unit,
+        drawdown_multiplier=idea.drawdown_multiplier,
+        binding_limit=explanation.get("binding_limit", "none"),
+        correlation_cluster=idea.correlation_cluster,
+        quantity_step=instrument.quantity_step if instrument else Decimal(1),
+        quantity_unit=_quantity_unit(instrument),
+        quote_currency=currency,
+        quote_rate_rub=_decimal_or_none(explanation.get("quote_rate_rub")),
+        quote_note=explanation.get("quote_note", ""),
+        tradable=tradable,
+        not_tradable_reason=reason,
     )
 
 
@@ -176,21 +261,7 @@ def get_idea(idea_id: UUID, db: Session = Depends(get_db)) -> IdeaDetail:
                 else ""
             ),
         ),
-        sizing=SizingBlock(
-            risk_pct=idea.risk_pct,
-            risk_amount=idea.risk_amount,
-            quantity=idea.quantity,
-            risk_per_unit=idea.risk_per_unit,
-            drawdown_multiplier=idea.drawdown_multiplier,
-            binding_limit=explanation.get("binding_limit", "none"),
-            correlation_cluster=idea.correlation_cluster,
-            tradable=idea.quantity > 0,
-            not_tradable_reason=(
-                "" if idea.quantity > 0
-                else "объём меньше минимального лота: идея информационная "
-                     "и не подтверждается (§20.1)"
-            ),
-        ),
+        sizing=_sizing_block(idea, instrument, explanation),
         evidence=[EvidenceOut(**e) for e in (idea.evidence_json or [])],
         annotations=[AnnotationOut(**a) for a in (idea.annotations_json or [])],
         score_breakdown=ScoreBlock(

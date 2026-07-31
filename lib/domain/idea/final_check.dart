@@ -145,7 +145,15 @@ abstract final class FinalCheck {
     // Структура плана: стоп, доли, объём, R/R (ТЗ §13.1, §20).
     final structural = plan.structuralBlockers();
     final rrIssue = structural.where((s) => s.contains('R/R')).toList();
-    final sizingIssues = structural.where((s) => !s.contains('R/R')).toList();
+    final sizingIssues = [
+      for (final issue in structural)
+        if (!issue.contains('R/R')) issue,
+      // Отказ движка исполнять объём — такой же блокирующий факт, как
+      // нарушенная структура плана. Раньше он приезжал в ответе и нигде не
+      // проверялся: сервер писал «идея информационная», а кнопка входа
+      // оставалась активной.
+      if (idea.sizingBlocker.isNotEmpty) idea.sizingBlocker,
+    ];
 
     results.add(rrIssue.isEmpty
         ? CheckResult.pass(CheckKind.riskReward,
@@ -153,8 +161,10 @@ abstract final class FinalCheck {
         : CheckResult.fail(CheckKind.riskReward, rrIssue.first));
 
     results.add(sizingIssues.isEmpty
-        ? CheckResult.pass(CheckKind.sizing,
-            '${plan.quantity} ед., риск ${_money(plan.riskRubles)} ₽')
+        ? CheckResult.pass(
+            CheckKind.sizing,
+            '${_quantity(plan)}, риск ${_money(plan.riskRubles)} ₽',
+          )
         : CheckResult.fail(CheckKind.sizing, sizingIssues.join('; ')));
 
     // Лимиты риска.
@@ -249,6 +259,17 @@ abstract final class FinalCheck {
 
   static List<CheckResult> blockers(List<CheckResult> results) =>
       results.where((r) => !r.passed).toList();
+
+  /// Объём в номинале инструмента: «0,348 ETH», «4 контр.».
+  ///
+  /// «Ед.» здесь стояло раньше и врало дважды: у крипты единица дробная, и
+  /// целое число превращало 0,348 монеты в ноль.
+  static String _quantity(TradePlan plan) {
+    final value = plan.quantity
+        .toStringAsFixed(plan.quantityDecimals)
+        .replaceAll('.', ',');
+    return plan.quantityUnit.isEmpty ? '$value ед.' : '$value ${plan.quantityUnit}';
+  }
 
   static String _r(double v) => v.toStringAsFixed(2).replaceAll('.', ',');
 

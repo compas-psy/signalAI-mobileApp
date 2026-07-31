@@ -479,30 +479,78 @@ class AppController extends ChangeNotifier {
   }
 
   /// Свечи графика по идеям: движок, а если он молчит — биржа напрямую.
+  ///
+  /// Ключ кэша — идея **и таймфрейм**. Раньше кэш был по идее, и переключать
+  /// картинку было нечем: кнопки 1d/4h/1h стояли на экране, но нажимались
+  /// впустую, потому что за ними лежал ровно один загруженный ряд.
   final IdeaChartSource _chartSource = IdeaChartSource();
   final Map<String, SignalChart> _ideaCharts = {};
   final Set<String> _ideaChartsAsked = {};
+  final Set<String> _ideaChartsFailed = {};
+  final Map<String, String> _ideaTimeframe = {};
 
-  /// График идеи. null — ещё не загружен или движок его не отдал.
-  SignalChart? ideaChart(String ideaId) => _ideaCharts[ideaId];
+  static String _chartKey(String ideaId, String timeframe) => '$ideaId|$timeframe';
 
-  /// Загрузить свечи для идеи. Повторный вызов ничего не делает: разбор
-  /// перестраивается на каждом кадре анимации, и запрос на кадр положил бы и
-  /// сервер, и батарею.
+  /// Таймфрейм сетапа — тот, на котором идея построена и на котором лежит её
+  /// разметка. Контекстный слишком крупен для зоны входа, триггерный слишком
+  /// мелок для структуры.
+  static String setupTimeframe(Idea idea) => idea.timeframes.length >= 2
+      ? idea.timeframes[1]
+      : (idea.timeframes.isEmpty ? '1h' : idea.timeframes.first);
+
+  /// Показываемый сейчас таймфрейм идеи.
+  String ideaTimeframe(Idea idea) =>
+      _ideaTimeframe[idea.id] ?? setupTimeframe(idea);
+
+  /// График идеи на выбранном таймфрейме. null — ещё не загружен или
+  /// источник его не отдал.
+  SignalChart? ideaChart(String ideaId, {String timeframe = ''}) {
+    final tf = timeframe.isNotEmpty ? timeframe : _ideaTimeframe[ideaId];
+    if (tf == null) {
+      // Таймфрейм не выбирали — отдаём то единственное, что загружено.
+      for (final entry in _ideaCharts.entries) {
+        if (entry.key.startsWith('$ideaId|')) return entry.value;
+      }
+      return null;
+    }
+    return _ideaCharts[_chartKey(ideaId, tf)];
+  }
+
+  /// Свечи запрошены, но ещё не пришли. Нужно экрану: без этого переключение
+  /// таймфрейма выглядит как поломка — картинка пропала и ничего не сказано.
+  bool ideaChartLoading(Idea idea) {
+    final key = _chartKey(idea.id, ideaTimeframe(idea));
+    return _ideaChartsAsked.contains(key) &&
+        !_ideaCharts.containsKey(key) &&
+        !_ideaChartsFailed.contains(key);
+  }
+
+  /// Источник не дал свечей этого таймфрейма. Отличается от «ещё грузим».
+  bool ideaChartFailed(Idea idea) =>
+      _ideaChartsFailed.contains(_chartKey(idea.id, ideaTimeframe(idea)));
+
+  /// Переключить таймфрейм графика идеи.
+  void selectIdeaTimeframe(Idea idea, String timeframe) {
+    if (timeframe.isEmpty || ideaTimeframe(idea) == timeframe) return;
+    _ideaTimeframe[idea.id] = timeframe;
+    notifyListeners();
+    loadIdeaChart(idea);
+  }
+
+  /// Загрузить свечи для идеи на текущем таймфрейме. Повторный вызов ничего
+  /// не делает: разбор перестраивается на каждом кадре анимации, и запрос на
+  /// кадр положил бы и сервер, и батарею.
   Future<void> loadIdeaChart(Idea idea) async {
-    if (_ideaChartsAsked.contains(idea.id)) return;
-    _ideaChartsAsked.add(idea.id);
+    final timeframe = ideaTimeframe(idea);
+    final key = _chartKey(idea.id, timeframe);
+    if (_ideaChartsAsked.contains(key)) return;
+    _ideaChartsAsked.add(key);
     // Уступаем микрозадачу перед любой работой. Вызов приходит из `build`
     // разбора, а демо-режим отвечает без единого `await` — и
     // `notifyListeners` попадал внутрь построения дерева: «setState() called
     // during build». Микрозадача, а не таймер: таймер переживает тест и
     // роняет его на «A Timer is still pending».
     await Future<void>.microtask(() {});
-    // Таймфрейм сетапа — тот, на котором идея построена. Контекстный слишком
-    // крупен для зоны входа, триггерный слишком мелок для структуры.
-    final timeframe = idea.timeframes.length >= 2
-        ? idea.timeframes[1]
-        : (idea.timeframes.isEmpty ? '1h' : idea.timeframes.first);
     // Движок первый: он считал идею и знает, под какими барами лежит её
     // разметка. Биржа вторая — но она есть всегда, ключа не требует и
     // работает, когда сервер молчит. Решение владельца: подключённые
@@ -514,9 +562,18 @@ class AppController extends ChangeNotifier {
     final chart = demoData
         ? DemoIdeas.chartFor(idea)
         : await _engine.bars(idea.instrumentId, timeframe: timeframe) ??
-            await _chartSource.load(idea);
-    if (chart == null) return;
-    _ideaCharts[idea.id] = chart;
+            await _chartSource.load(idea, timeframe: timeframe);
+    if (chart == null) {
+      _ideaChartsFailed.add(key);
+      notifyListeners();
+      return;
+    }
+    // Ряд кладётся под тем таймфреймом, который реально нарисован, а не под
+    // запрошенным: у ISS нет четырёхчасовых свечей, и вместо них приезжают
+    // часовые. Подписать их «4H» значило бы соврать на картинке, по которой
+    // принимают решение.
+    _ideaCharts[_chartKey(idea.id, chart.timeframeLabel)] = chart;
+    if (chart.timeframeLabel != timeframe) _ideaCharts[key] = chart;
     notifyListeners();
   }
 

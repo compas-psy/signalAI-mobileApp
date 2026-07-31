@@ -236,7 +236,19 @@ abstract final class EngineContract {
       annotations:
           annotations(j['annotations'] as List<dynamic>? ?? const []),
       dataFlags: _flags(j['data_warnings'] as List<dynamic>? ?? const []),
+      // Отказ движка исполнять объём переносится дословно. Раньше поле
+      // `tradable` не читалось вовсе: сервер писал «идея информационная»,
+      // а экран всё равно предлагал подтвердить.
+      sizingBlocker: _sizingBlocker(j['sizing'] as Map<String, dynamic>?),
     );
+  }
+
+  /// Причина, по которой объём нельзя исполнять. Пустая — можно.
+  static String _sizingBlocker(Map<String, dynamic>? sizing) {
+    if (sizing == null) return '';
+    if (sizing['tradable'] != false) return '';
+    final reason = sizing['not_tradable_reason'] as String? ?? '';
+    return reason.isEmpty ? 'движок не считает объём исполнимым' : reason;
   }
 
   static List<Evidence> evidence(List<dynamic> raw) {
@@ -335,9 +347,17 @@ abstract final class EngineContract {
       maxSlippagePercent: 0.1,
       stop: _num(plan['stop']),
       targets: targets,
-      quantity: _num(sizing?['quantity']).round(),
+      // Объём не округляется до целого. Округление здесь стоило бы позиции:
+      // 0,348 ETH превращались в ноль, а «28» читалось как двадцать восемь
+      // монет — два миллиона рублей при депозите в один.
+      quantity: _num(sizing?['quantity']),
+      quantityStep: _numOrNull(sizing?['quantity_step']) ?? 1,
+      quantityUnit: sizing?['quantity_unit'] as String? ?? '',
       lotSize: 1,
       valuePerPoint: _riskPerUnitToValue(sizing, plan),
+      quoteCurrency: sizing?['quote_currency'] as String? ?? 'RUB',
+      quoteRateRub: _numOrNull(sizing?['quote_rate_rub']),
+      quoteNote: sizing?['quote_note'] as String? ?? '',
       riskRubles: _num(sizing?['risk_amount']),
       riskPercent: _num(sizing?['risk_pct']) * 100,
       marginEstimate: 0,

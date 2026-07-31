@@ -1,6 +1,7 @@
 import 'package:flutter/widgets.dart';
 
 import '../../core/format.dart';
+import '../../domain/idea/trade_plan.dart';
 import '../../domain/models/settings.dart';
 import '../../domain/models/signal.dart';
 import '../../domain/position_sizing.dart';
@@ -21,12 +22,19 @@ class ConfirmSheet extends StatelessWidget {
     required this.signal,
     required this.risk,
     required this.onExecute,
+    this.plan,
     this.impact,
     required this.onClose,
     required this.busy,
   });
 
   final TradingSignal signal;
+
+  /// План движка. Подписывается именно он: объём и риск, посчитанные на
+  /// телефоне из профиля, разошлись бы с теми, что показала карточка идеи, —
+  /// и владелец подтвердил бы не ту сделку, которую видел.
+  final TradePlan? plan;
+
   final RiskProfile risk;
   final VoidCallback onExecute;
 
@@ -43,8 +51,10 @@ class ConfirmSheet extends StatelessWidget {
     final rows = <_SheetRow>[
       _SheetRow('Вход · лимит', fmtPrice(signal.entry, decimals), C.accent),
       _SheetRow(
-        'Объём (риск ${riskPercentLabel(risk.riskPercent)})',
-        PositionSizing.quantityLabel(signal, risk),
+        'Объём (риск ${riskPercentLabel(plan?.riskPercent ?? risk.riskPercent)})',
+        plan == null
+            ? PositionSizing.quantityLabel(signal, risk)
+            : _planQuantity(plan!),
         C.text,
       ),
       _SheetRow('Стоп-лосс', fmtPrice(signal.stopLoss, decimals), C.red),
@@ -53,7 +63,11 @@ class ConfirmSheet extends StatelessWidget {
         signal.takeProfits.map((tp) => fmtPrice(tp.price, decimals)).join(' / '),
         C.green,
       ),
-      _SheetRow('Риск, если SL', '−${fmt(risk.riskRub, 0)} ₽', C.red),
+      _SheetRow(
+        'Риск, если SL',
+        '−${fmt(plan?.riskRubles ?? risk.riskRub, 0)} ₽',
+        C.red,
+      ),
       _SheetRow('R:R до TP2', signal.riskReward, C.text),
     ];
 
@@ -227,6 +241,15 @@ class ConfirmSheet extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  /// Объём плана в номинале инструмента.
+  ///
+  /// Дробность обязательна: 0,348 ETH, округлённые до целых, стали бы нулём,
+  /// а «28» без единицы измерения — двадцатью восемью монетами.
+  static String _planQuantity(TradePlan plan) {
+    final value = fmt(plan.quantity, plan.quantityDecimals);
+    return plan.quantityUnit.isEmpty ? value : '$value ${plan.quantityUnit}';
   }
 }
 

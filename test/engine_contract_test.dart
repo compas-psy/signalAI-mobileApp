@@ -137,6 +137,61 @@ void main() {
       expect(plan.riskPercent, closeTo(0.75, 1e-9));
     });
 
+    test('дробный номинал не округляется до целого', () {
+      // «28 ETHUSDT» появилось из деления рублёвого бюджета на риск в USDT.
+      // После пересчёта объём стал дробным — и округление до целого снова
+      // превратило бы его в ноль либо в позицию в три раза крупнее.
+      final json = ideaJson();
+      json['sizing'] = {
+        'risk_pct': '0.0075',
+        'risk_amount': '7496',
+        'quantity': '0.348',
+        'quantity_step': '0.001',
+        'quantity_unit': 'ETH',
+        'risk_per_unit': '20.16',
+        'quote_currency': 'USDT',
+        'quote_rate_rub': '80.0',
+        'quote_note': 'USDT по курсу 80.0000 ₽ (MOEX FORTS SiU6 / 1000)',
+      };
+      final plan = EngineContract.idea(json).plan!;
+      expect(plan.quantity, closeTo(0.348, 1e-9));
+      expect(plan.quantityStep, closeTo(0.001, 1e-9));
+      expect(plan.quantityDecimals, 3);
+      expect(plan.quantityUnit, 'ETH');
+      // Цены в USDT, риск — в рублях. Обе единицы названы, иначе экран
+      // подписывает рублями то, что рублями не является.
+      expect(plan.quoteCurrency, 'USDT');
+      expect(plan.quoteRateRub, closeTo(80, 1e-9));
+      expect(plan.riskRubles, closeTo(7496, 1e-6));
+      // Прибыль считается в R и умножается на рублёвый риск — значит она
+      // тоже в рублях и пересчёта не требует.
+      expect(plan.weightedR * plan.riskRubles, greaterThan(0));
+    });
+
+    test('отказ движка исполнять объём доезжает до идеи', () {
+      // Сервер писал «идея информационная», клиент это поле не читал вовсе —
+      // и кнопка входа оставалась активной под неисполнимым объёмом.
+      final json = ideaJson();
+      json['sizing'] = {
+        ...(json['sizing']! as Map<String, dynamic>),
+        'tradable': false,
+        'not_tradable_reason': 'курс USDT к рублю неизвестен',
+      };
+      expect(EngineContract.idea(json).sizingBlocker, 'курс USDT к рублю неизвестен');
+    });
+
+    test('исполнимый объём блокировки не создаёт', () {
+      expect(EngineContract.idea(ideaJson()).sizingBlocker, isEmpty);
+    });
+
+    test('рублёвый инструмент курса не требует', () {
+      final plan = EngineContract.idea(ideaJson()).plan!;
+      expect(plan.quoteCurrency, 'RUB');
+      expect(plan.quoteRateRub, isNull);
+      expect(plan.quantityStep, 1);
+      expect(plan.quantityDecimals, 0);
+    });
+
     test('стоимость пункта восстанавливается, а не зашивается единицей', () {
       // Зашитая единица — молчаливая ошибка в деньгах: у Si пункт стоит
       // рубль, у нефти семь с половиной, и объём разойдётся в разы.

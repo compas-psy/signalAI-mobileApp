@@ -9,8 +9,9 @@ TradePlan plan({
   double entryHigh = 101,
   double stop = 96,
   List<PlanTarget>? targets,
-  int quantity = 10,
+  double quantity = 10,
   int lotSize = 1,
+  double quantityStep = 1,
   double riskRubles = 4000,
   double riskPercent = 0.75,
   DateTime? expiry,
@@ -30,6 +31,7 @@ TradePlan plan({
             PlanTarget(name: 'TP3', price: 120, fraction: 0.2, afterFill: 'разбор'),
           ],
       quantity: quantity,
+      quantityStep: quantityStep,
       lotSize: lotSize,
       valuePerPoint: 100,
       riskRubles: riskRubles,
@@ -144,16 +146,31 @@ void main() {
       expect(thin.structuralBlockers().join(), contains('ниже порога'));
     });
 
-    test('объём меньше лота оставляет идею информационной', () {
+    test('объём меньше шага оставляет идею информационной', () {
       // ТЗ §20.1: quantity < min_lot → идея не подтверждается.
       final small = plan(quantity: 0);
       expect(small.structuralBlockers(),
-          contains('объём меньше лота — идея остаётся информационной'));
+          contains('объём меньше минимального — идея остаётся информационной'));
     });
 
-    test('объём не кратный лоту не проходит', () {
-      expect(plan(quantity: 7, lotSize: 5).structuralBlockers(),
-          contains('объём не кратен лоту'));
+    test('объём не кратный шагу не проходит', () {
+      expect(plan(quantity: 7, quantityStep: 5).structuralBlockers(),
+          contains('объём не кратен шагу 5.0'));
+    });
+
+    test('дробный номинал крипты — не поломка, а верный объём', () {
+      // 0,348 ETH при шаге 0,001. Целочисленная проверка кратности
+      // забраковала бы каждую позицию на бессрочном контракте.
+      final coin = plan(quantity: 0.348, quantityStep: 0.001);
+      expect(
+        coin.structuralBlockers().where((i) => i.contains('объём')),
+        isEmpty,
+      );
+      expect(coin.quantityDecimals, 3);
+    });
+
+    test('целый контракт показывается без знаков после запятой', () {
+      expect(plan(quantity: 4, quantityStep: 1).quantityDecimals, 0);
     });
   });
 

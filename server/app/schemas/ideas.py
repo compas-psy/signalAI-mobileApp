@@ -75,12 +75,26 @@ class SizingBlock(ApiModel):
     """
 
     risk_pct: Money
+    # В рублях: бюджет задан в них, и убыток по стопу считается по этому числу.
     risk_amount: Money
+    # В номинале инструмента — 0,348 ETH или 3 контракта, а не «штуки».
     quantity: Money
+    # В валюте котировки: у ETHUSDT это USDT, у фьючерса MOEX — рубли.
     risk_per_unit: Money
     drawdown_multiplier: Money
     binding_limit: str
     correlation_cluster: str | None = None
+
+    # Чем меряется объём. Без шага «0,348 ETH» негде округлить, а без имени
+    # единицы число читается как штуки — и 0,348 штуки выглядит поломкой.
+    quantity_step: Money = Decimal(1)
+    quantity_unit: str = ""
+    # Валюта котировки и курс, по которому рубли получены. Курс — тот, что
+    # участвовал в расчёте, а не сегодняшний: карточка живёт днями.
+    quote_currency: str = "RUB"
+    quote_rate_rub: Money | None = None
+    quote_note: str = ""
+
     # §20.1: если объём меньше лота, идея остаётся информационной.
     tradable: bool = True
     not_tradable_reason: str = ""

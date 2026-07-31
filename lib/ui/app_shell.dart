@@ -219,6 +219,7 @@ class AppShell extends StatelessWidget {
         child: pane.isCompact
             ? ConfirmSheet(
                 signal: signal,
+                plan: controller.currentIdea?.plan,
                 risk: risk,
                 impact: controller.currentImpact,
                 busy: controller.confirming,
@@ -232,6 +233,7 @@ class AppShell extends StatelessWidget {
                   constraints: const BoxConstraints(maxWidth: 440),
                   child: ConfirmSheet(
                     signal: signal,
+                    plan: controller.currentIdea?.plan,
                     risk: risk,
                     impact: controller.currentImpact,
                     busy: controller.confirming,

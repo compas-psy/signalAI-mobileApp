@@ -3,7 +3,7 @@ import 'package:signalai/domain/idea/execution.dart';
 
 final t0 = DateTime.utc(2026, 7, 29, 12);
 
-Execution fresh({int planned = 10, ExecutionState? state}) => Execution(
+Execution fresh({double planned = 10, ExecutionState? state}) => Execution(
       ideaId: 'idea_1',
       planHash: 'abcd1234',
       plannedQuantity: planned,
@@ -11,11 +11,11 @@ Execution fresh({int planned = 10, ExecutionState? state}) => Execution(
     );
 
 /// Доводит исполнение до отправленного входа — общий пролог половины тестов.
-Execution submitted({int planned = 10}) => fresh(planned: planned)
+Execution submitted({double planned = 10}) => fresh(planned: planned)
     .moveTo(ExecutionState.precheck)
     .moveTo(ExecutionState.submitEntry);
 
-Fill fill(int qty, {double price = 100, int minute = 0, double fee = 0}) =>
+Fill fill(double qty, {double price = 100, int minute = 0, double fee = 0}) =>
     Fill(quantity: qty, price: price, at: t0.add(Duration(minutes: minute)), fee: fee);
 
 void main() {

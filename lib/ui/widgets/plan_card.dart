@@ -55,6 +55,7 @@ class PlanCard extends StatelessWidget {
             TileGrid(tiles: _levelTiles()),
             const SizedBox(height: 8),
             TileGrid(tiles: _riskTiles()),
+            _rateNote(),
             const SizedBox(height: 12),
             _management(),
           ],
@@ -125,11 +126,14 @@ class PlanCard extends StatelessWidget {
       ),
       MetricTile(
         label: 'Размер',
+        // Объём в номинале инструмента и с его знаками. «28» под эфиром
+        // читалось как двадцать восемь монет — позиция на два миллиона
+        // рублей при депозите в один; ноль знаков превращал 0,348 в «0».
         value: plan == null
             ? PositionSizing.quantityLabel(signal, risk)
-            : '${fmt(plan.quantity, 0)} ${signal.unitName}',
+            : _quantityLabel(plan),
         color: C.accent,
-        hint: signal.unitRiskLabel,
+        hint: plan == null ? signal.unitRiskLabel : _perUnitHint(plan),
       ),
       MetricTile(
         label: 'R:R',
@@ -157,6 +161,43 @@ class PlanCard extends StatelessWidget {
         hint: 'если сработает стоп',
       ),
     ];
+  }
+
+  /// Объём в номинале инструмента.
+  static String _quantityLabel(TradePlan plan) {
+    final unit = plan.quantityUnit;
+    final value = fmt(plan.quantity, plan.quantityDecimals);
+    return unit.isEmpty ? value : '$value $unit';
+  }
+
+  /// Подпись под объёмом: во сколько обходится движение на один пункт.
+  ///
+  /// Валюта названа. Цены плана в USDT, а риск и убыток — в рублях, и без
+  /// подписи это выглядит как одна валюта с разными числами.
+  static String _perUnitHint(TradePlan plan) {
+    final perUnit = plan.riskPerUnit;
+    if (perUnit <= 0) return '';
+    final currency = plan.quoteCurrency == 'RUB' ? '₽' : plan.quoteCurrency;
+    final unit = plan.quantityUnit.isEmpty ? 'единицу' : plan.quantityUnit;
+    return 'стоп ${fmt(perUnit, perUnit < 10 ? 2 : 0)} $currency за $unit';
+  }
+
+  /// Курс, по которому получены рубли.
+  ///
+  /// Показывается только у инструмента с чужой валютой — у рублёвого
+  /// строка «по курсу 1» была бы шумом. Без неё же владелец не может
+  /// проверить рублёвые числа: цены на экране в USDT, а риск в рублях.
+  Widget _rateNote() {
+    final plan = _plan;
+    final note = plan?.quoteNote ?? '';
+    if (plan == null || note.isEmpty) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Text(
+        'Прибыль и убыток пересчитаны в рубли: $note',
+        style: T.body(10.5, color: C.faint, height: 1.4),
+      ),
+    );
   }
 
   /// Сопровождение — правила, которые подписываются вместе с входом.

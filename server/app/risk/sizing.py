@@ -64,6 +64,19 @@ class InstrumentSpec:
     contract_multiplier: Decimal = Decimal(1)
     is_linear: bool = False  # крипта: объём считается прямо из разницы цен
 
+    # Валюта, в которой котируется инструмент, и сколько рублей в её единице.
+    #
+    # У фьючерса MOEX стоимость шага уже в рублях, и множитель равен единице.
+    # У бессрочного контракта разница цен — это USDT, и делить на неё рублёвый
+    # бюджет нельзя: получится число без единиц измерения, которое выглядит
+    # как объём. Так и появлялись «28 ETH» на депозит в миллион рублей.
+    #
+    # ``None`` — курс неизвестен. Это не то же самое, что единица: единица
+    # означает «доллар стоит рубль», и размер позиции ошибается в
+    # восемьдесят раз молча. Неизвестный курс останавливает расчёт.
+    quote_currency: str = "RUB"
+    quote_to_account: Decimal | None = Decimal(1)
+
 
 @dataclass(frozen=True, slots=True)
 class BudgetLine:
@@ -92,7 +105,13 @@ class RiskBudget:
 
 @dataclass(frozen=True, slots=True)
 class Sizing:
-    """Итог расчёта объёма."""
+    """Итог расчёта объёма.
+
+    Единицы измерения здесь разные, и это не небрежность, а суть расчёта:
+    объём — в номинале инструмента (дробном у крипты), риск на единицу и
+    номинал — в валюте котировки, а ``risk_amount`` — в рублях, потому что
+    именно рублями ограничен бюджет и именно их видит владелец.
+    """
 
     quantity: Decimal
     risk_per_unit: Decimal
@@ -265,10 +284,24 @@ def size_position(
             f"бюджет риска исчерпан: {budget.binding_label.lower()}",
         )
 
+    # Курс проверяется до всех расчётов: без него не с чем сравнивать риск
+    # на единицу, и любое число дальше было бы выдумкой.
+    rate = spec.quote_to_account
+    if rate is None or rate <= 0:
+        return Sizing(
+            Decimal(0), Decimal(0), Decimal(0), Decimal(0), False,
+            f"курс {spec.quote_currency} к рублю неизвестен: размер позиции "
+            "по рублёвому бюджету не посчитать (§17.1)",
+        )
+
     per_unit = risk_per_unit(
         entry=entry, stop=stop, spec=spec, slippage=slippage, fees=fees
     )
-    raw = budget.amount / per_unit
+    # Бюджет переводится в валюту котировки, а не наоборот: риск на единицу
+    # и минимальный номинал заданы биржей именно в ней, и сравнивать их с
+    # пересчитанными числами значит сравнивать с округлениями.
+    budget_quote = budget.amount / rate
+    raw = budget_quote / per_unit
     quantity = _floor_to_step(raw, spec.quantity_step)
 
     if quantity < spec.min_quantity:
@@ -302,7 +335,9 @@ def size_position(
                 "(§13) — иначе биржа закроет позицию раньше стопа",
             )
 
-    risk_amount = (quantity * per_unit).quantize(
+    # Фактический риск возвращается в рублях: бюджет задан в них, экран
+    # подписывает это число рублями, и убыток по стопу считается по нему.
+    risk_amount = (quantity * per_unit * rate).quantize(
         Decimal("0.00000001"), rounding=ROUND_HALF_UP
     )
     if risk_amount > budget.amount:

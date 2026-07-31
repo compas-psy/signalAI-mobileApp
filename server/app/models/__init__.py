@@ -28,7 +28,14 @@ from .enums import (
     VolatilityRegime,
 )
 from .ideas import IdeaEvent, IdeaOutcome, IdeaSkip, TradeIdea
-from .market import Bar, DataQualityEvent, Instrument, MarketFeature, RegimeSnapshot
+from .market import (
+    Bar,
+    DataQualityEvent,
+    FxRate,
+    Instrument,
+    MarketFeature,
+    RegimeSnapshot,
+)
 from .portfolio import (
     Account,
     Holding,
@@ -47,6 +54,7 @@ __all__ = [
     "MarketFeature",
     "RegimeSnapshot",
     "DataQualityEvent",
+    "FxRate",
     # ideas
     "TradeIdea",
     "IdeaEvent",

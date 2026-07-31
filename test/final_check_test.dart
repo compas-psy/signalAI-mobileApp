@@ -48,6 +48,7 @@ Idea idea({
   TradePlan? plan,
   EventRisk? event,
   DateTime? validUntil,
+  String sizingBlocker = '',
 }) =>
     Idea(
       id: 'idea_1',
@@ -64,6 +65,7 @@ Idea idea({
       thesis: 'Откат в зону спроса.',
       plan: plan ?? samplePlan(),
       eventRisk: event,
+      sizingBlocker: sizingBlocker,
     );
 
 RiskBudget budget({double percent = 1.0}) => RiskBudget(
@@ -121,6 +123,27 @@ void main() {
       // Пропущенная проверка — это дыра в гейте. Список закрыт.
       final kinds = FinalCheck.run(idea(), ctx()).map((r) => r.kind).toSet();
       expect(kinds, containsAll(CheckKind.values));
+    });
+  });
+
+  group('Размер позиции (ТЗ §20.1, engine-ТЗ §17.1)', () {
+    test('отказ движка исполнять объём блокирует вход', () {
+      // Раньше сервер писал «идея информационная», клиент это не читал, и
+      // кнопка входа оставалась активной под неисполнимым объёмом.
+      final results = FinalCheck.run(
+        idea(sizingBlocker: 'курс USDT к рублю неизвестен'),
+        ctx(),
+      );
+      final check = find(results, CheckKind.sizing)!;
+      expect(check.passed, isFalse);
+      // Причина повторяется дословно: «нельзя» без «почему» не помогает.
+      expect(check.detail, contains('курс USDT к рублю неизвестен'));
+      expect(FinalCheck.passes(results), isFalse);
+    });
+
+    test('объём показан в номинале инструмента, а не в «единицах»', () {
+      final results = FinalCheck.run(idea(), ctx());
+      expect(find(results, CheckKind.sizing)!.detail, contains('10 ед.'));
     });
   });
 
