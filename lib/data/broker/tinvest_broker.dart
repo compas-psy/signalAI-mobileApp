@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import '../../domain/broker/broker.dart';
+import '../../domain/broker/tinvest_role.dart';
 import '../local_store.dart';
 import '../net/resilient_http.dart';
 
@@ -151,11 +152,16 @@ class TInvestBroker implements Broker {
     required this.mode,
     required Future<String?> Function() token,
     required this.instrumentCache,
+    this.role = TInvestRole.trade,
     HttpClient? client,
     this.baseUrl,
     this.timeout = const Duration(seconds: 20),
   })  : _token = token,
         _client = client ?? resilientHttpClient();
+
+  /// Роль токена. Она же — граница прав: инвестиционный токен выдан только
+  /// на чтение, и заявку он не отправит, даже если её попросят отправить.
+  final TInvestRole role;
 
   @override
   final TradingMode mode;
@@ -177,7 +183,23 @@ class TInvestBroker implements Broker {
   @override
   String get name => 'Т-Инвестиции';
 
-  bool get _sandbox => mode == TradingMode.testnet;
+  bool get _sandbox => role.isSandbox || mode == TradingMode.testnet;
+
+  /// Отказать, если роль токена не даёт торговать.
+  ///
+  /// Проверка стоит первой строкой в каждом методе, который умеет отправить
+  /// заявку, — до сети, до счёта, до всего. Правило «инвестиции — это только
+  /// рекомендации» обязано держаться кодом, а не тем, что вызывающий помнит
+  /// о нём. Один забытый вызов — и рекомендация превращается в сделку с
+  /// основным капиталом.
+  void _requireTrading(String what) {
+    if (role.canTrade) return;
+    throw BrokerException(
+      '$what: токен «${role.title}» выдан только на чтение. '
+      'Инвестиционный контур даёт рекомендации — сделки по ним '
+      'вы совершаете сами.',
+    );
+  }
 
   String get _base => baseUrl ?? 'https://invest-public-api.tinkoff.ru/rest';
 
@@ -309,6 +331,7 @@ class TInvestBroker implements Broker {
 
   @override
   Future<OrderResult> placeOrder(OrderRequest request) async {
+    _requireTrading('Заявка не отправлена');
     // Вход стоп-заявкой брокеру пока не отправляется: у Т-Инвестиций это
     // отдельный тип (стоп-лимит), и его постановка вместе с защитным стопом
     // не проверена на песочнице. Честный отказ лучше кривой заявки.
@@ -566,6 +589,7 @@ class TInvestBroker implements Broker {
     required bool long,
     required double quantity,
   }) async {
+    _requireTrading('Защитный стоп не выставлен');
     try {
       final account = await _account();
       final instrument = await _instrument(symbol);

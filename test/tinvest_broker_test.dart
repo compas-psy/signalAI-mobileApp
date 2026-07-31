@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:signalai/data/broker/tinvest_broker.dart';
 import 'package:signalai/data/local_store.dart';
 import 'package:signalai/domain/broker/broker.dart';
+import 'package:signalai/domain/broker/tinvest_role.dart';
 
 /// Подставной шлюз брокера: отвечает по имени метода и запоминает вызовы.
 class FakeGateway {
@@ -78,7 +79,13 @@ void main() {
 
   group('TInvestBroker', () {
     late FakeGateway gateway;
-    tearDown(() => gateway.server.close(force: true));
+    var gatewayStarted = false;
+    // Шлюз поднимают не все тесты: проверки прав отказывают до сети, и
+    // поднимать её там значило бы допустить, что запрос всё-таки уходит.
+    tearDown(() async {
+      if (gatewayStarted) await gateway.server.close(force: true);
+      gatewayStarted = false;
+    });
 
     /// Ответы, которых хватает на постановку заявки.
     Map<String, Object> okReplies() => {
@@ -104,11 +111,14 @@ void main() {
       Map<String, Object>? replies,
       TradingMode mode = TradingMode.testnet,
       String? token = 'T-TOKEN',
+      TInvestRole role = TInvestRole.trade,
     }) async {
       gateway = FakeGateway(replies ?? okReplies());
       await gateway.start();
+      gatewayStarted = true;
       return TInvestBroker(
         mode: mode,
+        role: role,
         baseUrl: gateway.baseUrl,
         token: () async => token,
         instrumentCache: StoredInstrumentCache(LocalStore.inMemory()),
@@ -123,6 +133,54 @@ void main() {
       stopLoss: 89500,
       takeProfit: 91000,
     );
+
+    // Токен «на чтение» проверяется без шлюза вовсе: отказ обязан
+    // случиться до сети, и поднимать её тут значило бы допустить, что
+    // запрос всё-таки может уйти.
+    TInvestBroker readOnly() => TInvestBroker(
+          mode: TradingMode.live,
+          role: TInvestRole.invest,
+          baseUrl: 'http://127.0.0.1:1',
+          token: () async => 'T-READ',
+          instrumentCache: StoredInstrumentCache(LocalStore.inMemory()),
+        );
+
+    test('инвестиционный токен не отправляет заявку', () async {
+      // Главное правило схемы: рекомендация не превращается в сделку сама.
+      // Токен «на чтение» выдан под основной капитал владельца, и заявка с
+      // него не уходит, даже если её попросят отправить.
+      await expectLater(
+        readOnly().placeOrder(request),
+        throwsA(
+          isA<BrokerException>().having(
+            (e) => e.message, 'причина', contains('только на чтение'),
+          ),
+        ),
+      );
+    });
+
+    test('инвестиционный токен не ставит и защитный стоп', () async {
+      // Стоп — тоже заявка. Разрешить его «в порядке исключения» значит
+      // разрешить приложению распоряжаться основным капиталом.
+      await expectLater(
+        readOnly().placeProtectiveStop(
+          symbol: 'SiZ5', stopPrice: 89500, long: true, quantity: 3,
+        ),
+        throwsA(isA<BrokerException>()),
+      );
+    });
+
+    test('роли различают, чем токену разрешено пользоваться', () {
+      expect(TInvestRole.invest.canTrade, isFalse);
+      // У песочницы настоящих денег нет, и весь её смысл — прогонять сделки.
+      expect(TInvestRole.sandbox.canTrade, isTrue);
+      expect(TInvestRole.trade.canTrade, isTrue);
+      // Каждый токен лежит в своём слоте и не перезаписывает соседний.
+      expect(
+        {for (final r in TInvestRole.values) r.slot}.length,
+        TInvestRole.values.length,
+      );
+    });
 
     test('заявка и стоп уходят вместе, объём в лотах', () async {
       final b = await broker();

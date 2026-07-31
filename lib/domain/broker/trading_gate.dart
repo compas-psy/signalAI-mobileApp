@@ -85,6 +85,7 @@ class TradingState {
     this.enabled = false,
     this.killSwitch = false,
     this.tinvestAccountId,
+    this.allowedAccountIds = const {},
   }) : _modes = modes ?? const {};
 
   final Map<BrokerId, TradingMode> _modes;
@@ -105,6 +106,32 @@ class TradingState {
   /// доступом; остальные счета читаются для капитала и не торгуют.
   final String? tinvestAccountId;
 
+  /// Счета, которые приложению разрешено видеть вообще.
+  ///
+  /// Пустое множество значит «доступ ещё не выдан»: тогда не показывается ни
+  /// один счёт. Это не осторожность ради осторожности — токен Invest API
+  /// привязан к пользователю, а не к счёту, и видит их все. Ограничить его
+  /// на стороне брокера нельзя, значит ограничивает приложение, и делает это
+  /// явным списком, а не умолчанием «всё, что нашлось».
+  ///
+  /// Разрешение читать — не разрешение торговать. Заявки уходят только с
+  /// [tinvestAccountId], и только по идеям: инвестиционный контур даёт
+  /// рекомендации, а сделки по ним владелец совершает сам.
+  final Set<String> allowedAccountIds;
+
+  /// Разрешён ли счёт к чтению.
+  bool allows(String accountId) => allowedAccountIds.contains(accountId);
+
+  /// Можно ли отправлять заявки с этого счёта.
+  ///
+  /// Ровно один счёт и ровно при условии, что он же разрешён к чтению.
+  /// Торговый счёт, выпавший из списка доступа, торговым быть перестаёт —
+  /// иначе отзыв доступа не отзывал бы главного.
+  bool canTradeFrom(String accountId) =>
+      accountId.isNotEmpty &&
+      accountId == tinvestAccountId &&
+      allows(accountId);
+
   /// Режим площадки. По умолчанию тренировочный — живой режим включается
   /// только осознанно и только через допуск.
   TradingMode modeOf(BrokerId broker) => _modes[broker] ?? TradingMode.testnet;
@@ -118,12 +145,14 @@ class TradingState {
     bool? enabled,
     bool? killSwitch,
     String? tinvestAccountId,
+    Set<String>? allowedAccountIds,
   }) =>
       TradingState(
         modes: _modes,
         enabled: enabled ?? this.enabled,
         killSwitch: killSwitch ?? this.killSwitch,
         tinvestAccountId: tinvestAccountId ?? this.tinvestAccountId,
+        allowedAccountIds: allowedAccountIds ?? this.allowedAccountIds,
       );
 
   TradingState withMode(BrokerId broker, TradingMode mode) => TradingState(
@@ -131,6 +160,7 @@ class TradingState {
         enabled: enabled,
         killSwitch: killSwitch,
         tinvestAccountId: tinvestAccountId,
+        allowedAccountIds: allowedAccountIds,
       );
 
   Map<String, dynamic> toJson() => {
@@ -138,6 +168,7 @@ class TradingState {
         'enabled': enabled,
         'kill_switch': killSwitch,
         if (tinvestAccountId != null) 'tinvest_account': tinvestAccountId,
+        'allowed_accounts': allowedAccountIds.toList(),
       };
 
   factory TradingState.fromJson(Map<String, dynamic> j) {
@@ -157,6 +188,13 @@ class TradingState {
       enabled: j['enabled'] as bool? ?? false,
       killSwitch: j['kill_switch'] as bool? ?? false,
       tinvestAccountId: j['tinvest_account'] as String?,
+      // Список отсутствует у состояния старых версий. Пустой — значит
+      // доступ ещё не выдавали, и ни один счёт не читается. Подставить сюда
+      // «все» было бы тихой выдачей доступа при обновлении приложения.
+      allowedAccountIds: {
+        for (final id in j['allowed_accounts'] as List<dynamic>? ?? const [])
+          id as String,
+      },
     );
   }
 }
