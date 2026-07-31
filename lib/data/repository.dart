@@ -9,6 +9,7 @@ import '../domain/models/digest.dart';
 import '../monitor/background_mode.dart';
 import '../domain/models/portfolio.dart';
 import '../domain/models/settings.dart';
+import '../domain/models/signal.dart';
 import '../domain/models/strategy.dart';
 
 /// Контракт данных приложения.
@@ -165,6 +166,15 @@ abstract interface class PaperTracking {
 
   /// Завести идею в журнал вручную. Возвращает строку для тоста.
   Future<String> trackOnPaper(String signalId);
+
+  /// Завести на бумаге уже разобранный сигнал.
+  ///
+  /// Отдельно от [trackOnPaper] намеренно. Тот ищет идею в последней выдаче
+  /// дайджеста, который считает устройство, — и для идеи, пришедшей с
+  /// движка, не находит ничего: контуры разные, общих идентификаторов у них
+  /// нет. Нажатие «Вести на бумаге» на карточке движка отвечало «идея
+  /// больше не в выдаче», хотя идея была прямо на экране.
+  Future<String> trackSignalOnPaper(TradingSignal signal);
 }
 
 abstract interface class SignalAiRepository {

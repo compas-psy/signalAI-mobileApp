@@ -594,6 +594,51 @@ void main() {
       expect(http.requested.first.host, 'iss.moex.com');
     });
 
+    test('идея, которой нет в дайджесте, всё равно заводится на бумаге',
+        () async {
+      // Идеи приходят с движка, дайджест считает устройство, и общих
+      // идентификаторов у них нет. Поиск по идентификатору отвечал «идея
+      // больше не в выдаче» на идею, открытую прямо сейчас, — и сработавший
+      // сигнал не попадал в журнал вовсе. А журнал открывает допуск к живым
+      // деньгам: статистика набиралась по сделкам, которых владелец не видел.
+      final store = LocalStore.inMemory();
+      await seedDigest(store, const []);
+      final repository = LocalAnalysisRepository(
+        iss: offlineIss(),
+        bybit: offlineBybit(),
+        store: store,
+        vault: FakeVault(),
+      );
+
+      final answer = await repository.trackSignalOnPaper(
+        signal(id: 'с-движка', symbol: 'BTCUSDT', market: Market.crypto),
+      );
+
+      expect(answer, contains('заведена'));
+      expect(repository.ledger.trades, hasLength(1));
+      expect(repository.paperNoteFor('BTCUSDT'), isNotNull);
+    });
+
+    test('повтор по тому же инструменту второй записи не создаёт', () async {
+      // Автозапись вызывается на каждом обновлении ленты, и защита от
+      // повторов обязана жить в журнале, а не в вызывающем коде.
+      final store = LocalStore.inMemory();
+      await seedDigest(store, const []);
+      final repository = LocalAnalysisRepository(
+        iss: offlineIss(),
+        bybit: offlineBybit(),
+        store: store,
+        vault: FakeVault(),
+      );
+      final idea = signal(id: 'с-движка', symbol: 'BTCUSDT', market: Market.crypto);
+
+      await repository.trackSignalOnPaper(idea);
+      final answer = await repository.trackSignalOnPaper(idea);
+
+      expect(answer, contains('уже ведётся'));
+      expect(repository.ledger.trades, hasLength(1));
+    });
+
     test('идея не из выдачи — отказ с внятной причиной', () async {
       final store = LocalStore.inMemory();
       await seedDigest(store, [signal()]);

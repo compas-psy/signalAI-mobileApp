@@ -495,6 +495,14 @@ def scan_instrument(
             "supporting_factors": [c.detail for c in candidate.checks if c.passed],
             "counter_factors": list(candidate.counter_factors),
             "admission": verdict.reason,
+            # Какие ворота §15.6 не прошли — именами, а не одной строкой.
+            #
+            # Строку нельзя разобрать обратно, а разобрать нужно: идея,
+            # которой не хватило **только** подтверждения на триггерном
+            # таймфрейме, обязана получить это подтверждение, когда оно
+            # появится. Идея, которой не хватило вероятности или ожидания,
+            # не обязана: качество перепроверкой не улучшается.
+            "admission_failed": [g.name for g in verdict.failed],
             "binding_limit": budget.binding,
             "score_breakdown": [
                 {

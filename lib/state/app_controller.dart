@@ -402,7 +402,37 @@ class AppController extends ChangeNotifier {
     );
     _engineDataStatus = await _engine.dataStatus();
     notifyListeners();
+    await _recordTriggeredOnPaper();
     await _notifyNewIdeas(previous, _engineIdeas.ideas);
+  }
+
+  /// Записать в бумажный журнал идеи, у которых сигнал сработал.
+  ///
+  /// До этого журнал наполнялся только из местного дайджеста — того, что
+  /// считает само устройство. Идеи с движка в него не попадали вовсе, и это
+  /// была дыра в самом важном месте: бумажная статистика открывает допуск к
+  /// живым деньгам, а набиралась она по сделкам, которых владелец не видел,
+  /// вместо тех, которые ему показывают.
+  ///
+  /// Записываются только сработавшие. Наблюдение — это ещё не сделка: завести
+  /// его на бумаге значило бы мерить не стратегию, а список кандидатов.
+  ///
+  /// Повторов не будет: журнал не заводит вторую запись по инструменту, у
+  /// которого уже есть живая. Поэтому вызывать это можно на каждом
+  /// обновлении, не сверяясь с тем, что уже записано.
+  Future<void> _recordTriggeredOnPaper() async {
+    final paper = _paper;
+    if (paper == null) return;
+    for (final idea in _engineIdeas.ideas) {
+      if (idea.state != IdeaState.triggered) continue;
+      final signal = EngineContract.signalFrom(idea);
+      if (paper.paperNoteFor(signal.symbol) != null) continue;
+      try {
+        await paper.trackSignalOnPaper(signal);
+      } on Exception {
+        // Одна незаписанная идея не должна ломать обновление ленты.
+      }
+    }
   }
 
   /// Пуш о новых идеях движка.
@@ -1889,7 +1919,10 @@ class AppController extends ChangeNotifier {
     final paper = _paper;
     if (signal == null || paper == null) return;
     try {
-      showToast(await paper.trackOnPaper(signal.id));
+      // Сигнал передаётся целиком, а не идентификатором: идея с движка в
+      // выдаче дайджеста не лежит, и поиск по идентификатору отвечал бы
+      // «идея больше не в выдаче» на идею, открытую прямо сейчас.
+      showToast(await paper.trackSignalOnPaper(signal));
     } catch (e) {
       showToast(_errorText(e));
     }

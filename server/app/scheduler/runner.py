@@ -130,6 +130,7 @@ def build_default_scheduler(
     ingest_every: timedelta = timedelta(minutes=15),
     review_every: timedelta = timedelta(hours=6),
     supervise_every: timedelta = timedelta(minutes=15),
+    trigger_every: timedelta = timedelta(minutes=15),
     scan_every: timedelta = timedelta(minutes=15),
     portfolio_every: timedelta = timedelta(hours=24),
     fetch=None,
@@ -153,6 +154,7 @@ def build_default_scheduler(
     from ..market.universe import review_universe, sync_crypto, sync_futures
     from ..pipeline.scan import scan as run_scan
     from ..pipeline.supervise import supervise as run_supervise
+    from ..pipeline.trigger import recheck as run_trigger_recheck
     from ..portfolio.build import build_all
 
     scheduler = Scheduler()
@@ -220,6 +222,25 @@ def build_default_scheduler(
             detail += ", живых изменений нет"
         return detail
 
+    def trigger(session: Session) -> str:
+        # Идёт после супервизора и до скана. После — потому что подтверждать
+        # идею, которую рынок уже обогнал, незачем: супервизор её закроет.
+        # До — потому что подтверждённая идея должна успеть в отбор дня.
+        report = run_trigger_recheck(session)
+        detail = f"проверено {report.checked}"
+        if report.not_eligible:
+            # Не «пропущено», а «перепроверять нечего»: этим идеям не хватило
+            # не подтверждения, а качества, и новые свечи его не добавят.
+            detail += f", вне перепроверки {report.not_eligible}"
+        if report.no_data:
+            detail += f", без баров {report.no_data}"
+        if report.promoted:
+            detail += f", подтверждено {report.promoted}"
+            detail += "; " + "; ".join(report.details[:2])
+        else:
+            detail += ", новых подтверждений нет"
+        return detail
+
     def scan(session: Session) -> str:
         newest = latest_bar_time(session)
         if newest is None:
@@ -279,6 +300,7 @@ def build_default_scheduler(
     scheduler.add("ingest", ingest_every, ingest)
     scheduler.add("review", review_every, review)
     scheduler.add("supervise", supervise_every, supervise)
+    scheduler.add("trigger", trigger_every, trigger)
     scheduler.add("scan", scan_every, scan)
     scheduler.add("portfolio", portfolio_every, portfolio)
     return scheduler

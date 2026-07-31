@@ -87,14 +87,58 @@ def test_price_through_the_stop_before_entry_is_a_broken_idea(instrument):
 
 
 def test_touching_the_zone_leaves_the_idea_alone(instrument):
-    """Вход был возможен — дальше это сопровождение сделки, не наш вопрос."""
+    """Цена в зоне, план ещё жив — это рабочая идея, а не событие."""
     idea = short_idea(instrument.instrument_id)
     bars = [
         # Тень задела зону: лимитка исполняется тенью, а не телом.
         bar(instrument.instrument_id, NOW + timedelta(hours=1), 89500, 90050, close=89600),
-        bar(instrument.instrument_id, NOW + timedelta(hours=2), 87900, 88500),
+        bar(instrument.instrument_id, NOW + timedelta(hours=2), 89300, 89800),
     ]
     assert judge(idea, bars, now=NOW + timedelta(hours=3)).status is None
+
+
+def test_plan_that_played_out_after_the_touch_stops_being_live(instrument):
+    """Касание зоны больше не обрывает проверку.
+
+    Раньше здесь стоял ``break``: «вход был возможен, дальше это
+    сопровождение сделки». Сопровождать было некому — подтверждения не
+    было, сделки не существовало, — и идея замолкала навсегда. Полностью
+    отработавший план оставался в списке живых со статусом «Watch» и ценой
+    у третьей цели. Ровно это владелец и увидел на BTCUSDT.
+    """
+    idea = short_idea(instrument.instrument_id)
+    bars = [
+        bar(instrument.instrument_id, NOW + timedelta(hours=1), 89500, 90050, close=89600),
+        bar(instrument.instrument_id, NOW + timedelta(hours=2), 87900, 88500),
+    ]
+    verdict = judge(idea, bars, now=NOW + timedelta(hours=3))
+    assert verdict.status is IdeaStatus.MISSED
+    # Причина отдельная: «мимо зоны» и «войти было можно, но не вошли» —
+    # разные промахи, и чинятся они разным.
+    assert verdict.reason_code == "played_out_without_us"
+    assert "подтверждения не было" in verdict.detail
+
+
+def test_stop_after_the_touch_ends_the_plan(instrument):
+    idea = short_idea(instrument.instrument_id)
+    bars = [
+        bar(instrument.instrument_id, NOW + timedelta(hours=1), 89500, 90050, close=89600),
+        bar(instrument.instrument_id, NOW + timedelta(hours=2), 90500, 91200),
+    ]
+    verdict = judge(idea, bars, now=NOW + timedelta(hours=3))
+    assert verdict.status is IdeaStatus.CANCELLED
+    assert verdict.reason_code == "stopped_after_entry"
+
+
+def test_idea_that_sat_in_the_zone_still_expires(instrument):
+    """Лимитка, простоявшая в зоне до конца срока, тоже перестаёт быть планом."""
+    idea = short_idea(instrument.instrument_id)
+    bars = [
+        bar(instrument.instrument_id, NOW + timedelta(hours=1), 89900, 90100, close=90000),
+    ]
+    verdict = judge(idea, bars, now=NOW + timedelta(days=9))
+    assert verdict.status is IdeaStatus.TIMED_OUT
+    assert "подтверждения не случилось" in verdict.detail
 
 
 def test_what_happened_first_wins_over_the_clock(instrument):

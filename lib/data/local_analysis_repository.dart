@@ -2485,7 +2485,12 @@ class LocalAnalysisRepository
   @override
   Future<String> trackOnPaper(String signalId) async {
     await _ensureLoaded();
-    final signal = _signalById(signalId);
+    return trackSignalOnPaper(_signalById(signalId));
+  }
+
+  @override
+  Future<String> trackSignalOnPaper(TradingSignal signal) async {
+    await _ensureLoaded();
     final existing = paperNoteFor(signal.symbol);
     if (existing != null) {
       return 'Идея уже ведётся на бумаге: $existing. Смотрите её на «Сделках».';
