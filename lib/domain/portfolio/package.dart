@@ -162,6 +162,7 @@ class PortfolioState {
     required this.stages,
     required this.packages,
     this.universeMix = const [],
+    this.universeNotes = const [],
     this.reason = '',
     this.universe = 0,
     this.generatedAt,
@@ -172,6 +173,7 @@ class PortfolioState {
       : stages = const [],
         packages = const [],
         universeMix = const [],
+        universeNotes = const [],
         reason = '',
         universe = 0,
         generatedAt = null,
@@ -180,8 +182,13 @@ class PortfolioState {
   final List<PortfolioStage> stages;
   final List<EnginePackage> packages;
 
-  /// Из чего вообще собирается пакет: классы вселенной и их история.
+  /// Из чего вообще собирается пакет: классы вселенной и сколько бумаг
+  /// каждого имеет историю. Без этого «в отборе только акции» — загадка.
   final List<UniverseSlice> universeMix;
+
+  /// Почему доска биржи не дала бумаг. Класс активов не может пропадать
+  /// беззвучно: «фондов нет» и «доска не ответила» требуют разных действий.
+  final List<String> universeNotes;
   final String reason;
   final int universe;
   final DateTime? generatedAt;

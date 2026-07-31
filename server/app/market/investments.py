@@ -26,7 +26,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..config import EngineConfig, get_config
-from ..models import Bar, Instrument
+from ..models import Bar, DataQualityEvent, Instrument
 from ..models.enums import AssetClass, Timeframe, Venue
 from . import moex
 from .http import FetchError
@@ -48,7 +48,24 @@ def _limits(cfg: EngineConfig) -> dict[str, int]:
         "max_bonds": int(section.get("max_bonds", 20)),
         "min_turnover_rub": int(section.get("min_daily_turnover_rub", 20_000_000)),
         "min_bond_turnover_rub": int(section.get("min_bond_turnover_rub", 5_000_000)),
+        "min_fund_turnover_rub": int(section.get("min_fund_turnover_rub", 3_000_000)),
     }
+
+
+def _note(session: Session, board: str, detail: str) -> None:
+    """Записать, почему доска не дала бумаг.
+
+    Событие качества данных, а не лог: лог живёт до перезапуска контейнера, а
+    вопрос «почему во вселенной нет фондов» задаётся дни спустя.
+    """
+    session.add(
+        DataQualityEvent(
+            source="moex",
+            instrument_id=None,
+            flag="BOARD_EMPTY",
+            detail=f"{board}: {detail}"[:512],
+        )
+    )
 
 
 def _tick(row: moex.BoardRow) -> Decimal:
@@ -110,15 +127,25 @@ def sync_investments(session: Session, *, fetch=None) -> list[str]:
     for market, board, provisional, prefix in BOARDS:
         try:
             rows, _ = moex.stock_board(market, board, **kwargs)
-        except (FetchError, ValueError):
+        except (FetchError, ValueError) as exc:
             # Доска недоступна — бумаги с неё остаются в справочнике такими,
             # какими были. Обнулять вселенную из-за одного отказа сети нельзя.
+            #
+            # Но и молчать нельзя, и это была настоящая ошибка: доска фондов
+            # не доезжала неделю, во вселенной не было ни одного фонда, и
+            # экран сообщал лишь «в отборе только акции и ОФЗ» — про доску
+            # не знал никто. Целый класс активов пропал беззвучно.
+            _note(
+                session, board,
+                f"доска не ответила: {type(exc).__name__}: {exc}"[:400],
+            )
             continue
 
         floor = Decimal(
-            limits["min_bond_turnover_rub"]
-            if provisional is AssetClass.OFZ
-            else limits["min_turnover_rub"]
+            {
+                AssetClass.OFZ: limits["min_bond_turnover_rub"],
+                AssetClass.BOND_FUND: limits["min_fund_turnover_rub"],
+            }.get(provisional, limits["min_turnover_rub"])
         )
         cap = {
             AssetClass.EQUITY: limits["max_equities"],
@@ -128,6 +155,18 @@ def sync_investments(session: Session, *, fetch=None) -> list[str]:
 
         liquid = [r for r in rows if r.turnover and r.turnover >= floor and r.last]
         liquid.sort(key=lambda r: r.turnover or Decimal(0), reverse=True)
+        if not liquid:
+            # Пустой отбор — это тоже событие, а не тишина. Причин ровно две,
+            # и они требуют разных действий: биржа не дала строк либо порог
+            # оборота отсёк всё. Из «фондов нет» ни одну из них не видно.
+            with_price = sum(1 for r in rows if r.last)
+            best = max((r.turnover or Decimal(0) for r in rows), default=Decimal(0))
+            _note(
+                session, board,
+                f"ни одна бумага не прошла отбор: строк {len(rows)}, "
+                f"с ценой {with_price}, наибольший оборот {best:.0f} ₽ "
+                f"при пороге {floor:.0f} ₽",
+            )
         for row in liquid[:cap]:
             instrument_id = f"MOEX:{prefix}:{row.sec_id}"
             tick = _tick(row)

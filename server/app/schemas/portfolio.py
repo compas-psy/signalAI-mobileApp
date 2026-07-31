@@ -88,6 +88,10 @@ class UniverseSliceOut(ApiModel):
 class PortfolioStatusOut(ApiModel):
     stages: list[StageOut]
     universe_mix: list[UniverseSliceOut] = Field(default_factory=list)
+    # Почему доска биржи не дала бумаг. Целый класс активов не может
+    # пропадать беззвучно: «фондов нет» и «доска не ответила» требуют
+    # разных действий.
+    universe_notes: list[str] = Field(default_factory=list)
     packages_ready: int
     universe: int
     generated_at: datetime | None = None

@@ -935,6 +935,20 @@ class _Progress extends StatelessWidget {
                   detail: '${slice.withHistory} из ${slice.total} с историей',
                 ),
             ],
+            if (portfolio.universeNotes.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              // Целый класс активов не может пропадать беззвучно. Если доска
+              // биржи не ответила или её отсёк порог оборота — это видно
+              // здесь, а не выясняется разбором скриншотов.
+              for (final note in portfolio.universeNotes)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 4),
+                  child: Text(
+                    '· $note',
+                    style: T.body(10.5, color: C.warning, height: 1.4),
+                  ),
+                ),
+            ],
             if (note.isNotEmpty) ...[
               const SizedBox(height: 10),
               Text(note, style: T.body(11, color: C.faint, height: 1.45)),

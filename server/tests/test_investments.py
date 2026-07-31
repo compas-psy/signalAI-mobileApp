@@ -16,7 +16,7 @@ from sqlalchemy import select
 from app.market import moex
 from app.market.ingest import ingest_universe
 from app.market.investments import investment_universe, sync_investments
-from app.models import Bar, Instrument
+from app.models import Bar, DataQualityEvent, Instrument
 from app.models.enums import AssetClass, Timeframe, Venue
 
 
@@ -169,3 +169,66 @@ def test_первая_загрузка_ограничена_бюджетом(ses
     ingest_universe(session, fetch=fetch, first_load_budget=3)
     # Две с историей плюс три новых — не больше.
     assert touched == {"N0", "N1", "N2", "N3", "N4"}
+
+
+FUNDS = {
+    "securities": {
+        "columns": ["SECID", "SHORTNAME", "MINSTEP", "DECIMALS", "LOTSIZE",
+                    "ISSUESIZE", "SECTYPE"],
+        "data": [
+            ["LQDT", "Ликвидность", 0.0001, 4, 1, 100000000, "ETF"],
+            ["SBGB", "Фонд ОФЗ", 0.01, 2, 1, 5000000, "ETF"],
+        ],
+    },
+    "marketdata": {
+        "columns": ["SECID", "LAST", "VALTODAY"],
+        # Оборот фонда на порядок меньше, чем у голубой фишки: 8 и 4 млн ₽.
+        "data": [["LQDT", 1.62, 8_000_000], ["SBGB", 11.4, 4_000_000]],
+    },
+}
+
+
+def test_фонды_не_отсекаются_порогом_для_акций(session):
+    """У биржевых фондов оборот меньше по построению, а не по неликвидности.
+
+    Общий порог в 20 млн ₽ отсекал их все: во вселенной не оказалось ни
+    одного фонда, а значит ни денежного рынка, ни облигационных. Без них
+    консервативный профиль не собирается никогда — потолок на акции не даёт
+    набрать 100%.
+    """
+    kept = sync_investments(
+        session,
+        fetch=_board({
+            "markets/shares/boards/TQBR": EMPTY,
+            "markets/shares/boards/TQTF": FUNDS,
+            "markets/bonds/boards/TQOB": EMPTY,
+        }),
+    )
+    session.flush()
+    assert "MOEX:ETF:LQDT" in kept
+    assert "MOEX:ETF:SBGB" in kept
+
+
+def test_пустая_доска_записывает_причину(session):
+    """Класс активов не может пропадать беззвучно.
+
+    Доска фондов не доезжала, во вселенной не было ни одного фонда, и экран
+    сообщал лишь «в отборе только акции и ОФЗ» — про доску не знал никто.
+    """
+    sync_investments(
+        session,
+        fetch=_board({
+            "markets/shares/boards/TQBR": EMPTY,
+            "markets/shares/boards/TQTF": EMPTY,
+            "markets/bonds/boards/TQOB": EMPTY,
+        }),
+    )
+    session.flush()
+    notes = [
+        e.detail
+        for e in session.query(DataQualityEvent).filter_by(flag="BOARD_EMPTY")
+    ]
+    # По событию на каждую доску, и в каждом — чем именно она пуста.
+    assert len(notes) == 3
+    assert any(n.startswith("TQTF:") for n in notes)
+    assert all("не прошла отбор" in n or "не ответила" in n for n in notes)

@@ -459,6 +459,10 @@ abstract final class EngineContract {
             ),
       ],
       reason: '${statusMap['reason'] ?? ''}',
+      universeNotes: [
+        for (final note in (statusMap['universe_notes'] as List? ?? const []))
+          '$note',
+      ],
       universe: (statusMap['universe'] as num?)?.toInt() ?? 0,
       generatedAt: _time(statusMap['generated_at']),
     );

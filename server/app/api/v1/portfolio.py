@@ -22,7 +22,14 @@ from sqlalchemy.orm import Session
 
 from ...db import get_db
 from ...market.investments import INVESTMENT_CLASSES, investment_universe
-from ...models import Bar, Instrument, PortfolioModel, PortfolioRun, TradeIdea
+from ...models import (
+    Bar,
+    DataQualityEvent,
+    Instrument,
+    PortfolioModel,
+    PortfolioRun,
+    TradeIdea,
+)
 from ...models.enums import PackageSize, RiskProfile, Timeframe
 from ...portfolio.build import build_all
 from ...schemas.portfolio import (
@@ -97,6 +104,21 @@ def _universe_mix(session: Session) -> list[UniverseSliceOut]:
         )
         for key, value in sorted(total.items(), key=lambda kv: -kv[1])
     ]
+
+
+def _universe_notes(session: Session, limit: int = 3) -> list[str]:
+    """Свежие жалобы на доски биржи — по одной на доску, самые новые."""
+    rows = session.execute(
+        select(DataQualityEvent.detail)
+        .where(DataQualityEvent.flag == "BOARD_EMPTY")
+        .order_by(DataQualityEvent.occurred_at.desc())
+        .limit(30)
+    ).scalars()
+    seen: dict[str, str] = {}
+    for detail in rows:
+        board = str(detail).split(":", 1)[0]
+        seen.setdefault(board, str(detail))
+    return list(seen.values())[:limit]
 
 
 def _last_run(session: Session) -> PortfolioRun | None:
@@ -264,6 +286,7 @@ def packages(
         status=PortfolioStatusOut(
             stages=stages,
             universe_mix=_universe_mix(session),
+            universe_notes=_universe_notes(session),
             packages_ready=len(everything),
             universe=len(investment_universe(session)),
             generated_at=generated,
