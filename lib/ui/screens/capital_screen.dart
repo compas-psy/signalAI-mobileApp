@@ -632,28 +632,38 @@ class _Packages extends StatefulWidget {
   State<_Packages> createState() => _PackagesState();
 }
 
+/// Вариант пакета на экране: одна шкала от «сохранить» до «рискнуть».
+///
+/// Движок считает профили и размеры отдельными осями, но на экране это была
+/// бы сетка из двенадцати вариантов с двумя переключателями — владелец
+/// пришёл сюда не за настройкой оптимизатора. Оси сведены в одну.
+///
+/// Первым стоит доходный. Он существует потому, что падающий рынок акций
+/// может длиться годами, а денежный рынок и фонды облигаций приносят выше
+/// инфляции всё это время: экран, который в такие годы пуст, отвечает не на
+/// тот вопрос. Пойдёт рынок вверх — на это ребаланс в вариант повыше.
+enum _Variant {
+  income('Доход', 'INCOME', PackageSize.simple),
+  simple('Простой', 'CONSERVATIVE', PackageSize.simple),
+  balanced('Сбалансированный', 'OPTIMAL', PackageSize.balanced),
+  maxPotential('Максимальный', 'AGGRESSIVE', PackageSize.maxPotential);
+
+  const _Variant(this.label, this.profile, this.size);
+
+  final String label;
+  final String profile;
+  final PackageSize size;
+}
+
 class _PackagesState extends State<_Packages> {
-  /// Выбранный размер пакета. Профиль риска идёт с ним заодно — см. [_profile].
-  PackageSize _size = PackageSize.balanced;
+  /// Выбранный вариант пакета.
+  _Variant _variant = _Variant.balanced;
 
   @override
   void initState() {
     super.initState();
     widget.controller.loadPortfolio();
   }
-
-  /// Профиль риска по размеру пакета.
-  ///
-  /// Движок считает три профиля × три размера, но на экране это была бы
-  /// сетка из девяти вариантов с двумя переключателями — владелец пришёл
-  /// сюда не за настройкой оптимизатора. Оси сведены: простой пакет — самый
-  /// спокойный, максимальный — самый рисковый. Так размер пакета означает
-  /// ровно то, что от него ждут.
-  static String _profile(PackageSize size) => switch (size) {
-        PackageSize.simple => 'CONSERVATIVE',
-        PackageSize.balanced => 'OPTIMAL',
-        PackageSize.maxPotential => 'AGGRESSIVE',
-      };
 
   @override
   Widget build(BuildContext context) {
@@ -680,30 +690,34 @@ class _PackagesState extends State<_Packages> {
     final years = controller.packageHorizon.years;
     final matching = [
       for (final p in portfolio.forHorizon(years))
-        if (p.profile == _profile(_size)) p,
+        if (p.profile == _variant.profile && p.size == _variant.size) p,
     ];
     final package = matching.isEmpty ? null : matching.first;
-    final sizes = {
-      for (final p in portfolio.forHorizon(years))
-        if (p.profile == _profile(p.size)) p.size,
+    // Какие варианты вообще собрались. Нужно, чтобы отличить «этот не прошёл
+    // проверку» от «не посчитано ничего»: первое лечится другим вариантом,
+    // второе — ничем, и владельцу нужна причина, а не совет.
+    final ready = {
+      for (final variant in _Variant.values)
+        for (final p in portfolio.forHorizon(years))
+          if (p.profile == variant.profile && p.size == variant.size) variant,
     };
 
     return ListView(
       padding: _pad,
       children: [
         SegmentedControl(
-          items: [for (final s in PackageSize.values) s.label],
-          index: PackageSize.values.indexOf(_size),
-          onSelect: (i) => setState(() => _size = PackageSize.values[i]),
+          items: [for (final v in _Variant.values) v.label],
+          index: _Variant.values.indexOf(_variant),
+          onSelect: (i) => setState(() => _variant = _Variant.values[i]),
         ),
         const SizedBox(height: 12),
         if (package == null)
           _Progress(
             portfolio: portfolio,
-            note: sizes.isEmpty
+            note: ready.isEmpty
                 ? portfolio.reason
-                : 'Для этого размера пакета состав не прошёл проверку на '
-                    'истории. Соседние размеры посчитаны.',
+                : 'Этот вариант проверку на истории не прошёл. Посчитаны: '
+                    '${ready.map((v) => v.label.toLowerCase()).join(', ')}.',
             onRetry: () => controller.loadPortfolio(force: true),
           )
         else ...[

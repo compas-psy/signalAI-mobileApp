@@ -24,7 +24,7 @@ from app.market.investments import classify_funds
 from app.models import Bar, Instrument, PortfolioModel, PortfolioRun
 from app.models.enums import AssetClass, PackageSize, RiskProfile, Timeframe, Venue
 from app.portfolio import fundamentals as fund
-from app.portfolio.build import PROFILES, build_all
+from app.portfolio.build import INCOME_CLASSES, PROFILES, build_all
 
 
 def _no_network(url: str):
@@ -382,3 +382,127 @@ def test_прогон_записывает_причину_а_не_только_�
     assert len(run.reasons_json) == run.built
     for entry in run.reasons_json:
         assert entry["reason"], "отказ без причины недопустим"
+
+
+# ── Доходный контур ──────────────────────────────────────────────────────
+
+
+def test_доходный_пакет_собирается_на_падающем_рынке_акций(session):
+    """Падающий рынок акций может длиться годами — деньги ждать не должны.
+
+    Денежный рынок и облигации платят проценты независимо от того, куда
+    идёт индекс. Портфель, который в такие годы показывает пустой экран,
+    отвечает не на тот вопрос.
+    """
+    rng = np.random.default_rng(5)
+    periods = 900
+
+    _add_instrument(
+        session, "MOEX:ETF:LQDT", AssetClass.MONEY_MARKET,
+        symbol="LQDT", title="Ликвидность",
+        meta={"market": "shares", "board": "TQTF"},
+    )
+    _add_bars(session, "MOEX:ETF:LQDT", _walk(rng, periods, 0.00055, 0.00012))
+
+    _add_instrument(
+        session, "MOEX:ETF:BONDS", AssetClass.BOND_FUND,
+        symbol="BONDS", title="Фонд облигаций",
+        meta={"market": "shares", "board": "TQTF"},
+    )
+    _add_bars(session, "MOEX:ETF:BONDS", _walk(rng, periods, 0.0004, 0.0018))
+
+    # Акции падают весь период — общий контур на них ничего не соберёт.
+    factor = rng.normal(-0.0009, 0.012, size=periods)
+    for name in ("SBER", "GAZP", "LKOH"):
+        _add_instrument(
+            session, f"MOEX:EQ:{name}", AssetClass.EQUITY,
+            symbol=name, title=name,
+            meta={"market": "shares", "board": "TQBR", "issuesize": "2.1e10"},
+        )
+        _add_bars(
+            session, f"MOEX:EQ:{name}",
+            _walk(rng, periods, -0.0009, 0.006, factor=factor, beta=1.0),
+        )
+    session.flush()
+
+    report = build_all(session, draws=12, fetch=_no_network)
+
+    income = [p for p in report.packages if p.profile is RiskProfile.INCOME]
+    assert income, "доходный профиль не посчитан вовсе"
+    admitted = [p for p in income if p.admitted]
+    assert admitted, (
+        "ни один доходный состав не допущен: "
+        + "; ".join(p.reason for p in income if p.reason)
+    )
+
+    # В доходном пакете нет акций — не потому что они плохи, а потому что
+    # этот пакет обязан работать в год, когда рынок акций падает.
+    for package in admitted:
+        classes = {p.asset_class for p in package.positions}
+        assert AssetClass.EQUITY not in classes
+        assert classes <= set(INCOME_CLASSES)
+
+
+def test_доходный_пакет_считается_на_своей_панели(session):
+    """Короткая история акций не должна выбрасывать фонды из отбора.
+
+    Общая панель строится по датам, общим для всех бумаг, и короткие ряды
+    из неё выпадают. Фонды денежного рынка моложе акций — вылетали первыми
+    ровно те, на которых доходный пакет только и держится.
+    """
+    rng = np.random.default_rng(7)
+
+    # У фондов истории меньше, чем у акций.
+    _add_instrument(
+        session, "MOEX:ETF:LQDT", AssetClass.MONEY_MARKET,
+        symbol="LQDT", title="Ликвидность",
+        meta={"market": "shares", "board": "TQTF"},
+    )
+    _add_bars(session, "MOEX:ETF:LQDT", _walk(rng, 700, 0.00055, 0.00012))
+    _add_instrument(
+        session, "MOEX:ETF:BONDS", AssetClass.BOND_FUND,
+        symbol="BONDS", title="Фонд облигаций",
+        meta={"market": "shares", "board": "TQTF"},
+    )
+    _add_bars(session, "MOEX:ETF:BONDS", _walk(rng, 700, 0.0004, 0.0018))
+
+    factor = rng.normal(0.0002, 0.011, size=1400)
+    for name in ("SBER", "GAZP", "LKOH", "ROSN"):
+        _add_instrument(
+            session, f"MOEX:EQ:{name}", AssetClass.EQUITY,
+            symbol=name, title=name,
+            meta={"market": "shares", "board": "TQBR", "issuesize": "2.1e10"},
+        )
+        _add_bars(
+            session, f"MOEX:EQ:{name}",
+            _walk(rng, 1400, 0.0004, 0.006, factor=factor, beta=1.0),
+        )
+    session.flush()
+
+    report = build_all(session, draws=12, fetch=_no_network)
+    # Панель доходного контура своя, и фонды на ней остались.
+    assert report.income_candidates >= 2
+    assert report.income_days >= 400
+    income = [p for p in report.packages if p.profile is RiskProfile.INCOME]
+    assert any(p.positions for p in income)
+
+
+def test_без_доходных_бумаг_причина_названа_отдельно(session):
+    """«Рынок акций падает» и «доходных бумаг нет во вселенной» — разное."""
+    rng = np.random.default_rng(9)
+    factor = rng.normal(0.0002, 0.011, size=900)
+    for name in ("SBER", "GAZP", "LKOH", "ROSN"):
+        _add_instrument(
+            session, f"MOEX:EQ:{name}", AssetClass.EQUITY,
+            symbol=name, title=name,
+            meta={"market": "shares", "board": "TQBR", "issuesize": "2.1e10"},
+        )
+        _add_bars(
+            session, f"MOEX:EQ:{name}",
+            _walk(rng, 900, 0.0004, 0.006, factor=factor, beta=1.0),
+        )
+    session.flush()
+
+    report = build_all(session, draws=12, fetch=_no_network)
+    assert "доходных бумаг" in report.income_note
+    assert not [p for p in report.packages if p.profile is RiskProfile.INCOME]

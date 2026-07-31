@@ -74,7 +74,35 @@ class Profile:
     title: str = ""
 
 
+# Классы, которые платят проценты, а не растут. Денежный рынок, фонды
+# облигаций, ОФЗ и корпоративные бумаги: их доход не зависит от того, куда
+# идёт рынок акций, и в падающий год он остаётся положительным.
+INCOME_CLASSES: frozenset[AssetClass] = frozenset(
+    {
+        AssetClass.MONEY_MARKET,
+        AssetClass.BOND_FUND,
+        AssetClass.OFZ,
+        AssetClass.CORPORATE_BOND,
+    }
+)
+
+
 PROFILES: dict[RiskProfile, Profile] = {
+    # Сохранение капитала. Акций и золота здесь нет вовсе — не потому, что
+    # они плохи, а потому что вопрос другой: этот пакет обязан работать в
+    # год, когда рынок акций падает. Если рынок развернётся, состав меняет
+    # не он, а ребаланс в пользу профиля повыше.
+    RiskProfile.INCOME: Profile(
+        target_volatility=0.03,
+        drawdown_limit=0.04,
+        caps={
+            AssetClass.EQUITY: 0.0,
+            AssetClass.GOLD: 0.0,
+            AssetClass.CRYPTO_SPOT: 0.0,
+            AssetClass.CRYPTO_PERPETUAL: 0.0,
+        },
+        title="обогнать инфляцию, не глядя на рынок",
+    ),
     RiskProfile.CONSERVATIVE: Profile(
         target_volatility=0.06,
         drawdown_limit=0.08,
@@ -170,6 +198,14 @@ class BuildReport:
     screened: int = 0
     candidates: int = 0
     common_days: int = 0
+
+    # Доходный контур считается отдельно, и отчитывается тоже отдельно:
+    # «пакетов нет» из-за падающего рынка акций и «нет доходных бумаг во
+    # вселенной» — разные поломки, и чинить их надо по-разному.
+    income_candidates: int = 0
+    income_days: int = 0
+    income_note: str = ""
+
     packages: list[Package] = field(default_factory=list)
     rejected: list[tuple[str, str]] = field(default_factory=list)
     note: str = ""
@@ -664,17 +700,60 @@ def build_all(
             PROFILES[key].caps.get(AssetClass.CRYPTO_SPOT, crypto_cap), crypto_cap
         )
 
+    # Доходный контур считается на своей панели.
+    #
+    # Общая панель строится так, чтобы у всех бумаг было длинное общее окно,
+    # и короткие ряды из неё выпадают. Фонды денежного рынка и облигаций
+    # моложе акций — и вылетали первыми, ровно те, на которых доходный пакет
+    # только и держится. Своя панель снимает эту зависимость: окно у неё
+    # своё, и история акций на него не влияет.
+    income_ids = [
+        key for key in candidates
+        if key in by_id and by_id[key].asset_class in INCOME_CLASSES
+    ]
+    income_panel = None
+    if income_ids:
+        income_panel, income_dropped = _panel_with_window(
+            {k: v for k, v in series.items() if k in income_ids},
+            needed=needed,
+            target=needed + 5 * test_days,
+            min_width=2,
+            classes={key: by_id[key].asset_class for key in income_ids},
+        )
+        for instrument_id, why in income_dropped:
+            report.rejected.append((instrument_id, why))
+        report.income_candidates = income_panel.width
+        report.income_days = income_panel.periods
+    else:
+        report.income_note = (
+            "доходных бумаг среди кандидатов нет: ни фондов денежного рынка, "
+            "ни облигационных. Пакет сохранения капитала собирать не из чего"
+        )
+
     now = datetime.now(UTC)
     for profile_key in profiles:
+        # У доходного профиля своя панель: на общей его состав зависел бы от
+        # того, сколько истории у акций.
+        source = income_panel if profile_key is RiskProfile.INCOME else panel
+        if source is None or source.width < 2:
+            continue
         for package_key, config_key in (
             (PackageSize.SIMPLE, "simple"),
             (PackageSize.BALANCED, "balanced"),
             (PackageSize.MAX_POTENTIAL, "max_potential"),
         ):
             low, high = packages[config_key]
+            # Доходных бумаг на бирже единицы: требовать от пакета
+            # сохранения капитала восьми позиций значит не собрать его
+            # никогда. Границы сжимаются под то, что есть.
+            if profile_key is RiskProfile.INCOME:
+                low = min(int(low), max(2, source.width))
+                high = min(int(high), source.width)
+                if high < low:
+                    continue
             for horizon in horizons:
                 built = build_package(
-                    panel,
+                    source,
                     card_by_id,
                     by_id,
                     profile_key=profile_key,
