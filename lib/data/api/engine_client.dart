@@ -188,6 +188,41 @@ class EngineClient {
     }
   }
 
+  /// Отправить движку снимок позиций инвестиционного счёта.
+  ///
+  /// Счёт читает устройство, а не сервер, и это не разделение труда, а
+  /// граница безопасности. Токен Т-Инвестиций на чтение лежит в защищённом
+  /// хранилище телефона; он привязан к пользователю, а не к счёту, и видит
+  /// **все** счета владельца. Класть такой токен на VPS значило бы сложить
+  /// весь капитал в одну точку отказа ради удобства синхронизации.
+  ///
+  /// Сервер по снимку считает расхождение с целевым составом и предлагает,
+  /// что поправить. Заявок по этому предложению не отправляет никто.
+  ///
+  /// Возвращает ответ движка или null, если отправить не удалось. Отказ —
+  /// не исключение: снимок посылается фоном, и ронять из-за него чтение
+  /// счёта нельзя.
+  Future<Map<String, dynamic>?> putHoldings({
+    required String accountId,
+    required List<Map<String, dynamic>> positions,
+    String broker = 'tinvest',
+    String title = '',
+    String? equity,
+  }) async {
+    if (!isConfigured || accountId.isEmpty) return null;
+    try {
+      return await _api.post('$_base/portfolio/holdings', body: {
+        'broker': broker,
+        'account_id': accountId,
+        if (title.isNotEmpty) 'title': title,
+        'equity': ?equity,
+        'positions': positions,
+      });
+    } catch (_) {
+      return null;
+    }
+  }
+
   static double? _price(Object? raw) => switch (raw) {
         num n => n.toDouble(),
         String s => double.tryParse(s),

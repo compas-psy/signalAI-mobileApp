@@ -724,6 +724,65 @@ class LocalAnalysisRepository
     }
   }
 
+  /// Какие счета считаются инвестиционными.
+  ///
+  /// Три условия, и каждое отсекает свою ошибку.
+  ///
+  /// Закрытый счёт отбрасывается: в выдаче он есть, но состава на нём нет.
+  ///
+  /// Неразрешённый — тоже, и пустой список разрешённых означает «доступ ещё
+  /// не выдан», а не «можно всё». Токен видит все счета владельца, и
+  /// умолчание «читаем то, что нашлось» было бы тихой выдачей доступа.
+  ///
+  /// Торговый счёт исключается отдельно, и это главное. С него уходят
+  /// заявки по идеям; его состав — это открытые сделки, а не портфель.
+  /// Смешать его с инвестиционным значило бы предложить ребаланс, который
+  /// закрывает рабочие позиции.
+  static List<TInvestAccount> investAccountsOf(
+    List<TInvestAccount> accounts,
+    TradingState trading,
+  ) =>
+      [
+        for (final account in accounts)
+          if (!account.closed &&
+              trading.allows(account.id) &&
+              account.id != trading.tinvestAccountId)
+            account,
+      ];
+
+  /// Что лежит на инвестиционном счёте. null — читать нечем или нечего.
+  ///
+  /// Инвестиционный счёт — тот, который владелец разрешил читать и который
+  /// **не** назначен торговым: с торгового идут заявки по идеям, и его
+  /// состав к пакетам капитала отношения не имеет. Если разрешённых счетов
+  /// несколько, берётся первый непустой: считать доли по сумме нескольких
+  /// счетов нельзя — это разные портфели с разными целями.
+  Future<InvestSnapshot?> investHoldings() async {
+    await _ensureLoaded();
+    final broker = await _investReadBroker();
+    if (broker == null) return null;
+    final List<TInvestAccount> accounts;
+    try {
+      accounts = await broker.accounts();
+    } on BrokerException {
+      return null;
+    }
+    for (final account in investAccountsOf(accounts, _trading)) {
+      try {
+        final holdings = await broker.holdings(account.id);
+        if (holdings.isEmpty) continue;
+        return InvestSnapshot(
+          accountId: account.id,
+          title: account.name,
+          holdings: holdings,
+        );
+      } on BrokerException {
+        // Один недоступный счёт не отменяет остальные.
+      }
+    }
+    return null;
+  }
+
   /// Назначает торговый счёт Т-Инвестиций.
   Future<void> setTinvestAccount(String? accountId) async {
     await _ensureLoaded();

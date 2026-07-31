@@ -335,10 +335,41 @@ class AppController extends ChangeNotifier {
     try {
       // Тот же порядок, что у идей: сначала адрес, потом запрос.
       await _engineReady;
+      // Снимок счёта уходит до запроса пакетов, а не после: движок считает
+      // расхождение по тому, что у него есть на момент вопроса. Иначе
+      // ребаланс отвечал бы по вчерашнему составу — или, как было до сих
+      // пор, «инвестиционный счёт не подключён» при подключённом счёте.
+      await _syncHoldings();
       _portfolio = await _engine.portfolio();
     } finally {
       _portfolioLoading = false;
       notifyListeners();
+    }
+  }
+
+  /// Отправить движку, что лежит на инвестиционном счёте.
+  ///
+  /// Счёт читает устройство токеном на чтение, который лежит в защищённом
+  /// хранилище телефона и на сервер не передаётся: он привязан к
+  /// пользователю, а не к счёту, и видит все счета владельца.
+  ///
+  /// Молча ничего не делает, если токена нет, счёт не выбран или движок не
+  /// ответил. Пакеты считаются и без снимка — без него не работает только
+  /// ребаланс, и ронять из-за этого весь экран нельзя.
+  Future<void> _syncHoldings() async {
+    final repository = _repository;
+    if (repository is! LocalAnalysisRepository) return;
+    try {
+      final snapshot = await repository.investHoldings();
+      if (snapshot == null) return;
+      await _engine.putHoldings(
+        accountId: snapshot.accountId,
+        title: snapshot.title,
+        positions: [for (final h in snapshot.holdings) h.toJson()],
+      );
+    } on Exception {
+      // Снимок — вспомогательный шаг. Его отказ не должен превращаться в
+      // «движок не ответил» на экране пакетов.
     }
   }
 

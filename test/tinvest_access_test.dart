@@ -9,6 +9,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:signalai/domain/broker/broker.dart';
 import 'package:signalai/domain/broker/tinvest_role.dart';
 import 'package:signalai/data/broker/secure_vault.dart';
+import 'package:signalai/data/broker/tinvest_broker.dart';
+import 'package:signalai/data/local_analysis_repository.dart';
 import 'package:signalai/domain/broker/trading_gate.dart';
 
 void main() {
@@ -106,6 +108,52 @@ void main() {
       expect(TInvestRole.parse(null), TInvestRole.sandbox);
     });
   });
+
+  group('Какие счета считаются инвестиционными', () {
+    // Снимок состава уходит движку, и он же становится основой ребаланса.
+    // Ошибка в отборе счёта здесь дороже всего: предложение продать рабочую
+    // позицию выглядит как обычная рекомендация.
+    TInvestAccount acc(String id, {bool closed = false}) => TInvestAccount(
+          id: id,
+          name: id,
+          type: 'ACCOUNT_TYPE_TINKOFF',
+          accessLevel: 'ACCOUNT_ACCESS_LEVEL_FULL_ACCESS',
+          status: closed ? 'ACCOUNT_STATUS_CLOSED' : 'ACCOUNT_STATUS_OPEN',
+        );
+
+    test('торговый счёт в инвестиционные не попадает', () {
+      // На нём открытые сделки по идеям, а не портфель. Ребаланс по нему
+      // предложил бы закрыть рабочие позиции.
+      const state = TradingState(
+        allowedAccountIds: {'ACC-1', 'ACC-2'},
+        tinvestAccountId: 'ACC-2',
+      );
+      final picked = LocalAnalysisRepository.investAccountsOf(
+        [acc('ACC-1'), acc('ACC-2')],
+        state,
+      );
+      expect([for (final a in picked) a.id], ['ACC-1']);
+    });
+
+    test('без выданного доступа не читается ни один счёт', () {
+      const state = TradingState();
+      expect(
+        LocalAnalysisRepository.investAccountsOf([acc('ACC-1')], state),
+        isEmpty,
+      );
+    });
+
+    test('закрытый счёт отбрасывается', () {
+      const state = TradingState(allowedAccountIds: {'ACC-1'});
+      expect(
+        LocalAnalysisRepository.investAccountsOf(
+          [acc('ACC-1', closed: true)],
+          state,
+        ),
+        isEmpty,
+      );
+    });
+  });
 }
 
 
@@ -123,4 +171,8 @@ class _OneKeyVault extends SecureVault {
     if (!needsSecret) return key;
     return key && _keys.contains('$exchange.$mode.secret');
   }
+
+  @override
+  Future<String?> apiKey({required String exchange, required String mode}) async =>
+      _keys.contains('$exchange.$mode.key') ? 'TOKEN' : null;
 }

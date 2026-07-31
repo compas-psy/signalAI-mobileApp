@@ -51,6 +51,52 @@ int _int(Object? value) => switch (value) {
 /// возвращает все открытые счета вместе с уровнем доступа. Поэтому «токен
 /// сделан под фьючерсный счёт» — это про права, а не про видимость: основной
 /// брокерский счёт тем же токеном виден, и капитал по нему считается.
+/// Бумага на инвестиционном счёте.
+///
+/// Не [BrokerPosition]: та описывает торговую позицию — сторону, плавающий
+/// результат, наличие защитного стопа. Здесь ничего этого нет и быть не
+/// должно. Инвестиционный счёт не торгуется приложением, и вопрос к нему
+/// один: что лежит и сколько это стоит сейчас. Из этих чисел считаются доли,
+/// а из долей — расхождение с целевым составом.
+class TInvestHolding {
+  const TInvestHolding({
+    required this.symbol,
+    required this.quantity,
+    required this.marketValue,
+    this.averagePrice = 0,
+    this.marketPrice = 0,
+  });
+
+  final String symbol;
+  final double quantity;
+  final double averagePrice;
+  final double marketPrice;
+  final double marketValue;
+
+  /// В форме, которую принимает движок. Числа уходят строками: доли
+  /// считаются точной арифметикой, и двоичная дробь по дороге туда лишняя.
+  Map<String, dynamic> toJson() => {
+        'symbol': symbol,
+        'quantity': quantity.toString(),
+        'market_value': marketValue.toStringAsFixed(2),
+        if (averagePrice > 0) 'average_price': averagePrice.toStringAsFixed(4),
+        if (marketPrice > 0) 'market_price': marketPrice.toStringAsFixed(4),
+      };
+}
+
+/// Снимок инвестиционного счёта целиком: чей он и что на нём.
+class InvestSnapshot {
+  const InvestSnapshot({
+    required this.accountId,
+    required this.holdings,
+    this.title = '',
+  });
+
+  final String accountId;
+  final String title;
+  final List<TInvestHolding> holdings;
+}
+
 class TInvestAccount {
   const TInvestAccount({
     required this.id,
@@ -448,6 +494,54 @@ class TInvestBroker implements Broker {
         // подставлять нельзя: единица вместо неё выглядела на экране как
         // уровень защиты в один пункт.
         protected: uid != null && protectedUids.contains(uid),
+      ));
+    }
+    return result;
+  }
+
+  /// Бумаги инвестиционного счёта: что лежит и сколько это стоит.
+  ///
+  /// Отдельно от [positions] намеренно. Тот метод обслуживает торговый
+  /// контур и оставляет только фьючерсы: остальное там не торгуется, и
+  /// показывать его в блоке «На бирже» значило бы мешать два разных счёта.
+  /// Здесь наоборот — фьючерсов нет, а есть акции, фонды и облигации, то
+  /// есть ровно то, из чего собирается пакет капитала.
+  ///
+  /// Деньги в список не попадают: свободный остаток — это не позиция, и
+  /// доля «рубли» в целевом составе не считается. Ребаланс работает с тем,
+  /// что куплено.
+  Future<List<TInvestHolding>> holdings(String accountId) async {
+    final json = await _call(
+      _sandbox ? 'SandboxService' : 'OperationsService',
+      _sandbox ? 'GetSandboxPortfolio' : 'GetPortfolio',
+      {'accountId': accountId},
+    );
+
+    const kinds = {'share', 'etf', 'bond'};
+    final result = <TInvestHolding>[];
+    for (final item in json['positions'] as List<dynamic>? ?? const []) {
+      final row = item as Map<String, dynamic>;
+      if (!kinds.contains(row['instrumentType'] as String? ?? '')) continue;
+      final quantity = quotationToDouble(row['quantity']);
+      if (quantity == 0) continue;
+      final price = quotationToDouble(row['currentPrice']);
+      result.add(TInvestHolding(
+        symbol: await _tickerOf(
+          row['instrumentUid'] as String?,
+          row['figi'] as String?,
+        ),
+        quantity: quantity,
+        averagePrice: quotationToDouble(row['averagePositionPrice']),
+        marketPrice: price,
+        // Стоимость считается ценой на количество: отдельного поля со
+        // стоимостью позиции у брокера нет. Цена приходит суммой в валюте
+        // (MoneyValue), а не процентом номинала, поэтому умножение верно и
+        // для облигаций.
+        //
+        // Накопленный купонный доход сюда не входит — его брокер отдаёт
+        // отдельно. Для долей это правильно: НКД не часть цены бумаги, а
+        // деньги, которые придут отдельно.
+        marketValue: price * quantity,
       ));
     }
     return result;
