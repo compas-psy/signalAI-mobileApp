@@ -26,6 +26,11 @@ enum IdeaState {
   /// Срок сигнала истёк — исполнять нельзя.
   expired('Expired', 'Срок сигнала истёк'),
 
+  /// Рынок ушёл без нас: цена отработала план, ни разу не зайдя в зону
+  /// входа. Это не «срок истёк» и не «замысел сломан» — сетап был верен,
+  /// но войти по нему было негде, и входить сейчас уже некуда.
+  missed('Missed', 'Рынок ушёл без входа: цена отработала план мимо зоны'),
+
   /// Выполнено kill-условие — исполнять нельзя.
   invalidated('Invalidated', 'Замысел сломан kill-условием');
 
@@ -48,6 +53,7 @@ enum IdeaState {
       this == IdeaState.closed ||
       this == IdeaState.skipped ||
       this == IdeaState.expired ||
+      this == IdeaState.missed ||
       this == IdeaState.invalidated;
 
   /// Живая идея, которая требует внимания сегодня.
@@ -56,18 +62,25 @@ enum IdeaState {
 
   /// Разрешённые переходы (ТЗ §8, колонка «Переход»).
   Set<IdeaState> get allowedNext => switch (this) {
-        IdeaState.watch => {IdeaState.ready, IdeaState.expired, IdeaState.invalidated},
+        IdeaState.watch => {
+            IdeaState.ready,
+            IdeaState.expired,
+            IdeaState.missed,
+            IdeaState.invalidated,
+          },
         IdeaState.ready => {
             IdeaState.triggered,
             IdeaState.watch,
             IdeaState.skipped,
             IdeaState.expired,
+            IdeaState.missed,
             IdeaState.invalidated,
           },
         IdeaState.triggered => {
             IdeaState.active,
             IdeaState.skipped,
             IdeaState.expired,
+            IdeaState.missed,
             IdeaState.invalidated,
           },
         IdeaState.active => {IdeaState.closed},
@@ -75,6 +88,7 @@ enum IdeaState {
         IdeaState.closed ||
         IdeaState.skipped ||
         IdeaState.expired ||
+        IdeaState.missed ||
         IdeaState.invalidated =>
           const {},
       };

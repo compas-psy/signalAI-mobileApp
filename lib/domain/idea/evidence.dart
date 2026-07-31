@@ -44,7 +44,15 @@ enum AnnotationType {
   levelInvalidation('Инвалидация'),
   volumeClimax('Кульминация объёма'),
   oiBuildup('Набор позиции'),
-  eventMarker('Событие');
+  eventMarker('Событие'),
+
+  /// Момент, в который движок посчитал идею.
+  ///
+  /// Без него график не отвечает на первый же вопрос, который задаёт
+  /// владелец: на какой свече это появилось. Все уровни плана нарисованы
+  /// от края до края, и понять, что было «до», а что «после», нельзя —
+  /// а именно от этого зависит, отработал сетап или ещё нет.
+  planCreated('Идея');
 
   const AnnotationType(this.label);
 
@@ -71,6 +79,7 @@ enum AnnotationType {
         AnnotationType.paRejection ||
         AnnotationType.paFailedBreakout =>
           ChartLayer.priceAction,
+        AnnotationType.planCreated ||
         AnnotationType.levelEntry ||
         AnnotationType.levelStop ||
         AnnotationType.levelTarget ||

@@ -129,6 +129,7 @@ def build_default_scheduler(
     universe_every: timedelta = timedelta(hours=6),
     ingest_every: timedelta = timedelta(minutes=15),
     review_every: timedelta = timedelta(hours=6),
+    supervise_every: timedelta = timedelta(minutes=15),
     scan_every: timedelta = timedelta(minutes=15),
     portfolio_every: timedelta = timedelta(hours=24),
     fetch=None,
@@ -151,6 +152,7 @@ def build_default_scheduler(
     from ..market.investments import classify_funds, sync_investments
     from ..market.universe import review_universe, sync_crypto, sync_futures
     from ..pipeline.scan import scan as run_scan
+    from ..pipeline.supervise import supervise as run_supervise
     from ..portfolio.build import build_all
 
     scheduler = Scheduler()
@@ -198,6 +200,24 @@ def build_default_scheduler(
             detail += f", отказов {len(failed)}: " + "; ".join(
                 f"{r.instrument_id} — {r.error}" for r in failed[:3]
             )
+        return detail
+
+    def supervise(session: Session) -> str:
+        # Идёт до скана, а не после: идея, которую рынок уже обогнал, не
+        # должна участвовать в отборе дня и занимать место живой.
+        report = run_supervise(session)
+        detail = f"проверено {report.checked}"
+        if report.no_data:
+            detail += f", без баров {report.no_data}"
+        if report.changed:
+            detail += (
+                f", закрыто {report.changed}"
+                f" (обогнали {report.missed}, сломано {report.cancelled},"
+                f" по сроку {report.timed_out})"
+            )
+            detail += "; " + "; ".join(report.details[:2])
+        else:
+            detail += ", живых изменений нет"
         return detail
 
     def scan(session: Session) -> str:
@@ -251,6 +271,7 @@ def build_default_scheduler(
     scheduler.add("universe", universe_every, universe)
     scheduler.add("ingest", ingest_every, ingest)
     scheduler.add("review", review_every, review)
+    scheduler.add("supervise", supervise_every, supervise)
     scheduler.add("scan", scan_every, scan)
     scheduler.add("portfolio", portfolio_every, portfolio)
     return scheduler

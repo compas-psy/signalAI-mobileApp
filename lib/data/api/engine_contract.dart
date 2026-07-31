@@ -240,6 +240,7 @@ abstract final class EngineContract {
       // `tradable` не читалось вовсе: сервер писал «идея информационная»,
       // а экран всё равно предлагал подтвердить.
       sizingBlocker: _sizingBlocker(j['sizing'] as Map<String, dynamic>?),
+      closingReason: j['closing_reason'] as String? ?? '',
     );
   }
 
@@ -417,7 +418,11 @@ abstract final class EngineContract {
         'ACTIVE' || 'PARTIAL' || 'SCALED' => IdeaState.active,
         'CLOSED' || 'STOPPED' || 'TARGET_REACHED' => IdeaState.closed,
         'CANCELLED' || 'REJECTED' => IdeaState.invalidated,
-        'EXPIRED' => IdeaState.expired,
+        // Рынок ушёл без входа — своё состояние, а не «срок истёк».
+        // Раньше оба падали в watch, и обогнанная рынком идея неделю
+        // выглядела живой: «Watch, сигнал живёт 4 дн 6 ч» под ценой у TP3.
+        'MISSED' => IdeaState.missed,
+        'EXPIRED' || 'TIMED_OUT' => IdeaState.expired,
         'SKIPPED' => IdeaState.skipped,
         _ => IdeaState.watch,
       };

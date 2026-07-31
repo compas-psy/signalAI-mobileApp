@@ -79,6 +79,7 @@ class Idea {
     this.riskChanged = false,
     this.stateChangedAt,
     this.sizingBlocker = '',
+    this.closingReason = '',
   });
 
   final String id;
@@ -124,6 +125,13 @@ class Idea {
   /// пересчёта валют»), и требуют они разного. Пересказ на клиенте склеил
   /// бы их в одно «нельзя».
   final String sizingBlocker;
+
+  /// Почему идея закончилась — дословно из журнала переходов движка.
+  ///
+  /// Состояние отвечает «что», причина — «почему». «Рынок ушёл без нас» без
+  /// пояснения не отличить от «срок истёк», а действия за ними разные:
+  /// первое значит, что сетап отработал и входить уже некуда.
+  final String closingReason;
 
   /// Идея, которую нельзя показывать вовсе (ТЗ §14.2: ниже 65).
   bool get showable => score.value >= QualityScore.minimumToShow;
@@ -188,6 +196,26 @@ class Idea {
     final plan = this.plan;
     if (plan == null) return annotations;
     final extra = <ChartAnnotation>[
+      // Момент рождения идеи. Первое, о чём спрашивают, глядя на график:
+      // на какой свече это появилось. Уровни плана тянутся от края до края
+      // и сами по себе не отделяют «до» от «после» — а именно по этому
+      // видно, отработал сетап или ещё нет.
+      if (!present.contains(AnnotationType.planCreated))
+        ChartAnnotation(
+          id: 'plan-created',
+          type: AnnotationType.planCreated,
+          timeframe: timeframes.isEmpty ? '' : timeframes.last,
+          startTime: createdAt,
+          endTime: createdAt,
+          confidence: 1,
+          evidenceId: 'plan',
+          detectorVersion: 'plan-local',
+          label: 'Идея',
+          // Ниже уровней плана: вертикаль момента и горизонтали цен не
+          // спорят за одни пиксели, а стоп обязан остаться самым верхним
+          // объектом разметки.
+          displayPriority: 70,
+        ),
       if (!present.contains(AnnotationType.levelEntry))
         ChartAnnotation(
           id: 'plan-entry',

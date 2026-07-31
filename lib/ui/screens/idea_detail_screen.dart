@@ -118,6 +118,15 @@ class _IdeaDetailScreenState extends State<IdeaDetailScreen> {
               const SizedBox(height: 12),
             ],
             IdeaDetailHead(signal: signal, idea: idea, now: now),
+            // Чем закончилась идея — до графика, а не после.
+            //
+            // Владелец открывает разбор, видит цену у третьей цели и первым
+            // делом спрашивает: это ещё сделка или уже история. Отвечать
+            // обязан экран, а не арифметика в голове по картинке.
+            if (idea != null && idea.closingReason.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              _ClosedNote(state: idea.state, reason: idea.closingReason),
+            ],
             const SizedBox(height: 14),
             IdeaChartCard(
               signal: signal,
@@ -704,4 +713,42 @@ List<CheckResult> _checks(AppController controller, Idea idea) {
 double? _parsePrice(String? raw) {
   if (raw == null || raw.isEmpty) return null;
   return double.tryParse(raw.replaceAll(' ', '').replaceAll(',', '.'));
+}
+
+/// Полоса «идея закончилась» с причиной из журнала движка.
+///
+/// Стоит до графика намеренно. Владелец открывает разбор, видит цену у
+/// третьей цели и первым делом спрашивает: это ещё сделка или уже история.
+/// Ответ обязан встретить его сразу, а не обнаружиться после прокрутки —
+/// и обязан быть причиной, а не одним словом состояния: «рынок ушёл без
+/// нас» и «срок истёк» требуют разного.
+class _ClosedNote extends StatelessWidget {
+  const _ClosedNote({required this.state, required this.reason});
+
+  final IdeaState state;
+  final String reason;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = StateBadge.colorOf(state);
+    return Container(
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 11),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.10),
+        border: Border.all(color: color.withValues(alpha: 0.35)),
+        borderRadius: BorderRadius.circular(R.card),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            state.meaning,
+            style: T.body(12, weight: 700, color: color, height: 1.35),
+          ),
+          const SizedBox(height: 4),
+          Text(reason, style: T.body(11.5, color: C.textSecondary, height: 1.45)),
+        ],
+      ),
+    );
+  }
 }

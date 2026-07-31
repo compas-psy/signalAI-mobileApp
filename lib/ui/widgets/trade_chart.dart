@@ -196,7 +196,8 @@ _Geometry _geometry(AnnotationType type) => switch (type) {
       AnnotationType.paFailedBreakout =>
         _Geometry.marker,
       AnnotationType.volumeClimax || AnnotationType.oiBuildup => _Geometry.strip,
-      AnnotationType.eventMarker => _Geometry.moment,
+      AnnotationType.eventMarker || AnnotationType.planCreated =>
+        _Geometry.moment,
     };
 
 class _ChartPainter extends CustomPainter {
@@ -465,6 +466,44 @@ class _ChartPainter extends CustomPainter {
   }
 
   /// Чип таймфрейма в левом верхнем углу.
+  /// Подпись вертикальной метки момента.
+  ///
+  /// Прижимается к краю, если метка у самого борта: подпись, уехавшая за
+  /// границу графика, не читается вовсе, а именно она и объясняет линию.
+  void _momentLabel(Canvas canvas, String text, double cx, Color color, double alpha) {
+    final painter = TextPainter(
+      text: TextSpan(
+        text: text,
+        style: TextStyle(
+          fontFamily: 'JetBrains Mono',
+          fontSize: 8.5,
+          fontWeight: FontWeight.w700,
+          fontVariations: const [FontVariation('wght', 700)],
+          color: color.withValues(alpha: alpha),
+          height: 1,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    final width = painter.width + 8;
+    var left = cx + 3;
+    if (left + width > _plotRight) left = cx - 3 - width;
+    if (left < _plotLeft) left = _plotLeft;
+    final rect = Rect.fromLTWH(left, _padTop + 1, width, 13);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(rect, const Radius.circular(3)),
+      Paint()..color = const Color(0xE60B0B0D),
+    );
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(rect, const Radius.circular(3)),
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1
+        ..color = color.withValues(alpha: alpha * 0.5),
+    );
+    painter.paint(canvas, Offset(left + 4, _padTop + 3));
+  }
+
   void _tag(Canvas canvas, String text, Offset topLeft) {
     final painter = TextPainter(
       text: TextSpan(
@@ -694,6 +733,12 @@ class _ChartPainter extends CustomPainter {
             dash: 3,
             gap: 4,
           );
+          // Момент без подписи — просто пунктир поперёк графика: видно, что
+          // что-то произошло, и невозможно понять что. Именно на этом
+          // спотыкался вопрос «на какой свече сформировалась идея».
+          if (a.label.isNotEmpty) {
+            _momentLabel(canvas, a.label, cx, color, alpha);
+          }
       }
     }
   }

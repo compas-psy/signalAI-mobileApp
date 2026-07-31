@@ -19,7 +19,7 @@ from fastapi.testclient import TestClient
 from app.db import get_db
 from app.main import app
 from app.models import Bar, IdeaEvent, Instrument, TradeIdea
-from app.models.enums import AssetClass, Venue
+from app.models.enums import AssetClass, IdeaStatus, Venue
 from tests.conftest import idea_kwargs
 
 
@@ -438,3 +438,34 @@ def test_ruble_idea_of_the_old_format_is_untouched(client, session, instrument, 
     sizing = client.get(f"/api/v1/ideas/{idea.id}").json()["sizing"]
     assert sizing["tradable"] is True
     assert sizing["quote_currency"] == "RUB"
+
+
+def test_closed_idea_says_why_not_just_that(client, session, instrument, now):
+    """«Рынок обогнал» — это отметка. Владельцу нужно, что именно случилось."""
+    from app.journal.lifecycle import TransitionRequest, transition
+
+    idea = TradeIdea(**idea_kwargs(instrument.instrument_id, now))
+    session.add(idea)
+    session.flush()
+    transition(
+        session,
+        idea,
+        TransitionRequest(
+            new_status=IdeaStatus.MISSED,
+            reason_code="price_left_without_entry",
+            reason_detail="цена дошла до дальней цели 88000, ни разу не зайдя "
+            "в зону входа 90000-90200: сетап отработал без нас",
+        ),
+    )
+    session.flush()
+
+    body = client.get(f"/api/v1/ideas/{idea.id}").json()
+    assert body["status"] == "MISSED"
+    assert "не зайдя в зону входа" in body["closing_reason"]
+
+
+def test_live_idea_has_no_closing_reason(client, session, instrument, now):
+    idea = TradeIdea(**idea_kwargs(instrument.instrument_id, now))
+    session.add(idea)
+    session.flush()
+    assert client.get(f"/api/v1/ideas/{idea.id}").json()["closing_reason"] == ""

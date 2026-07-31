@@ -519,6 +519,10 @@ class AppController extends ChangeNotifier {
   /// Свечи запрошены, но ещё не пришли. Нужно экрану: без этого переключение
   /// таймфрейма выглядит как поломка — картинка пропала и ничего не сказано.
   bool ideaChartLoading(Idea idea) {
+    // Таймфреймы ещё не приехали — значит ждём полную карточку. Это тоже
+    // загрузка, и молчать о ней нельзя: иначе на месте графика висит
+    // «недоступен», хотя запрос идёт.
+    if (idea.timeframes.isEmpty) return true;
     final key = _chartKey(idea.id, ideaTimeframe(idea));
     return _ideaChartsAsked.contains(key) &&
         !_ideaCharts.containsKey(key) &&
@@ -541,6 +545,14 @@ class AppController extends ChangeNotifier {
   /// не делает: разбор перестраивается на каждом кадре анимации, и запрос на
   /// кадр положил бы и сервер, и батарею.
   Future<void> loadIdeaChart(Idea idea) async {
+    // Пока таймфреймы неизвестны, грузить нечего.
+    //
+    // Лента отдаёт сводки без context/setup/trigger, и запасной «1h»
+    // приводил к тому, что первым загружался часовой ряд, а после
+    // подгрузки полной карточки сетапным оказывался 4h — и на экране
+    // оставались часовые свечи, которые никто уже не переспрашивал.
+    // Отметки «спрошено» здесь тоже не ставим: запрос ещё предстоит.
+    if (idea.timeframes.isEmpty) return;
     final timeframe = ideaTimeframe(idea);
     final key = _chartKey(idea.id, timeframe);
     if (_ideaChartsAsked.contains(key)) return;

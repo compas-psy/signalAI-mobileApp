@@ -141,6 +141,50 @@ void main() {
     expect(picked, isEmpty);
   });
 
+  testWidgets('подсвечен тот таймфрейм, чьи свечи нарисованы', (tester) async {
+    // Карточка открывается сводкой, у которой таймфреймов ещё нет, и первый
+    // график грузится часовым. Потом приезжает полная карточка, сетапным
+    // оказывается 4h — и тулбар подсвечивал «4h» поверх часовых свечей,
+    // споря с тегом «1h», который график честно рисует в своём углу.
+    final idea = EngineContract.idea(detail());
+    await tester.pumpWidget(
+      Directionality(
+        textDirection: TextDirection.ltr,
+        child: MediaQuery(
+          data: const MediaQueryData(size: Size(400, 900)),
+          child: Align(
+            alignment: Alignment.topCenter,
+            child: SizedBox(
+              width: 380,
+              child: IdeaChartCard(
+                signal: EngineContract.signalFrom(idea),
+                idea: idea,
+                chart: candles('1h'),
+                // Экран просит 4h, источник дал часовые.
+                timeframe: '4h',
+                onTimeframe: (_) {},
+                available: const {ChartLayer.candles, ChartLayer.levels},
+                visible: const {ChartLayer.candles, ChartLayer.levels},
+                highlight: const {},
+                onToggle: (_) {},
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    final pill = tester.widget<Text>(
+      find.descendant(of: find.byType(IdeaChartCard), matching: find.text('1h')),
+    );
+    // Активная пилюля жирнее и светлее — это и есть «1h», а не «4h».
+    expect(pill.style?.fontWeight, FontWeight.w600);
+    final other = tester.widget<Text>(
+      find.descendant(of: find.byType(IdeaChartCard), matching: find.text('4h')),
+    );
+    expect(other.style?.fontWeight, isNot(FontWeight.w600));
+  });
+
   testWidgets('отказ источника назван, а не показан пустым местом',
       (tester) async {
     final idea = EngineContract.idea(detail());

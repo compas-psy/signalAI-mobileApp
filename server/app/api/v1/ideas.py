@@ -20,7 +20,7 @@ from pydantic import Field
 from sqlalchemy.orm import Session
 
 from ...db import get_db
-from ...models import Instrument, TradeIdea
+from ...models import IdeaEvent, Instrument, TradeIdea
 from ...models.enums import IdeaStatus, QualityStatus, Strategy
 from ...schemas.common import ApiModel
 from ...schemas.ideas import (
@@ -66,6 +66,28 @@ def _summary(idea: TradeIdea, symbol: str = "") -> IdeaSummary:
         signal_time=idea.signal_time,
         expires_at=idea.expires_at,
     )
+
+
+def _closing_reason(db: Session, idea: TradeIdea) -> str:
+    """Почему идея закончилась — дословно из журнала переходов.
+
+    Состояние отвечает «что», а не «почему». «Рынок обогнал» на экране — это
+    отметка; владельцу нужно прочитать, что цена дошла до дальней цели, ни
+    разу не зайдя в зону входа. Пересказывать это в интерфейсе нельзя:
+    журнал неизменяем, а пересказ разошёлся бы с ним на первой же правке.
+    """
+    if not IdeaStatus(idea.status).is_terminal:
+        return ""
+    row = db.execute(
+        select(IdeaEvent.reason_detail, IdeaEvent.reason_code)
+        .where(IdeaEvent.idea_id == idea.id)
+        .order_by(IdeaEvent.sequence.desc())
+        .limit(1)
+    ).first()
+    if row is None:
+        return ""
+    detail, code = row
+    return str(detail or code or "")
 
 
 def _decimal_or_none(raw) -> Decimal | None:
@@ -283,6 +305,7 @@ def get_idea(idea_id: UUID, db: Session = Depends(get_db)) -> IdeaDetail:
         engine_version=idea.engine_version,
         feature_version=idea.feature_version,
         was_presented=idea.was_presented,
+        closing_reason=_closing_reason(db, idea),
     )
 
 

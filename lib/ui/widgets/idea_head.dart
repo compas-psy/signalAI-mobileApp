@@ -27,6 +27,9 @@ class StateBadge extends StatelessWidget {
         IdeaState.closed => C.muted,
         IdeaState.skipped => C.muted,
         IdeaState.expired => C.warning,
+        // Рынок ушёл без нас — предупреждение, а не поломка: сетап был
+        // верен, войти было негде.
+        IdeaState.missed => C.warning,
         IdeaState.invalidated => C.red,
       };
 
@@ -212,11 +215,27 @@ class IdeaDetailHead extends StatelessWidget {
         idea!.timeframes.join(' / ')
       else if (signal.horizonLabel.isNotEmpty)
         signal.horizonLabel,
+      ?_born(),
       ?_life(),
       if (idea != null) 'стратегия ${idea!.strategyVersion}',
     ];
     return parts.join(' · ');
   }
+
+  /// Когда идея посчитана.
+  ///
+  /// «Сигнал живёт 4 дн 6 ч» — это обратный отсчёт, а не точка отсчёта: по
+  /// нему нельзя понять, что на графике произошло **после** появления идеи.
+  /// А именно это и решает, отработал сетап или ещё нет.
+  String? _born() {
+    final at = idea?.createdAt;
+    if (at == null) return null;
+    final local = at.toLocal();
+    return 'идея от ${_two(local.day)}.${_two(local.month)} '
+        '${_two(local.hour)}:${_two(local.minute)}';
+  }
+
+  static String _two(int v) => v.toString().padLeft(2, '0');
 
   /// Сколько живёт сигнал. Срок берётся у идеи, а при её отсутствии — у
   /// сигнала: это одно и то же время, пришедшее двумя путями.

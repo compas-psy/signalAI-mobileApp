@@ -262,6 +262,7 @@ class _ReadinessChip extends StatelessWidget {
       IdeaState.ready => (label: 'ждём триггер', color: C.muted),
       IdeaState.watch => (label: 'не исполнять', color: C.muted),
       IdeaState.expired => (label: 'срок истёк', color: C.warning),
+      IdeaState.missed => (label: 'рынок ушёл без нас', color: C.warning),
       IdeaState.invalidated => (label: 'замысел сломан', color: C.red),
       IdeaState.skipped => (label: 'пропущена', color: C.muted),
       IdeaState.closed => (label: 'закрыта', color: C.muted),
