@@ -16,6 +16,7 @@ import pytest
 from app.portfolio.stats import (
     Constraints,
     ReturnPanel,
+    annualise_mean,
     block_bootstrap,
     build_panel,
     optimise_to_volatility,
@@ -25,7 +26,9 @@ from app.portfolio.stats import (
     project_with_groups,
     resampled_weights,
     shrunk_covariance,
+    shrunk_mean,
 )
+from app.portfolio.build import _drop_unstable
 from app.portfolio.walkforward import judge, walk_forward
 
 
@@ -265,3 +268,136 @@ def test_осмысленная_проверка_требует_нескольк
     assert len(report.folds) == 3
     verdict = judge(report, drawdown_limit=0.9)
     assert any("грубая" in w for w in verdict.warnings)
+
+
+# ── Сжатие ожидаемой доходности (Jorion, Bayes–Stein) ────────────────────
+
+
+def _mu_cov(returns):
+    from app.portfolio.stats import annualise_cov, shrunk_covariance
+
+    return annualise_cov(shrunk_covariance(returns))
+
+
+def test_сжатие_тянет_средние_к_портфелю_минимальной_дисперсии():
+    """Выборочное среднее — худший вход оптимизации, и его надо сжимать.
+
+    Ковариацию мы сжимали с самого начала, а среднее брали выборочным. Это
+    не мелочь, а несимметричность в самом чувствительном месте.
+    """
+    rng = np.random.default_rng(3)
+    returns = np.column_stack([
+        rng.normal(0.0002, 0.004, 500),
+        rng.normal(0.0006, 0.012, 500),
+        rng.normal(-0.0001, 0.010, 500),
+    ])
+    sample = annualise_mean(returns)
+    shrunk = shrunk_mean(returns, _mu_cov(returns))
+
+    # Разброс сжатых оценок строго меньше выборочного: в этом весь смысл.
+    assert shrunk.std() < sample.std()
+    # И сжатие не выносит оценки за пределы исходного разброса.
+    assert shrunk.min() >= sample.min() - 1e-9
+    assert shrunk.max() <= sample.max() + 1e-9
+
+
+def test_сжатие_сохраняет_порядок_бумаг():
+    """Выпуклая комбинация с общей точкой: кто был выше — выше и остался.
+
+    Это принципиально. Если бы сжатие меняло порядок, оно меняло бы и
+    решение оптимизатора — то есть было бы не стабилизацией оценки, а
+    подменой рыночной картины.
+    """
+    rng = np.random.default_rng(4)
+    returns = np.column_stack([
+        rng.normal(0.0008, 0.006, 400),
+        rng.normal(0.0003, 0.006, 400),
+        rng.normal(-0.0004, 0.006, 400),
+    ])
+    sample = annualise_mean(returns)
+    shrunk = shrunk_mean(returns, _mu_cov(returns))
+    assert list(np.argsort(sample)) == list(np.argsort(shrunk))
+
+
+def test_короткое_окно_сжимается_сильнее_длинного():
+    """Чем меньше наблюдений, тем меньше веры выборочному среднему."""
+    rng = np.random.default_rng(6)
+    long_returns = np.column_stack([
+        rng.normal(0.0005, 0.008, 1000),
+        rng.normal(0.0001, 0.008, 1000),
+        rng.normal(0.0003, 0.008, 1000),
+    ])
+    short_returns = long_returns[:120]
+
+    def pull(returns):
+        sample = annualise_mean(returns)
+        shrunk = shrunk_mean(returns, _mu_cov(returns))
+        # Доля пути, пройденного к общей точке.
+        return float(np.mean(np.abs(shrunk - sample)) / max(sample.std(), 1e-12))
+
+    assert pull(short_returns) > pull(long_returns)
+
+
+def test_сжатие_не_ломается_на_вырожденной_ковариации():
+    """Две одинаковые бумаги — матрица вырождена, а ответ нужен всё равно."""
+    rng = np.random.default_rng(8)
+    column = rng.normal(0.0004, 0.007, 300)
+    returns = np.column_stack([column, column])
+    result = shrunk_mean(returns, _mu_cov(returns))
+    assert np.all(np.isfinite(result))
+    assert result.size == 2
+
+
+def test_на_одном_активе_сжимать_нечего():
+    rng = np.random.default_rng(10)
+    returns = rng.normal(0.0004, 0.007, (300, 1))
+    sample = annualise_mean(returns)
+    shrunk = shrunk_mean(returns, _mu_cov(returns))
+    assert shrunk == pytest.approx(sample, abs=1e-6)
+
+
+def test_сжатие_среднего_не_меняет_состав_при_целевой_волатильности():
+    """Свойство, которое нельзя не знать: под целевой волатильностью сжатие
+    среднего — математический ноль.
+
+    Веса дают в сумме единицу, поэтому общая добавка к среднему из задачи
+    выпадает; остаётся умножение среднего на (1 − k), а это то же самое, что
+    деление неприятия риска на (1 − k). Целевая волатильность подбирает
+    неприятие риска заново — и приводит ровно в ту же точку границы.
+
+    Тест стоит здесь, чтобы никто не «улучшил» устойчивость, добавив сжатие
+    ещё раз и посчитав задачу решённой.
+    """
+    rng = np.random.default_rng(2026)
+    returns = rng.normal(0.0003, 0.010, (504, 8))
+    cov = _mu_cov(returns)
+    constraints = Constraints(lo=np.zeros(8), hi=np.full(8, 0.30), groups=())
+
+    sample = optimise_to_volatility(
+        annualise_mean(returns), cov, constraints, target_volatility=0.12
+    )
+    shrunk = optimise_to_volatility(
+        shrunk_mean(returns, cov), cov, constraints, target_volatility=0.12
+    )
+    assert np.abs(sample - shrunk).sum() == pytest.approx(0.0, abs=1e-6)
+
+
+def test_позиция_неотличимая_от_шума_из_состава_убирается():
+    """Разброс веса больше самого веса — это не доля, а «мы не знаем».
+
+    Ресэмплинг усредняет сотню составов, и такая бумага в среднем выглядит
+    прилично: 6% в одной выборке, ноль в другой, 12% в третьей.
+    """
+    weights = np.array([0.5, 0.3, 0.2])
+    dispersion = np.array([0.05, 0.02, 0.4])
+    result = _drop_unstable(weights, dispersion)
+    assert result[2] == 0.0
+    assert result[0] == 0.5 and result[1] == 0.3
+
+
+def test_если_устойчивых_позиций_не_осталось_состав_не_обнуляется():
+    """«Не уверены ни в чём» — повод сказать это на проверке, а не молча
+    отдать пустой портфель."""
+    weights = np.array([0.5, 0.5])
+    dispersion = np.array([0.9, 0.9])
+    assert np.array_equal(_drop_unstable(weights, dispersion), weights)

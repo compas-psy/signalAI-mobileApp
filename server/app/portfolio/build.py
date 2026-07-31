@@ -43,15 +43,15 @@ from ..models.enums import AssetClass, PackageSize, RiskProfile, Timeframe
 from . import fundamentals as fund
 from .stats import (
     Constraints,
-    project_with_groups,
     ReturnPanel,
+    annualise_cov,
     build_panel,
     optimise_to_volatility,
     performance,
+    project_with_groups,
     resampled_weights,
     shrunk_covariance,
-    annualise_cov,
-    annualise_mean,
+    shrunk_mean,
 )
 from .walkforward import judge, walk_forward
 
@@ -405,6 +405,28 @@ def _reachable(hi: np.ndarray, groups: tuple[tuple[np.ndarray, float], ...]) -> 
     return total
 
 
+def _drop_unstable(
+    weights: np.ndarray, dispersion: np.ndarray, *, ratio: float = 1.0
+) -> np.ndarray:
+    """Убрать позиции, чей вес неотличим от собственного разброса.
+
+    ``ratio`` — во сколько раз разброс должен превышать вес, чтобы позицию
+    считать случайной. Единица означает буквально «стандартное отклонение
+    веса больше самого веса»: такая доля с равным успехом могла оказаться
+    нулём.
+
+    Если после отсева не остаётся хотя бы двух бумаг, состав возвращается
+    как был: «не уверены ни в чём» — это повод сказать об этом на проверке
+    на истории, а не молча отдать пустой портфель.
+    """
+    if weights.size == 0 or dispersion.size != weights.size:
+        return weights
+    keep = ~((dispersion > ratio * np.maximum(weights, 1e-12)) & (weights > 0))
+    if int(keep.sum()) < MIN_POSITIONS:
+        return weights
+    return np.where(keep, weights, 0.0)
+
+
 def _trim(
     weights: np.ndarray, count: tuple[int, int], constraints: Constraints
 ) -> np.ndarray:
@@ -568,7 +590,16 @@ def build_package(
         result.reason = "оптимизатор не сошёлся ни на одной выборке"
         return result
 
-    weights = _trim(resampled.weights, count, constraints)
+    # Позиции, вес которых по бутстрэп-выборкам скачет сильнее собственной
+    # величины, из состава убираются.
+    #
+    # Ресэмплинг Мишо усредняет сотню составов, и в среднем такая бумага
+    # выглядит прилично: 6% там, ноль тут, 12% в третьей выборке — среднее
+    # 6%. Но это не «доля 6%», а «мы не знаем, нужна ли она вообще».
+    # Разброс здесь считался с самого начала и никуда не применялся — а он
+    # и есть честная мера устойчивости позиции.
+    stable = _drop_unstable(resampled.weights, resampled.dispersion)
+    weights = _trim(stable, count, constraints)
     if abs(float(weights.sum())) < 1e-6:
         # Проекция вернула нули: потолки классов профиля вместе не дают 100%
         # на отобранных бумагах. Это состояние вселенной, а не приговор
@@ -586,8 +617,10 @@ def build_package(
         # Окно горизонта применяется и внутри проверки: иначе проверялся бы
         # не тот способ счёта, которым получен показанный состав.
         piece = train if window == 0 or train.shape[0] <= window else train[-window:]
-        mu = annualise_mean(piece)
         cov = annualise_cov(shrunk_covariance(piece))
+        # Сжатое среднее, а не выборочное: проверка обязана мерить тот же
+        # способ счёта, которым получен показанный состав.
+        mu = shrunk_mean(piece, cov)
         w = optimise_to_volatility(
             mu, cov, constraints, target_volatility=profile.target_volatility
         )
@@ -632,7 +665,12 @@ def build_package(
         f"{report.summary}"
     )
 
-    mu_annual = annualise_mean(working.values)
+    # На экране — то же число, которым считал оптимизатор. Показать рядом с
+    # долей выборочное среднее значило бы объяснять вес не тем, из чего он
+    # получен: сжатие меняет эти числа заметно, и расхождение заметили бы.
+    mu_annual = shrunk_mean(
+        working.values, annualise_cov(shrunk_covariance(working.values))
+    )
     for i, instrument_id in enumerate(working.columns):
         if weights[i] < 1e-6:
             continue

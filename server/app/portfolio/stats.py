@@ -146,6 +146,56 @@ def annualise_mean(returns: np.ndarray, periods_per_year: int = 252) -> np.ndarr
     return returns.mean(axis=0) * periods_per_year
 
 
+def shrunk_mean(
+    returns: np.ndarray, cov: np.ndarray, *, periods_per_year: int = 252
+) -> np.ndarray:
+    """Ожидаемая доходность со сжатием к портфелю минимальной дисперсии.
+
+    Оценка Джориона (Bayes–Stein, 1986). Ковариацию мы сжимали с самого
+    начала, а среднее брали выборочным — и это была не мелочь, а
+    несимметричность в самом чувствительном месте. Выборочное среднее —
+    худший вход оптимизации: его стандартная ошибка убывает как корень из
+    длины окна, и на двух годах дневных данных разница «12% годовых» и «2%
+    годовых» статистически неразличима. Оптимизатор же принимает её за
+    факт и уводит вес туда, где среднее случайно оказалось выше.
+
+    Цель сжатия — доходность портфеля минимальной дисперсии, а не ноль и не
+    среднее по бумагам. Ноль был бы утверждением «все активы бесперспективны»,
+    среднее по бумагам зависит от того, сколько каких бумаг попало в отбор.
+    Портфель минимальной дисперсии — единственная точка, которую данные
+    задают сами и которая не зависит от состава выборки.
+
+    Интенсивность не подбирается: она выводится из данных. Чем больше бумаг
+    и короче окно — тем сильнее сжатие; чем сильнее бумаги разошлись
+    относительно ошибки оценки — тем слабее. Порядок бумаг сжатие сохраняет:
+    это выпуклая комбинация с общей точкой, и бумага, которая была выше
+    другой, выше и останется.
+    """
+    T, N = returns.shape
+    mu = annualise_mean(returns, periods_per_year)
+    if T < 2 or N == 0:
+        return mu
+    inv = np.linalg.pinv(cov)
+    ones = np.ones(N)
+    denominator = float(ones @ inv @ ones)
+    if not np.isfinite(denominator) or abs(denominator) < 1e-12:
+        return mu
+    # Доходность портфеля минимальной дисперсии — точка, к которой тянем.
+    grand = float(ones @ inv @ mu) / denominator
+    diff = mu - grand
+    # Квадратичная форма приводится к единицам одного периода. И среднее, и
+    # ковариация здесь годовые, а `T` считает дни: годовое расхождение,
+    # делённое на годовую дисперсию, даёт величину в 252 раза больше дневной,
+    # и сжатие обнулялось на любых данных. Ошибка была тихой — формула
+    # работала, просто всегда возвращала выборочное среднее.
+    spread = float(diff @ inv @ diff) / periods_per_year
+    if not np.isfinite(spread) or spread <= 0:
+        return np.full(N, grand)
+    intensity = (N + 2) / ((N + 2) + T * spread)
+    intensity = float(np.clip(intensity, 0.0, 1.0))
+    return (1.0 - intensity) * mu + intensity * grand
+
+
 def annualise_cov(cov: np.ndarray, periods_per_year: int = 252) -> np.ndarray:
     return cov * periods_per_year
 
@@ -452,9 +502,10 @@ def resampled_weights(
     # Подбирать его заново внутри каждой бутстрэп-выборки значило бы
     # усреднять портфели разного риска, а Michaud усредняет одинаковые.
     try:
+        full_cov = annualise_cov(shrunk_covariance(returns), periods_per_year)
         aversion = risk_aversion_for(
-            annualise_mean(returns, periods_per_year),
-            annualise_cov(shrunk_covariance(returns), periods_per_year),
+            shrunk_mean(returns, full_cov, periods_per_year=periods_per_year),
+            full_cov,
             constraints,
             target_volatility=target_volatility,
         )
@@ -466,8 +517,11 @@ def resampled_weights(
     warm: np.ndarray | None = None
     for _ in range(draws):
         sample = block_bootstrap(returns, rng, block=block)
-        mu = annualise_mean(sample, periods_per_year)
         cov = annualise_cov(shrunk_covariance(sample), periods_per_year)
+        # Сжатие внутри каждой выборки, а не один раз снаружи: бутстрэп для
+        # того и нужен, чтобы показать, насколько оценка гуляет, — а гуляет
+        # именно она, среднее по выборке.
+        mu = shrunk_mean(sample, cov, periods_per_year=periods_per_year)
         try:
             # Тёплый старт с прошлой выборки: соседние решения близки, и
             # спуск сходится за единицы шагов вместо десятков.
