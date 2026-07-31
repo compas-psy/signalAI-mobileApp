@@ -68,16 +68,23 @@ class IdeasScreen extends StatelessWidget {
       if (paper.isNotEmpty) ...[
         const _SectionLabel('Бумажные позиции'),
         for (final trade in paper)
-          PaperPositionCard(
-            trade: trade,
+          () {
             // Идея за сделкой есть не всегда: журнал ведёт и скринер на
-            // устройстве, у которого свои сигналы. Открывать нечего — так
-            // и говорим, а не молчим по нажатию.
-            idea: all.where((i) => i.id == trade.signalId).firstOrNull,
-            onOpenIdea: trade.signalId.isEmpty
-                ? null
-                : () => controller.openSignal(trade.signalId),
-          ),
+            // устройстве, у которого свои сигналы.
+            //
+            // Условие ровно одно — нашлась ли идея в выдаче. Раньше их было
+            // два: надпись смотрела на выдачу, а нажатие — на то, записан ли
+            // у сделки идентификатор. Сделка с идентификатором, но без идеи
+            // в выдаче открывала пустой разбор под подписью «идеи за ней
+            // нет». Ссылка ведёт туда, где что-то есть, или её нет вовсе.
+            final source = all.where((i) => i.id == trade.signalId).firstOrNull;
+            return PaperPositionCard(
+              trade: trade,
+              idea: source,
+              onOpenIdea:
+                  source == null ? null : () => controller.openSignal(source.id),
+            );
+          }(),
       ],
     ];
 
@@ -435,6 +442,16 @@ class PaperPositionCard extends StatelessWidget {
 
   final VoidCallback? onOpenIdea;
 
+  /// Откуда сделка и можно ли из неё куда-то перейти.
+  String _origin() {
+    final source = idea;
+    if (source != null) return 'из идеи ${source.strategy.label}';
+    if (trade.signalId.isEmpty) {
+      return 'заведена расчётом на устройстве — идеи за ней не записано';
+    }
+    return 'идеи за ней нет в текущей выдаче — открывать нечего';
+  }
+
   @override
   Widget build(BuildContext context) {
     final waiting = trade.status == PaperStatus.pending;
@@ -493,11 +510,12 @@ class PaperPositionCard extends StatelessWidget {
                 // Происхождение сделки названо прямо. Без этого позиция по
                 // тому же тикеру, что и идея движка, читается как «та самая
                 // идея» — а вход у неё другой.
-                ContextChip(
-                  idea != null
-                      ? 'из идеи ${idea!.strategy.label}'
-                      : 'из расчёта на устройстве — идеи движка за ней нет',
-                ),
+                //
+                // Причин «открывать нечего» две, и они разные: у сделки может
+                // не быть ссылки на идею вовсе, а может быть ссылка на идею,
+                // которой больше нет в выдаче. Первое — свойство сделки,
+                // второе — свойство ленты, и владелец вправе их различать.
+                ContextChip(_origin()),
               ],
             ),
           ],

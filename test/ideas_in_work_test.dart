@@ -11,6 +11,7 @@ library;
 
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:signalai/data/api/engine_contract.dart';
 import 'package:signalai/domain/ledger/signal_ledger.dart';
 import 'package:signalai/ui/screens/ideas_screen.dart';
 import 'package:signalai/ui/widgets/common.dart';
@@ -69,14 +70,28 @@ void main() {
     expect(find.textContaining('в позиции с'), findsNothing);
   });
 
-  testWidgets('сделка без идеи говорит об этом прямо', (tester) async {
+  testWidgets('сделка без записанной идеи говорит об этом прямо',
+      (tester) async {
     // Журнал ведёт и скринер на устройстве: позиция по тому же тикеру, что и
     // идея движка, — это другая сделка с другим входом, и путать их нельзя.
     await pump(tester, PaperPositionCard(trade: trade()));
-    expect(
-      find.textContaining('идеи движка за ней нет'),
-      findsOneWidget,
-    );
+    expect(find.textContaining('идеи за ней не записано'), findsOneWidget);
+  });
+
+  testWidgets('ссылка на идею есть, а идеи в выдаче нет — это другое',
+      (tester) async {
+    // Две разные причины «открывать нечего»: у сделки нет ссылки вовсе —
+    // свойство сделки; ссылка есть, а идеи в ленте нет — свойство ленты.
+    await pump(tester, PaperPositionCard(trade: trade(signalId: 'i1')));
+    expect(find.textContaining('нет в текущей выдаче'), findsOneWidget);
+  });
+
+  testWidgets('ссылка без идеи не делает карточку нажимаемой', (tester) async {
+    // Та самая недоделка: надпись смотрела на выдачу, а нажатие — на то,
+    // записан ли идентификатор. Сделка со ссылкой, но без идеи открывала
+    // пустой разбор под подписью «идеи за ней нет».
+    await pump(tester, PaperPositionCard(trade: trade(signalId: 'i1')));
+    expect(tester.widget<Pressable>(find.byType(Pressable)).onTap, isNull);
   });
 
   testWidgets('карточка без идеи не притворяется нажимаемой', (tester) async {
@@ -89,13 +104,29 @@ void main() {
 
   testWidgets('нажатие по сделке с идеей открывает разбор', (tester) async {
     var opened = 0;
+    final source = EngineContract.idea({
+      'id': 'i1',
+      'instrument_id': 'CRYPTO:PERP:BTCUSDT',
+      'symbol': 'BTCUSDT',
+      'strategy': 'TREND_PULLBACK',
+      'direction': 'SHORT',
+      'status': 'WATCH',
+      'quality_status': 'OK',
+      'horizon_days': 5,
+      'score': '80',
+      'signal_time': '2026-07-31T09:00:00Z',
+      'expires_at': '2026-08-05T09:00:00Z',
+    });
     await pump(
       tester,
       PaperPositionCard(
         trade: trade(signalId: 'i1'),
+        idea: source,
         onOpenIdea: () => opened++,
       ),
     );
+    // Происхождение названо стратегией идеи, а не «идеи нет».
+    expect(find.textContaining('из идеи'), findsOneWidget);
     await tester.tap(find.byType(PaperPositionCard));
     await tester.pump();
     expect(opened, 1);
