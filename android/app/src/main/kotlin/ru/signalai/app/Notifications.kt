@@ -30,10 +30,30 @@ object Notifications {
             context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
                 PackageManager.PERMISSION_GRANTED
 
-    /** Показывает уведомление о событии. false — разрешения нет. */
-    fun post(context: Context, id: Int, title: String, body: String): Boolean {
+    /** Ключ, под которым уведомление несёт адрес открываемого экрана. */
+    const val PAYLOAD = "ru.signalai.app.payload"
+
+    /**
+     * Показывает уведомление о событии. false — разрешения нет.
+     *
+     * [payload] — что открыть по нажатию: идентификатор идеи. Пустая строка
+     * значит «просто открыть приложение». Уведомление без адреса приводит
+     * владельца на тот экран, где он был вчера, и заставляет искать идею
+     * руками — то есть делает пуш бесполезным ровно в тот момент, ради
+     * которого он и посылался.
+     */
+    fun post(
+        context: Context,
+        id: Int,
+        title: String,
+        body: String,
+        payload: String = "",
+    ): Boolean {
         if (!hasPermission(context)) return false
-        manager(context).notify(id, build(context, SIGNALS, title, body).build())
+        manager(context).notify(
+            id,
+            build(context, SIGNALS, title, body, payload, id).build(),
+        )
         return true
     }
 
@@ -48,6 +68,8 @@ object Notifications {
         channelId: String,
         title: String,
         body: String,
+        payload: String = "",
+        requestCode: Int = 0,
     ): Notification.Builder {
         val builder = if (Build.VERSION.SDK_INT >= 26) {
             ensureChannel(context, channelId)
@@ -60,8 +82,15 @@ object Notifications {
         }
 
         val intent = Intent(context, MainActivity::class.java)
+            // SINGLE_TOP: приложение уже открыто — оно обязано получить адрес
+            // через onNewIntent, а не подняться второй копией поверх себя.
+            .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_NEW_TASK)
+            .putExtra(PAYLOAD, payload)
+        // Код запроса свой у каждого уведомления. С общим нулём система
+        // считает намерения одинаковыми и переиспользует первое: все пуши
+        // открывали бы идею, о которой пришёл самый первый из них.
         val pending = PendingIntent.getActivity(
-            context, 0, intent,
+            context, requestCode, intent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         return builder

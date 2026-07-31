@@ -24,12 +24,18 @@ object MonitorAlarm {
     const val EXTRA_MODE = "mode"
 
     private const val REQUEST = 4242
-    private const val INTERVAL_MS = 60 * 60 * 1000L
+    private const val DEFAULT_MINUTES = 60
     private const val PREFS = "signalai.monitor"
 
-    fun schedule(context: Context, mode: String) {
+    /**
+     * [minutes] — через сколько будить. Интервал задаёт контур, а не
+     * константа: он знает, есть ли за чем следить и сколько осталось
+     * заряда, а будильник обязан просыпаться тогда же, когда собирался
+     * проснуться сам контур, — иначе страховка сама становится расходом.
+     */
+    fun schedule(context: Context, mode: String, minutes: Int = DEFAULT_MINUTES) {
         val manager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        val at = System.currentTimeMillis() + INTERVAL_MS
+        val at = System.currentTimeMillis() + minutes.coerceIn(15, 720) * 60_000L
         val intent = pending(context, mode)
         if (Build.VERSION.SDK_INT >= 23) {
             manager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, intent)

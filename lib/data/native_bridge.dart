@@ -88,6 +88,21 @@ class NativeBridge {
   /// Android больше не показывает.
   Future<bool> openNotificationSettings() => _bool('notificationSettings');
 
+  /// Адрес из нажатого уведомления — один раз.
+  ///
+  /// Пустая строка значит «по уведомлению не приходили». Забирается именно
+  /// запросом, а не приходит событием: при холодном старте система отдаёт
+  /// намерение раньше, чем поднимается движок Flutter, и слушателя ещё нет.
+  Future<String> takeLaunchPayload() async {
+    try {
+      return await _channel.invokeMethod<String>('takeLaunchPayload') ?? '';
+    } on PlatformException {
+      return '';
+    } on MissingPluginException {
+      return '';
+    }
+  }
+
   /// Диалог подтверждения. false — отказ, отмена или ошибка: при любом
   /// сомнении ордер не уходит.
   Future<bool> biometricConfirm({required String title, String subtitle = ''}) =>
@@ -115,12 +130,22 @@ class NativeBridge {
   }
 
   /// Локальное уведомление. true — показано (разрешение есть и канал жив).
-  Future<bool> notify({required String title, required String body, int id = 1}) async {
+  ///
+  /// [payload] — что открыть по нажатию: идентификатор идеи. Без него пуш
+  /// приводит владельца на тот экран, где он был вчера, и заставляет искать
+  /// идею руками — то есть перестаёт работать ровно там, ради чего послан.
+  Future<bool> notify({
+    required String title,
+    required String body,
+    int id = 1,
+    String payload = '',
+  }) async {
     try {
       return await _channel.invokeMethod<bool>('notify', {
             'title': title,
             'body': body,
             'id': id,
+            'payload': payload,
           }) ??
           false;
     } on PlatformException {

@@ -362,6 +362,7 @@ class AppController extends ChangeNotifier {
     // значит предлагать войти трижды. Остаётся лучшее мнение; ТЗ §16 того же
     // требует от сервера («до трёх карточек»), но пока он присылает всё,
     // отбор делается здесь.
+    final previous = _engineIdeas.ideas;
     _engineIdeas = EngineIdeas(
       ideas: bestPerInstrument(fetched.ideas),
       unavailableReason: fetched.unavailableReason,
@@ -369,6 +370,57 @@ class AppController extends ChangeNotifier {
     );
     _engineDataStatus = await _engine.dataStatus();
     notifyListeners();
+    await _notifyNewIdeas(previous, _engineIdeas.ideas);
+  }
+
+  /// Пуш о новых идеях движка.
+  ///
+  /// Раньше уведомления слал только скринер на устройстве — по своему,
+  /// отдельному дайджесту. Идеи движка, то есть то, что показано на экране
+  /// «Идеи», не приводили к пушу вообще: приложение находило сделку и
+  /// молчало, пока владелец сам не откроет его.
+  ///
+  /// Поводов ровно два, и оба про действие, а не про новизну:
+  /// появилась сильная идея (балл §14.2 и выше порога показа) и идея дошла
+  /// до состояния, в котором нужно решение. Пуш о переходе шлётся даже при
+  /// невысоком балле: момент входа не повторяется.
+  Future<void> _notifyNewIdeas(List<Idea> previous, List<Idea> current) async {
+    if (!pushEnabled || previous.isEmpty && current.isEmpty) return;
+    final before = {for (final i in previous) i.id: i};
+    var id = 200;
+    for (final idea in current) {
+      final was = before[idea.id];
+      final appeared = was == null && idea.score.value >= _pushScoreFloor;
+      final armed = idea.state.needsAttention &&
+          (was == null || !was.state.needsAttention);
+      if (!appeared && !armed) continue;
+      final notice = ideaNotice(idea, armed: armed);
+      // Без адреса пуш приводит на вчерашний экран: карточку пришлось бы
+      // искать руками ровно в тот момент, когда дорога каждая минута.
+      await _bridge.notify(
+        id: id++,
+        title: notice.title,
+        body: notice.body,
+        payload: notice.payload,
+      );
+      if (id > 299) id = 200;
+    }
+  }
+
+  /// Балл, ниже которого новая идея не будит владельца. Порог показа §14.2
+  /// плюс запас: идея на 66 баллов — это «есть о чём подумать», а не «звони
+  /// брокеру».
+  static const _pushScoreFloor = 75;
+
+  /// Включены ли уведомления. Настройка одна на оба контура — скринер на
+  /// устройстве и движок: два разных выключателя для одного и того же
+  /// «звенеть или нет» владелец не найдёт.
+  bool get pushEnabled {
+    final repository = _repository;
+    if (repository is LocalAnalysisRepository) return repository.pushEnabled;
+    // Другого хранилища настроек у уведомлений пока нет; молчать по
+    // умолчанию честнее, чем звенеть без спроса.
+    return false;
   }
 
   /// Лучшая идея на инструмент: дальше по конвейеру, при равенстве — выше
@@ -598,6 +650,19 @@ class AppController extends ChangeNotifier {
   }
 
   /// Показатели журнала (ТЗ §12.1). null — журнала нет вовсе.
+  /// Открытые и выставленные бумажные сделки.
+  ///
+  /// Нужны не только журналу. «Идеи → В работе» показывали лишь идеи движка
+  /// в состоянии Active, а бумажная позиция живёт в журнале сделок — и экран
+  /// писал «открытых позиций нет», пока в журнале висела открытая позиция по
+  /// тому же инструменту. Три экрана, три разных ответа на один вопрос.
+  List<PaperTrade> get openPaperTrades {
+    final repository = _repository;
+    return repository is LocalAnalysisRepository
+        ? repository.ledger.openOrPending
+        : const [];
+  }
+
   JournalMetrics? get journalMetrics {
     final repository = _repository;
     return repository is LocalAnalysisRepository
@@ -671,7 +736,33 @@ class AppController extends ChangeNotifier {
     // обновления, и владелец увидел бы пустой экран без объяснения.
     await refreshIdeas();
     await refreshDigest();
+    // Уведомление, по которому приложение и запустили. Забирается после
+    // первой загрузки: открывать разбор идеи, которой ещё нет в памяти,
+    // значит показать пустой экран вместо той самой идеи.
+    await openFromNotification();
   }
+
+  /// Открыть то, по чему нажали в уведомлении.
+  ///
+  /// Пуш без адреса приводит владельца на тот экран, где он был вчера, и
+  /// заставляет искать идею руками — то есть перестаёт работать ровно там,
+  /// ради чего послан. Адрес отдаётся системой один раз, поэтому повторный
+  /// возврат в приложение ничего не открывает.
+  Future<void> openFromNotification() async {
+    final payload = await _bridge.takeLaunchPayload();
+    if (payload.isEmpty) return;
+    final id = payload.startsWith(notificationIdeaPrefix)
+        ? payload.substring(notificationIdeaPrefix.length)
+        : payload;
+    if (id.isEmpty) return;
+    goSection(AppSection.ideas);
+    openSignal(id);
+  }
+
+  /// Префикс адреса идеи в уведомлении. Не голый идентификатор: адреса
+  /// появятся и у других экранов, а разбирать их по форме строки — способ
+  /// однажды открыть сделку вместо пакета.
+  static const notificationIdeaPrefix = 'idea:';
 
   /// Пересчёт идей. [force] — игнорировать свежий кэш (кнопка «Пересчитать»);
   /// без него репозиторий вправе вернуть недавний результат мгновенно.
@@ -779,7 +870,12 @@ class AppController extends ChangeNotifier {
     for (final signal in current.signals) {
       if (signal.score < 75 || known.contains(signal.symbol)) continue;
       final notice = signalNotice(signal);
-      await _bridge.notify(id: id++, title: notice.title, body: notice.body);
+      await _bridge.notify(
+        id: id++,
+        title: notice.title,
+        body: notice.body,
+        payload: notice.payload,
+      );
     }
   }
 
@@ -1908,6 +2004,9 @@ class AppController extends ChangeNotifier {
   Future<void> onAppResumed() async {
     await _bridge.monitorStop();
     await _lock?.heartbeat(StateLock.ui);
+    // Нажатие по уведомлению у работающего приложения приходит сюда: система
+    // не перезапускает его, а возвращает на передний план.
+    await openFromNotification();
     // Фон мог пересчитать дайджест — перечитываем, чтобы не показывать старое
     // и не гонять расчёт второй раз.
     await refreshDigest();

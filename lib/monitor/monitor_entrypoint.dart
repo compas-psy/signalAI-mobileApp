@@ -8,6 +8,7 @@ import '../data/local_store.dart';
 import '../data/native_bridge.dart';
 import '../data/state_lock.dart';
 import 'background_cycle.dart';
+import 'monitor_pace.dart';
 
 /// Канал сервиса. Тот же, что у интерфейса: общие методы обслуживает
 /// `NativeChannel`, специфичные для контура — сам `MonitorService`.
@@ -37,28 +38,92 @@ Future<void> signalaiMonitorMain() async {
 
   while (true) {
     final state = await _loadState(store);
-    final report = await cycle.run(state: state, now: DateTime.now());
-    await _saveState(store, state);
 
-    for (final notice in report.notices) {
-      await bridge.notify(
-        id: notificationId++,
-        title: notice.title,
-        body: notice.body,
-      );
-      // Идентификаторы не должны расти бесконечно: система хранит их
-      // пожизненно, а нам нужен только различимый набор.
-      if (notificationId > 599) notificationId = 500;
+    // Шаг наблюдения выбирается до прогона: на разряженном телефоне без
+    // единой открытой сделки часовой пересчёт круглосуточно — это не
+    // «постоянное наблюдение», а разряженный к вечеру телефон, который не
+    // следит уже ни за чем.
+    final pace = paceFor(
+      watching: _watching(repository),
+      power: await _power(),
+    );
+
+    if (!pace.skipRun) {
+      await _wake();
+      final report = await cycle.run(state: state, now: DateTime.now());
+      await _saveState(store, state);
+
+      for (final notice in report.notices) {
+        await bridge.notify(
+          id: notificationId++,
+          title: notice.title,
+          body: notice.body,
+          payload: notice.payload,
+        );
+        // Идентификаторы не должны расти бесконечно: система хранит их
+        // пожизненно, а нам нужен только различимый набор.
+        if (notificationId > 599) notificationId = 500;
+      }
+      await _report('${report.summary} · ${pace.reason}');
+    } else {
+      // Пропуск обязан быть виден. «Контур ничего не делал три часа» без
+      // причины неотличимо от «контур сломался», и владелец узнаёт об этом
+      // в худший момент.
+      await _report(pace.reason);
     }
-    await _report(report.summary);
 
     if (mode != 'persistent') break;
-    // Спим до следующего часа. Будильник продолжает страховать: если система
-    // снимет сервис во сне, поднимется новый.
-    await Future<void>.delayed(const Duration(hours: 1));
+    // Блокировка процессора снимается на время сна, а будильник
+    // переставляется под тот же интервал: страховка обязана будить тогда
+    // же, когда собирался проснуться сам контур.
+    await _sleep(pace.sleep);
+    await Future<void>.delayed(pace.sleep);
   }
 
   await _finished();
+}
+
+/// Сколько объектов на сопровождении: открытые и выставленные сделки.
+///
+/// Ноль значит, что сторожить нечего — новую идею контур всё равно найдёт
+/// следующим прогоном, а будить телефон каждый час незачем.
+int _watching(LocalAnalysisRepository repository) {
+  try {
+    return repository.ledger.openOrPending.length;
+  } on Object {
+    // Журнал ещё не прочитан — считаем, что следить есть за чем: ошибиться
+    // в сторону лишнего прогона дешевле, чем проспать открытую позицию.
+    return 1;
+  }
+}
+
+Future<PowerState> _power() async {
+  try {
+    final raw = await _channel.invokeMethod<Map<Object?, Object?>>('powerState');
+    return raw == null ? const PowerState() : PowerState.fromMap(raw);
+  } on Object {
+    // Состояние питания неизвестно — работаем в обычном темпе, а не
+    // экономим на догадке.
+    return const PowerState();
+  }
+}
+
+Future<void> _wake() async {
+  try {
+    await _channel.invokeMethod<bool>('monitorWake');
+  } on Object {
+    // Не дали блокировку — прогон всё равно попробуем.
+  }
+}
+
+Future<void> _sleep(Duration until) async {
+  try {
+    await _channel.invokeMethod<bool>('monitorSleep', {
+      'minutes': until.inMinutes,
+    });
+  } on Object {
+    // Сервис уже мог быть снят системой.
+  }
 }
 
 Future<String> _mode() async {

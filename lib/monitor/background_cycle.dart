@@ -1,5 +1,7 @@
 import '../data/state_lock.dart';
 import '../domain/broker/broker.dart';
+import '../domain/idea/idea.dart';
+import '../domain/idea/trade_plan.dart';
 import '../domain/ledger/signal_ledger.dart';
 import '../domain/models/digest.dart';
 import '../domain/models/signal.dart';
@@ -36,8 +38,12 @@ abstract interface class MonitorTarget {
   Future<List<({String title, String body})>> investNightly();
 }
 
-/// Одно уведомление: заголовок и текст.
-typedef MonitorNotice = ({String title, String body});
+/// Одно уведомление: заголовок, текст и адрес открываемого экрана.
+///
+/// Адрес — часть уведомления, а не необязательное дополнение. Пуш без него
+/// приводит владельца на тот экран, где он был вчера, и заставляет искать
+/// идею руками, то есть перестаёт работать ровно там, ради чего послан.
+typedef MonitorNotice = ({String title, String body, String payload});
 
 /// Итог одного прогона.
 class CycleReport {
@@ -209,6 +215,9 @@ class BackgroundCycle {
         title: '${trade.symbol}: сделка закрыта',
         body: '${trade.outcome ?? '—'} · '
             '${r >= 0 ? '+' : '−'}${r.abs().toStringAsFixed(2).replaceAll('.', ',')}R',
+        // Идея за сделкой есть не всегда: журнал ведёт и скринер на
+        // устройстве. Нет — уведомление просто открывает приложение.
+        payload: trade.signalId.isEmpty ? '' : 'idea:${trade.signalId}',
       ));
     }
     state._trim(state.notifiedTrades);
@@ -233,7 +242,7 @@ class BackgroundCycle {
     final notices = <MonitorNotice>[];
     for (final notice in await target.investNightly()) {
       if (!state.notifiedSignals.add('invest:${notice.title}')) continue;
-      notices.add((title: notice.title, body: notice.body));
+      notices.add((title: notice.title, body: notice.body, payload: ''));
     }
     return notices;
   }
@@ -244,7 +253,11 @@ class BackgroundCycle {
     final notices = <MonitorNotice>[
       for (final symbol in state.knownPositions)
         if (!open.contains(symbol))
-          (title: '$symbol: позиции на бирже больше нет', body: 'Проверьте историю сделок'),
+          (
+            title: '$symbol: позиции на бирже больше нет',
+            body: 'Проверьте историю сделок',
+            payload: '',
+          ),
     ];
     state.knownPositions
       ..clear()
@@ -275,6 +288,7 @@ class BackgroundCycle {
             title: '${position.symbol}: позиция без стопа',
             body: 'Приложение её не открывало — уровень защиты неизвестен. '
                 'Выставьте стоп сами.',
+            payload: '',
           ));
         }
         continue;
@@ -291,6 +305,7 @@ class BackgroundCycle {
         notices.add((
           title: '${position.symbol}: защита восстановлена',
           body: 'Стоп выставлен заново на ${_price(planned)}.',
+          payload: '',
         ));
         continue;
       }
@@ -302,6 +317,7 @@ class BackgroundCycle {
           title: '${position.symbol}: позиция без стопа',
           body: 'Выставить защиту не удалось $failures раза подряд. '
               'Закройте позицию или поставьте стоп вручную.',
+          payload: '',
         ));
       }
     }
@@ -340,6 +356,48 @@ class BackgroundCycle {
   }
 }
 
+/// Уведомление об идее движка.
+///
+/// Отдельный текст от сигнального: у идеи есть состояние и срок, и «дошла до
+/// решения» читается иначе, чем «появилась». Одинаковый текст на оба повода
+/// заставлял бы открывать приложение, чтобы понять, что вообще случилось.
+MonitorNotice ideaNotice(Idea idea, {bool armed = false}) {
+  final payload = 'idea:${idea.id}';
+  final plan = idea.plan;
+  final head = armed
+      ? '${idea.symbolOrId} · ${idea.direction.label} · можно решать'
+      : '${idea.symbolOrId} · ${idea.direction.label} · ${idea.score.value}/100';
+  if (plan == null) {
+    return (
+      title: head,
+      body: '${idea.strategy.label}. Плана пока нет — открыть разбор.',
+      payload: payload,
+    );
+  }
+  final decimals = _planDecimals(plan);
+  return (
+    title: head,
+    body: 'Вход ${plan.entryLow.toStringAsFixed(decimals)}–'
+        '${plan.entryHigh.toStringAsFixed(decimals)} · '
+        'SL ${plan.stop.toStringAsFixed(decimals)} · '
+        'R:R ${plan.rrToSecondTarget.toStringAsFixed(1).replaceAll('.', ',')}. '
+        '${idea.strategy.label}.',
+    payload: payload,
+  );
+}
+
+/// Сколько знаков у цен плана. Считается по самим ценам: у фьючерса на
+/// доллар знаков нет, у крипты бывает шесть, и округлить чужую цену до
+/// целых значит показать не ту цену.
+int _planDecimals(TradePlan plan) {
+  for (final price in [plan.entryLow, plan.entryHigh, plan.stop]) {
+    final text = price.toStringAsFixed(6).replaceAll(RegExp(r'0+$'), '');
+    final dot = text.indexOf('.');
+    if (dot >= 0 && text.length - dot - 1 > 0) return text.length - dot - 1;
+  }
+  return 0;
+}
+
 /// Уведомление о новой идее. Общее для фона и переднего плана, чтобы текст
 /// не разъезжался в зависимости от того, кто его отправил.
 MonitorNotice signalNotice(TradingSignal signal) => (
@@ -347,4 +405,5 @@ MonitorNotice signalNotice(TradingSignal signal) => (
       body: 'Вход ${signal.entry.toStringAsFixed(signal.priceDecimals)} · '
           'SL ${signal.stopLoss.toStringAsFixed(signal.priceDecimals)} · '
           'R:R ${signal.riskReward}. Открыть SignalAI, чтобы посмотреть разбор.',
+      payload: 'idea:${signal.id}',
     );

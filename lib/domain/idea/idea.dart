@@ -133,6 +133,16 @@ class Idea {
   /// первое значит, что сетап отработал и входить уже некуда.
   final String closingReason;
 
+  /// Тикер для подписи: «CRYPTO:PERP:BTCUSDT» → «BTCUSDT».
+  ///
+  /// Целиком идентификатор в заголовок уведомления не помещается и
+  /// обрезается на «CRYPTO:PER…» — по такой подписи нельзя понять, о каком
+  /// активе пуш.
+  String get symbolOrId {
+    final cut = instrumentId.lastIndexOf(':');
+    return cut < 0 ? instrumentId : instrumentId.substring(cut + 1);
+  }
+
   /// Идея, которую нельзя показывать вовсе (ТЗ §14.2: ниже 65).
   bool get showable => score.value >= QualityScore.minimumToShow;
 

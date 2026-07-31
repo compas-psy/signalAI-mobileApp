@@ -1,6 +1,7 @@
 package ru.signalai.app
 
 import android.Manifest
+import android.content.Intent
 import android.os.Build
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -16,8 +17,32 @@ class MainActivity : FlutterActivity() {
     private val shared by lazy { NativeChannel(applicationContext) }
     private val biometrics by lazy { Biometrics(this) }
 
+    /**
+     * Адрес, по которому нажали в уведомлении, — до того, как интерфейс за
+     * ним придёт.
+     *
+     * Хранится здесь, а не отдаётся сразу в Dart: при холодном старте
+     * приложение получает намерение раньше, чем поднимется движок Flutter,
+     * и отправлять некому. Интерфейс забирает адрес сам, когда готов.
+     */
+    private var pendingPayload: String? = null
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        // Заменяем намерение активити: без этого следующий `takeLaunchPayload`
+        // прочитал бы то, с которым приложение запустилось в прошлый раз.
+        setIntent(intent)
+        readPayload(intent)
+    }
+
+    private fun readPayload(intent: Intent?) {
+        val payload = intent?.getStringExtra(Notifications.PAYLOAD)
+        if (!payload.isNullOrEmpty()) pendingPayload = payload
+    }
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        readPayload(intent)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
@@ -45,6 +70,15 @@ class MainActivity : FlutterActivity() {
                             .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
                         startActivity(intent)
                         result.success(true)
+                    }
+
+                    // Адрес из нажатого уведомления. Отдаётся один раз:
+                    // повторное открытие той же идеи при каждом возврате в
+                    // приложение — это не диплинк, а навязчивость.
+                    "takeLaunchPayload" -> {
+                        val payload = pendingPayload
+                        pendingPayload = null
+                        result.success(payload ?: "")
                     }
 
                     "biometricsAvailable" -> result.success(biometrics.isAvailable())

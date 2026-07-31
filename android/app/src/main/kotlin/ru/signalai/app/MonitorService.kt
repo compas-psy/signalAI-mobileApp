@@ -72,7 +72,7 @@ class MonitorService : Service() {
         // раньше следующего прогона, поднять контур будет уже нечем.
         MonitorAlarm.schedule(this, mode)
 
-        if (engine == null) startEngine()
+        if (engine == null) startEngine() else awake()
         // START_STICKY: система, снявшая сервис из-за нехватки памяти, вернёт
         // его сама. Для burst-режима это безвредно — прогон завершится и
         // сервис остановится снова.
@@ -92,12 +92,28 @@ class MonitorService : Service() {
         }
     }
 
-    private fun startEngine() {
-        // Короткий wake lock: без него устройство может уснуть на середине
-        // сетевого запроса, и прогон растянется до следующего пробуждения.
-        wakeLock = (getSystemService(Context.POWER_SERVICE) as PowerManager)
+    /**
+     * Не давать уснуть на время прогона — и ровно на это время.
+     *
+     * Раньше блокировка бралась один раз на десять минут при старте движка и
+     * снималась только вместе с сервисом. В постоянном режиме это значило
+     * десять минут запрещённого сна на каждый подъём контура, независимо от
+     * того, что прогон занимает секунды. Таймаут остаётся страховкой на
+     * случай, если Dart не отзовётся вовсе.
+     */
+    private fun awake() {
+        val lock = wakeLock ?: (getSystemService(Context.POWER_SERVICE) as PowerManager)
             .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "SignalAI:monitor")
-            .apply { acquire(10 * 60 * 1000L) }
+            .also { it.setReferenceCounted(false); wakeLock = it }
+        if (!lock.isHeld) lock.acquire(5 * 60 * 1000L)
+    }
+
+    private fun asleep() {
+        wakeLock?.let { if (it.isHeld) it.release() }
+    }
+
+    private fun startEngine() {
+        awake()
 
         // Загрузчик инициализируется явно: сервис может стартовать в свежем
         // процессе, где ни одна активити ещё не запускалась, и без этого путь
@@ -115,6 +131,24 @@ class MonitorService : Service() {
                     // Режим сообщается Dart'у: он решает, спать до следующего
                     // прогона или завершиться.
                     "monitorMode" -> result.success(mode)
+
+                    // Прогон начался — держим процессор до его конца.
+                    "monitorWake" -> {
+                        awake()
+                        result.success(true)
+                    }
+
+                    // Прогон закончен, впереди сон: блокировку отпускаем
+                    // немедленно, а не ждём её таймаута.
+                    "monitorSleep" -> {
+                        asleep()
+                        val minutes = call.argument<Int>("minutes") ?: 60
+                        // Будильник переставляется под фактический интервал:
+                        // страховка обязана будить тогда же, когда собирался
+                        // проснуться сам контур, а не через фиксированный час.
+                        MonitorAlarm.schedule(this, mode, minutes)
+                        result.success(true)
+                    }
 
                     // Итог прогона — в служебную строку.
                     "monitorReport" -> {
@@ -152,7 +186,7 @@ class MonitorService : Service() {
         running = false
         engine?.destroy()
         engine = null
-        wakeLock?.let { if (it.isHeld) it.release() }
+        asleep()
         wakeLock = null
         super.onDestroy()
     }

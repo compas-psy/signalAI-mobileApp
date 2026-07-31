@@ -1,8 +1,11 @@
 import 'package:flutter/widgets.dart';
 
+import '../../core/format.dart';
 import '../../data/api/engine_contract.dart';
+import '../../domain/enums.dart';
 import '../../domain/idea/idea.dart';
 import '../../domain/idea/idea_state.dart';
+import '../../domain/ledger/signal_ledger.dart';
 import '../../state/app_scope.dart';
 import '../../state/navigation.dart';
 import '../../theme/tokens.dart';
@@ -42,7 +45,15 @@ class IdeasScreen extends StatelessWidget {
 
     final all = controller.ideas;
     final visible = filterIdeas(all, filter, now);
-    if (visible.isEmpty) {
+    // «В работе» — это вопрос «что у меня сейчас открыто», а не «какие идеи
+    // движок пометил Active». Бумажная позиция живёт в журнале сделок, и
+    // экран писал «открытых позиций нет», пока в журнале висела открытая
+    // позиция по тому же инструменту.
+    final paper = filter == IdeasPill.active
+        ? controller.openPaperTrades
+        : const <PaperTrade>[];
+
+    if (visible.isEmpty && paper.isEmpty) {
       return _Empty(
         filter: filter,
         total: all.length,
@@ -51,16 +62,31 @@ class IdeasScreen extends StatelessWidget {
       );
     }
 
+    final rows = <Widget>[
+      for (final idea in visible)
+        IdeaCard(idea: idea, now: now, onTap: () => controller.openSignal(idea.id)),
+      if (paper.isNotEmpty) ...[
+        const _SectionLabel('Бумажные позиции'),
+        for (final trade in paper)
+          PaperPositionCard(
+            trade: trade,
+            // Идея за сделкой есть не всегда: журнал ведёт и скринер на
+            // устройстве, у которого свои сигналы. Открывать нечего — так
+            // и говорим, а не молчим по нажатию.
+            idea: all.where((i) => i.id == trade.signalId).firstOrNull,
+            onOpenIdea: trade.signalId.isEmpty
+                ? null
+                : () => controller.openSignal(trade.signalId),
+          ),
+      ],
+    ];
+
     return ListView.builder(
       padding: const EdgeInsets.fromLTRB(S.screen, 12, S.screen, 18),
-      itemCount: visible.length,
+      itemCount: rows.length,
       itemBuilder: (context, i) => Padding(
-        padding: EdgeInsets.only(bottom: i == visible.length - 1 ? 0 : S.gap),
-        child: IdeaCard(
-          idea: visible[i],
-          now: now,
-          onTap: () => controller.openSignal(visible[i].id),
-        ),
+        padding: EdgeInsets.only(bottom: i == rows.length - 1 ? 0 : S.gap),
+        child: rows[i],
       ),
     );
   }
@@ -295,7 +321,9 @@ class _Empty extends StatelessWidget {
         ),
       IdeasPill.active => (
           'Открытых позиций нет',
-          'Подтверждённые идеи появятся здесь вместе с заявками.'
+          'Здесь будут подтверждённые идеи движка и открытые бумажные '
+              'сделки из журнала — вместе, потому что вопрос один: что '
+              'сейчас в работе.'
         ),
       IdeasPill.all => (
           'Идей нет',
@@ -367,4 +395,114 @@ class _Pending extends StatelessWidget {
           ),
         ),
       );
+}
+
+/// Подпись группы внутри ленты.
+class _SectionLabel extends StatelessWidget {
+  const _SectionLabel(this.text);
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: const EdgeInsets.only(top: 6, bottom: 2),
+        child: SectionLabel(text, color: C.faint),
+      );
+}
+
+/// Открытая бумажная позиция в ленте «В работе».
+///
+/// Существует потому, что «что у меня открыто» и «какие идеи движок пометил
+/// Active» — разные вопросы, а экран отвечал только на второй. Журнал при
+/// этом показывал открытую позицию, и два раздела приложения противоречили
+/// друг другу на одном и том же инструменте.
+///
+/// Карточка не притворяется идеей: у бумажной сделки свой вход, свой
+/// плавающий результат и своё происхождение, и всё это названо.
+class PaperPositionCard extends StatelessWidget {
+  const PaperPositionCard({
+    super.key,
+    required this.trade,
+    this.idea,
+    this.onOpenIdea,
+  });
+
+  final PaperTrade trade;
+
+  /// Идея движка, из которой сделка родилась. null — её нет: журнал ведёт и
+  /// скринер на устройстве, у которого сигналы свои.
+  final Idea? idea;
+
+  final VoidCallback? onOpenIdea;
+
+  @override
+  Widget build(BuildContext context) {
+    final waiting = trade.status == PaperStatus.pending;
+    final r = trade.unrealizedR;
+    final decimals = trade.entry >= 1000 ? 2 : 4;
+    return Pressable(
+      onTap: onOpenIdea,
+      child: SectionCard(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    trade.symbol,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: T.jost(17, letterSpacing: -0.3),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                DirectionBadge(
+                  label: trade.long ? 'LONG' : 'SHORT',
+                  color: directionColor(
+                    trade.long ? Direction.long : Direction.short,
+                  ),
+                  background: directionBackground(
+                    trade.long ? Direction.long : Direction.short,
+                  ),
+                ),
+                if (r != null) ...[
+                  const SizedBox(width: 8),
+                  Text(
+                    '${r >= 0 ? '+' : '−'}${r.abs().toStringAsFixed(2).replaceAll('.', ',')}R',
+                    style: T.mono(13, weight: 600, color: r >= 0 ? C.green : C.red),
+                  ),
+                ],
+              ],
+            ),
+            const SizedBox(height: 6),
+            Text(
+              waiting
+                  ? 'заявка выставлена по ${fmtPrice(trade.entry, decimals)} — '
+                      'цена до неё не дошла'
+                  : 'в позиции с ${fmtPrice(trade.entry, decimals)} · '
+                      'взято тейков: ${trade.tpsTaken} из ${trade.tpPrices.length}',
+              style: T.body(11.5, color: C.textSecondary, height: 1.4),
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                const ContextChip('бумажная'),
+                // Происхождение сделки названо прямо. Без этого позиция по
+                // тому же тикеру, что и идея движка, читается как «та самая
+                // идея» — а вход у неё другой.
+                ContextChip(
+                  idea != null
+                      ? 'из идеи ${idea!.strategy.label}'
+                      : 'из расчёта на устройстве — идеи движка за ней нет',
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }

@@ -1,6 +1,11 @@
 package ru.signalai.app
 
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.os.BatteryManager
+import android.os.Build
+import android.os.PowerManager
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 
@@ -18,6 +23,30 @@ import io.flutter.plugin.common.MethodChannel
 class NativeChannel(private val context: Context) {
 
     private val vault by lazy { Vault(context) }
+
+    /**
+     * Заряд, питание и режим энергосбережения.
+     *
+     * Читается через sticky-broadcast: подписка на изменения здесь не нужна
+     * и вредна — контур спрашивает раз в час, а живой приёмник будил бы
+     * процесс на каждый процент заряда.
+     */
+    private fun powerState(): Map<String, Any> {
+        val status = context.registerReceiver(
+            null, IntentFilter(Intent.ACTION_BATTERY_CHANGED),
+        )
+        val level = status?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
+        val scale = status?.getIntExtra(BatteryManager.EXTRA_SCALE, -1) ?: -1
+        val plugged = status?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0
+        val power = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+        return mapOf(
+            // −1 значит «неизвестно»: подставлять сюда сотню значит решить,
+            // что заряд полный, и разрядить телефон на этом допущении.
+            "percent" to if (level >= 0 && scale > 0) level * 100 / scale else -1,
+            "charging" to (plugged != 0),
+            "saver" to (Build.VERSION.SDK_INT >= 21 && power.isPowerSaveMode),
+        )
+    }
 
     /** true — метод обработан. */
     fun handle(call: MethodCall, result: MethodChannel.Result): Boolean {
@@ -42,8 +71,15 @@ class NativeChannel(private val context: Context) {
                     call.argument<Int>("id") ?: 1,
                     call.argument<String>("title") ?: "SignalAI",
                     call.argument<String>("body") ?: "",
+                    call.argument<String>("payload") ?: "",
                 ),
             )
+
+            // Состояние питания. Фоновый контур решает по нему, как часто
+            // просыпаться: круглосуточный часовой пересчёт на телефоне с
+            // 15% заряда — это не «постоянное наблюдение», а разряженный к
+            // вечеру телефон.
+            "powerState" -> result.success(powerState())
 
             "vaultAvailable" -> result.success(vault.isAvailable())
 
