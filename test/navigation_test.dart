@@ -5,6 +5,8 @@ import 'package:signalai/data/local_store.dart';
 import 'package:signalai/state/app_controller.dart';
 import 'package:signalai/state/navigation.dart';
 
+import 'support/offline_http.dart';
+
 void main() {
   // Книга спрашивает у платформы каталог для файла — без инициализации
   // биндинга канал недоступен и чтение падает ещё до диска.
@@ -60,7 +62,9 @@ void main() {
       // только на переходах: раздел, с которого всё начинается, оставался
       // единственным неинициализированным.
       final repository = LocalAnalysisRepository(
-        store: LocalStore.inMemory(),
+      iss: offlineIss(),
+      bybit: offlineBybit(),
+      store: LocalStore.inMemory(),
         vault: const SecureVault(),
       );
       final controller = AppController(repository);

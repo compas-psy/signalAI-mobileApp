@@ -9,6 +9,8 @@ import 'package:signalai/domain/idea/idea_state.dart';
 import 'support/score_fixture.dart';
 import 'package:signalai/state/app_controller.dart';
 
+import 'support/offline_http.dart';
+
 Idea sample({String id = 'idea_1'}) => Idea(
       id: id,
       instrumentId: 'SiZ6',
@@ -33,7 +35,10 @@ void main() {
     // разрезы по причинам считаются по огрызку и врут.
     final store = LocalStore.inMemory();
 
-    final first = LocalAnalysisRepository(store: store, vault: const SecureVault());
+    final first = LocalAnalysisRepository(
+      iss: offlineIss(),
+      bybit: offlineBybit(),
+      store: store, vault: const SecureVault());
     final controller = AppController(first);
     addTearDown(controller.dispose);
     await controller.load();
@@ -50,7 +55,10 @@ void main() {
 
     // Перезапуск: то же хранилище, новый репозиторий.
     final second =
-        LocalAnalysisRepository(store: store, vault: const SecureVault());
+        LocalAnalysisRepository(
+      iss: offlineIss(),
+      bybit: offlineBybit(),
+      store: store, vault: const SecureVault());
     final restarted = AppController(second);
     addTearDown(restarted.dispose);
     await restarted.load();
@@ -64,7 +72,10 @@ void main() {
   test('пропуски копятся, новые сверху', () async {
     final store = LocalStore.inMemory();
     final controller = AppController(
-      LocalAnalysisRepository(store: store, vault: const SecureVault()),
+      LocalAnalysisRepository(
+      iss: offlineIss(),
+      bybit: offlineBybit(),
+      store: store, vault: const SecureVault()),
     );
     addTearDown(controller.dispose);
     await controller.load();

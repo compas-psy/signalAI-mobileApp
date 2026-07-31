@@ -5,6 +5,8 @@ import 'package:signalai/data/local_analysis_repository.dart';
 import 'package:signalai/data/local_store.dart';
 import 'package:signalai/data/native_bridge.dart';
 
+import 'support/offline_http.dart';
+
 void main() {
   test('LocalStore: запись и чтение через диск', () async {
     final dir = Directory.systemTemp.createTempSync('signalai_store');
@@ -54,14 +56,20 @@ void main() {
   test('настройки переживают перезапуск: риск, тумблеры, стратегии', () async {
     final store = LocalStore.inMemory();
 
-    final first = LocalAnalysisRepository(store: store);
+    final first = LocalAnalysisRepository(
+      iss: offlineIss(),
+      bybit: offlineBybit(),
+      store: store);
     await first.updateRiskProfile(deposit: 2500000, riskPercent: 1.0);
     await first.setChannelEnabled('push', true);
     await first.setNotificationEnabled('alerts', true);
     await first.setStrategyEnabled('crypto', false);
 
     // «Перезапуск»: новый репозиторий, то же хранилище.
-    final second = LocalAnalysisRepository(store: store);
+    final second = LocalAnalysisRepository(
+      iss: offlineIss(),
+      bybit: offlineBybit(),
+      store: store);
     final settings = await second.fetchSettings();
 
     expect(settings.risk.deposit, 2500000);
@@ -86,7 +94,10 @@ void main() {
     // Владелец не мог отличить «пересчиталось и ничего не нашлось» от «не
     // пересчитывалось»: настройка «раз в час» была, а доказательства не было.
     final store = LocalStore.inMemory();
-    final first = LocalAnalysisRepository(store: store);
+    final first = LocalAnalysisRepository(
+      iss: offlineIss(),
+      bybit: offlineBybit(),
+      store: store);
     await first.fetchSettings();
     expect(first.digestRuns, isEmpty, reason: 'до первого прогона журнал пуст');
 
@@ -110,7 +121,10 @@ void main() {
       ],
     });
 
-    final second = LocalAnalysisRepository(store: store);
+    final second = LocalAnalysisRepository(
+      iss: offlineIss(),
+      bybit: offlineBybit(),
+      store: store);
     await second.fetchSettings();
 
     // От новых к старым: последний прогон первым.

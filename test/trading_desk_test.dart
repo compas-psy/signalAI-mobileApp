@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:signalai/data/broker/secure_vault.dart';
 import 'package:signalai/data/local_analysis_repository.dart';
+import 'package:signalai/data/market/iss_client.dart';
 import 'package:signalai/data/local_store.dart';
 import 'package:signalai/data/repository.dart';
 import 'package:signalai/domain/broker/broker.dart';
@@ -8,6 +9,8 @@ import 'package:signalai/domain/enums.dart';
 import 'package:signalai/domain/models/digest.dart';
 import 'package:signalai/domain/models/signal.dart';
 import 'package:signalai/state/app_controller.dart';
+
+import 'support/offline_http.dart';
 
 /// Хранилище ключей в памяти.
 ///
@@ -119,7 +122,10 @@ void main() {
     test('отвергнутый ключ остаётся в хранилище вместе с причиной', () async {
       final store = LocalStore.inMemory();
       final vault = FakeVault();
-      final repository = LocalAnalysisRepository(store: store, vault: vault);
+      final repository = LocalAnalysisRepository(
+      iss: offlineIss(),
+      bybit: offlineBybit(),
+      store: store, vault: vault);
 
       await expectLater(
         repository.saveBrokerKeys(
@@ -145,7 +151,10 @@ void main() {
       // Подписи нет — отказ местный, до сети дело не дошло. Кросс-проверка
       // в этом случае не запускается: «ключ не принят нигде» было бы ложью.
       final repository =
-          LocalAnalysisRepository(store: LocalStore.inMemory(), vault: FakeVault());
+          LocalAnalysisRepository(
+      iss: offlineIss(),
+      bybit: offlineBybit(),
+      store: LocalStore.inMemory(), vault: FakeVault());
       await repository
           .saveBrokerKeys(
             broker: BrokerId.bybit,
@@ -163,7 +172,10 @@ void main() {
     test('причина отказа переживает перезапуск приложения', () async {
       final store = LocalStore.inMemory();
       final vault = FakeVault();
-      final first = LocalAnalysisRepository(store: store, vault: vault);
+      final first = LocalAnalysisRepository(
+      iss: offlineIss(),
+      bybit: offlineBybit(),
+      store: store, vault: vault);
       await first
           .saveBrokerKeys(
             broker: BrokerId.bybit,
@@ -175,7 +187,10 @@ void main() {
 
       // Тост давно исчез, приложение перезапущено — вопрос «работает или
       // нет» обязан иметь ответ и теперь.
-      final second = LocalAnalysisRepository(store: store, vault: vault);
+      final second = LocalAnalysisRepository(
+      iss: offlineIss(),
+      bybit: offlineBybit(),
+      store: store, vault: vault);
       await second.fetchSettings();
 
       final check = second.keyCheckOf(BrokerId.bybit);
@@ -186,7 +201,10 @@ void main() {
     test('настройки показывают ключи заданными, но не принятыми', () async {
       final store = LocalStore.inMemory();
       final vault = FakeVault();
-      final repository = LocalAnalysisRepository(store: store, vault: vault);
+      final repository = LocalAnalysisRepository(
+      iss: offlineIss(),
+      bybit: offlineBybit(),
+      store: store, vault: vault);
       await repository
           .saveBrokerKeys(
             broker: BrokerId.bybit,
@@ -214,10 +232,16 @@ void main() {
       // первого await — второй и третий вызовы работали с дефолтами.
       final store = LocalStore.inMemory();
       final vault = FakeVault();
-      final first = LocalAnalysisRepository(store: store, vault: vault);
+      final first = LocalAnalysisRepository(
+      iss: offlineIss(),
+      bybit: offlineBybit(),
+      store: store, vault: vault);
       await first.setTradingMode(BrokerId.bybit, TradingMode.live);
 
-      final second = LocalAnalysisRepository(store: store, vault: vault);
+      final second = LocalAnalysisRepository(
+      iss: offlineIss(),
+      bybit: offlineBybit(),
+      store: store, vault: vault);
       await Future.wait([
         second.fetchTrades(),
         second.fetchStrategies(),
@@ -233,14 +257,23 @@ void main() {
       // в самой записи, а не в каждом вызывающем.
       final store = LocalStore.inMemory();
       final vault = FakeVault();
-      final first = LocalAnalysisRepository(store: store, vault: vault);
+      final first = LocalAnalysisRepository(
+      iss: offlineIss(),
+      bybit: offlineBybit(),
+      store: store, vault: vault);
       await first.setTradingMode(BrokerId.bybit, TradingMode.live);
 
-      final second = LocalAnalysisRepository(store: store, vault: vault);
+      final second = LocalAnalysisRepository(
+      iss: offlineIss(),
+      bybit: offlineBybit(),
+      store: store, vault: vault);
       // Первое обращение к репозиторию — пишущее.
       await second.setBackgroundEnabled(true);
 
-      final third = LocalAnalysisRepository(store: store, vault: vault);
+      final third = LocalAnalysisRepository(
+      iss: offlineIss(),
+      bybit: offlineBybit(),
+      store: store, vault: vault);
       await third.fetchSettings();
       expect(third.tradingState.modeOf(BrokerId.bybit), TradingMode.live);
     });
@@ -253,7 +286,10 @@ void main() {
       vault.stored['bybit.live.key'] = 'K';
       vault.stored['bybit.live.secret'] = 'S';
       final repository =
-          LocalAnalysisRepository(store: LocalStore.inMemory(), vault: vault);
+          LocalAnalysisRepository(
+      iss: offlineIss(),
+      bybit: offlineBybit(),
+      store: LocalStore.inMemory(), vault: vault);
 
       // Текущий режим — testnet: ключей для него нет.
       expect(await repository.hasBrokerKeys(BrokerId.bybit), isFalse);
@@ -271,7 +307,10 @@ void main() {
         vault.stored['bybit.$mode.secret'] = 'S';
       }
       final repository =
-          LocalAnalysisRepository(store: LocalStore.inMemory(), vault: vault);
+          LocalAnalysisRepository(
+      iss: offlineIss(),
+      bybit: offlineBybit(),
+      store: LocalStore.inMemory(), vault: vault);
 
       expect(await repository.readableMode(BrokerId.bybit), TradingMode.testnet);
       await repository.setTradingMode(BrokerId.bybit, TradingMode.live);
@@ -280,7 +319,10 @@ void main() {
 
     test('без ключей вовсе площадка нечитаема', () async {
       final repository =
-          LocalAnalysisRepository(store: LocalStore.inMemory(), vault: FakeVault());
+          LocalAnalysisRepository(
+      iss: offlineIss(),
+      bybit: offlineBybit(),
+      store: LocalStore.inMemory(), vault: FakeVault());
       expect(await repository.readableMode(BrokerId.bybit), isNull);
       expect(await repository.brokerKeyModes(BrokerId.bybit), isEmpty);
     });
@@ -293,7 +335,10 @@ void main() {
       final vault = FakeVault();
       vault.stored['bybit.live.key'] = 'K';
       vault.stored['bybit.live.secret'] = 'S';
-      final repository = LocalAnalysisRepository(store: store, vault: vault);
+      final repository = LocalAnalysisRepository(
+      iss: offlineIss(),
+      bybit: offlineBybit(),
+      store: store, vault: vault);
       await repository.setTradingEnabled(true);
 
       // Режим остаётся тренировочным — ключей для него нет.
@@ -356,7 +401,10 @@ void main() {
   group('Живой счёт как наблюдение', () {
     test('Bybit переключается на live при закрытом допуске', () async {
       final repository =
-          LocalAnalysisRepository(store: LocalStore.inMemory(), vault: FakeVault());
+          LocalAnalysisRepository(
+      iss: offlineIss(),
+      bybit: offlineBybit(),
+      store: LocalStore.inMemory(), vault: FakeVault());
 
       await repository.setTradingMode(BrokerId.bybit, TradingMode.live);
       expect(repository.tradingState.modeOf(BrokerId.bybit), TradingMode.live);
@@ -369,7 +417,10 @@ void main() {
       // приложение держало её в режиме «песочница», не находило по этой паре
       // ключей и показывало виртуальный счёт вместо настоящего.
       final repository =
-          LocalAnalysisRepository(store: LocalStore.inMemory(), vault: FakeVault());
+          LocalAnalysisRepository(
+      iss: offlineIss(),
+      bybit: offlineBybit(),
+      store: LocalStore.inMemory(), vault: FakeVault());
 
       await repository.setTradingMode(BrokerId.tinvest, TradingMode.live);
 
@@ -385,7 +436,10 @@ void main() {
       await seedDigest(store, [signal(market: Market.forts, symbol: 'TSTU6')]);
       final vault = FakeVault();
       vault.stored['tinvest.live.key'] = 'T';
-      final repository = LocalAnalysisRepository(store: store, vault: vault);
+      final repository = LocalAnalysisRepository(
+      iss: offlineIss(),
+      bybit: offlineBybit(),
+      store: store, vault: vault);
       await repository.setTradingEnabled(true);
       await repository.setTradingMode(BrokerId.tinvest, TradingMode.live);
 
@@ -406,7 +460,10 @@ void main() {
       // Ключи лежат в живом слоте — дело не в них.
       vault.stored['bybit.live.key'] = 'K';
       vault.stored['bybit.live.secret'] = 'S';
-      final repository = LocalAnalysisRepository(store: store, vault: vault);
+      final repository = LocalAnalysisRepository(
+      iss: offlineIss(),
+      bybit: offlineBybit(),
+      store: store, vault: vault);
       await repository.setTradingEnabled(true);
       await repository.setTradingMode(BrokerId.bybit, TradingMode.live);
 
@@ -425,7 +482,10 @@ void main() {
     test('идею можно завести в журнал без ключей и без биржи', () async {
       final store = LocalStore.inMemory();
       await seedDigest(store, [signal()]);
-      final repository = LocalAnalysisRepository(store: store, vault: FakeVault());
+      final repository = LocalAnalysisRepository(
+      iss: offlineIss(),
+      bybit: offlineBybit(),
+      store: store, vault: FakeVault());
 
       expect(repository.paperNoteFor('TSTU6'), isNull);
 
@@ -438,7 +498,10 @@ void main() {
     test('повторное нажатие не создаёт вторую сделку', () async {
       final store = LocalStore.inMemory();
       await seedDigest(store, [signal()]);
-      final repository = LocalAnalysisRepository(store: store, vault: FakeVault());
+      final repository = LocalAnalysisRepository(
+      iss: offlineIss(),
+      bybit: offlineBybit(),
+      store: store, vault: FakeVault());
 
       await repository.trackOnPaper('sig-1');
       final answer = await repository.trackOnPaper('sig-1');
@@ -450,18 +513,53 @@ void main() {
     test('запись переживает перезапуск', () async {
       final store = LocalStore.inMemory();
       await seedDigest(store, [signal()]);
-      final first = LocalAnalysisRepository(store: store, vault: FakeVault());
+      final first = LocalAnalysisRepository(
+      iss: offlineIss(),
+      bybit: offlineBybit(),
+      store: store, vault: FakeVault());
       await first.trackOnPaper('sig-1');
 
-      final second = LocalAnalysisRepository(store: store, vault: FakeVault());
+      final second = LocalAnalysisRepository(
+      iss: offlineIss(),
+      bybit: offlineBybit(),
+      store: store, vault: FakeVault());
       await second.fetchTrades();
       expect(second.paperNoteFor('TSTU6'), isNotNull);
+    });
+
+    test('биржа недоступна — журнал всё равно ведётся, и в сеть не уходим',
+        () async {
+      // Тест, случайно уходящий на биржу, — ловушка с отложенным
+      // срабатыванием: локально `iss.moex.com` недоступен и отказ приходит за
+      // секунду, а на раннере соединение висит до тайм-аута. Именно на этом
+      // падала сборка APK на трёх зелёных у разработчика тестах.
+      final http = OfflineHttp();
+      final store = LocalStore.inMemory();
+      await seedDigest(store, [signal()]);
+      final repository = LocalAnalysisRepository(
+        iss: IssClient(http: http),
+        bybit: offlineBybit(),
+        store: store,
+        vault: FakeVault(),
+      );
+
+      final answer = await repository.trackOnPaper('sig-1');
+      expect(answer, contains('заведена'));
+      expect(repository.ledger.trades, hasLength(1));
+      // Клиент действительно подменён: спецификацию спрашивали у подставного
+      // HTTP, а не у настоящего. Иначе тест доказывал бы офлайновость,
+      // сходив в интернет.
+      expect(http.requested, isNotEmpty);
+      expect(http.requested.first.host, 'iss.moex.com');
     });
 
     test('идея не из выдачи — отказ с внятной причиной', () async {
       final store = LocalStore.inMemory();
       await seedDigest(store, [signal()]);
-      final repository = LocalAnalysisRepository(store: store, vault: FakeVault());
+      final repository = LocalAnalysisRepository(
+      iss: offlineIss(),
+      bybit: offlineBybit(),
+      store: store, vault: FakeVault());
 
       await expectLater(
         repository.trackOnPaper('нет-такой'),
