@@ -88,8 +88,28 @@ jobs:
 
           cd server
           $SUDO docker compose --env-file "$ENV_FILE" config >/dev/null
+
+          # Порядок здесь принципиален, и раньше он был неверным.
+          #
+          # `run --rm api alembic upgrade head` запускается на том образе,
+          # который уже лежит на машине, — то есть на ПРЕДЫДУЩЕЙ версии кода.
+          # Новой миграции в нём ещё нет, и alembic честно сообщает, что
+          # применять нечего. Именно так и выглядел лог деплоя 31.07: две
+          # строки INFO и ни одной «Running upgrade», хотя ревизия 0005 была
+          # в коммите. Схему спасала только собственная команда контейнера
+          # api (`alembic upgrade head && uvicorn`), выполнявшаяся уже после
+          # пересборки, — то есть правильный результат получался случайно, а
+          # в логе деплоя его не было видно вовсе.
+          #
+          # Теперь образ собирается первым, и миграция идёт на нём. В логе
+          # прогона видно, какая ревизия применилась, — а это единственное
+          # место, где вообще можно это проверить.
+          $SUDO docker compose --env-file "$ENV_FILE" build api scheduler </dev/null
           $SUDO docker compose --env-file "$ENV_FILE" run --rm -T api alembic upgrade head </dev/null
-          $SUDO docker compose --env-file "$ENV_FILE" up -d --build --remove-orphans </dev/null
+          $SUDO docker compose --env-file "$ENV_FILE" up -d --remove-orphans </dev/null
+
+          echo '── ревизия схемы ──'
+          $SUDO docker compose --env-file "$ENV_FILE" run --rm -T api alembic current </dev/null
 
           echo '── контейнеры ──'
           $SUDO docker compose --env-file "$ENV_FILE" ps
