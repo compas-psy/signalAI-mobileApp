@@ -232,3 +232,183 @@ def test_апи_отдаёт_предложение_а_не_заявку(session
     assert "executable" not in body
     assert "order_id" not in body
     assert str(model.id) == body["model_id"]
+
+
+# ── Снимок фактических позиций ──────────────────────────────────────────────
+#
+# Токен Т-Инвестиций на чтение лежит в защищённом хранилище телефона и на VPS
+# не передаётся: он привязан к пользователю, а не к счёту, и видит все счета
+# владельца. Поэтому счёт читает устройство, а сюда приезжает результат
+# чтения. До этого ребаланс считать было не от чего — таблица позиций
+# заполнялась только в тестах.
+
+
+def _instrument(session: Session, symbol: str, instrument_id: str) -> None:
+    from app.models import Instrument
+    from app.models.enums import Venue
+
+    session.add(
+        Instrument(
+            instrument_id=instrument_id,
+            venue=Venue.MOEX,
+            asset_class=AssetClass.EQUITY,
+            symbol=symbol,
+            title=symbol,
+            currency="RUB",
+            tick_size=Decimal("0.01"),
+            tick_value=Decimal("0.01"),
+            lot_size=1,
+            quantity_step=Decimal("1"),
+            min_quantity=Decimal("1"),
+            contract_multiplier=Decimal("1"),
+        )
+    )
+    session.flush()
+
+
+def _put(session: Session, payload: dict) -> dict:
+    from fastapi.testclient import TestClient
+
+    from app.db import get_db
+    from app.main import app
+
+    app.dependency_overrides[get_db] = lambda: session
+    try:
+        with TestClient(app) as client:
+            return client.post("/api/v1/portfolio/holdings", json=payload).json()
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_снимок_с_устройства_становится_фактическим_составом(session: Session):
+    _instrument(session, "LQDT", "MOEX:SHARE:LQDT")
+    _instrument(session, "SBER", "MOEX:SHARE:SBER")
+
+    body = _put(
+        session,
+        {
+            "broker": "tinvest",
+            "account_id": "ACC-READ",
+            "title": "Инвестиции",
+            "as_of": "2026-07-31",
+            "positions": [
+                {"symbol": "LQDT", "quantity": "100", "market_value": "60000"},
+                {"symbol": "SBER", "quantity": "10", "market_value": "40000"},
+            ],
+        },
+    )
+
+    assert body["stored"] == 2
+    assert body["unknown"] == []
+    assert Decimal(body["total_value"]) == Decimal("100000")
+
+    account = session.query(Account).filter_by(external_id="ACC-READ").one()
+    # Контур проставляется сервером, а не приходит снаружи: позволить вызову
+    # объявить счёт риск-контуром значило бы дать ему менять расчёт лимитов.
+    assert account.circuit == "investment"
+    holdings = latest_holdings(session, account.id)
+    assert {h.instrument_id for h in holdings} == {
+        "MOEX:SHARE:LQDT",
+        "MOEX:SHARE:SBER",
+    }
+
+
+def test_неопознанная_бумага_не_пропадает_молча(session: Session):
+    """Иначе доли посчитались бы от неполной суммы.
+
+    Ребаланс предложил бы докупить то, что уже куплено, — и владелец купил
+    бы это второй раз.
+    """
+    _instrument(session, "LQDT", "MOEX:SHARE:LQDT")
+
+    body = _put(
+        session,
+        {
+            "account_id": "ACC-READ",
+            "positions": [
+                {"symbol": "LQDT", "quantity": "100", "market_value": "60000"},
+                {"symbol": "ЧТОТОСВОЁ", "quantity": "5", "market_value": "40000"},
+            ],
+        },
+    )
+
+    assert body["stored"] == 1
+    assert body["unknown"] == ["ЧТОТОСВОЁ"]
+    assert "не опознано" in body["note"]
+
+
+def test_повторное_чтение_того_же_дня_не_удваивает_позиции(session: Session):
+    _instrument(session, "LQDT", "MOEX:SHARE:LQDT")
+    payload = {
+        "account_id": "ACC-READ",
+        "as_of": "2026-07-31",
+        "positions": [
+            {"symbol": "LQDT", "quantity": "100", "market_value": "60000"}
+        ],
+    }
+    _put(session, payload)
+    payload["positions"][0]["market_value"] = "61000"
+    body = _put(session, payload)
+
+    account = session.query(Account).filter_by(external_id="ACC-READ").one()
+    holdings = latest_holdings(session, account.id)
+    assert len(holdings) == 1
+    assert holdings[0].market_value == Decimal("61000")
+    assert body["stored"] == 1
+
+
+def test_снимки_копятся_по_датам(session: Session):
+    """История нужна: ребаланс сравнивает «было» и «стало»."""
+    _instrument(session, "LQDT", "MOEX:SHARE:LQDT")
+    for day, value in (("2026-07-30", "60000"), ("2026-07-31", "62000")):
+        _put(
+            session,
+            {
+                "account_id": "ACC-READ",
+                "as_of": day,
+                "positions": [
+                    {"symbol": "LQDT", "quantity": "100", "market_value": value}
+                ],
+            },
+        )
+
+    account = session.query(Account).filter_by(external_id="ACC-READ").one()
+    assert session.query(Holding).filter_by(account_id=account.id).count() == 2
+    # Доли считаются по одной дате: смешать вчерашнюю цену одной бумаги с
+    # сегодняшней другой — это состав портфеля ни на один момент времени.
+    latest = latest_holdings(session, account.id)
+    assert len(latest) == 1
+    assert latest[0].as_of == date(2026, 7, 31)
+
+
+def test_снимок_замыкает_контур_до_предложения(session: Session):
+    """Прочитали счёт — получили предложение. Раньше цепочка рвалась здесь."""
+    _instrument(session, "LQDT", "MOEX:SHARE:LQDT")
+    _instrument(session, "SBER", "MOEX:SHARE:SBER")
+    _model(session, {"MOEX:SHARE:LQDT": "0.5", "MOEX:SHARE:SBER": "0.5"})
+    _put(
+        session,
+        {
+            "account_id": "ACC-READ",
+            "positions": [
+                {"symbol": "LQDT", "quantity": "100", "market_value": "80000"},
+                {"symbol": "SBER", "quantity": "10", "market_value": "20000"},
+            ],
+        },
+    )
+
+    from fastapi.testclient import TestClient
+
+    from app.db import get_db
+    from app.main import app
+
+    app.dependency_overrides[get_db] = lambda: session
+    try:
+        with TestClient(app) as client:
+            body = client.get("/api/v1/portfolio/rebalance").json()
+    finally:
+        app.dependency_overrides.clear()
+
+    assert body["needed"] is True
+    assert "не подключён" not in body["reason"]
+    assert {a["side"] for a in body["actions"]} == {"SELL", "BUY"}

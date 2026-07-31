@@ -317,6 +317,21 @@ _MD_COLUMNS = {
 _SEC_MINIMAL = "SECID,SHORTNAME,MINSTEP,DECIMALS,LOTSIZE"
 _MD_MINIMAL = "SECID,LAST,VALTODAY"
 
+# Признак «не спрашивать колонки вовсе».
+#
+# Урезанный набор — тоже догадка: он перечисляет то, что мы **считаем**
+# общим для всех досок. Догадка уже подвела один раз, и доска фондов
+# продолжала приходить пустой после починки: значит лишней была не
+# ISSUESIZE, а что-то из оставшегося, и перебирать колонки по одной — это
+# гадание с деплоем на каждый ход.
+#
+# Последняя попытка не спрашивает ничего: ISS отдаёт все поля доски, какие
+# у неё есть, и промахнуться этим запросом нельзя в принципе. Цена — сорок
+# полей на бумагу вместо шести, и ровно поэтому попытка последняя: она
+# случается только там, где иначе не пришло бы ни одной строки, а сотня
+# фондов с полными полями всё равно легче, чем отсутствующий класс активов.
+_ALL_COLUMNS = ""
+
 
 def stock_board(
     market: str, board: str, *, fetch=http_json
@@ -335,12 +350,17 @@ def stock_board(
 
     def request(sec: str, md: str):
         def url(start: int) -> str:
+            # Пустая строка означает «колонки не сужаем»: параметр не
+            # добавляется вовсе, и ISS отдаёт всё, что есть на доске.
+            columns = ""
+            if sec:
+                columns += f"&securities.columns={sec}"
+            if md:
+                columns += f"&marketdata.columns={md}"
             return (
                 f"{BASE}/engines/stock/markets/{market}/boards/{board}"
                 "/securities.json?iss.meta=off&iss.only=securities,marketdata"
-                f"&securities.columns={sec}"
-                f"&marketdata.columns={md}"
-                f"&limit={PAGE_SIZE}&start={start}"
+                f"{columns}&limit={PAGE_SIZE}&start={start}"
             )
 
         rows, reports = _paged(url, "securities", fetch=fetch)
@@ -355,6 +375,13 @@ def stock_board(
         # поля при этом теряются — но бумага без капитализации полезнее, чем
         # отсутствующий класс активов.
         securities, market_data, retry = request(_SEC_MINIMAL, _MD_MINIMAL)
+        reports = [*reports, *retry]
+    if not securities:
+        # И этот набор — догадка. Она подвела: доска фондов приходила пустой
+        # и после починки. Спрашиваем последний раз, не сужая колонки вовсе:
+        # промахнуться таким запросом нельзя, потому что он ничего не
+        # утверждает о доске.
+        securities, market_data, retry = request(_ALL_COLUMNS, _ALL_COLUMNS)
         reports = [*reports, *retry]
     by_id = {row.get("SECID"): row for row in market_data}
 

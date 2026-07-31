@@ -6,6 +6,9 @@ import '../../domain/ledger/account.dart';
 import '../../domain/ledger/ledger_event.dart';
 import '../../domain/ledger/money.dart';
 import '../../domain/portfolio/package.dart';
+import '../../domain/portfolio/package_absence.dart';
+import '../../domain/portfolio/package_pick.dart';
+import '../../domain/portfolio/package_plan.dart';
 import '../../state/app_controller.dart';
 import '../../state/app_scope.dart';
 import '../../theme/tokens.dart';
@@ -687,19 +690,42 @@ class _PackagesState extends State<_Packages> {
     }
 
     final years = controller.packageHorizon.years;
-    final matching = [
-      for (final p in portfolio.forHorizon(years))
-        if (p.profile == _variant.profile && p.size == _variant.size) p,
-    ];
-    final package = matching.isEmpty ? null : matching.first;
+    final onHorizon = portfolio.forHorizon(years);
+    // Диагональ «профиль ↔ размер» — предпочтение, а не условие. Движок
+    // считает девять сочетаний на горизонт, а вкладок три: требуя точного
+    // совпадения, экран прятал шесть сочетаний из девяти. Так и вышло:
+    // «прошли проверку 2» и пусто под ними.
+    final pick = pickPackage(
+      onHorizon,
+      wantProfile: _variant.profile,
+      wantSize: _variant.size,
+    );
+    final package = pick.package;
     // Какие варианты вообще собрались. Нужно, чтобы отличить «этот не прошёл
     // проверку» от «не посчитано ничего»: первое лечится другим вариантом,
     // второе — ничем, и владельцу нужна причина, а не совет.
     final ready = {
       for (final variant in _Variant.values)
-        for (final p in portfolio.forHorizon(years))
-          if (p.profile == variant.profile && p.size == variant.size) variant,
+        if (pickPackage(
+              onHorizon,
+              wantProfile: variant.profile,
+              wantSize: variant.size,
+            ).package !=
+            null)
+          variant,
     };
+    // На какие горизонты составы всё-таки посчитаны.
+    //
+    // Без этого экран врал молчанием: конвейер зелёный, «составов 2», а под
+    // ним пусто — и ни слова о том, что оба состава посчитаны на другой
+    // горизонт. Владелец видел исправную машину, которая ничего не выдаёт,
+    // и это худший вид пустого экрана: он не называет ни причины, ни
+    // действия.
+    final otherHorizons = {
+      for (final p in portfolio.packages)
+        if (p.horizonYears != years) p.horizonYears,
+    }.toList()
+      ..sort();
 
     return ListView(
       padding: _pad,
@@ -713,13 +739,34 @@ class _PackagesState extends State<_Packages> {
         if (package == null)
           _Progress(
             portfolio: portfolio,
-            note: ready.isEmpty
-                ? portfolio.reason
-                : 'Этот вариант проверку на истории не прошёл. Посчитаны: '
-                    '${ready.map((v) => v.label.toLowerCase()).join(', ')}.',
+            note: packageAbsenceNote(
+              readyVariants: [for (final v in ready) v.label],
+              otherHorizons: otherHorizons,
+              horizonLabel: controller.packageHorizon.label,
+              reason: portfolio.reason,
+            ),
+            onSwitchHorizon: ready.isEmpty && otherHorizons.isNotEmpty
+                ? () => controller.setPackageHorizon(
+                      controller.packageHorizon == PackageHorizon.oneYear
+                          ? PackageHorizon.fivePlus
+                          : PackageHorizon.oneYear,
+                    )
+                : null,
             onRetry: () => controller.loadPortfolio(force: true),
           )
         else ...[
+          // Подмена не бывает молчаливой: «сбалансированный» и «простой» —
+          // разные обещания по риску, и владелец обязан видеть, что смотрит
+          // не на то, что выбрал.
+          if (pick.note.isNotEmpty) ...[
+            SectionCard(
+              child: Text(
+                pick.note,
+                style: T.body(11.5, color: C.warning, height: 1.45),
+              ),
+            ),
+            const SizedBox(height: 12),
+          ],
           _PackageHead(package: package),
           const SizedBox(height: 12),
           _PackageComposition(package: package),
@@ -907,11 +954,15 @@ class _Progress extends StatelessWidget {
     required this.portfolio,
     required this.note,
     required this.onRetry,
+    this.onSwitchHorizon,
   });
 
   final PortfolioState portfolio;
   final String note;
   final VoidCallback onRetry;
+
+  /// Переключить горизонт, если составы посчитаны на другой. null — некуда.
+  final VoidCallback? onSwitchHorizon;
 
   @override
   Widget build(BuildContext context) => SectionCard(
@@ -930,6 +981,21 @@ class _Progress extends StatelessWidget {
                 ),
               ],
             ),
+            // Причина пустоты — первой строкой, а не подписью под таблицей
+            // шагов. Владелец пришёл за составом и не нашёл его: он ищет
+            // ответ на «почему», а не список зелёных галочек.
+            if (note.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Text(note, style: T.body(11.5, color: C.text, height: 1.45)),
+              if (onSwitchHorizon != null) ...[
+                const SizedBox(height: 10),
+                ActionButton(
+                  label: 'Показать посчитанный горизонт',
+                  onTap: onSwitchHorizon!,
+                  dense: true,
+                ),
+              ],
+            ],
             const SizedBox(height: 10),
             for (final stage in portfolio.stages)
               _Stage(done: stage.done, name: stage.name, detail: stage.detail),
@@ -961,10 +1027,6 @@ class _Progress extends StatelessWidget {
                     style: T.body(10.5, color: C.warning, height: 1.4),
                   ),
                 ),
-            ],
-            if (note.isNotEmpty) ...[
-              const SizedBox(height: 10),
-              Text(note, style: T.body(11, color: C.faint, height: 1.45)),
             ],
             if (portfolio.jobs.isNotEmpty) ...[
               const SizedBox(height: 10),

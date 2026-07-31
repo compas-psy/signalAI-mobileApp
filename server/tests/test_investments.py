@@ -15,7 +15,7 @@ from sqlalchemy import select
 
 from app.market import moex
 from app.market.ingest import ingest_universe
-from app.market.investments import investment_universe, sync_investments
+from app.market.investments import BOARDS, investment_universe, sync_investments
 from app.models import Bar, DataQualityEvent, Instrument
 from app.models.enums import AssetClass, Timeframe, Venue
 
@@ -229,6 +229,6 @@ def test_пустая_доска_записывает_причину(session):
         for e in session.query(DataQualityEvent).filter_by(flag="BOARD_EMPTY")
     ]
     # По событию на каждую доску, и в каждом — чем именно она пуста.
-    assert len(notes) == 3
+    assert len(notes) == len(BOARDS)
     assert any(n.startswith("TQTF:") for n in notes)
     assert all("не прошла отбор" in n or "не ответила" in n for n in notes)

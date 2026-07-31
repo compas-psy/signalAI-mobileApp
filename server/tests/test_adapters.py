@@ -426,3 +426,45 @@ def test_доска_повторяет_запрос_безопасным_наб�
     # они есть; безопасный набор идёт только вторым.
     assert any("ISSUESIZE" in url for url in asked)
     assert any("ISSUESIZE" not in url for url in asked)
+
+
+def test_доска_переспрашивает_без_колонок_когда_урезанный_набор_не_помог():
+    """Урезанный набор — тоже догадка, и она подвела.
+
+    Доска фондов приходила пустой и после починки: значит лишней была не
+    ISSUESIZE, а что-то из оставшегося. Перебирать колонки по одной — это
+    гадание с деплоем на каждый ход. Последняя попытка не спрашивает
+    ничего: промахнуться таким запросом нельзя, потому что он ничего не
+    утверждает о доске.
+    """
+    asked: list[str] = []
+
+    def fetch(url: str):
+        asked.append(url)
+        report = moex.FetchReport(
+            url=url, status=200, elapsed_ms=1, bytes_read=1, ok=True
+        )
+        # Пусто, пока в запросе есть хоть одно сужение колонок.
+        if "columns=" in url:
+            return {
+                "securities": {"columns": ["SECID"], "data": []},
+                "marketdata": {"columns": ["SECID"], "data": []},
+            }, report
+        return {
+            "securities": {
+                "columns": ["SECID", "SHORTNAME", "MINSTEP", "DECIMALS", "LOTSIZE"],
+                "data": [["LQDT", "ВИМ Ликвидность", 0.0001, 4, 1]],
+            },
+            "marketdata": {
+                "columns": ["SECID", "LAST", "VALTODAY"],
+                "data": [["LQDT", 1.62, 8_000_000_000]],
+            },
+        }, report
+
+    rows, _ = moex.stock_board("shares", "TQIF", fetch=fetch)
+
+    assert [r.sec_id for r in rows] == ["LQDT"]
+    assert rows[0].turnover == Decimal("8000000000")
+    # Порядок попыток: полный набор, урезанный, и только потом без сужения.
+    assert any("ISSUESIZE" in url for url in asked)
+    assert any("columns=" not in url for url in asked)

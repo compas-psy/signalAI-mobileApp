@@ -14,7 +14,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 
 from ...db import get_db
 from ...market.investments import INVESTMENT_CLASSES, investment_universe
+from ...portfolio import holdings as holdings_store
 from ...portfolio.rebalance import latest_holdings, plan
 from ...schemas.common import ApiModel, Money
 from pydantic import Field
@@ -392,6 +393,95 @@ def rebalance(
             )
             for a in draft.actions
         ],
+    )
+
+
+class HoldingIn(ApiModel):
+    """Одна позиция, как её прочитало устройство."""
+
+    symbol: str
+    quantity: Decimal
+    market_value: Money
+    average_price: Money | None = None
+    market_price: Money | None = None
+    instrument_id: str = ""
+
+
+class HoldingsIn(ApiModel):
+    """Снимок инвестиционного счёта целиком.
+
+    Приезжает с устройства, а не читается сервером: токен Т-Инвестиций на
+    чтение лежит в защищённом хранилище телефона и на VPS не передаётся.
+    Токен Invest API привязан к пользователю, а не к счёту, и видит все счета
+    владельца — хранить такой на сервере значило бы сложить весь капитал в
+    одну точку отказа ради удобства синхронизации.
+    """
+
+    broker: str = "tinvest"
+    account_id: str
+    title: str = ""
+    equity: Money | None = None
+    as_of: date | None = None
+    positions: list[HoldingIn] = Field(default_factory=list)
+
+
+class HoldingsOut(ApiModel):
+    """Что записалось и чего сервер не узнал."""
+
+    account_id: str = ""
+    as_of: date | None = None
+    stored: int = 0
+    total_value: Money = Decimal(0)
+    unknown: list[str] = Field(default_factory=list)
+    note: str = ""
+
+
+@router.post("/holdings", response_model=HoldingsOut)
+def put_holdings(
+    payload: HoldingsIn,
+    session: Session = Depends(get_db),
+) -> HoldingsOut:
+    """Принять снимок фактических позиций.
+
+    Снимки копятся по датам: ребаланс сравнивает «было» и «стало», и без
+    истории это сравнение не восстановить. В пределах одной даты снимок
+    заменяется — второе чтение того же дня уточняет первое.
+
+    Неопознанные бумаги возвращаются списком, а не пропускаются молча: доли
+    посчитались бы от неполной суммы, и ребаланс предложил бы докупить то,
+    что уже куплено.
+    """
+    account = holdings_store.account_for(
+        session,
+        broker=payload.broker,
+        external_id=payload.account_id,
+        title=payload.title,
+        equity=payload.equity,
+    )
+    snapshot = holdings_store.store(
+        session,
+        account,
+        [
+            holdings_store.Position(
+                symbol=p.symbol,
+                quantity=p.quantity,
+                market_value=p.market_value,
+                average_price=p.average_price,
+                market_price=p.market_price,
+                instrument_id=p.instrument_id,
+            )
+            for p in payload.positions
+        ],
+        as_of=payload.as_of,
+    )
+    session.commit()
+    return HoldingsOut(
+        account_id=str(snapshot.account_id),
+        as_of=snapshot.as_of,
+        stored=snapshot.stored,
+        total_value=snapshot.total_value,
+        unknown=snapshot.unknown,
+        note=snapshot.note,
     )
 
 
