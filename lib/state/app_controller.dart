@@ -31,6 +31,7 @@ import '../domain/risk/portfolio_impact.dart';
 import '../domain/risk/risk_engine.dart';
 import 'navigation.dart';
 import '../domain/broker/broker.dart';
+import '../domain/broker/tinvest_role.dart';
 import '../domain/broker/trading_diagnostics.dart';
 import '../domain/enums.dart';
 import '../domain/idea/execution.dart';
@@ -1355,6 +1356,47 @@ class AppController extends ChangeNotifier {
   }
 
   /// Назначает торговый счёт. Остальные остаются на чтение.
+  /// Какие роли токенов Т-Инвестиций уже заведены.
+  Set<TInvestRole> _tinvestTokens = const {};
+  Set<TInvestRole> get tinvestTokens => _tinvestTokens;
+
+  Future<void> refreshTinvestTokens() async {
+    final repository = _repository;
+    if (repository is! LocalAnalysisRepository) return;
+    _tinvestTokens = await repository.tinvestTokenRoles();
+    notifyListeners();
+  }
+
+  /// Сохранить токен под его ролью.
+  Future<void> saveTinvestToken(TInvestRole role, String token) async {
+    final repository = _repository;
+    if (repository is! LocalAnalysisRepository) return;
+    try {
+      final answer = await repository.saveTinvestToken(role, token);
+      showToast(answer);
+    } on FeatureUnavailableException catch (e) {
+      showToast(e.message);
+    }
+    await refreshTinvestTokens();
+    await refreshTinvestAccounts();
+  }
+
+  /// Разрешить или запретить приложению читать счёт.
+  ///
+  /// Токен видит все счета владельца — ограничить его на стороне брокера
+  /// нельзя. Значит ограничивает приложение, и делает это явным списком.
+  Future<void> setTinvestAccountAccess(String accountId, bool allowed) async {
+    final repository = _repository;
+    if (repository is! LocalAnalysisRepository) return;
+    await repository.setTinvestAccountAccess(accountId, allowed);
+    await refreshTinvestAccounts();
+    notifyListeners();
+  }
+
+  /// Счета, разрешённые к чтению. Пустое множество — доступ не выдавали.
+  Set<String> get tinvestAllowedAccounts =>
+      tradingDesk?.tradingState.allowedAccountIds ?? const {};
+
   Future<void> setTinvestAccount(String? accountId) async {
     final repository = _repository;
     if (repository is! LocalAnalysisRepository) return;

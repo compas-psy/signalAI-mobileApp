@@ -7,6 +7,7 @@ import '../../state/app_scope.dart';
 import '../../theme/tokens.dart';
 import '../../theme/typography.dart';
 import '../../domain/broker/broker.dart';
+import '../../domain/broker/tinvest_role.dart';
 import '../../monitor/background_mode.dart';
 import '../../state/navigation.dart';
 import '../layout.dart';
@@ -87,6 +88,9 @@ class SettingsScreen extends StatelessWidget {
                     onConnect: controller.connectExchange,
                   ),
                 if (snapshot.trading != null) _BrokersCard(trading: snapshot.trading!),
+                // Токены — выше счетов: без токена счетов не будет вовсе.
+                const TInvestTokensCard(),
+                const SizedBox(height: S.gap),
                 const _TinvestAccountsCard(),
                 if (snapshot.background != null)
                   _BackgroundCard(background: snapshot.background!),
@@ -865,6 +869,80 @@ class _AboutCardState extends State<_AboutCard> {
 }
 
 
+/// Три токена Т-Инвестиций.
+///
+/// Токен Invest API привязан к пользователю, а не к счёту: один торговый
+/// токен видит все счета владельца и может отправить заявку с любого.
+/// Ограничить его на стороне брокера нельзя — значит нельзя и заводить один
+/// такой токен. Права разделены там, где их выдаёт брокер, и заводятся тремя
+/// отдельными строками, чтобы это было видно, а не подразумевалось.
+class TInvestTokensCard extends StatefulWidget {
+  const TInvestTokensCard({super.key});
+
+  @override
+  State<TInvestTokensCard> createState() => _TInvestTokensCardState();
+}
+
+class _TInvestTokensCardState extends State<TInvestTokensCard> {
+  @override
+  void initState() {
+    super.initState();
+    // Наличие токенов читается из хранилища, а не угадывается по режиму.
+    WidgetsBinding.instance.addPostFrameCallback(
+      (_) => AppScope.read(context).refreshTinvestTokens(),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final controller = AppScope.of(context);
+    final present = controller.tinvestTokens;
+    return SectionCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const SectionLabel('Токены Т-Инвестиций'),
+          const SizedBox(height: 6),
+          Text(
+            'Токен Invest API привязан к вам, а не к счёту: один торговый '
+            'токен видит все ваши счета и может отправить заявку с любого. '
+            'Поэтому их три, с разными правами.',
+            style: T.body(11.5, color: C.muted, height: 1.5),
+          ),
+          const SizedBox(height: 10),
+          for (final role in TInvestRole.values) ...[
+            KeyValueRow(
+              name: role.title,
+              value: present.contains(role) ? 'задан · изменить' : 'нет · ввести',
+              valueStyle: T.mono(
+                12,
+                color: present.contains(role) ? C.green : C.accent,
+              ),
+              onTap: () => showBrokerKeysSheet(
+                context,
+                broker: BrokerId.tinvest,
+                mode: role == TInvestRole.trade
+                    ? TradingMode.live
+                    : TradingMode.testnet,
+                onSubmit: (token, _) =>
+                    controller.saveTinvestToken(role, token),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.only(top: 2, bottom: 6),
+              child: Text(
+                role.meaning,
+                style: T.body(10.5, color: C.faint, height: 1.4),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+
 /// Счета Т-Инвестиций и выбор торгового.
 ///
 /// Токен Invest API привязан к пользователю, а не к счёту: он видит и
@@ -999,6 +1077,7 @@ class _TinvestAccountsCardState extends State<_TinvestAccountsCard> {
     final controller = AppScope.of(context);
     final accounts = controller.tinvestAccounts;
     final selected = controller.tinvestTradingAccount;
+    final allowed = controller.tinvestAllowedAccounts;
 
     return SectionCard(
       child: Column(
@@ -1010,15 +1089,19 @@ class _TinvestAccountsCardState extends State<_TinvestAccountsCard> {
             Text(
               _asked
                   ? 'Счета не пришли: токен не задан или брокер не ответил.'
-                  : 'Один токен видит все ваши счета — и фьючерсный, и тот, где '
-                      'лежит основной капитал. Капитал считается по всем, '
-                      'торговля — только с выбранного.',
+                  : 'Токен видит все ваши счета. Приложение работает только '
+                      'с теми, которым вы открыли доступ: остальные не '
+                      'попадают ни в капитал, ни в выбор торгового. Заявки '
+                      'уходят с одного — отмеченного «ТОРГОВЫЙ».',
               style: T.body(11.5, color: C.muted, height: 1.5),
             )
           else
             for (final account in accounts) ...[
               Pressable(
-                onTap: account.tradable
+                // Нажатие назначает торговый счёт. Разрешение читать —
+                // отдельная кнопка справа: это разные права, и объединять
+                // их одним жестом значило бы выдавать оба сразу.
+                onTap: account.tradable && allowed.contains(account.id)
                     ? () => controller.setTinvestAccount(account.id)
                     : null,
                 child: Container(
@@ -1062,6 +1145,33 @@ class _TinvestAccountsCardState extends State<_TinvestAccountsCard> {
                       Text(
                         account.id == selected ? 'ТОРГОВЫЙ' : '',
                         style: T.body(9.5, weight: 800, color: C.accent),
+                      ),
+                      const SizedBox(width: 8),
+                      // Разрешение читать счёт. Пока его нет, счёт не
+                      // попадает ни в капитал, ни в выбор торгового.
+                      Pressable(
+                        onTap: () => controller.setTinvestAccountAccess(
+                          account.id,
+                          !allowed.contains(account.id),
+                        ),
+                        child: OutlineBadge(
+                          label: allowed.contains(account.id)
+                              ? 'доступ есть'
+                              : 'закрыт',
+                          color: allowed.contains(account.id) ? C.green : C.muted,
+                          borderColor: (allowed.contains(account.id)
+                                  ? C.green
+                                  : C.muted)
+                              .withValues(alpha: 0.35),
+                          background: (allowed.contains(account.id)
+                                  ? C.green
+                                  : C.muted)
+                              .withValues(alpha: 0.12),
+                          fontWeight: 700,
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 7, vertical: 3),
+                          radius: R.pill,
+                        ),
                       ),
                     ],
                   ),

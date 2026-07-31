@@ -22,7 +22,13 @@ from sqlalchemy.orm import Session
 
 from ...db import get_db
 from ...market.investments import INVESTMENT_CLASSES, investment_universe
+from ...portfolio.rebalance import latest_holdings, plan
+from ...schemas.common import ApiModel, Money
+from pydantic import Field
+from uuid import UUID
+from decimal import Decimal
 from ...models import (
+    Account,
     Bar,
     DataQualityEvent,
     Instrument,
@@ -309,6 +315,83 @@ def packages(
             reason=reason,
         ),
         packages=[_package_out(session, m) for m in models],
+    )
+
+
+class RebalanceActionOut(ApiModel):
+    instrument_id: str
+    symbol: str = ""
+    side: str
+    target_weight: Money
+    actual_weight: Money
+    amount_rub: Money
+    reason: str
+
+
+class RebalanceOut(ApiModel):
+    """Черновик ребаланса — предложение, а не заявка.
+
+    Приложение по нему ничего не отправляет: за инвестиционным счётом стоит
+    основной капитал владельца, токен на него выдан только на чтение, и
+    сделки владелец совершает сам. Поле ``executable`` отсутствует
+    намеренно — его нечему было бы включать.
+    """
+
+    model_id: str = ""
+    needed: bool = False
+    urgent: bool = False
+    reason: str = ""
+    max_drift: Money = Decimal(0)
+    total_value: Money = Decimal(0)
+    actions: list[RebalanceActionOut] = Field(default_factory=list)
+
+
+@router.get("/rebalance", response_model=RebalanceOut)
+def rebalance(
+    session: Session = Depends(get_db),
+    account_id: UUID | None = Query(default=None),
+) -> RebalanceOut:
+    """Что стоило бы поправить в фактическом составе.
+
+    Считается от позиций на счёте, а не от прошлого предложения: владелец
+    мог купить не всё, купить иначе или продать что-то сам, и предложение
+    обязано исходить из того, что есть на самом деле.
+    """
+    account = session.execute(
+        select(Account).where(Account.circuit == "investment")
+        if account_id is None
+        else select(Account).where(Account.id == account_id)
+    ).scalars().first()
+    if account is None:
+        return RebalanceOut(reason="инвестиционный счёт не подключён")
+
+    holdings = latest_holdings(session, account.id)
+    model = session.execute(
+        select(PortfolioModel).order_by(PortfolioModel.generated_at.desc()).limit(1)
+    ).scalar_one_or_none()
+    if model is None:
+        return RebalanceOut(reason="пакет ещё не посчитан — сравнивать не с чем")
+
+    draft = plan(model, holdings)
+    return RebalanceOut(
+        model_id=str(model.id),
+        needed=draft.needed,
+        urgent=draft.urgent,
+        reason=draft.reason,
+        max_drift=draft.max_drift,
+        total_value=draft.total_value,
+        actions=[
+            RebalanceActionOut(
+                instrument_id=a.instrument_id,
+                symbol=_symbol(session, a.instrument_id)[0],
+                side=a.side,
+                target_weight=a.target_weight,
+                actual_weight=a.actual_weight,
+                amount_rub=a.amount_rub,
+                reason=a.reason,
+            )
+            for a in draft.actions
+        ],
     )
 
 

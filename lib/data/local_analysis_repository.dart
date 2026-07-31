@@ -34,6 +34,7 @@ import '../domain/options/structures.dart';
 import 'ledger/broker_import.dart';
 import 'ledger/capital_desk.dart';
 import 'broker/bybit_broker.dart';
+import '../domain/broker/tinvest_role.dart';
 import 'broker/tinvest_broker.dart';
 import 'broker/tinvest_fundamentals.dart';
 import 'broker/secure_vault.dart';
@@ -226,15 +227,37 @@ class LocalAnalysisRepository
             signer: (payload) =>
                 vault.sign(exchange: id.name, mode: mode.name, payload: payload),
           ),
+        // Токен Т-Инвестиций берётся по роли, а не по режиму площадки.
+        //
+        // Токен Invest API привязан к пользователю, а не к счёту: один
+        // торговый токен видит все счета владельца. Поэтому их три —
+        // песочница, чтение инвестиций и торговля по идеям, — и брокер
+        // работает ровно тем, который соответствует роли.
         BrokerId.tinvest => TInvestBroker(
             mode: mode,
-            token: () => vault.apiKey(exchange: id.name, mode: mode.name),
+            role: tinvestRoleFor(mode),
+            token: () => vault.apiKey(
+              exchange: id.name,
+              mode: tinvestRoleFor(mode).slot,
+            ),
             instrumentCache: _instruments,
           )
           // Выбранный торговый счёт переживает пересоздание брокера: иначе
           // после смены режима заявка ушла бы с первого попавшегося счёта.
-          ..tradingAccountId = _trading.tinvestAccountId,
+          ..tradingAccountId = _trading.tinvestAccountId
+          // Счета, которые владелец разрешил читать. Токен видит все —
+          // приложение работает только с этими.
+          ..allowedAccountIds = _trading.allowedAccountIds,
       };
+
+  /// Какая роль токена отвечает режиму площадки.
+  ///
+  /// Тренировочный режим — песочница. Живой — торговля по идеям: это
+  /// единственный контур, которым распоряжается приложение. Токен на чтение
+  /// инвестиций сюда не попадает никогда и живёт своей жизнью — им считается
+  /// капитал и предлагается ребаланс, а сделки владелец делает сам.
+  static TInvestRole tinvestRoleFor(TradingMode mode) =>
+      mode == TradingMode.live ? TInvestRole.trade : TInvestRole.sandbox;
 
   /// Брокер площадки в её текущем режиме.
   @override
@@ -250,6 +273,12 @@ class LocalAnalysisRepository
   @override
   Future<bool> hasBrokerKeys(BrokerId id) async {
     await _ensureLoaded();
+    if (id == BrokerId.tinvest) {
+      return vault.hasKeys(
+        exchange: id.name,
+        mode: tinvestRoleFor(_trading.modeOf(id)).slot,
+      );
+    }
     return vault.hasKeys(exchange: id.name, mode: _trading.modeOf(id).name);
   }
 
@@ -302,9 +331,15 @@ class LocalAnalysisRepository
         'сохранять некуда, а класть их в открытый файл нельзя.',
       );
     }
+    // У Т-Инвестиций слот именуется ролью токена, а не режимом площадки:
+    // токенов три, и складывать их в два слота значило бы перезаписывать
+    // один другим.
+    final slot = broker == BrokerId.tinvest
+        ? tinvestRoleFor(mode).slot
+        : mode.name;
     await vault.saveKeys(
       exchange: broker.name,
-      mode: mode.name,
+      mode: slot,
       apiKey: apiKey,
       apiSecret: apiSecret,
     );
@@ -326,6 +361,72 @@ class LocalAnalysisRepository
       await _rememberKeyCheck(broker, mode, ok: false, note: note);
       throw FeatureUnavailableException('${broker.title} не принял ключ: $note');
     }
+  }
+
+  /// Сохранить токен Т-Инвестиций под его ролью.
+  ///
+  /// Отдельный путь от [saveBrokerKeys] потому, что роль — не режим
+  /// площадки. Токен на чтение инвестиций живёт вне переключателя
+  /// «тренировка/бой»: им никогда ничего не отправляется, и связывать его с
+  /// режимом торговли значило бы делать вид, что он тоже может торговать.
+  Future<String> saveTinvestToken(TInvestRole role, String token) async {
+    await _ensureLoaded();
+    if (!await vault.isAvailable) {
+      throw const FeatureUnavailableException(
+        'Защищённое хранилище недоступно на этом устройстве: токен '
+        'сохранять некуда, а класть его в открытый файл нельзя.',
+      );
+    }
+    await vault.saveKeys(
+      exchange: BrokerId.tinvest.name,
+      mode: role.slot,
+      apiKey: token,
+      apiSecret: '',
+    );
+    final probe = TInvestBroker(
+      mode: role == TInvestRole.trade ? TradingMode.live : TradingMode.testnet,
+      role: role,
+      token: () async => token,
+      instrumentCache: _instruments,
+    );
+    try {
+      final answer = await probe.checkAccess();
+      _brokers.remove(BrokerId.tinvest);
+      return answer;
+    } on BrokerException catch (e) {
+      // Токен остаётся в хранилище: набирать его заново из-за секундного
+      // отказа сети — наказание не по вине.
+      throw FeatureUnavailableException('Т-Инвестиции не приняли токен: ${e.message}');
+    }
+  }
+
+  Future<Set<TInvestRole>> tinvestTokenRoles() async {
+    await _ensureLoaded();
+    final result = <TInvestRole>{};
+    for (final role in TInvestRole.values) {
+      if (await vault.hasKeys(exchange: BrokerId.tinvest.name, mode: role.slot)) {
+        result.add(role);
+      }
+    }
+    return result;
+  }
+
+  Future<void> setTinvestAccountAccess(String accountId, bool allowed) async {
+    await _ensureLoaded();
+    final next = {..._trading.allowedAccountIds};
+    if (allowed) {
+      next.add(accountId);
+    } else {
+      next.remove(accountId);
+      // Счёт, у которого отобрали доступ, торговым быть перестаёт: иначе
+      // отзыв доступа не отзывал бы главного.
+      if (_trading.tinvestAccountId == accountId) {
+        _trading = _trading.copyWith(tinvestAccountId: '');
+      }
+    }
+    _trading = _trading.copyWith(allowedAccountIds: next);
+    await _store.write('trading', _trading.toJson());
+    _brokers.remove(BrokerId.tinvest);
   }
 
   /// Проверка отвергнутого ключа Bybit на противоположной площадке.
@@ -2260,9 +2361,11 @@ class LocalAnalysisRepository
 
   /// Фундаментальные паспорта: Invest API, токен — тот же, что у брокера.
   late final TInvestFundamentals fundamentals = TInvestFundamentals(
+    // Паспорта бумаг читаются инвестиционным токеном: это чтение, и
+    // торговый токен для него не нужен.
     token: () => vault.apiKey(
       exchange: BrokerId.tinvest.name,
-      mode: _trading.modeOf(BrokerId.tinvest).name,
+      mode: TInvestRole.invest.slot,
     ),
     store: _store,
   );

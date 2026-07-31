@@ -214,6 +214,14 @@ class TInvestBroker implements Broker {
   /// null — берётся первый с полным доступом.
   String? tradingAccountId;
 
+  /// Счета, которые приложению разрешено читать.
+  ///
+  /// Пустое множество означает «ограничения нет» — так работает песочница и
+  /// так же ведут себя настройки до первой выдачи доступа. Как только в
+  /// списке появился хоть один счёт, все остальные перестают существовать
+  /// для приложения: их не видно ни в капитале, ни в выборе торгового.
+  Set<String> allowedAccountIds = const {};
+
   @override
   Future<bool> get isReady async {
     try {
@@ -255,6 +263,10 @@ class TInvestBroker implements Broker {
         // прочитать не может — оба в капитале дали бы пустые строки.
         .where((a) =>
             a.id.isNotEmpty && !a.closed && !a.accessLevel.endsWith('NO_ACCESS'))
+        // Список разрешённых применяется здесь, а не на экране: счёт, не
+        // попавший в него, не должен доехать ни до капитала, ни до выбора
+        // торгового — фильтрация в интерфейсе оставила бы его в данных.
+        .where((a) => allowedAccountIds.isEmpty || allowedAccountIds.contains(a.id))
         .toList();
 
     if (list.isEmpty) {
