@@ -2,6 +2,7 @@ import '../domain/broker/broker.dart';
 import 'ledger/capital_desk.dart';
 import '../domain/invest/invest_models.dart';
 import '../domain/ledger/signal_ledger.dart';
+import '../domain/broker/sandbox_proof.dart';
 import '../domain/broker/trading_diagnostics.dart';
 import '../domain/broker/trading_gate.dart';
 import '../domain/models/digest.dart';
@@ -66,6 +67,16 @@ abstract interface class TradingDesk {
 
   /// Допуск к живым деньгам по бумажной статистике.
   GateVerdict get liveGate;
+
+  /// Что песочница площадки подтвердила на самом деле: приняла ли заявку и
+  /// встал ли защитный стоп. Бумажный журнал этого не знает — он про
+  /// доходность стратегии, а не про механику исполнения.
+  ///
+  /// По площадкам, а не одним значением на всё: прогон в песочнице Bybit не
+  /// говорит ничего о том, как принимает заявку Т-Инвестиции. Шаг лота, тип
+  /// стоп-заявки и порядок её постановки у них разные, и ошибка в одном не
+  /// исправляется проверкой другого.
+  SandboxProof sandboxProofOf(BrokerId broker);
 
   /// Есть ли ключи площадки для её текущего режима.
   Future<bool> hasBrokerKeys(BrokerId broker);

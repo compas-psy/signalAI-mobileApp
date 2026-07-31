@@ -6,6 +6,7 @@ import 'package:signalai/data/local_store.dart';
 import 'package:signalai/data/repository.dart';
 import 'package:signalai/domain/broker/broker.dart';
 import 'package:signalai/domain/enums.dart';
+import 'package:signalai/domain/ledger/signal_ledger.dart';
 import 'package:signalai/domain/models/digest.dart';
 import 'package:signalai/domain/models/signal.dart';
 import 'package:signalai/state/app_controller.dart';
@@ -104,6 +105,35 @@ TradingSignal signal({
       changeUp: true,
       status: SignalStatus.proposed,
     );
+
+/// Журнал с доказанной бумажной статистикой: выборка набрана, стратегия в
+/// плюсе, убытки есть. Нужен там, где проверяется не допуск по бумаге, а то,
+/// что стоит за ним, — иначе первый же гейт закрывает дорогу и до второго
+/// дело не доходит.
+SignalLedger provenLedger() {
+  final ledger = SignalLedger();
+  final start = DateTime(2025, 1, 1);
+  for (var i = 0; i < 25; i++) {
+    ledger.trades.add(PaperTrade(
+      id: 'trade-$i',
+      symbol: 'TSTU6',
+      strategyId: 'forts',
+      long: true,
+      entry: 100,
+      stopLoss: 98,
+      tpPrices: const [106],
+      tpShares: const [100],
+      score: 80,
+      createdAt: start.add(Duration(days: i)),
+      status: PaperStatus.closed,
+      // Убытки обязаны быть: без них профит-фактор не считается вовсе и
+      // гейт отвечает «убыточных сделок пока не было» — другая ветка.
+      resultR: i.isEven ? 3 : -1,
+      closedAt: start.add(Duration(days: i, hours: 2)),
+    ));
+  }
+  return ledger;
+}
 
 /// Кэш дайджеста на диске — так же, как после холодного старта.
 Future<void> seedDigest(LocalStore store, List<TradingSignal> signals) =>
@@ -433,13 +463,20 @@ void main() {
 
     test('ордер в Т-Инвестиции на живом счёте не уходит: стоп не подтверждён',
         () async {
-      // Запрет не снят, а переехал туда, где уходят деньги. Защитный стоп в
-      // Т-Инвестициях ставится отдельной заявкой, и пока не подтверждено,
-      // что он встаёт вместе с позицией, вход означал бы позицию без защиты.
+      // Защитный стоп в Т-Инвестициях ставится отдельной заявкой, и пока не
+      // подтверждено, что он встаёт вместе с позицией, вход означал бы
+      // позицию без защиты.
+      //
+      // Раньше здесь стоял безусловный отказ: подтверждать было некому, и
+      // снять запрет было нечем. Теперь подтверждение приходит из песочницы,
+      // и проверка настоящая — поэтому журнал в этом тесте заполнен: иначе
+      // сработал бы допуск по бумажной статистике и до механики дело бы не
+      // дошло. Отказ должен быть именно про стоп.
       final store = LocalStore.inMemory();
       await seedDigest(store, [signal(market: Market.forts, symbol: 'TSTU6')]);
+      await store.write('ledger', provenLedger().toJson());
       final vault = FakeVault();
-      vault.stored['tinvest.live.key'] = 'T';
+      vault.stored['tinvest.trade.key'] = 'T';
       final repository = LocalAnalysisRepository(
       iss: offlineIss(),
       bybit: offlineBybit(),

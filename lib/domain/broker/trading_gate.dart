@@ -1,4 +1,5 @@
 import '../ledger/signal_ledger.dart';
+import 'sandbox_proof.dart';
 import 'broker.dart';
 
 /// Допуск стратегии к живым деньгам и аварийная остановка.
@@ -21,7 +22,13 @@ class LiveTradingGate {
   final double minProfitFactor;
 
   /// Можно ли включать живой режим прямо сейчас.
-  GateVerdict evaluate(SignalLedger ledger) {
+  ///
+  /// [proof] — что подтвердила песочница. Он обязателен для площадки, где
+  /// приложение отправляет заявки: бумажный журнал доказывает, что стратегия
+  /// зарабатывает, но ничего не говорит о механике исполнения. Неверный шаг
+  /// лота или непоставленный стоп потеряют деньги на первой же заявке, а на
+  /// бумаге это не проверяется никак.
+  GateVerdict evaluate(SignalLedger ledger, {SandboxProof? proof}) {
     final closed = ledger.closed.length;
     if (closed < minClosedPaperTrades) {
       return GateVerdict(
@@ -34,10 +41,13 @@ class LiveTradingGate {
     // null означает «убытков не было»: на такой выборке это не признак
     // качества, а признак того, что рынок ещё не проверял стратегию на прочность.
     if (pf == null) {
-      return const GateVerdict(
-        allowed: true,
-        reason: 'убыточных сделок пока не было',
-        progress: 1,
+      return _withSandbox(
+        const GateVerdict(
+          allowed: true,
+          reason: 'убыточных сделок пока не было',
+          progress: 1,
+        ),
+        proof,
       );
     }
     if (pf < minProfitFactor) {
@@ -48,9 +58,28 @@ class LiveTradingGate {
         progress: 1,
       );
     }
+    return _withSandbox(
+      GateVerdict(
+        allowed: true,
+        reason: '$closed закрытых сделок, PF ${_num(pf)}',
+        progress: 1,
+      ),
+      proof,
+    );
+  }
+
+  /// Наложить на вердикт требование проверенной механики.
+  ///
+  /// Только на положительный: если стратегия не доказана на бумаге, причина
+  /// уже названа, и добавлять к ней вторую значит заставлять владельца
+  /// разбираться в двух отказах вместо одного.
+  static GateVerdict _withSandbox(GateVerdict verdict, SandboxProof? proof) {
+    if (!verdict.allowed) return verdict;
+    if (proof == null || proof.complete) return verdict;
     return GateVerdict(
-      allowed: true,
-      reason: '$closed закрытых сделок, PF ${_num(pf)}',
+      allowed: false,
+      reason: '${verdict.reason}; но ${proof.missing}',
+      // Прогресс полный: стратегия своё доказала, осталась механика.
       progress: 1,
     );
   }

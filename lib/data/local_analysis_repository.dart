@@ -34,6 +34,7 @@ import '../domain/options/structures.dart';
 import 'ledger/broker_import.dart';
 import 'ledger/capital_desk.dart';
 import 'broker/bybit_broker.dart';
+import '../domain/broker/sandbox_proof.dart';
 import '../domain/broker/tinvest_role.dart';
 import 'broker/tinvest_broker.dart';
 import 'broker/tinvest_fundamentals.dart';
@@ -267,8 +268,43 @@ class LocalAnalysisRepository
   @override
   TradingState get tradingState => _trading;
 
+  /// Что подтвердила песочница каждой площадки. Читается с диска вместе с
+  /// состоянием.
+  final Map<BrokerId, SandboxProof> _sandbox = {};
+
+  @override
+  SandboxProof sandboxProofOf(BrokerId broker) =>
+      _sandbox[broker] ?? const SandboxProof();
+
+  /// Допуск по бумажной статистике — про стратегию, а не про площадку.
+  ///
+  /// Отпечаток песочницы сюда не подмешивается: он у каждой площадки свой, и
+  /// общий вердикт «зарабатывает ли стратегия» от него не зависит. Механика
+  /// проверяется там, где она применяется, — в [liveGateFor].
   @override
   GateVerdict get liveGate => _gate.evaluate(ledger);
+
+  /// Допуск конкретной площадки к живым деньгам: и стратегия, и механика.
+  ///
+  /// Механика спрашивается только там, где её есть где проверить. У Bybit
+  /// песочницы у владельца нет, и требование прогона закрыло бы площадку
+  /// насовсем вместо того, чтобы что-то доказать.
+  GateVerdict liveGateFor(BrokerId broker) => _gate.evaluate(
+        ledger,
+        proof: broker.hasSandbox ? sandboxProofOf(broker) : null,
+      );
+
+  /// Записать факт, подтверждённый песочницей площадки.
+  ///
+  /// Факт, а не намерение: сюда попадает только то, на что брокер ответил
+  /// согласием. Иначе «проверено» означало бы «мы пытались».
+  Future<void> _rememberSandbox(BrokerId broker, SandboxProof next) async {
+    _sandbox[broker] = next;
+    await _store.write('sandbox_proof', _sandboxJson());
+  }
+
+  Map<String, dynamic> _sandboxJson() =>
+      {for (final e in _sandbox.entries) e.key.name: e.value.toJson()};
 
   @override
   Future<bool> hasBrokerKeys(BrokerId id) async {
@@ -1095,12 +1131,23 @@ class LocalAnalysisRepository
           .then((list) => list.any((p) => p.symbol == symbol))
           .catchError((_) => false);
       if (!mine) continue;
-      return brokerOf(id).placeProtectiveStop(
+      final placed = await brokerOf(id).placeProtectiveStop(
         symbol: symbol,
         stopPrice: stopPrice,
         long: long,
         quantity: quantity,
       );
+      // Стоп, вставший в песочнице, — это и есть та проверка механики,
+      // которую раньше интерфейс объявлял, но не делал.
+      if (placed && _trading.modeOf(id) == TradingMode.testnet) {
+        await _rememberSandbox(
+          id,
+          sandboxProofOf(id).withStop(
+            note: 'защита по $symbol встала на ${_num(stopPrice)}',
+          ),
+        );
+      }
+      return placed;
     }
     return false;
   }
@@ -1173,6 +1220,14 @@ class LocalAnalysisRepository
           for (final entry in keyChecks.entries) {
             final check = BrokerKeyCheck.fromJson(entry.value as Map<String, dynamic>);
             if (check != null) _keyChecks[entry.key] = check;
+          }
+        }
+        final sandbox = state['sandbox_proof'] as Map<String, dynamic>?;
+        if (sandbox != null) {
+          for (final entry in sandbox.entries) {
+            final proof = entry.value;
+            if (proof is! Map<String, dynamic>) continue;
+            _sandbox[BrokerId.parse(entry.key)] = SandboxProof.fromJson(proof);
           }
         }
         final background = state['background'] as Map<String, dynamic>?;
@@ -1277,6 +1332,7 @@ class LocalAnalysisRepository
         for (final entry in _params.entries) entry.key: entry.value.toJson(),
       },
       'trading': _trading.toJson(),
+      'sandbox_proof': _sandboxJson(),
       'key_checks': {
         for (final entry in _keyChecks.entries) entry.key: entry.value.toJson(),
       },
@@ -2238,23 +2294,20 @@ class LocalAnalysisRepository
     // Допуск к живым деньгам проверяется здесь, а не при смене режима:
     // живой счёт можно подключить и наблюдать, но ордер на него уйдёт
     // только когда бумажная статистика заработала это право.
-    // Т-Инвестиции на боевом счёте: наблюдать можно, отправлять нельзя.
-    // Защитный стоп там ставится отдельной заявкой, и пока не подтверждено,
-    // что он встаёт вместе с позицией, вход означал бы позицию без защиты.
-    // Проверка стоит здесь, а не на переключении режима: у боевого токена
-    // песочницы не существует, и запрет на режим просто отрезал бы площадку.
-    if (mode == TradingMode.live && brokerId == BrokerId.tinvest) {
-      throw const FeatureUnavailableException(
-        'Т-Инвестиции на боевом счёте пока только для наблюдения: защитный '
-        'стоп там ставится отдельной заявкой, и не подтверждено, что он '
-        'встаёт вместе с позицией. Позиция без стопа недопустима. Сделка '
-        'может вестись на бумаге — кнопкой в карточке.',
-      );
-    }
-    if (mode == TradingMode.live && !liveGate.allowed) {
+    // Т-Инвестиции на боевом счёте: защитный стоп там ставится отдельной
+    // заявкой, и пока не подтверждено, что он встаёт вместе с позицией, вход
+    // означал бы позицию без защиты. Раньше здесь стоял безусловный отказ —
+    // снять его было нечем, потому что подтверждать было некому. Теперь
+    // подтверждение приходит из песочницы: бумажная сделка по идее уходит
+    // туда же и проверяет ровно эту связку.
+    //
+    // Проверка стоит здесь, а не на переключении режима: наблюдать за живым
+    // счётом можно и без допуска, запрещена только отправка.
+    final gate = liveGateFor(brokerId);
+    if (mode == TradingMode.live && !gate.allowed) {
       throw FeatureUnavailableException(
         'Живой счёт в режиме наблюдения: ордера закрыты, пока допуск не '
-        'открыт (${liveGate.reason}). Сделка может вестись на бумаге — '
+        'открыт (${gate.reason}). Сделка может вестись на бумаге — '
         'кнопкой в карточке.',
       );
     }
@@ -2321,7 +2374,37 @@ class LocalAnalysisRepository
     if (!result.accepted) {
       throw FeatureUnavailableException(result.message);
     }
+    if (mode == TradingMode.testnet) {
+      await _rememberSandboxEntry(brokerId, signal.symbol, quantity);
+    }
   }
+
+  /// Что доказывает принятая песочницей заявка.
+  ///
+  /// Обе площадки ставят защиту вместе со входом и отменяют вход, если защита
+  /// не встала: у Bybit стоп уходит полем той же заявки, у Т-Инвестиций —
+  /// отдельным запросом, после отказа которого вход снимается. Поэтому
+  /// принятая заявка означает и принятый стоп; выдумывать здесь нечего.
+  Future<void> _rememberSandboxEntry(
+    BrokerId broker,
+    String symbol,
+    double quantity,
+  ) async {
+    final note = '$symbol ${_num(quantity)} — заявка и защита приняты';
+    await _rememberSandbox(
+      broker,
+      sandboxProofOf(broker).withOrder(note: note).withStop(note: note),
+    );
+  }
+
+  /// Есть ли ключи песочницы у площадки — независимо от её текущего режима.
+  Future<bool> _hasSandboxKeys(BrokerId id) => id == BrokerId.tinvest
+      ? vault.hasKeys(
+          exchange: id.name,
+          mode: TInvestRole.sandbox.slot,
+          needsSecret: false,
+        )
+      : vault.hasKeys(exchange: id.name, mode: TradingMode.testnet.name);
 
   // ── Бумажный журнал ─────────────────────────────────────────────────────
 
@@ -2361,8 +2444,75 @@ class LocalAnalysisRepository
       breakevenAfterTp1: true,
     );
     await _store.write('ledger', ledger.toJson());
+    final mirrored = await _mirrorToSandbox(signal, spec);
     return 'Идея заведена на бумаге: лимитка ${_num(signal.entry)}, '
-        'стоп ${_num(signal.stopLoss)}. Результат появится на «Сделках».';
+        'стоп ${_num(signal.stopLoss)}. Результат появится на «Сделках».'
+        '$mirrored';
+  }
+
+  /// Провести бумажную идею ещё и через песочницу брокера.
+  ///
+  /// Бумага и песочница — не альтернативы, а два разных ответа об одной
+  /// сделке. Журнал считает результат сам, вперёд по свечам, с издержками:
+  /// он говорит, зарабатывает ли стратегия. Песочница — настоящий API
+  /// брокера с ненастоящими деньгами: она говорит, примет ли он заявку,
+  /// верно ли посчитан лот, встанет ли защита. На живой счёт нужны оба
+  /// ответа, и получать их по очереди незачем — идея одна и та же.
+  ///
+  /// Результат песочницы намеренно не попадает в статистику журнала.
+  /// Исполнение там нереалистично — свои фактические цены она берёт из
+  /// упрощённой модели, — и подмешивать их в доходность значило бы мерить
+  /// стратегию выдуманными сделками.
+  ///
+  /// Только Т-Инвестиции. У Bybit песочницы у владельца нет, и бумажная
+  /// сделка по крипте остаётся целиком виртуальной — на устройстве. Это не
+  /// упущение: отправлять её некуда, и делать вид, что механика крипты
+  /// где-то проверена, нельзя.
+  ///
+  /// Ведение на бумаге от песочницы не зависит: недоступный брокер,
+  /// отсутствующий токен, отказ по лоту — всё это возвращает строку-примечание
+  /// и ничего не ломает. Обратное превратило бы бумагу в привилегию
+  /// подключённого счёта.
+  ///
+  /// Общий тумблер торговли здесь не спрашивается, и это не небрежность:
+  /// допуск к живым деньгам требует доказанной механики, а доказать её можно
+  /// только прогоном. Требовать включённой торговли значило бы замкнуть
+  /// круг — песочница не запускается без допуска, допуск не открывается без
+  /// песочницы. Аварийная остановка при этом сильнее: она означает «никуда и
+  /// ничего», и исключений у неё нет.
+  Future<String> _mirrorToSandbox(
+    TradingSignal signal,
+    InstrumentSpec? spec,
+  ) async {
+    if (_trading.killSwitch) return '';
+    final brokerId = BrokerId.forMarket(signal.market);
+    if (brokerId == null || spec == null || !brokerId.hasSandbox) return '';
+    if (!await _hasSandboxKeys(brokerId)) return '';
+    final quantity = _orderQuantity(signal, spec);
+    if (quantity <= 0) return '';
+    try {
+      final result = await _brokerFor(brokerId, TradingMode.testnet)
+          .placeOrder(OrderRequest(
+        symbol: signal.symbol,
+        long: signal.direction.isLong,
+        quantity: quantity,
+        entry: signal.entry,
+        stopEntry: signal.entryIsStop,
+        stopLoss: signal.stopLoss,
+        takeProfit: signal.takeProfits.isEmpty
+            ? signal.entry
+            : signal.takeProfits.first.price,
+      ));
+      if (!result.accepted) {
+        return ' Песочница ${brokerId.title} заявку не приняла: '
+            '${result.message}. На бумаге идея ведётся всё равно.';
+      }
+      await _rememberSandboxEntry(brokerId, signal.symbol, quantity);
+      return ' Та же заявка ушла в песочницу ${brokerId.title} — '
+          'механика исполнения проверена.';
+    } on BrokerException catch (e) {
+      return ' Песочница ${brokerId.title} недоступна (${e.message}).';
+    }
   }
 
   /// Идея из последней выдачи. Отсутствие — отказ, а не пустой результат.
@@ -3272,12 +3422,16 @@ class LocalAnalysisRepository
     final brokers = <BrokerView>[];
     for (final id in BrokerId.values) {
       final mode = _trading.modeOf(id);
-      // У Т-Инвестиций живой режим закрыт сверх общего допуска, пока
-      // постановка защитного стопа не подтверждена на песочнице. Bybit на
-      // живой счёт переключается всегда: допуск сторожит отправку ордеров,
-      // а не наблюдение за счётом.
-      final blocked =
-          id == BrokerId.tinvest ? 'защитный стоп ещё не проверен на песочнице' : '';
+      // Живой режим закрыт, пока механика исполнения не проверена в
+      // песочнице. Раньше здесь стояла строка «защитный стоп ещё не проверен
+      // на песочнице» — захардкоженная: она показывалась всегда, независимо
+      // от того, был ли прогон. Приложение объявляло проверку, которой не
+      // делало, и снять этот запрет было нечем.
+      //
+      // Теперь причина берётся из отпечатка того, что песочница ответила на
+      // самом деле, и исчезает сама, когда прогон состоялся. У Bybit
+      // песочницы нет — там причины и не возникает.
+      final blocked = id.hasSandbox ? sandboxProofOf(id).missing : '';
       final check = keyCheckOf(id);
       final hasKeys = await hasBrokerKeys(id);
       brokers.add(BrokerView(
