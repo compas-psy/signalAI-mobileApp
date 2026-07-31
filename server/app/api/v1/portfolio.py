@@ -121,6 +121,21 @@ def _universe_notes(session: Session, limit: int = 3) -> list[str]:
     return list(seen.values())[:limit]
 
 
+def _jobs(session: Session, limit: int = 5) -> list[str]:
+    """Итоги последних задач планировщика — по одной на задачу, свежие."""
+    rows = session.execute(
+        select(DataQualityEvent.detail, DataQualityEvent.occurred_at)
+        .where(DataQualityEvent.source == "scheduler")
+        .order_by(DataQualityEvent.occurred_at.desc())
+        .limit(40)
+    ).all()
+    seen: dict[str, str] = {}
+    for detail, at in rows:
+        name = str(detail).split(":", 1)[0]
+        seen.setdefault(name, f"{at:%H:%M} {detail}")
+    return list(seen.values())[:limit]
+
+
 def _last_run(session: Session) -> PortfolioRun | None:
     return session.execute(
         select(PortfolioRun).order_by(PortfolioRun.started_at.desc()).limit(1)
@@ -287,6 +302,7 @@ def packages(
             stages=stages,
             universe_mix=_universe_mix(session),
             universe_notes=_universe_notes(session),
+            jobs=_jobs(session),
             packages_ready=len(everything),
             universe=len(investment_universe(session)),
             generated_at=generated,

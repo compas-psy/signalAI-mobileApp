@@ -463,6 +463,9 @@ abstract final class EngineContract {
         for (final note in (statusMap['universe_notes'] as List? ?? const []))
           '$note',
       ],
+      jobs: [
+        for (final job in (statusMap['jobs'] as List? ?? const [])) '$job',
+      ],
       universe: (statusMap['universe'] as num?)?.toInt() ?? 0,
       generatedAt: _time(statusMap['generated_at']),
     );

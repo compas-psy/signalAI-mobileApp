@@ -281,13 +281,26 @@ def run_forever(
                     result.elapsed_ms,
                     result.detail,
                 )
-                if not result.ok:
-                    session.add(
-                        DataQualityEvent(
-                            source="scheduler", flag="JOB_FAILED",
-                            detail=f"{result.name}: {result.detail}"[:512],
-                        )
+                # Итог задачи пишется всегда, а не только при отказе.
+                #
+                # Планировщик — отдельный процесс без входящих портов, и
+                # увидеть его работу можно было лишь в логах контейнера,
+                # то есть с доступом к серверу. Владелец, глядя на пустой
+                # экран, не мог отличить «движок считает прямо сейчас» от
+                # «движок молчит третий день». Длинная задача при этом не
+                # пишет ничего, пока не закончится, — по логу деплоя это
+                # выглядело как полная тишина.
+                session.add(
+                    DataQualityEvent(
+                        source="scheduler",
+                        flag="JOB_FAILED" if not result.ok else "JOB_DONE",
+                        detail=(
+                            f"{result.name}: "
+                            f"{'ок' if result.ok else 'ОТКАЗ'} "
+                            f"за {result.elapsed_ms // 1000} с — {result.detail}"
+                        )[:512],
                     )
+                )
             session.commit()
         except Exception:
             session.rollback()

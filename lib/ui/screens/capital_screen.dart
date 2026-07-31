@@ -953,6 +953,22 @@ class _Progress extends StatelessWidget {
               const SizedBox(height: 10),
               Text(note, style: T.body(11, color: C.faint, height: 1.45)),
             ],
+            if (portfolio.jobs.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              const SectionLabel('Чем занят движок', color: C.faint),
+              const SizedBox(height: 6),
+              // Пустой экран одинаково выглядит и когда расчёт идёт прямо
+              // сейчас, и когда он не запускался третий день. Итоги задач
+              // планировщика различают эти два случая.
+              for (final job in portfolio.jobs)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 3),
+                  child: Text(
+                    job,
+                    style: T.mono(10, color: C.dim, height: 1.4),
+                  ),
+                ),
+            ],
             const SizedBox(height: 12),
             ActionButton(label: 'Спросить ещё раз', onTap: onRetry),
           ],

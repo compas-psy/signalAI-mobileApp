@@ -92,6 +92,10 @@ class PortfolioStatusOut(ApiModel):
     # пропадать беззвучно: «фондов нет» и «доска не ответила» требуют
     # разных действий.
     universe_notes: list[str] = Field(default_factory=list)
+    # Чем занят движок: итоги последних задач планировщика. Без них пустой
+    # экран одинаково выглядит и когда расчёт идёт прямо сейчас, и когда он
+    # не запускался третий день.
+    jobs: list[str] = Field(default_factory=list)
     packages_ready: int
     universe: int
     generated_at: datetime | None = None

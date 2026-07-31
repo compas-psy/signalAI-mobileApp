@@ -163,6 +163,7 @@ class PortfolioState {
     required this.packages,
     this.universeMix = const [],
     this.universeNotes = const [],
+    this.jobs = const [],
     this.reason = '',
     this.universe = 0,
     this.generatedAt,
@@ -174,6 +175,7 @@ class PortfolioState {
         packages = const [],
         universeMix = const [],
         universeNotes = const [],
+        jobs = const [],
         reason = '',
         universe = 0,
         generatedAt = null,
@@ -189,6 +191,11 @@ class PortfolioState {
   /// Почему доска биржи не дала бумаг. Класс активов не может пропадать
   /// беззвучно: «фондов нет» и «доска не ответила» требуют разных действий.
   final List<String> universeNotes;
+
+  /// Чем занят движок: итоги последних задач планировщика. Без них пустой
+  /// экран одинаково выглядит и когда расчёт идёт прямо сейчас, и когда он
+  /// не запускался третий день.
+  final List<String> jobs;
   final String reason;
   final int universe;
   final DateTime? generatedAt;
