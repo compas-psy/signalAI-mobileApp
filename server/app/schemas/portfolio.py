@@ -71,8 +71,23 @@ class StageOut(ApiModel):
     detail: str = ""
 
 
+class UniverseSliceOut(ApiModel):
+    """Сколько бумаг каждого класса во вселенной и сколько с историей.
+
+    Без этого «в отборе только акции и ОФЗ» остаётся загадкой: то ли фонды
+    не синхронизировались с биржи, то ли не прошли срез, то ли их выкинуло
+    окно истории. Три разные поломки с одним и тем же экраном.
+    """
+
+    asset_class: str
+    label: str
+    total: int
+    with_history: int
+
+
 class PortfolioStatusOut(ApiModel):
     stages: list[StageOut]
+    universe_mix: list[UniverseSliceOut] = Field(default_factory=list)
     packages_ready: int
     universe: int
     generated_at: datetime | None = None

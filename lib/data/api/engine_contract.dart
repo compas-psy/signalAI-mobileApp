@@ -448,6 +448,16 @@ abstract final class EngineContract {
         for (final item in (json['packages'] as List? ?? const []))
           if (item is Map<String, dynamic>) _package(item),
       ],
+      universeMix: [
+        for (final item in (statusMap['universe_mix'] as List? ?? const []))
+          if (item is Map<String, dynamic>)
+            UniverseSlice(
+              assetClass: '${item['asset_class'] ?? ''}',
+              label: '${item['label'] ?? ''}',
+              total: (item['total'] as num?)?.toInt() ?? 0,
+              withHistory: (item['with_history'] as num?)?.toInt() ?? 0,
+            ),
+      ],
       reason: '${statusMap['reason'] ?? ''}',
       universe: (statusMap['universe'] as num?)?.toInt() ?? 0,
       generatedAt: _time(statusMap['generated_at']),

@@ -21,6 +21,25 @@ class PortfolioStage {
   final String detail;
 }
 
+/// Сколько бумаг класса во вселенной и у скольких есть история.
+///
+/// Без этого «в отборе только акции и ОФЗ» остаётся загадкой: то ли фонды не
+/// синхронизировались с биржи, то ли не прошли срез, то ли их выкинуло окно
+/// истории. Три разные поломки с одним и тем же экраном.
+class UniverseSlice {
+  const UniverseSlice({
+    required this.assetClass,
+    required this.label,
+    required this.total,
+    required this.withHistory,
+  });
+
+  final String assetClass;
+  final String label;
+  final int total;
+  final int withHistory;
+}
+
 /// Доля класса активов — полоса на экране, а не строка текста.
 class ClassSlice {
   const ClassSlice({
@@ -142,6 +161,7 @@ class PortfolioState {
   const PortfolioState({
     required this.stages,
     required this.packages,
+    this.universeMix = const [],
     this.reason = '',
     this.universe = 0,
     this.generatedAt,
@@ -151,6 +171,7 @@ class PortfolioState {
   const PortfolioState.unavailable(String reason)
       : stages = const [],
         packages = const [],
+        universeMix = const [],
         reason = '',
         universe = 0,
         generatedAt = null,
@@ -158,6 +179,9 @@ class PortfolioState {
 
   final List<PortfolioStage> stages;
   final List<EnginePackage> packages;
+
+  /// Из чего вообще собирается пакет: классы вселенной и их история.
+  final List<UniverseSlice> universeMix;
   final String reason;
   final int universe;
   final DateTime? generatedAt;

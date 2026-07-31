@@ -920,6 +920,21 @@ class _Progress extends StatelessWidget {
             const SizedBox(height: 10),
             for (final stage in portfolio.stages)
               _Stage(done: stage.done, name: stage.name, detail: stage.detail),
+            if (portfolio.universeMix.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              const SectionLabel('Из чего собирается', color: C.faint),
+              const SizedBox(height: 6),
+              // Состав вселенной по классам. «В отборе только акции и ОФЗ»
+              // без этой таблицы — загадка: то ли фонды не пришли с биржи,
+              // то ли не прошли срез, то ли у них нет истории. Три разные
+              // поломки с одинаковым экраном.
+              for (final slice in portfolio.universeMix)
+                _Stage(
+                  done: slice.withHistory > 0,
+                  name: slice.label,
+                  detail: '${slice.withHistory} из ${slice.total} с историей',
+                ),
+            ],
             if (note.isNotEmpty) ...[
               const SizedBox(height: 10),
               Text(note, style: T.body(11, color: C.faint, height: 1.45)),

@@ -2,6 +2,7 @@ import 'package:flutter/widgets.dart';
 
 import '../../core/format.dart';
 import '../../domain/models/portfolio.dart';
+import '../../state/app_scope.dart';
 import '../../theme/tokens.dart';
 import '../../theme/typography.dart';
 import '../layout.dart';
@@ -289,7 +290,9 @@ class _PositionCard extends StatelessWidget {
   final ActivePosition position;
 
   @override
-  Widget build(BuildContext context) => SectionCard(
+  Widget build(BuildContext context) => _OpensIdea(
+        signalId: position.signalId,
+        child: SectionCard(
         padding: const EdgeInsets.fromLTRB(14, 13, 14, 13),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -341,6 +344,37 @@ class _PositionCard extends StatelessWidget {
             Text(position.stage, style: T.body(10, color: C.muted)),
           ],
         ),
+        ),
+      );
+}
+
+/// Обёртка «нажатие открывает идею».
+///
+/// Журнал без этой связи — список тикеров: увидев сделку, нельзя посмотреть,
+/// на чём она строилась, а именно за этим в журнал и приходят. Когда ссылки
+/// нет (сделка заведена руками или пришла из источника без идеи), нажатие
+/// честно говорит об этом, а не молчит.
+class _OpensIdea extends StatelessWidget {
+  const _OpensIdea({required this.signalId, required this.child});
+
+  final String signalId;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => Pressable(
+        // Контроллер читается в обработчике, а не при построении. Экран
+        // сделок рисуется и там, где AppScope над ним не стоит, — например в
+        // тестах отдельных карточек. Требовать его на каждую отрисовку
+        // значит ронять экран ради связи, которая нужна только по нажатию.
+        onTap: () {
+          final controller = AppScope.read(context);
+          if (signalId.isEmpty) {
+            controller.showToast('У этой сделки нет идеи — открывать нечего');
+            return;
+          }
+          controller.openSignal(signalId);
+        },
+        child: child,
       );
 }
 
@@ -352,7 +386,9 @@ class _JournalRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final resultColor = entry.rMultiple < 0 ? C.red : C.green;
-    return Container(
+    return _OpensIdea(
+      signalId: entry.signalId,
+      child: Container(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       decoration: const BoxDecoration(
         border: Border(bottom: BorderSide(color: C.divider)),
@@ -389,6 +425,7 @@ class _JournalRow extends StatelessWidget {
             ),
           ),
         ],
+      ),
       ),
     );
   }

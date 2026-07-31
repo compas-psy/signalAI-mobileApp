@@ -11,6 +11,7 @@ class ActivePosition {
     required this.pnlPositive,
     required this.progressPercent,
     required this.stage,
+    this.signalId = '',
   });
 
   final String symbol;
@@ -21,6 +22,9 @@ class ActivePosition {
   /// P&L готовой подписью («+14 080 ₽»).
   final String pnlLabel;
   final bool pnlPositive;
+
+  /// Идея, из которой позиция родилась. Пустая — открывать нечего.
+  final String signalId;
 
   /// Прогресс до ближайшего тейка, 0–100.
   final int progressPercent;
@@ -48,6 +52,7 @@ class JournalEntry {
     required this.direction,
     required this.outcome,
     required this.rMultiple,
+    this.signalId = '',
   });
 
   final String date;
@@ -59,6 +64,9 @@ class JournalEntry {
 
   /// Результат в единицах риска: +2.1, −1.0.
   final double rMultiple;
+
+  /// Идея, из которой сделка родилась. Пустая — открывать нечего.
+  final String signalId;
 
   /// «L» / «S» — колонка направления в журнале.
   String get directionLetter => direction.isLong ? 'L' : 'S';

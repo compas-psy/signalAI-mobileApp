@@ -32,6 +32,7 @@ class PaperTrade {
   PaperTrade({
     required this.id,
     required this.symbol,
+    this.signalId = '',
     required this.strategyId,
     required this.long,
     required this.entry,
@@ -53,6 +54,14 @@ class PaperTrade {
   });
 
   final String id;
+
+  /// Идея, из которой сделка родилась. Пустая строка — сделка заведена
+  /// руками либо пришла из источника, у которого идеи нет.
+  ///
+  /// Без этой ссылки журнал остаётся списком тикеров: нажать на сделку и
+  /// увидеть, на чём она строилась, невозможно — а именно за этим в журнал
+  /// и приходят.
+  final String signalId;
   final String symbol;
   final String strategyId;
   final bool long;
@@ -182,6 +191,7 @@ class PaperTrade {
 
   Map<String, dynamic> toJson() => {
         'id': id,
+        'signal_id': signalId,
         'symbol': symbol,
         'strategy_id': strategyId,
         'long': long,
@@ -205,6 +215,9 @@ class PaperTrade {
 
   factory PaperTrade.fromJson(Map<String, dynamic> j) => PaperTrade(
         id: j['id'] as String,
+        // Сделки, записанные до появления ссылки, её не получат задним
+        // числом: журнал только дополняется, переписывать его нельзя.
+        signalId: j['signal_id'] as String? ?? '',
         symbol: j['symbol'] as String,
         strategyId: j['strategy_id'] as String? ?? 'forts',
         long: j['long'] as bool? ?? true,
@@ -297,6 +310,7 @@ class SignalLedger {
 
     trades.add(PaperTrade(
       id: '${signal.symbol}-${now.millisecondsSinceEpoch}',
+      signalId: signal.id,
       symbol: signal.symbol,
       strategyId: signal.market.name == 'crypto' ? 'crypto' : 'forts',
       long: signal.direction.isLong,

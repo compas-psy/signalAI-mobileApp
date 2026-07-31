@@ -27,6 +27,7 @@ from ...models.enums import PackageSize, RiskProfile, Timeframe
 from ...portfolio.build import build_all
 from ...schemas.portfolio import (
     ClassSliceOut,
+    UniverseSliceOut,
     PackageOut,
     PortfolioResponse,
     PortfolioStatusOut,
@@ -62,6 +63,40 @@ def _symbol(session: Session, instrument_id: str) -> tuple[str, str]:
     if row is None:
         return instrument_id.split(":")[-1], ""
     return row[0], row[1] or ""
+
+
+def _universe_mix(session: Session) -> list[UniverseSliceOut]:
+    """Состав вселенной по классам: сколько всего и у скольких есть история."""
+    universe = investment_universe(session)
+    if not universe:
+        return []
+    counts = session.execute(
+        select(Bar.instrument_id, func.count())
+        .where(
+            Bar.instrument_id.in_([i.instrument_id for i in universe]),
+            Bar.timeframe == Timeframe.D1,
+            Bar.is_closed.is_(True),
+        )
+        .group_by(Bar.instrument_id)
+    ).all()
+    bars = {key: value for key, value in counts}
+
+    total: dict[str, int] = {}
+    ready: dict[str, int] = {}
+    for item in universe:
+        key = str(item.asset_class)
+        total[key] = total.get(key, 0) + 1
+        if bars.get(item.instrument_id, 0) >= 120:
+            ready[key] = ready.get(key, 0) + 1
+    return [
+        UniverseSliceOut(
+            asset_class=key,
+            label=CLASS_LABELS.get(key, key),
+            total=value,
+            with_history=ready.get(key, 0),
+        )
+        for key, value in sorted(total.items(), key=lambda kv: -kv[1])
+    ]
 
 
 def _last_run(session: Session) -> PortfolioRun | None:
@@ -228,6 +263,7 @@ def packages(
     return PortfolioResponse(
         status=PortfolioStatusOut(
             stages=stages,
+            universe_mix=_universe_mix(session),
             packages_ready=len(everything),
             universe=len(investment_universe(session)),
             generated_at=generated,

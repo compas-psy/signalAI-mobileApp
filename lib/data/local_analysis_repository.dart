@@ -1842,6 +1842,7 @@ class LocalAnalysisRepository
       positions: [
         for (final t in live)
           ActivePosition(
+            signalId: t.signalId,
             symbol: t.symbol,
             direction: t.long ? Direction.long : Direction.short,
             entryLabel: t.entry.toStringAsFixed(2).replaceAll('.', ','),
@@ -1866,6 +1867,7 @@ class LocalAnalysisRepository
                 ? ''
                 : '${t.closedAt!.day.toString().padLeft(2, '0')}.'
                     '${t.closedAt!.month.toString().padLeft(2, '0')}',
+            signalId: t.signalId,
             symbol: t.symbol,
             direction: t.long ? Direction.long : Direction.short,
             outcome: t.outcome ?? '—',
