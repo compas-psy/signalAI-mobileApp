@@ -355,3 +355,41 @@ def test_reversal_rejection_names_every_failed_condition():
     assert isinstance(result, Rejection)
     assert result.reason
     assert len(result.failed) >= 1
+
+
+def _on_grid(price: Decimal, tick: Decimal) -> bool:
+    return (price / tick) % 1 == 0
+
+
+@pytest.mark.parametrize(
+    ("build", "context"),
+    [
+        (trend_pullback.build, pullback_context),
+        (breakout_retest.build, breakout_context),
+        (wyckoff_reversal.build, reversal_context),
+    ],
+)
+def test_все_цены_плана_лежат_на_шаге_инструмента(build, context):
+    """Ни одна цена плана не может быть вне сетки цен инструмента.
+
+    Стоп и цели округлялись всегда, зона входа — нет: она приходила из ATR
+    числом вроде 1874.023606. Такую заявку биржа не примет, а приложение,
+    подбирающее число знаков по самим ценам, из-за одного такого края
+    показывало ВСЕ цены идеи с шестью знаками.
+
+    Тест общий для всех стратегий намеренно: следующая забудет округлить
+    ровно так же, и поймать это должен не разбор скриншота.
+    """
+    tick = Decimal("0.01")
+    result = build(context(tick_size=tick))
+    assert isinstance(result, Candidate), result
+    for name, price in (
+        ("entry_low", result.entry_low),
+        ("entry_high", result.entry_high),
+        ("entry_reference", result.entry_reference),
+        ("stop", result.stop),
+        *[(f"tp{i}", t.price) for i, t in enumerate(result.targets, start=1)],
+    ):
+        assert _on_grid(price, tick), f"{name}={price} не лежит на шаге {tick}"
+    # Опорная цена обязана остаться внутри зоны: из неё считается риск.
+    assert result.entry_low <= result.entry_reference <= result.entry_high

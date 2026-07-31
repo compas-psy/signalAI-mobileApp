@@ -145,6 +145,28 @@ def reject(strategy: Strategy, checks: Sequence[Check]) -> Rejection:
     )
 
 
+def snap_entry(
+    low: Decimal, high: Decimal, reference: Decimal, tick: Decimal
+) -> tuple[Decimal, Decimal, Decimal]:
+    """Границы зоны входа на сетке цен инструмента.
+
+    Стоп и цели округлялись к шагу всегда, а зона входа — нет: она приходила
+    как есть из ATR, то есть числом вроде 1874.023606. Биржа такую заявку не
+    примет, и это первая причина. Вторая видна на экране: приложение
+    подбирает число знаков по самим ценам, и один неокруглённый край зоны
+    заставлял показывать ВСЕ цены идеи с шестью знаками — «1 858,120000»
+    вместо «1 858,12».
+
+    Края округляются наружу (зона не сужается), опорная цена — внутрь, и она
+    остаётся между краями: из неё считается риск на единицу, и вылет за
+    границу зоны сделал бы R/R неверным.
+    """
+    lo = round_to_tick(min(low, high), tick, up=False)
+    hi = round_to_tick(max(low, high), tick, up=True)
+    ref = round_to_tick(reference, tick, up=False)
+    return lo, hi, min(max(ref, lo), hi)
+
+
 def round_to_tick(price: Decimal, tick: Decimal, *, up: bool) -> Decimal:
     """Округлить цену к шагу инструмента.
 

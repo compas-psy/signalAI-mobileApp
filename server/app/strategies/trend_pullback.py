@@ -32,6 +32,7 @@ from .base import (
     price_text,
     reject,
     round_to_tick,
+    snap_entry,
 )
 
 STRATEGY = Strategy.TREND_PULLBACK
@@ -226,7 +227,9 @@ def build(ctx: SetupContext, params: TrendPullbackParams | None = None) -> Outco
         entry_low, entry_high = zone_low, zone_high
         stop = round_to_tick(zone_high + buffer, ctx.tick_size, up=True)
 
-    entry_reference = (entry_low + entry_high) / 2
+    entry_low, entry_high, entry_reference = snap_entry(
+        entry_low, entry_high, (entry_low + entry_high) / 2, ctx.tick_size
+    )
     risk = abs(entry_reference - stop)
     checks.append(
         Check("stop_distance", "Расстояние до стопа", risk > 0,

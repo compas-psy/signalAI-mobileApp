@@ -183,3 +183,34 @@ class RebalanceDraft(UuidPk, Base):
         Boolean, nullable=False, default=True
     )
     created_at: Mapped[datetime] = utcnow_column()
+
+
+class PortfolioRun(UuidPk, Base):
+    """Отчёт одного прогона сборки пакетов (§6).
+
+    Нужен затем, что «состава нет» — это два разных ответа. Либо конвейер до
+    оптимизации не дошёл (мало данных, короткая общая история), либо составы
+    посчитаны и ни один не прошёл проверку на истории. На экране оба
+    выглядели одинаково — точкой «нет», — и владелец не мог понять, ждать ему
+    данных или менять требования.
+
+    Хранится последний прогон, а не история: это состояние конвейера, и
+    вопрос к нему всегда один — «что сейчас мешает».
+    """
+
+    __tablename__ = "portfolio_runs"
+
+    started_at: Mapped[datetime] = utcnow_column()
+    universe: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    screened: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    candidates: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    common_days: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    built: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    admitted: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    # Почему прогон не дал состава — словами, как их увидит владелец.
+    note: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # Причины отказа по каждому варианту пакета: профиль × размер × горизонт.
+    reasons_json: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    # Что не взято в пересчёт и почему: бумаги без истории, без оборота.
+    dropped_json: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)

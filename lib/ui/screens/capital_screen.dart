@@ -88,15 +88,28 @@ class _Stage extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 10),
+            // Название шага важнее числа рядом с ним: без него строка не
+            // читается вовсе. Раньше оба поля делили ширину поровну, и
+            // длинная деталь ломала «Фундаментальный срез» на слоги.
             Expanded(
+              flex: 3,
               child: Text(
                 name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
                 style: T.body(12, color: done ? C.textSoft : C.muted),
               ),
             ),
-            Text(
-              detail.isNotEmpty ? detail : (done ? 'есть' : 'нет'),
-              style: T.mono(10.5, color: done ? C.green : C.faint),
+            const SizedBox(width: 8),
+            Expanded(
+              flex: 2,
+              child: Text(
+                detail.isNotEmpty ? detail : (done ? 'есть' : 'нет'),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.right,
+                style: T.mono(10.5, color: done ? C.green : C.faint),
+              ),
             ),
           ],
         ),

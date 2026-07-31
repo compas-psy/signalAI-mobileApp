@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 
 from ...db import get_db
 from ...market.investments import INVESTMENT_CLASSES, investment_universe
-from ...models import Bar, Instrument, PortfolioModel, TradeIdea
+from ...models import Bar, Instrument, PortfolioModel, PortfolioRun, TradeIdea
 from ...models.enums import PackageSize, RiskProfile, Timeframe
 from ...portfolio.build import build_all
 from ...schemas.portfolio import (
@@ -64,7 +64,15 @@ def _symbol(session: Session, instrument_id: str) -> tuple[str, str]:
     return row[0], row[1] or ""
 
 
-def _stages(session: Session, models: list[PortfolioModel]) -> list[StageOut]:
+def _last_run(session: Session) -> PortfolioRun | None:
+    return session.execute(
+        select(PortfolioRun).order_by(PortfolioRun.started_at.desc()).limit(1)
+    ).scalar_one_or_none()
+
+
+def _stages(
+    session: Session, models: list[PortfolioModel], run: PortfolioRun | None
+) -> list[StageOut]:
     universe = investment_universe(session)
     with_history = 0
     if universe:
@@ -110,14 +118,25 @@ def _stages(session: Session, models: list[PortfolioModel]) -> list[StageOut]:
         StageOut(
             key="optimisation",
             name="Оптимизация состава",
-            done=bool(models),
-            detail=f"составов {len(models)}" if models else "",
+            # Шаг считается сделанным, если составы посчитаны, — даже если
+            # ни один не прошёл проверку. Иначе «посчитали и забраковали»
+            # выглядит как «не считали», и владелец ждёт того, чего не будет.
+            done=bool(models) or bool(run and run.built),
+            detail=(
+                f"составов {len(models)}"
+                if models
+                else (f"посчитано {run.built}" if run and run.built else "")
+            ),
         ),
         StageOut(
             key="walkforward",
             name="Проверка на истории",
             done=bool(validated),
-            detail=f"прошли проверку {len(validated)}" if validated else "",
+            detail=(
+                f"прошли проверку {len(validated)}"
+                if validated
+                else (f"не прошёл ни один из {run.built}" if run and run.built else "")
+            ),
         ),
     ]
 
@@ -187,16 +206,22 @@ def packages(
     models.sort(key=lambda m: (m.horizon_years, order.get(m.package, 9)))
 
     everything = list(session.execute(select(PortfolioModel)).scalars())
-    stages = _stages(session, everything)
+    run = _last_run(session)
+    stages = _stages(session, everything, run)
     generated = max((m.generated_at for m in everything), default=None)
     reason = ""
     if not models:
-        pending = next((s for s in stages if not s.done), None)
-        reason = (
-            f"состав не посчитан: работа стоит на шаге «{pending.name}»"
-            if pending
-            else "состав не посчитан: ни один вариант не прошёл проверку на истории"
-        )
+        # Причина берётся с прогона, а не выводится из «первого невыполненного
+        # шага»: шаг говорит, где остановились, а прогон — почему.
+        if run is not None and run.note:
+            reason = run.note
+        else:
+            pending = next((s for s in stages if not s.done), None)
+            reason = (
+                f"состав не посчитан: работа стоит на шаге «{pending.name}»"
+                if pending
+                else "состав не посчитан: ни один вариант не прошёл проверку"
+            )
 
     return PortfolioResponse(
         status=PortfolioStatusOut(

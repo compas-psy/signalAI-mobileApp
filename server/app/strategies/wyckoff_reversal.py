@@ -23,6 +23,7 @@ from .base import (
     SetupContext,
     Target,
     price_text,
+    snap_entry,
     reject,
     round_to_tick,
 )
@@ -132,7 +133,10 @@ def build(ctx: SetupContext, params: WyckoffReversalParams | None = None) -> Out
         ctx.tick_size,
         up=direction is Direction.SHORT,
     )
-    entry_reference = (entry_zone_low + entry_zone_high) / 2
+    entry_zone_low, entry_zone_high, entry_reference = snap_entry(
+        entry_zone_low, entry_zone_high, (entry_zone_low + entry_zone_high) / 2,
+        ctx.tick_size,
+    )
     risk = abs(entry_reference - stop)
 
     tp1 = trading_range.midpoint

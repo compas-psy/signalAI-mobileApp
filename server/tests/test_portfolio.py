@@ -21,7 +21,7 @@ from fastapi.testclient import TestClient
 from app.db import get_db
 from app.main import app
 from app.market.investments import classify_funds
-from app.models import Bar, Instrument, PortfolioModel
+from app.models import Bar, Instrument, PortfolioModel, PortfolioRun
 from app.models.enums import AssetClass, PackageSize, RiskProfile, Timeframe, Venue
 from app.portfolio import fundamentals as fund
 from app.portfolio.build import PROFILES, build_all
@@ -332,3 +332,53 @@ def test_api_отдаёт_состав_с_долями_строками(market, 
     stages = {s["key"]: s for s in body["status"]["stages"]}
     assert stages["optimisation"]["done"]
     assert stages["walkforward"]["done"]
+
+
+def test_короткая_бумага_не_обрезает_окно_остальным(market, session):
+    """Одна недавно допущенная бумага не должна отменять проверку на истории.
+
+    Панель строится по датам, общим для всех, — и бумага с полугодом истории
+    обрезала общее окно до полугода. Скользящей проверке нужно два года
+    обучения плюс квартал измерения; она не проводилась ни разу, значит ни
+    один состав не мог быть допущен. Ровно это и произошло на сервере: 54
+    бумаги с историей и ни одного пакета.
+    """
+    rng = np.random.default_rng(21)
+    _add_instrument(
+        session, "MOEX:EQ:FRESH", AssetClass.EQUITY, symbol="FRESH", title="Новичок",
+        meta={"market": "shares", "board": "TQBR", "issuesize": "1e10"},
+    )
+    # 200 дней — выше порога среза (120), но втрое меньше окна проверки.
+    _add_bars(session, "MOEX:EQ:FRESH", _walk(rng, 200, 0.0003, 0.006))
+    session.flush()
+
+    classify_funds(session)
+    report = build_all(
+        session, draws=20, fetch=_no_network,
+        profiles=(RiskProfile.OPTIMAL,), horizons=(1,),
+    )
+
+    # Короткий ряд отброшен с причиной, а не проглочен молча.
+    dropped = dict(report.rejected)
+    assert "MOEX:EQ:FRESH" in dropped
+    assert "истории" in dropped["MOEX:EQ:FRESH"]
+    # И составы посчитаны — окно осталось длинным.
+    assert report.admitted >= 1, [p.reason for p in report.packages]
+
+
+def test_прогон_записывает_причину_а_не_только_итог(market, session):
+    """«Состава нет» обязано отличать «не считали» от «посчитали и забраковали»."""
+    classify_funds(session)
+    build_all(
+        session, draws=20, fetch=_no_network,
+        profiles=(RiskProfile.OPTIMAL,), horizons=(1,),
+    )
+    session.flush()
+    run = session.query(PortfolioRun).one()
+    assert run.universe >= 7
+    assert run.built == 3, "три размера пакета на один профиль и горизонт"
+    assert run.common_days > 0
+    # По каждому варианту записано, допущен он и почему.
+    assert len(run.reasons_json) == run.built
+    for entry in run.reasons_json:
+        assert entry["reason"], "отказ без причины недопустим"

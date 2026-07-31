@@ -32,7 +32,13 @@ from sqlalchemy.orm import Session
 
 from ..config import get_config
 from ..market.investments import investment_universe
-from ..models import Bar, Instrument, PortfolioModel, PortfolioWeight
+from ..models import (
+    Bar,
+    Instrument,
+    PortfolioModel,
+    PortfolioRun,
+    PortfolioWeight,
+)
 from ..models.enums import AssetClass, PackageSize, RiskProfile, Timeframe
 from . import fundamentals as fund
 from .stats import (
@@ -159,6 +165,7 @@ class BuildReport:
     universe: int = 0
     screened: int = 0
     candidates: int = 0
+    common_days: int = 0
     packages: list[Package] = field(default_factory=list)
     rejected: list[tuple[str, str]] = field(default_factory=list)
     note: str = ""
@@ -187,6 +194,47 @@ def daily_closes(session: Session, instrument_ids: list[str]) -> dict[str, list]
         if len(points) >= 2:
             series[instrument_id] = points
     return series
+
+
+def _panel_with_window(
+    series: dict[str, list],
+    *,
+    needed: int,
+    min_width: int,
+) -> tuple[ReturnPanel, list[tuple[str, str]]]:
+    """Панель, у которой хватает общей истории на скользящую проверку.
+
+    Панель строится по датам, **общим** для всех бумаг, — иначе ковариация
+    считалась бы по разным периодам для разных пар. Отсюда неприятное
+    свойство: одна недавно допущенная бумага обрезает окно всем остальным.
+    Именно это и произошло на боевом сервере: 54 бумаги с историей, а общее
+    окно короче, чем нужно одному циклу проверки (два года обучения плюс
+    квартал измерения). Проверка не проводилась ни разу, значит ни один
+    состав не мог быть допущен — экран честно показывал «нет» на шаге
+    оптимизации, и причина этого «нет» была не видна.
+
+    Здесь короткие ряды **отбрасываются**, а не укорачивают всех: бумага без
+    длинной истории просто не участвует в этом пересчёте. Отброшенные едут в
+    отчёт с причиной — «пропала из состава» не должно быть неотличимо от
+    «сломалась загрузка».
+    """
+    working = dict(series)
+    dropped: list[tuple[str, str]] = []
+    panel = build_panel(working)
+    while panel.periods < needed and len(working) > min_width:
+        # Уходит самый короткий ряд: он и ограничивает пересечение.
+        shortest = min(working, key=lambda key: len(working[key]))
+        length = len(working[shortest])
+        del working[shortest]
+        dropped.append(
+            (
+                shortest,
+                f"истории {length} дней — общее окно короче {needed} дней, "
+                "нужных для проверки на истории; в этот пересчёт не взят",
+            )
+        )
+        panel = build_panel(working)
+    return panel, dropped
 
 
 # ── Ограничения ──────────────────────────────────────────────────────────
@@ -387,9 +435,9 @@ def build_package(
         )
         return _trim(w, count, constraints)
 
-    wf_config = cfg.section("backtest")["walk_forward"]
-    train_days = int(wf_config["train_months"]) * 21
-    test_days = int(wf_config["test_months"]) * 21
+    wf = cfg.section("backtest")["walk_forward"]
+    train_days = int(wf["train_months"]) * 21
+    test_days = int(wf["test_months"]) * 21
     # Проверка идёт по всей истории, а не по окну горизонта. Годовой пакет
     # считается по последним двум годам — но доверия он заслуживает лишь
     # тем, что такой способ счёта работал и раньше, на других режимах.
@@ -474,7 +522,7 @@ def build_all(
         report.note = (
             "инвестиционной вселенной нет: доски биржи ещё не синхронизированы"
         )
-        return report
+        return _record(session, report)
 
     min_history = int(cfg.get("universe.investments.min_history_days", 120))
     cards = fund.screen(
@@ -488,7 +536,7 @@ def build_all(
             f"фундаментальный срез прошли {len(passed)} бумаг из {len(cards)} — "
             "пакет собирать не из чего"
         )
-        return report
+        return _record(session, report)
 
     by_id = {i.instrument_id: i for i in universe}
     card_by_id = {c.instrument_id: c for c in passed}
@@ -506,13 +554,29 @@ def build_all(
     report.candidates = len(candidates)
 
     series = daily_closes(session, candidates)
-    panel = build_panel(series)
+    wf_config = cfg.section("backtest")["walk_forward"]
+    needed = int(wf_config["train_months"]) * 21 + int(wf_config["test_months"]) * 21
+    panel, dropped = _panel_with_window(series, needed=needed, min_width=4)
+    for instrument_id, why in dropped:
+        report.rejected.append((instrument_id, why))
+    report.common_days = panel.periods
     if panel.width < 3 or panel.periods < 120:
         report.note = (
             f"общая история кандидатов — {panel.periods} дней по {panel.width} "
             "бумагам; для оптимизации нужно не меньше 120 дней"
         )
-        return report
+        return _record(session, report)
+    if panel.periods < needed:
+        # Оптимизацию провести можно, а проверить состав на данных, которых
+        # он не видел, — нет. Считать и показать непроверенное было бы хуже
+        # честного «пока нечем проверить».
+        report.note = (
+            f"общего окна {panel.periods} дней хватает на оптимизацию, но не на "
+            f"проверку на истории: одному циклу нужно {needed} дней "
+            f"({int(wf_config['train_months'])} мес. обучения плюс "
+            f"{int(wf_config['test_months'])} мес. измерения). "
+            "Состав появится, когда наберётся общая история."
+        )
 
     packages = cfg.section("portfolio")["packages"]
     crypto_cap = float(cfg.get("portfolio.crypto_max_weight"))
@@ -543,6 +607,46 @@ def build_all(
                 )
                 report.packages.append(built)
                 _persist(session, built, cfg=cfg, now=now)
+    if report.packages and report.admitted == 0 and not report.note:
+        report.note = (
+            "составы посчитаны, но проверку на истории не прошёл ни один — "
+            "показывать непроверенный состав нельзя"
+        )
+    return _record(session, report)
+
+
+def _record(session: Session, report: BuildReport) -> BuildReport:
+    """Записать итог прогона: без него «нет» на экране остаётся без причины.
+
+    Хранится один прогон, последний. История прогонов здесь не нужна: вопрос
+    к конвейеру всегда один — что мешает сейчас.
+    """
+    session.execute(delete(PortfolioRun))
+    session.add(
+        PortfolioRun(
+            universe=report.universe,
+            screened=report.screened,
+            candidates=report.candidates,
+            common_days=report.common_days,
+            built=len(report.packages),
+            admitted=report.admitted,
+            note=report.note,
+            reasons_json=[
+                {
+                    "profile": str(p.profile),
+                    "package": str(p.package),
+                    "horizon_years": p.horizon_years,
+                    "admitted": p.admitted,
+                    "reason": p.reason,
+                }
+                for p in report.packages
+            ],
+            dropped_json=[
+                {"instrument_id": key, "reason": why} for key, why in report.rejected
+            ],
+        )
+    )
+    session.flush()
     return report
 
 

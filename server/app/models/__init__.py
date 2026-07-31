@@ -33,6 +33,7 @@ from .portfolio import (
     Account,
     Holding,
     PortfolioModel,
+    PortfolioRun,
     PortfolioWeight,
     RebalanceDraft,
 )
@@ -55,6 +56,7 @@ __all__ = [
     "Account",
     "Holding",
     "PortfolioModel",
+    "PortfolioRun",
     "PortfolioWeight",
     "RebalanceDraft",
     # risk / research

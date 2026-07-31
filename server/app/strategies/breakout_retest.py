@@ -19,7 +19,16 @@ from decimal import Decimal
 
 from ..detectors.price_action import PriceZone
 from ..models.enums import Direction, OrderIntent, Strategy
-from .base import Candidate, Check, Outcome, SetupContext, Target, reject, round_to_tick
+from .base import (
+    Candidate,
+    Check,
+    Outcome,
+    SetupContext,
+    Target,
+    reject,
+    round_to_tick,
+    snap_entry,
+)
 
 STRATEGY = Strategy.BREAKOUT_RETEST
 
@@ -152,7 +161,9 @@ def build(ctx: SetupContext, params: BreakoutParams | None = None) -> Outcome:
         entry_low, entry_high = boundary - atr_setup * Decimal("0.25"), boundary + atr_setup * Decimal("0.25")
         stop = round_to_tick(max(retest.high, boundary) + buffer, ctx.tick_size, up=True)
 
-    entry_reference = boundary
+    entry_low, entry_high, entry_reference = snap_entry(
+        entry_low, entry_high, boundary, ctx.tick_size
+    )
     risk = abs(entry_reference - stop)
     if risk <= 0:
         checks.append(Check("stop_distance", "Расстояние до стопа", False, "нулевой риск"))
