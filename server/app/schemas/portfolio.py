@@ -47,6 +47,10 @@ class PackageOut(ApiModel):
     drawdown_limit: Money
     cvar_95: Money | None = None
     rationale: str
+    # Состав годен, но рискованнее, чем обещает профиль. Экран показывает это
+    # отметкой рядом с числами риска, а не прячет состав целиком.
+    meets_target: bool = True
+    warnings: list[str] = Field(default_factory=list)
     stress: dict[str, str] = Field(default_factory=dict)
     generated_at: datetime
     valid_until: datetime

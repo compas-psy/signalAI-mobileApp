@@ -93,6 +93,8 @@ class EnginePackage {
     required this.generatedAt,
     required this.validUntil,
     this.cvar95,
+    this.meetsTarget = true,
+    this.warnings = const [],
     this.stress = const {},
     this.mix = const [],
     this.positions = const [],
@@ -112,6 +114,13 @@ class EnginePackage {
   final double drawdown;
   final double? cvar95;
   final String rationale;
+
+  /// Состав годен, но рискованнее, чем обещает профиль. Прятать такой нельзя:
+  /// на рынке, пережившем 2022 год, «не уложился в целевую просадку» — это
+  /// свойство рынка, а не брак состава. Экран показывает отметку рядом с
+  /// числами риска, владелец решает сам.
+  final bool meetsTarget;
+  final List<String> warnings;
 
   /// Худшее, что уже случалось с этим составом: день, месяц, квартал, год.
   final Map<String, String> stress;

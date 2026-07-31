@@ -740,6 +740,17 @@ class _PackageHead extends StatelessWidget {
                     background: C.warningFaint,
                     fontWeight: 700,
                   )
+                else if (!package.meetsTarget)
+                  // Состав годен, но рискованнее, чем обещает профиль. Прятать
+                  // его было бы хуже: числа риска нужны владельцу именно
+                  // тогда, когда они больше ожидаемых.
+                  OutlineBadge(
+                    label: 'риск выше цели',
+                    color: C.warning,
+                    borderColor: C.warningBorder,
+                    background: C.warningFaint,
+                    fontWeight: 700,
+                  )
                 else
                   OutlineBadge(
                     label: '${package.positions.length} позиций',
@@ -843,6 +854,17 @@ class _PackageEvidence extends StatelessWidget {
               const SectionLabel('Что уже случалось', color: C.faint),
               const SizedBox(height: 6),
               StressTiles(stress: package.stress),
+            ],
+            if (package.warnings.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              for (final warning in package.warnings)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 4),
+                  child: Text(
+                    '· $warning',
+                    style: T.body(11, color: C.warning, height: 1.45),
+                  ),
+                ),
             ],
             if (package.rationale.isNotEmpty) ...[
               const SizedBox(height: 12),

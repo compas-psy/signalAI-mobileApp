@@ -153,14 +153,81 @@ class Idea {
   /// этот фильтр гасил и Вайкоффа, и SMC, и трендовые: график оставался
   /// голыми свечами.
   List<ChartAnnotation> annotationsFor(Set<ChartLayer> visible) =>
-      annotations.where((a) => visible.contains(a.layer)).toList()
+      _allAnnotations.where((a) => visible.contains(a.layer)).toList()
         ..sort((a, b) => b.displayPriority.compareTo(a.displayPriority));
 
   /// Слои, которые вообще имеет смысл включать для этой идеи.
   Set<ChartLayer> get availableLayers => {
         ChartLayer.candles,
-        for (final a in annotations) a.layer,
+        for (final a in _allAnnotations) a.layer,
       };
+
+  /// Разметка идеи вместе с уровнями плана.
+  ///
+  /// Уровни плана строит движок и кладёт в снимок идеи. Но идея — снимок
+  /// неизменяемый: та, что посчитана вчерашней версией движка, живёт свой
+  /// срок как есть, и переписать её задним числом нельзя — по ней принято
+  /// решение. Владельцу же нужен график **сейчас**, а не через три дня.
+  ///
+  /// Поэтому недостающие уровни достраиваются здесь из плана. Это не
+  /// выдуманные данные: те же вход, стоп и цели уже показаны текстом рядом,
+  /// и §9.1 требует ровно того, чтобы картинка повторяла текст. Находки
+  /// детекторов (Вайкофф, смарт-мани) так восстановить нельзя — их здесь и
+  /// не появляется, и это честно видно по отсутствию их слоёв.
+  List<ChartAnnotation> get _allAnnotations {
+    final present = {for (final a in annotations) a.type};
+    final plan = this.plan;
+    if (plan == null) return annotations;
+    final extra = <ChartAnnotation>[
+      if (!present.contains(AnnotationType.levelEntry))
+        ChartAnnotation(
+          id: 'plan-entry',
+          type: AnnotationType.levelEntry,
+          timeframe: timeframes.isEmpty ? '' : timeframes.last,
+          startTime: createdAt,
+          endTime: validUntil,
+          confidence: 1,
+          evidenceId: 'plan',
+          detectorVersion: 'plan-local',
+          label: 'Зона входа',
+          priceLow: plan.entryLow < plan.entryHigh ? plan.entryLow : plan.entryHigh,
+          priceHigh: plan.entryLow < plan.entryHigh ? plan.entryHigh : plan.entryLow,
+          displayPriority: 95,
+        ),
+      if (!present.contains(AnnotationType.levelStop))
+        ChartAnnotation(
+          id: 'plan-stop',
+          type: AnnotationType.levelStop,
+          timeframe: timeframes.isEmpty ? '' : timeframes.last,
+          startTime: createdAt,
+          endTime: validUntil,
+          confidence: 1,
+          evidenceId: 'plan',
+          detectorVersion: 'plan-local',
+          label: 'Стоп',
+          priceLow: plan.stop,
+          priceHigh: plan.stop,
+          displayPriority: 96,
+        ),
+      if (!present.contains(AnnotationType.levelTarget))
+        for (var i = 0; i < plan.targets.length; i++)
+          ChartAnnotation(
+            id: 'plan-tp${i + 1}',
+            type: AnnotationType.levelTarget,
+            timeframe: timeframes.isEmpty ? '' : timeframes.last,
+            startTime: createdAt,
+            endTime: validUntil,
+            confidence: 1,
+            evidenceId: 'plan',
+            detectorVersion: 'plan-local',
+            label: 'TP${i + 1}',
+            priceLow: plan.targets[i].price,
+            priceHigh: plan.targets[i].price,
+            displayPriority: 80,
+          ),
+    ];
+    return extra.isEmpty ? annotations : [...annotations, ...extra];
+  }
 
   /// Переход состояния с проверкой машины (ТЗ §8).
   ///

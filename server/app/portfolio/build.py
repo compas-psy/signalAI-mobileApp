@@ -148,6 +148,10 @@ class Package:
     horizon_years: int
     admitted: bool
     reason: str
+    # Состав годен, но рискованнее, чем обещает профиль. Это не повод его
+    # прятать: числа риска показываются рядом, решение за владельцем.
+    meets_target: bool = True
+    warnings: list[str] = field(default_factory=list)
     positions: list[Position] = field(default_factory=list)
     expected_low: float = 0.0
     expected_high: float = 0.0
@@ -465,6 +469,8 @@ def build_package(
         result.drawdown = realised.max_drawdown
 
     result.admitted = verdict.admitted
+    result.meets_target = verdict.meets_target
+    result.warnings = list(verdict.warnings)
     result.reason = verdict.note
     result.rationale = (
         f"{profile.title}: целевые колебания {profile.target_volatility:.0%}, "
@@ -608,9 +614,16 @@ def build_all(
                 report.packages.append(built)
                 _persist(session, built, cfg=cfg, now=now)
     if report.packages and report.admitted == 0 and not report.note:
+        # Причины разных вариантов чаще всего совпадают — показываем их
+        # списком, а не одним общим «не прошёл». Владельцу нужно знать, чего
+        # именно не хватило: доходности вне обучения или устойчивости.
+        reasons: list[str] = []
+        for package in report.packages:
+            if package.reason and package.reason not in reasons:
+                reasons.append(package.reason)
         report.note = (
-            "составы посчитаны, но проверку на истории не прошёл ни один — "
-            "показывать непроверенный состав нельзя"
+            "составы посчитаны, но ни один не прошёл проверку: "
+            + "; ".join(reasons[:2])
         )
     return _record(session, report)
 

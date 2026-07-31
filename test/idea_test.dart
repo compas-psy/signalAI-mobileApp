@@ -207,8 +207,24 @@ void main() {
         ],
       );
 
-      expect(summary.annotationsFor(ChartLayer.values.toSet()), hasLength(1));
+      final drawn = summary.annotationsFor(ChartLayer.values.toSet());
+      // Находка детектора доезжает без доказательства...
+      expect(
+        drawn.where((a) => a.type == AnnotationType.wyckoffSpring),
+        hasLength(1),
+      );
       expect(summary.availableLayers, contains(ChartLayer.wyckoff));
+      // ...а рядом с ней — уровни самой сделки, достроенные из плана.
+      // Без них график остаётся голыми свечами у любой идеи, посчитанной
+      // до появления серверной разметки, а живёт такая идея днями.
+      expect(
+        drawn.map((a) => a.type),
+        containsAll([
+          AnnotationType.levelEntry,
+          AnnotationType.levelStop,
+          AnnotationType.levelTarget,
+        ]),
+      );
     });
 
     test('выключенный слой скрывает свои метки', () {
@@ -218,7 +234,16 @@ void main() {
 
     test('метки идут по убыванию приоритета отрисовки', () {
       final all = withEvidence.annotationsFor(ChartLayer.values.toSet());
-      expect(all.first.displayPriority, 80);
+      for (var i = 1; i < all.length; i++) {
+        expect(
+          all[i - 1].displayPriority >= all[i].displayPriority,
+          isTrue,
+          reason: 'порядок отрисовки нарушен на позиции $i',
+        );
+      }
+      // Уровни сделки рисуются поверх находок детекторов: стоп важнее
+      // ордер-блока, если они пришлись на одну цену.
+      expect(all.first.type, AnnotationType.levelStop);
     });
 
     test('свечи доступны всегда', () {

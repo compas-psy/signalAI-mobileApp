@@ -150,20 +150,34 @@ abstract final class EngineContract {
   /// одном знаке и всегда давала максимум. Отсюда «1 858,1200» вместо
   /// «1 858,12»: четыре знака там, где значащих два.
   static int _decimalsFor(List<double> prices) {
-    var decimals = 0;
-    for (final price in prices) {
-      final scale = price.abs() < 1 ? 1.0 : price.abs();
-      for (var d = 0; d <= 6; d++) {
-        final factor = _pow10(d);
-        final rounded = (price * factor).roundToDouble() / factor;
-        if ((price - rounded).abs() <= 1e-9 * scale) {
-          if (d > decimals) decimals = d;
-          break;
-        }
-        if (d == 6 && decimals < 4) decimals = 4;
-      }
+    if (prices.isEmpty) return 0;
+    final needed = <int>[for (final price in prices) _decimalsOf(price)]..sort();
+    // Берётся не максимум, а середина. Максимум означает, что ОДНА цена
+    // задаёт вид всех остальных: сервер прислал границу зоны входа
+    // неокруглённой (1874.023606), и весь экран идеи стал показывать шесть
+    // знаков — «1 858,120000» вместо «1 858,12». Сервер это уже чинит
+    // округлением к шагу цены, но идеи, посчитанные до того, живут своим
+    // сроком, и читать их владельцу приходится сейчас.
+    //
+    // Медиана устойчива к одному выбросу и при этом не занижает точность,
+    // когда цены действительно дробные: у крипты все шесть знаков значащие,
+    // и медиана даст те же шесть.
+    return needed[needed.length ~/ 2];
+  }
+
+  /// Сколько знаков после запятой нужно этой цене.
+  ///
+  /// Сравнение с допуском, а не точное: сервер отдаёт цены строками Decimal
+  /// («1849.100000000000»), в double это 1849.0999999999999, и точная
+  /// проверка не сходится ни на одном знаке.
+  static int _decimalsOf(double price) {
+    final scale = price.abs() < 1 ? 1.0 : price.abs();
+    for (var d = 0; d <= 6; d++) {
+      final factor = _pow10(d);
+      final rounded = (price * factor).roundToDouble() / factor;
+      if ((price - rounded).abs() <= 1e-9 * scale) return d;
     }
-    return decimals;
+    return 6;
   }
 
   static double _pow10(int n) {
@@ -453,6 +467,10 @@ abstract final class EngineContract {
       drawdown: _num(json['drawdown_limit']),
       cvar95: _numOrNull(json['cvar_95']),
       rationale: '${json['rationale'] ?? ''}',
+      meetsTarget: json['meets_target'] != false,
+      warnings: [
+        for (final w in (json['warnings'] as List? ?? const [])) '$w',
+      ],
       stress: {
         for (final entry in (json['stress'] as Map? ?? const {}).entries)
           '${entry.key}': '${entry.value}',

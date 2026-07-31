@@ -131,9 +131,21 @@ def walk_forward(
 
 @dataclass(frozen=True, slots=True)
 class Verdict:
-    """Допуск состава по итогам проверки (§19.2)."""
+    """Итог проверки: допустить состав и соответствует ли он профилю.
+
+    Два разных вопроса, и раньше они были склеены в один. «Просадка больше
+    целевой» — это не «состав недействителен», а «состав рискованнее, чем
+    заявляет профиль». Склеив их, я сделал экран, который на рынке, пережившем
+    2022 год, не покажет вообще ничего: 18 составов посчитаны, все забракованы,
+    владелец видит пустоту вместо чисел и решает сам, не имея чисел.
+
+    Поэтому отказ остался только за тем, что делает состав бессмысленным:
+    проверить было нечем или вне обучения он теряет деньги. Всё остальное —
+    предупреждение, которое едет вместе с составом и показывается на экране.
+    """
 
     admitted: bool
+    meets_target: bool = True
     reasons: tuple[str, ...] = ()
     warnings: tuple[str, ...] = field(default=())
 
@@ -146,38 +158,45 @@ class Verdict:
         return f"{head}: " + "; ".join(parts)
 
 
+# Ниже этой доли прибыльных окон состав не выигрывает даже у монетки — такое
+# показывать нельзя ни с какими оговорками.
+MIN_POSITIVE_SHARE = 0.4
+
+
 def judge(
     report: WalkForward,
     *,
     drawdown_limit: float,
-    min_positive_share: float = 0.5,
+    min_positive_share: float = MIN_POSITIVE_SHARE,
 ) -> Verdict:
-    """Пропускать ли состав владельцу.
-
-    Пороги простые и проверяемые: вне обучения состав не должен терять
-    больше заявленного лимита просадки и должен зарабатывать чаще, чем
-    подбрасывание монеты. Всё, что не дотянуло, называет причину — пакет
-    исчезает с экрана не молча.
-    """
+    """Пропускать ли состав владельцу и соответствует ли он профилю."""
     if not report.performed:
-        return Verdict(False, (report.reason,))
+        return Verdict(False, False, (report.reason,))
     combined = report.combined
     assert combined is not None
 
     reasons: list[str] = []
     warnings: list[str] = []
-    if combined.max_drawdown > drawdown_limit:
+
+    # ── Отказ: состав бессмысленен ────────────────────────────────────────
+    if combined.cagr <= 0:
         reasons.append(
-            f"просадка вне обучения {combined.max_drawdown:.1%} "
-            f"выше допустимой {drawdown_limit:.1%}"
+            f"вне обучения состав теряет {abs(combined.cagr):.1%} годовых"
         )
     share = report.positive_folds / max(1, len(report.folds))
     if share < min_positive_share:
         reasons.append(
-            f"прибыльных окон {share:.0%} — меньше половины"
+            f"прибыльных окон {share:.0%} — состав не выигрывает у монетки"
         )
-    if combined.cagr <= 0:
-        reasons.append(f"доходность вне обучения {combined.cagr:.1%}")
+
+    # ── Оговорки: состав годен, но не таков, как обещает профиль ──────────
+    meets_target = True
+    if combined.max_drawdown > drawdown_limit:
+        meets_target = False
+        warnings.append(
+            f"просадка вне обучения {combined.max_drawdown:.1%} выше целевой "
+            f"для профиля {drawdown_limit:.1%}"
+        )
     if report.mean_turnover > 0.6:
         warnings.append(
             f"состав меняется на {report.mean_turnover:.0%} за пересчёт — "
@@ -185,4 +204,4 @@ def judge(
         )
     if len(report.folds) < 4:
         warnings.append(f"окон всего {len(report.folds)} — оценка грубая")
-    return Verdict(not reasons, tuple(reasons), tuple(warnings))
+    return Verdict(not reasons, meets_target, tuple(reasons), tuple(warnings))

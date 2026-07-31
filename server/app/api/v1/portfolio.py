@@ -173,6 +173,8 @@ def _package_out(session: Session, model: PortfolioModel) -> PackageOut:
         drawdown_limit=model.model_drawdown_limit,
         cvar_95=model.cvar_95,
         rationale=model.rationale,
+        meets_target=model.meets_target,
+        warnings=[str(w) for w in (model.warnings_json or [])],
         stress={str(k): str(v) for k, v in (model.stress_json or {}).items()},
         generated_at=model.generated_at,
         valid_until=model.valid_until,

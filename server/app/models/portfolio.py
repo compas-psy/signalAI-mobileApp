@@ -104,6 +104,13 @@ class PortfolioModel(UuidPk, Base):
     cvar_95: Mapped[Ratio] = mapped_column(nullable=True)
 
     rationale: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # Состав годен, но рискованнее, чем обещает профиль. Прятать такой нельзя:
+    # на рынке, пережившем 2022 год, «не уложился в целевую просадку» — это
+    # свойство рынка, а не брак состава. Владелец видит числа и решает сам.
+    meets_target: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True
+    )
+    warnings_json: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     stress_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     config_hash: Mapped[str] = mapped_column(String(64), nullable=False)
 
