@@ -237,3 +237,31 @@ def test_метрики_ряда_считаются_по_определению(
     result = performance(series, periods_per_year=252)
     assert result.periods == 2
     assert result.max_drawdown == pytest.approx(0.10, abs=1e-9)
+
+
+def test_нулевой_состав_не_считается_портфелем() -> None:
+    """Вектор из нулей — это «состав не собрался», а не портфель без дохода.
+
+    Ровно так и выглядело на боевом сервере: потолки консервативного профиля
+    не давали набрать 100% из отобранных бумаг, проекция возвращала нули,
+    скользящая проверка честно мерила ряд из нулей и сообщала «вне обучения
+    состав теряет 0.0% годовых, прибыльных окон 0%». Владелец читал это как
+    приговор рынку, хотя речь о невыполнимых ограничениях.
+    """
+    panel = _panel(periods=700, width=4)
+    report = walk_forward(panel, lambda t: np.zeros(4), train=250, test=60)
+    assert not report.performed
+    assert "ограничения профиля" in report.reason
+    assert not judge(report, drawdown_limit=0.2).admitted
+
+
+def test_осмысленная_проверка_требует_нескольких_окон() -> None:
+    """Три окна — девять месяцев вне обучения: оценка обязана назвать себя грубой."""
+    panel = _panel(periods=250 + 3 * 60, width=3)
+    report = walk_forward(
+        panel, lambda t: np.full(3, 1 / 3), train=250, test=60
+    )
+    assert report.performed
+    assert len(report.folds) == 3
+    verdict = judge(report, drawdown_limit=0.9)
+    assert any("грубая" in w for w in verdict.warnings)

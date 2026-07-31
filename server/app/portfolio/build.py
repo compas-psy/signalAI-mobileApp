@@ -205,6 +205,8 @@ def _panel_with_window(
     *,
     needed: int,
     min_width: int,
+    target: int | None = None,
+    classes: dict[str, AssetClass] | None = None,
 ) -> tuple[ReturnPanel, list[tuple[str, str]]]:
     """Панель, у которой хватает общей истории на скользящую проверку.
 
@@ -225,20 +227,68 @@ def _panel_with_window(
     working = dict(series)
     dropped: list[tuple[str, str]] = []
     panel = build_panel(working)
-    while panel.periods < needed and len(working) > min_width:
-        # Уходит самый короткий ряд: он и ограничивает пересечение.
-        shortest = min(working, key=lambda key: len(working[key]))
+    # Цель — не минимально допустимое окно, а осмысленное. Останавливаться на
+    # первом же успехе значило получить три окна проверки: девять месяцев вне
+    # обучения, по которым вердикт «состав теряет 3.1% годовых» говорит
+    # больше о конкретном квартале, чем о составе. Пока отбрасывание коротких
+    # рядов удлиняет общее окно и бумаг остаётся достаточно — продолжаем.
+    goal = max(needed, target or needed)
+    by_class = classes or {}
+    while panel.periods < goal and len(working) > min_width:
+        # Уходит самый короткий ряд — он и ограничивает пересечение. Но не
+        # любой: класс актива, от которого осталась пара бумаг, беречь
+        # важнее длины окна. Вырезав все облигации и денежный рынок, мы
+        # оставим консервативный профиль без единого допустимого состава —
+        # его потолок на акции просто не даст набрать 100%.
+        shortest = _next_to_drop(working, by_class)
+        if shortest is None:
+            break
         length = len(working[shortest])
-        del working[shortest]
+        candidate = dict(working)
+        del candidate[shortest]
+        grown = build_panel(candidate)
+        # Если удаление не удлиняет окно, дальше резать бессмысленно: длину
+        # держит не этот ряд, и мы просто обедняем отбор.
+        if panel.periods >= needed and grown.periods <= panel.periods:
+            break
+        working, panel = candidate, grown
         dropped.append(
             (
                 shortest,
-                f"истории {length} дней — общее окно короче {needed} дней, "
-                "нужных для проверки на истории; в этот пересчёт не взят",
+                f"истории {length} дней — общее окно короче {goal} дней, "
+                "нужных для осмысленной проверки; в этот пересчёт не взят",
             )
         )
-        panel = build_panel(working)
     return panel, dropped
+
+
+def _next_to_drop(
+    working: dict[str, list], by_class: dict[str, AssetClass]
+) -> str | None:
+    """Какой ряд убрать следующим: самый короткий из тех, кого не жалко.
+
+    «Не жалко» — значит его класс представлен ещё как минимум двумя другими
+    бумагами. Класс, доживший до пары представителей, не режется: без него
+    часть профилей перестаёт быть выполнимой в принципе.
+    """
+    counts: dict[AssetClass, int] = {}
+    for key in working:
+        asset_class = by_class.get(key)
+        if asset_class is not None:
+            counts[asset_class] = counts.get(asset_class, 0) + 1
+
+    def length(key: str) -> int:
+        return len(working[key])
+
+    spare = [
+        key
+        for key in working
+        if by_class.get(key) is None or counts.get(by_class[key], 0) > 2
+    ]
+    pool = spare or list(working)
+    if not pool:
+        return None
+    return min(pool, key=length)
 
 
 # ── Ограничения ──────────────────────────────────────────────────────────
@@ -427,6 +477,18 @@ def build_package(
         return result
 
     weights = _trim(resampled.weights, count, constraints)
+    if abs(float(weights.sum())) < 1e-6:
+        # Проекция вернула нули: потолки классов профиля вместе не дают 100%
+        # на отобранных бумагах. Это состояние вселенной, а не приговор
+        # рынку, и называть его надо именно так — иначе экран скажет
+        # «вне обучения состав теряет 0.0% годовых».
+        present = sorted({str(c) for c in classes})
+        result.reason = (
+            "состав не собран: потолки профиля не дают набрать 100% из "
+            f"отобранных бумаг (в отборе только {', '.join(present)}). "
+            "Нужны бумаги классов, которым профиль оставляет место."
+        )
+        return result
 
     def rebuild(train: np.ndarray) -> np.ndarray:
         # Окно горизонта применяется и внутри проверки: иначе проверялся бы
@@ -561,8 +623,19 @@ def build_all(
 
     series = daily_closes(session, candidates)
     wf_config = cfg.section("backtest")["walk_forward"]
-    needed = int(wf_config["train_months"]) * 21 + int(wf_config["test_months"]) * 21
-    panel, dropped = _panel_with_window(series, needed=needed, min_width=4)
+    train_days = int(wf_config["train_months"]) * 21
+    test_days = int(wf_config["test_months"]) * 21
+    needed = train_days + test_days
+    # Одно окно — это не проверка, а единственное наблюдение: три окна дают
+    # девять месяцев вне обучения, и на них оценка заведомо грубая. Целимся в
+    # шесть окон и отступаем к минимуму, если истории не хватает.
+    panel, dropped = _panel_with_window(
+        series,
+        needed=needed,
+        target=needed + 5 * test_days,
+        min_width=4,
+        classes={key: by_id[key].asset_class for key in series if key in by_id},
+    )
     for instrument_id, why in dropped:
         report.rejected.append((instrument_id, why))
     report.common_days = panel.periods

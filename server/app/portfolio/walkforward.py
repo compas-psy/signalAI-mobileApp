@@ -92,7 +92,18 @@ def walk_forward(
         train_slice = panel.values[start : start + train]
         test_slice = panel.values[start + train : start + train + test]
         weights = build(train_slice)
-        if weights.size != panel.width or not np.isfinite(weights).all():
+        degenerate = (
+            weights.size != panel.width
+            or not np.isfinite(weights).all()
+            # Нулевой вектор — это не портфель, а признак того, что при этих
+            # ограничениях состав собрать нельзя. Измерять его нельзя тем
+            # более: ряд доходностей выйдет ровно нулевым, и проверка честно
+            # сообщит «вне обучения состав теряет 0.0% годовых, прибыльных
+            # окон 0%». Владелец прочтёт это как приговор рынку, хотя речь о
+            # невыполнимых потолках класса.
+            or abs(float(weights.sum())) < 1e-6
+        )
+        if degenerate:
             start += stride
             continue
         series = test_slice @ weights
@@ -114,7 +125,10 @@ def walk_forward(
     if not folds:
         return WalkForward(
             performed=False,
-            reason="ни одно окно не дало состава — проверка не проводилась",
+            reason=(
+                "ни в одном окне состав не собрался: ограничения профиля не "
+                "дают набрать 100% из отобранных бумаг"
+            ),
         )
 
     combined = performance(np.concatenate(out_of_sample), periods_per_year=periods_per_year)
