@@ -23,6 +23,7 @@ import '../domain/ledger/signal_ledger.dart';
 import '../domain/options/structure_builder.dart';
 import '../domain/portfolio/allocation.dart';
 import '../domain/portfolio/package.dart';
+import '../domain/research/hypothesis.dart';
 import '../domain/portfolio/package_backtest.dart';
 import '../domain/portfolio/package_plan.dart';
 import '../domain/portfolio/rebalance.dart';
@@ -343,6 +344,34 @@ class AppController extends ChangeNotifier {
       _portfolio = await _engine.portfolio();
     } finally {
       _portfolioLoading = false;
+      notifyListeners();
+    }
+  }
+
+  // ── Ранние сигналы ──────────────────────────────────────────────────────
+
+  ResearchState? _research;
+  bool _researchLoading = false;
+
+  ResearchState? get research => _research;
+  bool get researchLoading => _researchLoading;
+
+  /// Загрузить гипотезы и состояние источников.
+  ///
+  /// Отдельно от пакетов: контуры считаются разными прогонами и падают по
+  /// разным причинам. Недоступный источник ранних сигналов не должен
+  /// выглядеть как сломанный расчёт пакетов.
+  Future<void> loadResearch({bool force = false}) async {
+    if (_researchLoading) return;
+    if (_research != null && !force) return;
+    _researchLoading = true;
+    await Future<void>.microtask(() {});
+    notifyListeners();
+    try {
+      await _engineReady;
+      _research = await _engine.research();
+    } finally {
+      _researchLoading = false;
       notifyListeners();
     }
   }

@@ -6,6 +6,7 @@ import '../../state/navigation.dart';
 import '../../theme/tokens.dart';
 import '../widgets/segmented.dart';
 import 'capital_screen.dart';
+import 'signals_screen.dart';
 
 /// Раздел «Портфель» (ТЗ §7).
 ///
@@ -23,9 +24,17 @@ class PortfolioScreen extends StatelessWidget {
     final controller = AppScope.of(context);
     final section =
         PortfolioPill.values[pill.clamp(0, PortfolioPill.values.length - 1)];
+    // Сигналы — не подраздел «Капитала»: у них своя модель, свой запрос и
+    // своя причина пустоты. Пропускать их через переходник, написанный для
+    // книги операций, значило бы притворяться, что это одно и то же.
+    if (section == PortfolioPill.signals) {
+      return SignalsScreen(controller: controller);
+    }
+
     final body = CapitalScreen(
       pill: switch (section) {
         PortfolioPill.packages => CapitalPill.packages.index,
+        PortfolioPill.signals => CapitalPill.packages.index,
         PortfolioPill.rebalance => CapitalPill.overview.index,
         PortfolioPill.accounts => CapitalPill.accounts.index,
       },

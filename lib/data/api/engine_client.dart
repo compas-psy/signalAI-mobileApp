@@ -1,6 +1,7 @@
 import '../../domain/models/signal.dart';
 import '../../domain/idea/idea.dart';
 import '../../domain/portfolio/package.dart';
+import '../../domain/research/hypothesis.dart';
 import 'api_client.dart';
 import 'engine_contract.dart';
 
@@ -185,6 +186,25 @@ class EngineClient {
           await _api.get('$_base/portfolio/packages'));
     } catch (error) {
       return PortfolioState.unavailable(_reason(error));
+    }
+  }
+
+  /// Ранние сигналы: гипотезы и готовность источников.
+  ///
+  /// Отдельно от идей и от пакетов, потому что это третий вопрос. Идеи —
+  /// когда входить, пакеты — как разложить капитал, гипотезы — что
+  /// изменилось в экономике эмитента и стоит ли это изучать. Исполнять
+  /// гипотезу нечем, и подтверждать кнопкой тоже.
+  Future<ResearchState> research() async {
+    if (!isConfigured) {
+      return const ResearchState.unavailable(_noAddress);
+    }
+    try {
+      return ResearchState.fromJson(
+        await _api.get('$_base/research/hypotheses'),
+      );
+    } catch (error) {
+      return ResearchState.unavailable(_reason(error));
     }
   }
 
