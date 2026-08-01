@@ -156,6 +156,7 @@ def build_default_scheduler(
     from ..pipeline.scan import scan as run_scan
     from ..pipeline.supervise import supervise as run_supervise
     from ..pipeline.trigger import recheck as run_trigger_recheck
+    from ..research.collector import collect_all
     from ..research.pipeline import expire as expire_hypotheses
     from ..research.sources import readiness, sync_registry
     from ..portfolio.build import build_all
@@ -307,15 +308,17 @@ def build_default_scheduler(
         # самый неприятный вид расхождения. Протухшие гипотезы закрываются:
         # без срока они живут вечно и превращаются в кладбище решений.
         #
-        # Сбора данных здесь нет, и это не недоделка. Ни один источник не
-        # получил проверки условий использования, а без неё правовой шлюз
-        # не выдаёт разрешения — по построению, а не по забывчивости.
+        # Сбор идёт по тем источникам, у которых проверены условия и
+        # написан адаптер. Правовой шлюз спрашивается по-настоящему: у
+        # закрытого источника прогон не ходит в сеть вовсе, и причина
+        # попадает в строку журнала, а не теряется.
         sync_registry(session)
+        collected = collect_all(session)
         expired = expire_hypotheses(session)
         state = readiness(session)
         detail = (
             f"источников {state['total']}, бесплатный маршрут у "
-            f"{state['free_route']}"
+            f"{state['free_route']}; сбор: {collected.summary()}"
         )
         if state["awaiting_terms_check"]:
             detail += (
