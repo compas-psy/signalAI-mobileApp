@@ -261,6 +261,7 @@ class EngineState {
     this.ready = true,
     this.feedsFrom = const [],
     this.blockedBy = const [],
+    this.coverage = 'none',
   });
 
   final String key;
@@ -274,7 +275,22 @@ class EngineState {
   /// Источники, которых не хватает для расчёта.
   final List<String> blockedBy;
 
-  bool get fed => ready && blockedBy.isEmpty;
+  /// full — все входы закрыты, partial — часть, none — ни одного.
+  ///
+  /// Полнота важнее наличия. Движок, у которого подключена половина
+  /// входов, считает половину картины: ФНС показывает, как живёт
+  /// поставщик, но не показывает его заказы — они в ЕИС. Назвать это
+  /// «считает» значило бы обещать ответ, которого не будет.
+  final String coverage;
+
+  bool get fed => ready && coverage == 'full';
+  bool get partial => ready && coverage == 'partial';
+
+  String get stateLabel => switch (coverage) {
+        'full' => 'считает',
+        'partial' => 'считает частично',
+        _ => 'ждёт источников',
+      };
 
   /// Человеческое название движка.
   String get title => switch (key) {
@@ -300,6 +316,7 @@ class EngineState {
         blockedBy: [
           for (final s in j['blocked_by'] as List<dynamic>? ?? const []) '$s',
         ],
+        coverage: j['coverage'] as String? ?? 'none',
       );
 }
 

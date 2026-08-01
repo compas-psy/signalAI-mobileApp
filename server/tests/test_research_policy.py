@@ -92,7 +92,7 @@ def test_срок_проверки_обязателен(session: Session):
     add_source(session, terms_review_due_at=None)
     with pytest.raises(CollectionDenied) as exc:
         authorize(session, "test_source", {"fetch"}, now=NOW)
-    assert "не задан" in exc.value.reason
+    assert "не проверялись" in exc.value.reason
 
 
 def test_операция_вне_разрешённых_отклоняется(session: Session):
@@ -128,29 +128,59 @@ def test_реестр_источников_записывается_и_обно�
     assert updated2 == len(ALL_SOURCES)
 
 
-def test_бесплатное_ядро_есть_но_ждёт_проверки_условий(session: Session):
-    """Бесплатный маршрут — это ещё не разрешение собирать.
+def test_проверенные_источники_открываются_остальные_ждут(session: Session):
+    """Реестр — запись о состоявшихся проверках, а не о намерениях.
 
-    Половина ядра собирается без покупки данных, и это хорошая новость. Но
-    ``approved`` в реестре означает «маршрут официальный и бесплатный», а не
-    «можно не думать»: пока срок проверки условий не проставлен, шлюз не
-    пускает. Источник не начинает собираться сам только потому, что кто-то
-    написал в таблице нужное слово.
+    Два источника проверены и работают. Остальные бесплатные ждут: у них
+    правовой маршрут есть, а проверки условий не было, и шлюз это различает.
+    «Approved» без даты — мнение, а не решение.
     """
     sync_registry(session, now=NOW)
     state = readiness(session)
 
     assert state["total"] == len(ALL_SOURCES)
-    # Бесплатных маршрутов больше половины — ядро действительно собирается.
     assert state["free_route"] >= 12
-    # И ни один из них пока не пропускает сбор.
-    assert set(state["awaiting_terms_check"]) and all(
-        item for item in state["awaiting_terms_check"]
-    )
+
+    # Проверенные пропускают сбор.
+    for source_id in ("cbr_data", "fns_open_data"):
+        permit = authorize(session, source_id, {"fetch", "store_raw"}, now=NOW)
+        assert permit.valid_at(NOW)
+
+    # Остальные — нет, и причина названа действием, а не следствием.
+    assert "cbr_data" not in state["awaiting_terms_check"]
+    assert state["awaiting_terms_check"]
     for source_id in state["awaiting_terms_check"]:
         with pytest.raises(CollectionDenied) as exc:
             authorize(session, source_id, {"fetch"}, now=NOW)
-        assert "просрочена" in exc.value.reason or "не задан" in exc.value.reason
+        assert "не проверялись" in exc.value.reason
+
+
+def test_платная_отчётность_фнс_остаётся_закрытой(session: Session):
+    """Открытые наборы и подписная отчётность — один владелец, разное право.
+
+    Один «источник ФНС» с общим тумблером означал бы, что включение
+    открытых данных случайно включает и платную часть.
+    """
+    sync_registry(session, now=NOW)
+    with pytest.raises(CollectionDenied) as exc:
+        authorize(session, "fns_bfo", {"fetch"}, now=NOW)
+    assert "requires_contract" in exc.value.reason
+
+
+def test_покрытие_движка_бывает_частичным(session: Session):
+    """ФНС даёт финансы поставщика, но не контракты — они в ЕИС.
+
+    Называть это полным покрытием значило бы обещать движку данные,
+    которых у него нет.
+    """
+    from app.research.sources import ALL_SOURCES as SPECS
+
+    fns = next(s for s in SPECS if s.source_id == "fns_open_data")
+    assert fns.feeds["SUPPLIER"] == "partial"
+
+    cbr = next(s for s in SPECS if s.source_id == "cbr_data")
+    assert cbr.feeds["DEMAND"] == "full"
+    assert cbr.feeds["SPREAD"] == "partial"
 
 
 def test_у_каждого_недоступного_источника_названа_замена(session: Session):

@@ -210,8 +210,10 @@ void main() {
         'status': {
           'engines': [
             {'key': 'WCQ', 'version': '1.0.0', 'ready': true,
+             'coverage': 'none',
              'feeds_from': ['fns_open_data'], 'blocked_by': ['fns_open_data']},
             {'key': 'DEMAND', 'version': '1.0.0', 'ready': true,
+             'coverage': 'full',
              'feeds_from': ['rosstat'], 'blocked_by': const []},
           ],
           'engines_ready': 2,
@@ -236,6 +238,41 @@ void main() {
         final engine = EngineState(key: key);
         expect(engine.title, isNot(key), reason: key);
       }
+    });
+  });
+
+  group('Полнота покрытия', () {
+    test('«считает» и «считает частично» — разные обещания', () {
+      // ФНС показывает, как живёт поставщик, но не показывает его заказы:
+      // они в ЕИС. Назвать это «считает» — обещать ответ, которого не будет.
+      const full = EngineState(key: 'DEMAND', coverage: 'full');
+      const half = EngineState(key: 'SUPPLIER', coverage: 'partial');
+      const none = EngineState(key: 'HIRING', coverage: 'none');
+
+      expect(full.fed, isTrue);
+      expect(half.fed, isFalse);
+      expect(half.partial, isTrue);
+      expect(none.partial, isFalse);
+
+      expect(full.stateLabel, 'считает');
+      expect(half.stateLabel, 'считает частично');
+      expect(none.stateLabel, 'ждёт источников');
+    });
+
+    test('полнота разбирается из контракта', () {
+      final state = ResearchState.fromJson({
+        'status': {
+          'engines': [
+            {'key': 'SUPPLIER', 'version': '1.0.0', 'ready': true,
+             'coverage': 'partial', 'blocked_by': ['eis_open_data']},
+          ],
+          'engines_ready': 1,
+          'engines_fed': 0,
+        },
+        'hypotheses': const [],
+      });
+      expect(state.engines.single.partial, isTrue);
+      expect(state.engines.single.blockedBy, ['eis_open_data']);
     });
   });
 }

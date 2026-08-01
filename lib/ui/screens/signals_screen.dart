@@ -313,15 +313,22 @@ class _Engines extends StatelessWidget {
             const SizedBox(height: 6),
             Text(
               'Написано и проверено ${state.enginesReady} из '
-              '${state.engines.length}; данные есть у ${state.enginesFed}.',
+              '${state.engines.length}. Все входы закрыты у '
+              '${state.enginesFed}, часть входов — у '
+              '${state.engines.where((e) => e.partial).length}.',
               style: T.body(11.5, color: C.text, height: 1.45),
             ),
             const SizedBox(height: 10),
             for (final engine in state.engines)
               KeyValueRow(
                 name: engine.title,
-                value: engine.fed ? 'считает' : 'ждёт источников',
-                valueStyle: T.mono(11, color: engine.fed ? C.green : C.warning),
+                value: engine.stateLabel,
+                valueStyle: T.mono(
+                  11,
+                  color: engine.fed
+                      ? C.green
+                      : (engine.partial ? C.info : C.warning),
+                ),
                 showDivider: engine != state.engines.last,
               ),
           ],

@@ -88,25 +88,54 @@ class SourceSpec:
     expected_frequency: str = ""
     source_timezone: str = "Europe/Moscow"
     allowed_operations: dict = field(default_factory=lambda: dict(_NONE))
-    # Что движки берут отсюда — чтобы по списку заблокированных было видно,
-    # какой сигнал остаётся без данных, а не просто «источник недоступен».
-    feeds: tuple[str, ...] = ()
+    # Что движки берут отсюда и **насколько полно**. Полнота важнее самого
+    # факта: источник, закрывающий половину входов движка, и источник,
+    # закрывающий все, снаружи выглядят одинаково — строкой в списке, — а
+    # означают разное. ФНС даёт финансовое состояние поставщика, но не
+    # контракты; без ЕИС движок SUPPLIER считает часть картины.
+    feeds: dict[str, str] = field(default_factory=dict)
     rate_limit_policy: dict = field(default_factory=dict)
+
+    # Когда условия использования были проверены и когда проверить снова.
+    #
+    # Живут в реестре как **запись о состоявшейся проверке**, а не как
+    # автоматическое значение. Источник без даты остаётся закрытым, каким
+    # бы ни был его правовой статус: «approved» без проверки — это мнение,
+    # а не решение.
+    terms_checked_at: datetime | None = None
+    terms_review_due_at: datetime | None = None
+    terms_url: str = ""
+    datasets: tuple[str, ...] = ()
 
 
 # ── Россия: бесплатные официальные маршруты ─────────────────────────────────
 
 RUSSIA_FREE: tuple[SourceSpec, ...] = (
     SourceSpec(
-        "cbr_data", "Сервис данных Банка России", "Банк России", "api",
+        "cbr_data", "Bank of Russia Data Service", "Банк России", "api",
         LicenseStatus.APPROVED,
-        "официальный REST/JSON; доступ к веб-сервисам заявлен как бесплатный "
-        "и общедоступный. Отраслевой и региональный разрезы мониторинга "
-        "предприятий — опережающий спрос",
-        base_url="https://www.cbr.ru/",
+        "официальный REST с OpenAPI 3.0; автоматическое получение данных "
+        "собственным кодом прямо предусмотрено. Внутренняя аналитика и "
+        "производные показатели разрешены, перепродажа сырого массива — нет. "
+        "При цитировании обязательна ссылка; условия могут быть изменены в "
+        "одностороннем порядке, поэтому проверка назначена на ноябрь",
+        base_url="https://www.cbr.ru/dataservice/",
         expected_frequency="monthly",
         allowed_operations=dict(_READ),
-        feeds=("DEMAND", "SPREAD", "CAPACITY"),
+        # Мониторинг предприятий закрывает спрос целиком. Мощности — частично:
+        # загрузка и ожидания есть, а запасов, сроков поставки и цен
+        # производителя в нужной детализации нет. Спред — частично: курс и
+        # ставки отсюда, а цены продукции, сырья, энергии и логистики нужны
+        # из других источников, иначе считать разницу не из чего.
+        feeds={"DEMAND": "full", "CAPACITY": "partial", "SPREAD": "partial"},
+        terms_url="https://www.cbr.ru/user_agreement/",
+        terms_checked_at=datetime(2026, 8, 1, tzinfo=UTC),
+        terms_review_due_at=datetime(2026, 11, 1, tzinfo=UTC),
+        rate_limit_policy={
+            "strategy": "token_bucket",
+            "requests_per_second": 1,
+            "burst": 2,
+        },
     ),
     SourceSpec(
         "cbr_legacy", "Веб-сервисы ЦБ (курсы, ставки)", "Банк России", "api",
@@ -115,26 +144,42 @@ RUSSIA_FREE: tuple[SourceSpec, ...] = (
         base_url="https://www.cbr.ru/scripts/",
         expected_frequency="daily",
         allowed_operations=dict(_READ),
-        feeds=("SPREAD",),
+        feeds={"SPREAD": "full"},
     ),
     SourceSpec(
-        "fns_open_data", "Открытые наборы ФНС", "ФНС России", "file",
+        "fns_open_data", "FNS Open Data — Entity Metrics", "ФНС России", "file",
         LicenseStatus.APPROVED,
-        "бесплатные ZIP/XML с XSD: доходы, расходы, численность и уплаченные "
-        "налоги ежегодно, налоговая задолженность ежеквартально. Полный "
-        "баланс не заменяет, но для разведки по поставщикам этого много",
+        "открытые данные используются без договора и лицензий, в том числе "
+        "коммерчески. Обязательны ссылка на ФНС, законная цель и достоверное "
+        "представление. Перепубликация сырого массива отключена решением "
+        "продукта, хотя условия её допускают",
+        base_url="https://file.nalog.ru/opendata/",
         expected_frequency="yearly",
         allowed_operations=dict(_READ),
-        feeds=("SUPPLIER", "WCQ"),
+        # Финансовое состояние поставщика — да; контракты, исполнение, авансы
+        # и приёмка — нет, они в ЕИС. Пока ЕИС не подключён, SUPPLIER считает
+        # часть картины, и называть это полным покрытием было бы обманом.
+        feeds={"SUPPLIER": "partial", "WCQ": "partial"},
+        terms_url="https://www.nalog.gov.ru/files/tipovye_usloviya_od.pdf",
+        terms_checked_at=datetime(2026, 8, 1, tzinfo=UTC),
+        terms_review_due_at=datetime(2027, 2, 1, tzinfo=UTC),
+        datasets=(
+            "revenue_expenses",
+            "headcount",
+            "paid_taxes",
+            "tax_debt",
+        ),
     ),
     SourceSpec(
         "eis_open_data", "Открытые данные ЕИС закупок", "ЕИС", "file",
         LicenseStatus.APPROVED,
         "официальные выгрузки: извещения, контракты, исполнение, оплата, "
-        "приёмка. HTML-поиск как массовый API не использовать",
+        "приёмка. HTML-поиск как массовый API не использовать. Следующий "
+        "приоритет подключения: без него SUPPLIER видит финансы поставщика, "
+        "но не заказы, ради которых движок и существует",
         expected_frequency="daily",
         allowed_operations=dict(_READ),
-        feeds=("BUDGET", "SUPPLIER"),
+        feeds={"BUDGET": "full", "SUPPLIER": "full"},
     ),
     SourceSpec(
         "trudvsem", "API «Работа России»", "Роструд", "api",
@@ -143,7 +188,7 @@ RUSSIA_FREE: tuple[SourceSpec, ...] = (
         "hh.ru, условия которого ограничивают применение тематикой найма",
         expected_frequency="daily",
         allowed_operations=dict(_READ),
-        feeds=("HIRING",),
+        feeds={"HIRING": "full"},
     ),
     SourceSpec(
         "rosstat", "Росстат / ЕМИСС", "Росстат", "file",
@@ -153,7 +198,7 @@ RUSSIA_FREE: tuple[SourceSpec, ...] = (
         "хранить vintage и учитывать ревизии",
         expected_frequency="monthly",
         allowed_operations=dict(_READ),
-        feeds=("DEMAND", "SPREAD", "CAPACITY"),
+        feeds={"DEMAND": "full", "SPREAD": "full", "CAPACITY": "full"},
     ),
     SourceSpec(
         "budget_open_data", "Открытые данные «Электронного бюджета»",
@@ -164,7 +209,7 @@ RUSSIA_FREE: tuple[SourceSpec, ...] = (
         "является",
         expected_frequency="monthly",
         allowed_operations=dict(_READ),
-        feeds=("BUDGET",),
+        feeds={"BUDGET": "full"},
     ),
     SourceSpec(
         "issuer_ir", "IR-разделы сайтов эмитентов", "эмитенты", "html",
@@ -174,7 +219,7 @@ RUSSIA_FREE: tuple[SourceSpec, ...] = (
         "импорт официального файла",
         expected_frequency="daily",
         allowed_operations=dict(_MANUAL),
-        feeds=("WCQ",),
+        feeds={"WCQ": "full"},
     ),
     SourceSpec(
         "broker_quotes", "Котировки через API брокера", "Т-Инвестиции", "api",
@@ -185,7 +230,7 @@ RUSSIA_FREE: tuple[SourceSpec, ...] = (
         auth_type="api_key",
         expected_frequency="daily",
         allowed_operations=dict(_READ),
-        feeds=("market_context",),
+        feeds={},
     ),
     SourceSpec(
         "worldbank_pinksheet", "World Bank Pink Sheet", "World Bank", "file",
@@ -195,7 +240,7 @@ RUSSIA_FREE: tuple[SourceSpec, ...] = (
         source_timezone="UTC",
         expected_frequency="monthly",
         allowed_operations=dict(_READ),
-        feeds=("SPREAD",),
+        feeds={"SPREAD": "full"},
     ),
     SourceSpec(
         "eia_open_data", "EIA Open Data", "U.S. EIA", "api",
@@ -204,7 +249,7 @@ RUSSIA_FREE: tuple[SourceSpec, ...] = (
         source_timezone="UTC",
         expected_frequency="weekly",
         allowed_operations=dict(_READ),
-        feeds=("SPREAD",),
+        feeds={"SPREAD": "full"},
     ),
 )
 
@@ -213,14 +258,14 @@ RUSSIA_FREE: tuple[SourceSpec, ...] = (
 RUSSIA_MANUAL: tuple[SourceSpec, ...] = (
     SourceSpec(
         "fns_bfo", "БФО ФНС (полная отчётность)", "ФНС России", "api",
-        LicenseStatus.MANUAL_ONLY,
+        LicenseStatus.REQUIRES_CONTRACT,
         "просмотр и скачивание отчётности одной компании бесплатны, REST API "
         "платный. Замена: открытые наборы ФНС плюс ручная загрузка полной "
         "отчётности по важным компаниям",
         auth_type="api_key",
         expected_frequency="yearly",
-        allowed_operations=dict(_MANUAL),
-        feeds=("WCQ",),
+        allowed_operations=dict(_NONE),
+        feeds={"WCQ": "partial"},
     ),
     SourceSpec(
         "interfax_disclosure", "Интерфакс e-disclosure", "Интерфакс", "html",
@@ -229,7 +274,7 @@ RUSSIA_MANUAL: tuple[SourceSpec, ...] = (
         "эмитентов и ручной импорт",
         expected_frequency="daily",
         allowed_operations=dict(_MANUAL),
-        feeds=("WCQ",),
+        feeds={"WCQ": "full"},
     ),
     SourceSpec(
         "fedresurs", "Федресурс", "Интерфакс", "api",
@@ -239,7 +284,7 @@ RUSSIA_MANUAL: tuple[SourceSpec, ...] = (
         auth_type="api_key",
         expected_frequency="daily",
         allowed_operations=dict(_MANUAL),
-        feeds=("SUPPLIER",),
+        feeds={"SUPPLIER": "full"},
     ),
     SourceSpec(
         "yandex_wordstat", "Яндекс Wordstat", "Яндекс", "api",
@@ -249,7 +294,7 @@ RUSSIA_MANUAL: tuple[SourceSpec, ...] = (
         auth_type="oauth",
         expected_frequency="weekly",
         allowed_operations=dict(_MANUAL),
-        feeds=("DEMAND",),
+        feeds={"DEMAND": "full"},
     ),
     SourceSpec(
         "sberindex", "СберИндекс", "Сбербанк", "html",
@@ -258,7 +303,7 @@ RUSSIA_MANUAL: tuple[SourceSpec, ...] = (
         "production API нет. Ручной импорт как подтверждающий источник",
         expected_frequency="monthly",
         allowed_operations=dict(_MANUAL),
-        feeds=("DEMAND",),
+        feeds={"DEMAND": "full"},
     ),
     SourceSpec(
         "moex_iss", "Московская биржа ISS", "MOEX", "api",
@@ -270,7 +315,7 @@ RUSSIA_MANUAL: tuple[SourceSpec, ...] = (
         base_url="https://iss.moex.com/",
         expected_frequency="daily",
         allowed_operations=dict(_NONE),
-        feeds=("market_context",),
+        feeds={},
     ),
     SourceSpec(
         "hh_ru", "hh.ru", "HeadHunter", "api",
@@ -281,7 +326,7 @@ RUSSIA_MANUAL: tuple[SourceSpec, ...] = (
         auth_type="api_key",
         expected_frequency="monthly",
         allowed_operations=dict(_NONE),
-        feeds=("HIRING",),
+        feeds={"HIRING": "full"},
     ),
 )
 
@@ -299,7 +344,7 @@ CRYPTO: tuple[SourceSpec, ...] = (
         source_timezone="UTC",
         expected_frequency="daily",
         allowed_operations=dict(_READ),
-        feeds=("CRYPTO_ECON",),
+        feeds={"CRYPTO_ECON": "full"},
     ),
     SourceSpec(
         "etherscan", "Etherscan API V2", "Etherscan", "api",
@@ -310,7 +355,7 @@ CRYPTO: tuple[SourceSpec, ...] = (
         source_timezone="UTC",
         expected_frequency="hourly",
         allowed_operations=dict(_READ),
-        feeds=("CRYPTO_SUPPLY", "CRYPTO_ECON"),
+        feeds={"CRYPTO_SUPPLY": "full", "CRYPTO_ECON": "full"},
         rate_limit_policy={"strategy": "token_bucket", "requests_per_second": 3,
                            "daily_quota": 100_000},
     ),
@@ -323,7 +368,7 @@ CRYPTO: tuple[SourceSpec, ...] = (
         source_timezone="UTC",
         expected_frequency="daily",
         allowed_operations=dict(_READ),
-        feeds=("CRYPTO_ECON",),
+        feeds={"CRYPTO_ECON": "full"},
         rate_limit_policy={"strategy": "fixed_window", "requests_per_hour": 5000},
     ),
     SourceSpec(
@@ -335,7 +380,7 @@ CRYPTO: tuple[SourceSpec, ...] = (
         source_timezone="UTC",
         expected_frequency="daily",
         allowed_operations=dict(_READ),
-        feeds=("CRYPTO_SUPPLY", "market_context"),
+        feeds={"CRYPTO_SUPPLY": "full"},
         rate_limit_policy={"strategy": "token_bucket", "requests_per_minute": 100,
                            "monthly_quota": 10_000},
     ),
@@ -348,7 +393,7 @@ CRYPTO: tuple[SourceSpec, ...] = (
         source_timezone="UTC",
         expected_frequency="daily",
         allowed_operations=dict(_READ),
-        feeds=("market_context",),
+        feeds={},
     ),
     SourceSpec(
         "project_docs", "Документация и контракты проектов", "проекты", "html",
@@ -359,7 +404,7 @@ CRYPTO: tuple[SourceSpec, ...] = (
         source_timezone="UTC",
         expected_frequency="weekly",
         allowed_operations=dict(_MANUAL),
-        feeds=("CRYPTO_SUPPLY",),
+        feeds={"CRYPTO_SUPPLY": "full"},
     ),
     SourceSpec(
         "dune", "Dune Analytics", "Dune", "api",
@@ -371,7 +416,7 @@ CRYPTO: tuple[SourceSpec, ...] = (
         source_timezone="UTC",
         expected_frequency="daily",
         allowed_operations=dict(_READ),
-        feeds=("CRYPTO_ECON",),
+        feeds={"CRYPTO_ECON": "full"},
     ),
 )
 
@@ -381,6 +426,37 @@ ALL_SOURCES: tuple[SourceSpec, ...] = RUSSIA_FREE + RUSSIA_MANUAL + CRYPTO
 #
 # Не «в чём больше пользы», а «что даёт больше сигналов на единицу работы»:
 # каждый источник здесь кормит минимум один движок целиком.
+# Выключатели наборов данных.
+#
+# Нужны там, где у одного владельца разные правовые режимы: открытые наборы
+# ФНС бесплатны и разрешены, полная отчётность той же ФНС — платная. Один
+# «источник ФНС» с общим тумблером означал бы, что включение открытых данных
+# случайно включает и подписную часть.
+FLAGS: dict[str, str] = {
+    "fns_open_data": "ENABLE_FNS_OPEN_DATA",
+    "fns_bfo": "ENABLE_FNS_BFO",
+}
+
+# Значения по умолчанию: открытые данные включены, подписная часть нет.
+FLAG_DEFAULTS: dict[str, bool] = {
+    "ENABLE_FNS_OPEN_DATA": True,
+    "ENABLE_FNS_BFO": False,
+}
+
+
+def enabled_by_flag(source_id: str) -> bool:
+    """Разрешён ли источник выключателем окружения."""
+    import os
+
+    name = FLAGS.get(source_id)
+    if name is None:
+        return True
+    raw = os.environ.get(name)
+    if raw is None:
+        return FLAG_DEFAULTS.get(name, False)
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
 CONNECT_ORDER: tuple[str, ...] = (
     "cbr_data",
     "fns_open_data",
@@ -407,10 +483,9 @@ def sync_registry(
     базой здесь самый неприятный вид расхождения. Включение источника —
     изменение этого файла вместе с проверкой условий, а не UPDATE.
 
-    ``terms_review_due_at`` намеренно не проставляется: он должен появиться
-    вместе с настоящей проверкой условий. Пустое значение шлюз трактует как
-    отказ, и это правильное умолчание — источник не начинает собираться сам
-    только потому, что кто-то написал ``approved`` в таблице.
+    ``terms_review_due_at`` переносится из реестра, где он означает
+    состоявшуюся проверку условий. У источника без проверки поля нет, и шлюз
+    трактует это как отказ: ``approved`` без даты — мнение, а не решение.
     """
     moment = now or datetime.now(UTC)
     known = {
@@ -437,8 +512,17 @@ def sync_registry(
         row.note = spec.note
         row.expected_frequency = spec.expected_frequency
         row.source_timezone = spec.source_timezone
-        row.enabled = spec.license_status is LicenseStatus.APPROVED
-        row.terms_checked_at = moment
+        row.terms_url = spec.terms_url
+        # Даты переносятся из реестра, а не проставляются автоматически.
+        # Источник, у которого проверки не было, остаётся без даты и потому
+        # закрытым — каким бы ни был его правовой статус.
+        row.terms_checked_at = spec.terms_checked_at
+        row.terms_review_due_at = spec.terms_review_due_at
+        row.enabled = (
+            spec.license_status is LicenseStatus.APPROVED
+            and spec.terms_review_due_at is not None
+            and enabled_by_flag(spec.source_id)
+        )
     session.flush()
     return added, updated
 

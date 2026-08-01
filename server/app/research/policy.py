@@ -141,14 +141,18 @@ def authorize(
             moment,
         )
 
-    if not source.enabled:
-        raise _deny(session, source_id, set(requested), "источник выключен", moment)
-
+    # Срок проверки условий спрашивается раньше включённости по той же
+    # причине, по какой раньше неё спрашивается право: выключенность здесь
+    # чаще всего следствие непроверенных условий, и ответ «источник
+    # выключен» прячет причину за её собственным следствием. Владельцу
+    # нужно знать, что источник ждёт проверки, а не что кто-то щёлкнул
+    # тумблером.
     due = source.terms_review_due_at
     if due is None:
         raise _deny(
             session, source_id, set(requested),
-            "срок проверки условий использования не задан",
+            "условия использования не проверялись: срок следующей проверки "
+            "не задан",
             moment,
         )
     if due.tzinfo is None:
@@ -159,6 +163,11 @@ def authorize(
             f"проверка условий использования просрочена с {due:%d.%m.%Y}",
             moment,
         )
+
+    # Осталась настоящая выключенность: тумблер окружения. У ФНС так
+    # разделены открытые наборы и платная отчётность одного владельца.
+    if not source.enabled:
+        raise _deny(session, source_id, set(requested), "источник выключен", moment)
 
     allowed = {
         name for name, value in (source.allowed_operations or {}).items() if value

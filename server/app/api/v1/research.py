@@ -27,6 +27,7 @@ from ...db import get_db
 from ...models import HypothesisEvidence, ResearchHypothesis, ResearchSource
 from ...models.enums import HypothesisState
 from ...research.engines import ENGINES
+from ...research.policy import CollectionDenied, authorize
 from ...research.sources import ALL_SOURCES, CONNECT_ORDER, readiness, sync_registry
 from ...schemas.common import ApiModel, Money
 
@@ -97,6 +98,9 @@ class EngineStateOut(ApiModel):
     ready: bool = True
     feeds_from: list[str] = Field(default_factory=list)
     blocked_by: list[str] = Field(default_factory=list)
+    # full — все входы движка закрыты подключёнными источниками;
+    # partial — часть; none — ни одного.
+    coverage: str = "none"
 
 
 class ResearchStatusOut(ApiModel):
@@ -170,16 +174,24 @@ def _engines(session: Session) -> list[EngineStateOut]:
     """
     feeds: dict[str, list[str]] = {}
     blocked: dict[str, list[str]] = {}
+    # Полнота по подключённым источникам: full только если хотя бы один
+    # работающий источник закрывает движок целиком.
+    fullness: dict[str, str] = {}
     live = {
         row.source_id
         for row in session.execute(select(ResearchSource)).scalars()
         if row.enabled and row.terms_review_due_at is not None
     }
     for spec in ALL_SOURCES:
-        for key in spec.feeds:
+        for key, depth in spec.feeds.items():
             feeds.setdefault(key, []).append(spec.source_id)
             if spec.source_id not in live:
                 blocked.setdefault(key, []).append(spec.source_id)
+                continue
+            if depth == "full":
+                fullness[key] = "full"
+            elif fullness.get(key) != "full":
+                fullness[key] = "partial"
 
     result: list[EngineStateOut] = []
     for engine in ENGINES:
@@ -195,6 +207,10 @@ def _engines(session: Session) -> list[EngineStateOut]:
                 ready=True,
                 feeds_from=sources,
                 blocked_by=missing,
+                # Полнота важнее наличия. Движок, у которого подключена
+                # половина входов, считает половину картины — и обещать по
+                # нему полный ответ значит обещать несуществующее.
+                coverage=fullness.get(key, "none"),
             )
         )
     return result
@@ -279,7 +295,7 @@ def hypotheses(
         status=ResearchStatusOut(
             engines=engines,
             engines_ready=sum(1 for e in engines if e.ready),
-            engines_fed=sum(1 for e in engines if e.ready and not e.blocked_by),
+            engines_fed=sum(1 for e in engines if e.coverage == "full"),
             total_sources=state["total"],
             free_route=state["free_route"],
             awaiting_terms_check=state["awaiting_terms_check"],
@@ -301,6 +317,92 @@ def hypotheses(
     )
 
 
+class ReachabilityOut(ApiModel):
+    """Дошёл ли запрос до источника."""
+
+    source_id: str
+    host: str = ""
+    reachable: bool = False
+    status: int | None = None
+    detail: str = ""
+
+
+@router.get("/sources/reachability", response_model=list[ReachabilityOut])
+def reachability(session: Session = Depends(get_db)) -> list[ReachabilityOut]:
+    """Живая проверка доступности источников после деплоя.
+
+    Нужна затем, что разрешить сбор и суметь его сделать — разные вещи.
+    Правовой шлюз может пропускать, а исходящий доступ с сервера быть
+    закрыт, и снаружи это выглядит одинаково: гипотез нет. Проверка
+    разделяет «нельзя по праву» и «не пускает сеть».
+
+    Пропуск запрашивается по-настоящему, а не в обход: у заблокированного
+    источника проба не уходит в сеть вовсе, и это видно в ответе. Пробовать
+    достучаться туда, куда нельзя, — то же нарушение, что и сбор.
+    """
+    result: list[ReachabilityOut] = []
+    for spec in ALL_SOURCES:
+        if not spec.base_url:
+            continue
+        host = spec.base_url.split("//")[-1].split("/")[0]
+        try:
+            authorize(session, spec.source_id, {"fetch"}, now=datetime.now(UTC))
+        except CollectionDenied as denied:
+            result.append(
+                ReachabilityOut(
+                    source_id=spec.source_id,
+                    host=host,
+                    reachable=False,
+                    detail=f"проба не отправлялась: {denied.reason}",
+                )
+            )
+            continue
+        result.append(_probe(spec.source_id, spec.base_url, host))
+    session.commit()
+    return result
+
+
+def _probe(source_id: str, url: str, host: str) -> ReachabilityOut:
+    """Один короткий запрос к источнику.
+
+    HEAD и короткий тайм-аут: цель — узнать, пускает ли сеть, а не забрать
+    данные. Долгая проба на недоступном хосте вешает весь ответ.
+    """
+    import urllib.error
+    import urllib.request
+
+    request = urllib.request.Request(url, method="HEAD")
+    try:
+        with urllib.request.urlopen(request, timeout=8) as response:
+            return ReachabilityOut(
+                source_id=source_id,
+                host=host,
+                reachable=True,
+                status=response.status,
+                detail="источник отвечает",
+            )
+    except urllib.error.HTTPError as error:
+        # Ответ есть — сеть пускает. Код может быть любым: часть источников
+        # не принимает HEAD, и это не проблема доступности.
+        return ReachabilityOut(
+            source_id=source_id,
+            host=host,
+            reachable=True,
+            status=error.code,
+            detail=f"сеть пускает, источник ответил {error.code}",
+        )
+    except Exception as error:  # noqa: BLE001 — причина важнее типа
+        return ReachabilityOut(
+            source_id=source_id,
+            host=host,
+            reachable=False,
+            detail=(
+                f"{type(error).__name__}: {error}. Проверьте исходящий HTTPS "
+                f"с сервера к {host}"
+            )[:400],
+        )
+
+
 @router.post("/sources/sync", response_model=ResearchStatusOut)
 def sync_sources(session: Session = Depends(get_db)) -> ResearchStatusOut:
     """Записать реестр источников из кода в базу.
@@ -315,7 +417,7 @@ def sync_sources(session: Session = Depends(get_db)) -> ResearchStatusOut:
     return ResearchStatusOut(
         engines=engines,
         engines_ready=sum(1 for e in engines if e.ready),
-        engines_fed=sum(1 for e in engines if e.ready and not e.blocked_by),
+        engines_fed=sum(1 for e in engines if e.coverage == "full"),
         total_sources=state["total"],
         free_route=state["free_route"],
         awaiting_terms_check=state["awaiting_terms_check"],
