@@ -87,7 +87,31 @@ jobs:
           $SUDO chmod 600 "$ENV_FILE"
 
           cd server
-          $SUDO docker compose --env-file "$ENV_FILE" config >/dev/null
+
+          # Локальная модель критика (ТЗ §26.2). Включается один раз и
+          # только если на диске есть запас: веса весят гигабайты, а сервер
+          # с забитым диском ломается целиком, а не частично.
+          #
+          # Строки дописываются, только если ключа ещё нет. Так позднейшая
+          # правка владельца выигрывает у выкладки — иначе каждый деплой
+          # молча возвращал бы настройки к своим.
+          LLM_PROFILE=''
+          FREE_GB="$(df --output=avail -BG / | tail -1 | tr -dc '0-9')"
+          echo "── место на диске ── ${FREE_GB}G свободно"
+          if [ "${FREE_GB:-0}" -lt 12 ]; then
+            echo 'модель не включается: меньше 12G свободно'
+          else
+            grep -q '^SIGNALAI_LLM_BASE_URL=' "$ENV_FILE" || printf '%s\n' \
+              'SIGNALAI_LLM_BASE_URL=http://ollama:11434' \
+              'SIGNALAI_LLM_MODEL=qwen3.5:4b' \
+              'SIGNALAI_LLM_NUM_CTX=4096' \
+              'SIGNALAI_LLM_TIMEOUT_SECONDS=180' \
+              'SIGNALAI_LLM_MEMORY_LIMIT=5g' \
+              | $SUDO tee -a "$ENV_FILE" >/dev/null
+            LLM_PROFILE='--profile llm'
+          fi
+
+          $SUDO docker compose --env-file "$ENV_FILE" $LLM_PROFILE config >/dev/null
 
           # Порядок здесь принципиален, и раньше он был неверным.
           #
@@ -106,13 +130,30 @@ jobs:
           # место, где вообще можно это проверить.
           $SUDO docker compose --env-file "$ENV_FILE" build api scheduler </dev/null
           $SUDO docker compose --env-file "$ENV_FILE" run --rm -T api alembic upgrade head </dev/null
-          $SUDO docker compose --env-file "$ENV_FILE" up -d --remove-orphans </dev/null
+          $SUDO docker compose --env-file "$ENV_FILE" $LLM_PROFILE \
+            up -d --remove-orphans </dev/null
+
+          # Веса тянутся один раз и живут в томе. Загрузка идёт в фоне и не
+          # держит выкладку: несколько гигабайт по сети — не повод считать
+          # деплой неудавшимся, а первый прогон разведки всё равно позже.
+          if [ -n "$LLM_PROFILE" ]; then
+            model="$(grep '^SIGNALAI_LLM_MODEL=' "$ENV_FILE" | cut -d= -f2-)"
+            if $SUDO docker compose --env-file "$ENV_FILE" $LLM_PROFILE \
+                 exec -T ollama ollama list 2>/dev/null | grep -q "${model%%:*}"; then
+              echo "── модель ── ${model} уже загружена"
+            else
+              echo "── модель ── тяну ${model} в фоне"
+              $SUDO docker compose --env-file "$ENV_FILE" $LLM_PROFILE \
+                exec -dT ollama ollama pull "$model" 2>&1 | tail -3 \
+                || echo 'загрузка не запустилась: смотрите логи ollama'
+            fi
+          fi
 
           echo '── ревизия схемы ──'
           $SUDO docker compose --env-file "$ENV_FILE" run --rm -T api alembic current </dev/null
 
           echo '── контейнеры ──'
-          $SUDO docker compose --env-file "$ENV_FILE" ps
+          $SUDO docker compose --env-file "$ENV_FILE" $LLM_PROFILE ps
 
           echo '── health ──'
           ok=''
