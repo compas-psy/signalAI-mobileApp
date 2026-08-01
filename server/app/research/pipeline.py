@@ -166,6 +166,7 @@ def run(
     signals: list[SignalInput],
     *,
     resolve,
+    critic=None,
     market: str = "russia_equity",
     now: datetime | None = None,
 ) -> RunReport:
@@ -186,11 +187,46 @@ def run(
     for bucket in groups:
         context = resolve(bucket)
         fused = fuse(bucket, now=now, **context)
+        if critic is not None:
+            _apply_critic(critic, fused, bucket, report)
         row, outcome = store(session, fused, bucket, market=market, now=now)
         setattr(report, outcome, getattr(report, outcome) + 1)
         key = str(fused.state)
         report.states[key] = report.states.get(key, 0) + 1
     return report
+
+
+def _apply_critic(critic, fused, bucket, report: RunReport) -> None:
+    """Спросить критика перед подтверждением — и только перед ним.
+
+    Ниже подтверждённой гипотеза ничего не обещает, и тратить на неё
+    вызов модели незачем. Выше — обещает достаточно, чтобы проверка
+    окупалась.
+
+    Критик не меняет состояние сам: §15.1 это прямо запрещает, и здесь
+    решение принимает объединение. Он называет причину, а вниз гипотезу
+    опускает эта функция — и обязательно с текстом причины, иначе на
+    экране появится необъяснимое понижение.
+    """
+    if fused.state not in (HypothesisState.CONFIRMED, HypothesisState.DILIGENCE_READY):
+        return
+    try:
+        verdict = critic(fused, bucket)
+    except Exception as error:  # noqa: BLE001 — недоступная модель не роняет прогон
+        # Молчание модели не должно подтверждать гипотезу: недоступный
+        # критик — это отсутствие проверки, а не её успешное прохождение.
+        fused.state = HypothesisState.EARLY_CANDIDATE
+        fused.state_reason = (
+            f"критик недоступен ({type(error).__name__}) — подтверждение "
+            "отложено до проверки"
+        )
+        report.notes.append(f"критик недоступен: {error}")
+        return
+    if verdict is None or not verdict.blocks_confirmation:
+        return
+    fused.state = HypothesisState.EARLY_CANDIDATE
+    fused.state_reason = verdict.summary or "критик не подтвердил гипотезу"
+    report.notes.append(f"критик отклонил подтверждение: {fused.state_reason}")
 
 
 def expire(

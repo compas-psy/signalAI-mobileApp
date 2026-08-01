@@ -146,3 +146,69 @@ def test_отчёт_движков_называет_числа():
     текст = report.summary()
     assert "наблюдений 40" in текст
     assert "гипотез 2" in текст
+
+
+# ── Критик перед подтверждением ─────────────────────────────────────────────
+
+
+def test_недоступный_критик_не_подтверждает_гипотезу(session):
+    """Молчание модели — отсутствие проверки, а не её успешное прохождение.
+
+    Ошибка здесь тихая и дорогая: недоступный критик молча превращал бы
+    каждую гипотезу в подтверждённую.
+    """
+    from app.models.enums import HypothesisState
+    from app.research.pipeline import RunReport, _apply_critic
+
+    class Гипотеза:
+        state = HypothesisState.CONFIRMED
+        state_reason = ""
+
+    fused = Гипотеза()
+    report = RunReport()
+
+    def падает(*_):
+        raise RuntimeError("модель не отвечает")
+
+    _apply_critic(падает, fused, [], report)
+
+    assert fused.state is HypothesisState.EARLY_CANDIDATE
+    assert "критик недоступен" in fused.state_reason
+    assert report.notes
+
+
+def test_критика_не_спрашивают_ниже_подтверждения(session):
+    """Ниже подтверждения гипотеза ничего не обещает — вызов не окупается."""
+    from app.models.enums import HypothesisState
+    from app.research.pipeline import RunReport, _apply_critic
+
+    class Гипотеза:
+        state = HypothesisState.EARLY_CANDIDATE
+        state_reason = "исходная причина"
+
+    спрошен: list[int] = []
+    fused = Гипотеза()
+    _apply_critic(lambda *_: спрошен.append(1), fused, [], RunReport())
+
+    assert not спрошен
+    assert fused.state_reason == "исходная причина"
+
+
+def test_отказ_критика_опускает_состояние_с_причиной(session):
+    """Необъяснимое понижение на экране хуже, чем отсутствие гипотезы."""
+    from app.models.enums import HypothesisState
+    from app.research.pipeline import RunReport, _apply_critic
+
+    class Вердикт:
+        blocks_confirmation = True
+        summary = "причинная цепочка неполна"
+
+    class Гипотеза:
+        state = HypothesisState.CONFIRMED
+        state_reason = ""
+
+    fused = Гипотеза()
+    _apply_critic(lambda *_: Вердикт(), fused, [], RunReport())
+
+    assert fused.state is HypothesisState.EARLY_CANDIDATE
+    assert fused.state_reason == "причинная цепочка неполна"

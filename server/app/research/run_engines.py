@@ -139,6 +139,37 @@ def _resolve(bucket: list[SignalInput]) -> dict:
     }
 
 
+def _critic(fused, bucket: list[SignalInput]):
+    """Проверить гипотезу моделью перед подтверждением.
+
+    Документ собирается из того, что гипотеза о себе утверждает: причинная
+    цепочка, показатели, опровержения. Отправлять модели сырые наблюдения
+    незачем — проверяется рассуждение, а не данные, и числа всё равно
+    сверяются вычислительно после ответа.
+
+    Ненастроенная модель — не ошибка конфигурации, а нормальное состояние
+    до того, как владелец её включит. Отсутствие критика поднимается
+    наверх исключением: молчание не должно выглядеть как одобрение.
+    """
+    from . import critic as critic_module
+
+    строки = [f"Гипотеза: {fused.title}", f"Причинная цепочка: {fused.causal_path}"]
+    строки += [f"Сигнал {s.strategy_key}: {s.detail}" for s in bucket]
+    строки += [f"Опровержение: {f.get('description', '')}" for f in fused.falsifiers]
+    claims = [
+        critic_module.Claim(claim_id=s.strategy_key, text=s.detail)
+        for s in bucket
+        if s.detail
+    ]
+
+    verdict, _report, _exchange = critic_module.review(
+        hypothesis=fused.title,
+        document="\n".join(строки),
+        claims=claims,
+    )
+    return verdict
+
+
 def run_demand(session: Session, *, now: datetime | None = None) -> EngineReport:
     """Прогнать движок спроса по собранным наблюдениям."""
     moment = now or datetime.now(UTC)
@@ -191,7 +222,9 @@ def run_demand(session: Session, *, now: datetime | None = None) -> EngineReport
     if not signals:
         return report
 
-    outcome = run_pipeline(session, signals, resolve=_resolve, now=moment)
+    outcome = run_pipeline(
+        session, signals, resolve=_resolve, critic=_critic, now=moment
+    )
     report.hypotheses = outcome.created + outcome.updated
     return report
 
