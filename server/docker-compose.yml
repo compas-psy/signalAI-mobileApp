@@ -42,6 +42,13 @@ services:
       # Тот же токен зашивается в sideload APK. Без него внешний API должен
       # закрыться, а не работать публично.
       SIGNALAI_DEVICE_TOKEN: ${SIGNALAI_DEVICE_TOKEN:?нужен SIGNALAI_DEVICE_TOKEN}
+      # api модель не опрашивает — он только показывает её состояние в
+      # диагностике. Настройки те же, чтобы «настроено» и «работает»
+      # проверялись по одному источнику правды.
+      SIGNALAI_LLM_BASE_URL: ${SIGNALAI_LLM_BASE_URL:-}
+      SIGNALAI_LLM_MODEL: ${SIGNALAI_LLM_MODEL:-qwen3.5:4b}
+      SIGNALAI_LLM_TIMEOUT_SECONDS: ${SIGNALAI_LLM_TIMEOUT_SECONDS:-180}
+      SIGNALAI_LLM_NUM_CTX: ${SIGNALAI_LLM_NUM_CTX:-4096}
     ports:
       - "127.0.0.1:8000:8000"
     command: >
@@ -60,6 +67,43 @@ services:
       timeout: 5s
       retries: 12
       start_period: 20s
+
+  # Локальная модель для критика (ТЗ §15, §26.2). Контейнером, а не службой
+  # на хосте, по одной причине: служба, слушающая 127.0.0.1, из контейнера
+  # недоступна в принципе — трафик приходит с адреса docker-моста, а не с
+  # петли. Чинить это пришлось бы либо открытием 0.0.0.0 (порт без
+  # авторизации на публичном интерфейсе), либо привязкой к адресу моста,
+  # который меняется вместе с сетью compose. Здесь ни того, ни другого:
+  # портов наружу нет вовсе, а api и планировщик ходят по имени сети.
+  #
+  # Профиль означает выключено по умолчанию. Модель весит гигабайты и ест
+  # ту же память, что Postgres; включать её на сервере, где её не ждут, —
+  # решение владельца, а не побочный эффект выкладки. Включается строкой
+  # COMPOSE_PROFILES=llm в /etc/signalai/.env.
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    profiles: ["llm"]
+    environment:
+      # Один запрос за раз и одна модель в памяти. На четырёх ядрах вторая
+      # одновременная генерация не ускоряет ничего: обе упираются в те же
+      # ядра, а память уходит в своп — вместе с базой.
+      OLLAMA_NUM_PARALLEL: "1"
+      OLLAMA_MAX_LOADED_MODELS: "1"
+      OLLAMA_MAX_QUEUE: "32"
+      OLLAMA_KEEP_ALIVE: "5m"
+      OLLAMA_CONTEXT_LENGTH: "${SIGNALAI_LLM_NUM_CTX:-4096}"
+      OLLAMA_FLASH_ATTENTION: "1"
+      OLLAMA_KV_CACHE_TYPE: "q8_0"
+    volumes:
+      - ollama:/root/.ollama
+    # Предел памяти стоит намеренно ниже свободной. Без него неудачно
+    # подобранная модель вытеснит Postgres, и «медленно» превратится в
+    # «база упала» — то есть в поломку, которую никто не свяжет с моделью.
+    deploy:
+      resources:
+        limits:
+          memory: ${SIGNALAI_LLM_MEMORY_LIMIT:-5g}
 
   # Планировщик §26: вселенная, загрузка, допуск, скан. Отдельный процесс, а
   # не фон внутри api: несколько воркеров uvicorn подняли бы столько же копий
@@ -86,6 +130,13 @@ services:
       # каждые пятнадцать минут не сделал бы состав точнее, а нагрузку
       # поднял бы на порядок.
       SIGNALAI_PORTFOLIO_EVERY_MINUTES: ${SIGNALAI_PORTFOLIO_EVERY_MINUTES:-60}
+      # Пустой адрес означает «модели нет», и критик честно называет это
+      # блокером. Догадка о запущенном сервисе стоила бы планировщику
+      # таймаута на каждом прогоне разведки.
+      SIGNALAI_LLM_BASE_URL: ${SIGNALAI_LLM_BASE_URL:-}
+      SIGNALAI_LLM_MODEL: ${SIGNALAI_LLM_MODEL:-qwen3.5:4b}
+      SIGNALAI_LLM_TIMEOUT_SECONDS: ${SIGNALAI_LLM_TIMEOUT_SECONDS:-180}
+      SIGNALAI_LLM_NUM_CTX: ${SIGNALAI_LLM_NUM_CTX:-4096}
     command: ["python", "-m", "app.scheduler"]
     # Проверка здоровья из образа здесь неприменима: она стучится в
     # http://127.0.0.1:8000/health, а у планировщика нет входящих портов по
@@ -113,3 +164,7 @@ services:
 volumes:
   pgdata:
   redisdata:
+  # Веса модели переживают пересборку. Иначе каждая выкладка тянула бы
+  # несколько гигабайт заново — и первый прогон разведки после деплоя
+  # выглядел бы как «модель не отвечает».
+  ollama:

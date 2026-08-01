@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 from ...db import get_db
 from ...models import HypothesisEvidence, ResearchHypothesis, ResearchSource
 from ...models.enums import HypothesisState
-from ...research import adapters, reach
+from ...research import adapters, gateway, reach
 from ...research.engines import ENGINES
 from ...research.policy import CollectionDenied, authorize
 from ...research.sources import ALL_SOURCES, CONNECT_ORDER, readiness, sync_registry
@@ -421,6 +421,30 @@ def _probe(source_id: str, urls: tuple[str, ...]) -> ReachabilityOut:
             for p in probes
         ],
     )
+
+
+class ModelStateOut(ApiModel):
+    """Состояние локальной модели критика."""
+
+    configured: bool = False
+    reachable: bool = False
+    model: str = ""
+    model_installed: bool = False
+    installed: list[str] = []
+    reason: str = ""
+
+
+@router.get("/model", response_model=ModelStateOut)
+def model_state() -> ModelStateOut:
+    """Есть ли модель, доступна ли она и та ли она.
+
+    Три разных «нет», которые снаружи выглядят одинаково пустой выдачей:
+    не настроена, не отвечает, установлена другая. Последнее коварнее
+    прочих — опечатка в теге выглядит как молчание модели.
+
+    Ключей и адресов наружу не отдаёт: только то, что уже задано локально.
+    """
+    return ModelStateOut(**gateway.health())
 
 
 class PlanCheckOut(ApiModel):
