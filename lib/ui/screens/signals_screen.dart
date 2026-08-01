@@ -69,11 +69,9 @@ class _SignalsScreenState extends State<SignalsScreen> {
     return ListView(
       padding: const EdgeInsets.fromLTRB(S.screen, 12, S.screen, 90),
       children: [
-        if (empty) ...[
-          const _Explainer(),
-          const SizedBox(height: 12),
-          _Waiting(state: state),
-        ] else
+        if (empty)
+          _Waiting(state: state)
+        else
           for (final h in state.hypotheses) ...[
             _HypothesisCard(hypothesis: h),
             const SizedBox(height: 10),
@@ -456,7 +454,7 @@ class _Waiting extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final computing = state.engines.where((e) => e.fed || e.partial).length;
+    final fed = state.engines.where((e) => e.fed || e.partial).length;
     return SectionCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -464,11 +462,10 @@ class _Waiting extends StatelessWidget {
           Text('Гипотез пока нет', style: T.jost(15, weight: 700, color: C.text)),
           const SizedBox(height: 6),
           Text(
-            computing == 0
-                ? 'Ни один движок ещё не получил данных. '
-                    'Подробности — ниже.'
-                : 'Данные computing $computing из ${state.engines.length} движков. '
-                    'Для гипотезы нужно совпадение из независимых источников.',
+            fed == 0
+                ? 'Движки ещё не получили данных.'
+                : 'Считают $fed из ${state.engines.length}. '
+                    'Гипотеза появится, когда сойдутся независимые источники.',
             style: T.body(12.5, color: C.muted, height: 1.4),
           ),
         ],
