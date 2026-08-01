@@ -157,6 +157,7 @@ def build_default_scheduler(
     from ..pipeline.supervise import supervise as run_supervise
     from ..pipeline.trigger import recheck as run_trigger_recheck
     from ..research.collector import collect_all
+    from ..research.run_engines import run_demand
     from ..research.pipeline import expire as expire_hypotheses
     from ..research.sources import readiness, sync_registry
     from ..portfolio.build import build_all
@@ -314,11 +315,16 @@ def build_default_scheduler(
         # попадает в строку журнала, а не теряется.
         sync_registry(session)
         collected = collect_all(session)
+        session.flush()
+        # Движки идут сразу за сбором: наблюдение, не дошедшее до гипотезы,
+        # снаружи неотличимо от несобранного.
+        engines = run_demand(session)
         expired = expire_hypotheses(session)
         state = readiness(session)
         detail = (
             f"источников {state['total']}, бесплатный маршрут у "
             f"{state['free_route']}; сбор: {collected.summary()}"
+            f"; движки: {engines.summary()}"
         )
         if state["awaiting_terms_check"]:
             detail += (
