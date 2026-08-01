@@ -212,3 +212,48 @@ def test_отказ_критика_опускает_состояние_с_при
 
     assert fused.state is HypothesisState.EARLY_CANDIDATE
     assert fused.state_reason == "причинная цепочка неполна"
+
+
+# ── Сектор брокера вместо биржи ─────────────────────────────────────────────
+
+
+def test_сектор_брокера_переводится_в_раздел_оквэд():
+    """Брокер и Банк России говорят на разных языках.
+
+    Без сопоставления «financial» и «K» — два несвязанных слова, и
+    наблюдение снова не к чему привязать.
+    """
+    assert issuers.section_of_sector("financial") == "K"
+    assert issuers.section_of_sector("ENERGY") == "B"
+    assert issuers.section_of_sector(" utilities ") == "D"
+
+
+def test_неизвестный_сектор_не_сваливается_в_прочее():
+    """Приписать бумаге чужую отрасль хуже, чем не дать ей сигнала."""
+    assert issuers.section_of_sector("нечто новое") == ""
+    assert issuers.section_of_sector("") == ""
+
+
+def test_справочник_брокера_даёт_эмитентов():
+    rows = [
+        {"ticker": "sber", "name": "Сбербанк", "sector": "financial"},
+        {"ticker": "XXXX", "name": "Без сектора", "sector": "неизвестно"},
+        {"ticker": "", "name": "Без тикера", "sector": "energy"},
+    ]
+    собрано = issuers.from_broker(rows)
+    assert [i.secid for i in собрано] == ["SBER"]
+    assert собрано[0].section == "K"
+
+
+def test_инн_из_брокера_не_выдумывается():
+    """Брокер ИНН не отдаёт, а выгрузки ФНС ключуются по нему."""
+    новый = issuers.from_broker(
+        [{"ticker": "NEWW", "name": "Новая", "sector": "materials"}]
+    )[0]
+    assert новый.inn == ""
+    assert новый.usable_for_financials is False
+    # А у известного эмитента проверенный ИНН сохраняется.
+    сбер = issuers.from_broker(
+        [{"ticker": "SBER", "name": "Сбербанк", "sector": "financial"}]
+    )[0]
+    assert сбер.inn == "7707083893"

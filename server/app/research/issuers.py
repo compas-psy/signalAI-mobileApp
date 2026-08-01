@@ -48,6 +48,44 @@ SECTIONS: dict[str, str] = {
 }
 
 
+#: Сектор T-Invest → раздел ОКВЭД.
+#:
+#: Нужен затем, что стороны говорят на разных языках: брокер называет
+#: сектор по-английски и укрупнённо, Банк России измеряет спрос по разделам
+#: ОКВЭД. Без сопоставления «financial» и «K» — два несвязанных слова, и
+#: наблюдение снова не к чему привязать.
+#:
+#: Сопоставление огрублённое и не может быть точным: у брокера сектор один
+#: на компанию, а у крупного холдинга видов деятельности несколько. Это
+#: причина, по которой уверенность привязки здесь ниже, чем у проверенного
+#: ИНН, а не повод считать её полной.
+SECTOR_TO_SECTION: dict[str, str] = {
+    "financial": "K",
+    "energy": "B",
+    "materials": "C",
+    "industrials": "C",
+    "consumer": "G",
+    "it": "J",
+    "telecom": "J",
+    "utilities": "D",
+    "health_care": "Q",
+    "real_estate": "L",
+    "electrocars": "C",
+    "green_buildings": "F",
+    "ecomaterials": "C",
+}
+
+
+def section_of_sector(sector: str) -> str:
+    """Раздел ОКВЭД по сектору брокера. Пустая строка — «не знаем».
+
+    Неизвестный сектор намеренно не сваливается в «прочее»: бумага без
+    раздела просто не получит отраслевого сигнала, и это честнее, чем
+    приписать ей чужую отрасль.
+    """
+    return SECTOR_TO_SECTION.get((sector or "").strip().lower(), "")
+
+
 @dataclass(frozen=True, slots=True)
 class Issuer:
     """Эмитент и то, что о нём известно достоверно."""
@@ -119,6 +157,37 @@ REGISTRY: tuple[Issuer, ...] = (
 )
 
 BY_SECID: dict[str, Issuer] = {issuer.secid: issuer for issuer in REGISTRY}
+
+
+def from_broker(rows: list[dict]) -> list[Issuer]:
+    """Собрать эмитентов из справочника инструментов T-Invest.
+
+    Замена бирже, и замена законная: токен принадлежит владельцу и выдан
+    только на чтение, а MOEX ISS для исследовательского контура закрыт
+    условиями.
+
+    Бумаги без известного сектора отбрасываются, а не помечаются «прочим»:
+    эмитент без раздела просто не получит отраслевого сигнала, и это
+    честнее, чем приписать ему чужую отрасль.
+    """
+    result: list[Issuer] = []
+    for row in rows:
+        secid = str(row.get("ticker") or "").strip().upper()
+        section = section_of_sector(str(row.get("sector") or ""))
+        if not secid or not section:
+            continue
+        result.append(
+            Issuer(
+                secid=secid,
+                name=str(row.get("name") or secid),
+                section=section,
+                # ИНН брокер не отдаёт. Оставляем пустым, а не выдумываем:
+                # выгрузки ФНС ключуются по нему, и чужой ИНН припишет
+                # эмитенту чужую отчётность.
+                inn=BY_SECID[secid].inn if secid in BY_SECID else "",
+            )
+        )
+    return result
 
 
 def of(secid: str) -> Issuer | None:
