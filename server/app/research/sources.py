@@ -89,6 +89,12 @@ class SourceSpec:
     # одному ничего не говорит о двух других. Проба по базовому адресу дала
     # бы ответ про четверть маршрута, выглядящий как ответ про весь.
     extra_urls: tuple[str, ...] = ()
+    # Точки входа в каталог источника. Адаптер обязан находить выгрузки,
+    # а не собирать их адреса из имени набора: ведомства нумеруют наборы
+    # своими идентификаторами и добавляют дату выпуска в имя файла.
+    # Собранный адрес выглядит правдоподобно и отвечает 404 — то есть
+    # сбор молча не идёт, а экран объясняется спокойным рынком.
+    catalogue_urls: tuple[str, ...] = ()
     auth_type: str = "none"
     expected_frequency: str = ""
     source_timezone: str = "Europe/Moscow"
@@ -125,6 +131,16 @@ RUSSIA_FREE: tuple[SourceSpec, ...] = (
         "При цитировании обязательна ссылка; условия могут быть изменены в "
         "одностороннем порядке, поэтому проверка назначена на ноябрь",
         base_url="https://www.cbr.ru/dataservice/",
+        # Несколько кандидатов, а не один: раскладка сервиса данных должна
+        # быть установлена прогоном, а не угадана. Собранный адрес
+        # `/dataservice/data?dataset=...` отвечал 501 на все четыре набора.
+        catalogue_urls=(
+            "https://www.cbr.ru/dataservice/datasets",
+            "https://www.cbr.ru/dataservice/measures",
+            "https://www.cbr.ru/dataservice/publications",
+            "https://www.cbr.ru/dataservice/swagger/v1/swagger.json",
+            "https://www.cbr.ru/development/SXML/",
+        ),
         expected_frequency="monthly",
         allowed_operations=dict(_READ),
         # Мониторинг предприятий закрывает спрос целиком. Мощности — частично:
@@ -162,6 +178,14 @@ RUSSIA_FREE: tuple[SourceSpec, ...] = (
         extra_urls=(
             "https://www.nalog.gov.ru/opendata/",
             "https://data.nalog.ru/",
+        ),
+        # Каталог отвечает 200, а собранные имена файлов — 404. Значит
+        # раскладку надо прочитать: наборы ФНС нумеруются идентификатором
+        # вида «ИНН-код», а дата выпуска входит в имя файла.
+        catalogue_urls=(
+            "https://www.nalog.gov.ru/opendata/",
+            "https://data.nalog.ru/opendata/",
+            "https://file.nalog.ru/opendata/7707329152-revexp/",
         ),
         expected_frequency="yearly",
         allowed_operations=dict(_READ),

@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 from ...db import get_db
 from ...models import HypothesisEvidence, ResearchHypothesis, ResearchSource
 from ...models.enums import HypothesisState
-from ...research import adapters, gateway, reach
+from ...research import adapters, explore, gateway, reach
 from ...research.engines import ENGINES
 from ...research.policy import CollectionDenied, authorize
 from ...research.sources import ALL_SOURCES, CONNECT_ORDER, readiness, sync_registry
@@ -496,6 +496,66 @@ def plan_check(session: Session = Depends(get_db)) -> list[PlanCheckOut]:
                     answered=probe.answered,
                     status=probe.status,
                     detail=probe.detail,
+                )
+            )
+    session.commit()
+    return result
+
+
+class CatalogueOut(ApiModel):
+    """Что лежит в точке входа источника."""
+
+    source_id: str
+    url: str = ""
+    status: int | None = None
+    content_type: str = ""
+    size: int = 0
+    matched: list[str] = []
+    sample: list[str] = []
+    head: str = ""
+    error: str = ""
+
+
+@router.get("/sources/catalogue", response_model=list[CatalogueOut])
+def catalogue(session: Session = Depends(get_db)) -> list[CatalogueOut]:
+    """Прочитать каталоги источников: что там есть на самом деле.
+
+    Адаптер обязан находить выгрузки, а не собирать их адреса из имени
+    набора. Собранный адрес выглядит правдоподобно и отвечает 404 — то
+    есть сбор молча не идёт, экран пуст, ошибок нет, объяснить нечем.
+    Именно так и было: ЦБ отвечал 501 на все четыре адреса, ФНС 404.
+
+    Адреса берутся из реестра, как и везде здесь. Произвольную ссылку
+    передать нельзя — иначе это был бы способ ходить в сеть чужими руками.
+    """
+    result: list[CatalogueOut] = []
+    now = datetime.now(UTC)
+    for spec in ALL_SOURCES:
+        if not spec.catalogue_urls:
+            continue
+        try:
+            authorize(session, spec.source_id, {"fetch"}, now=now)
+        except CollectionDenied as denied:
+            result.append(
+                CatalogueOut(
+                    source_id=spec.source_id,
+                    error=f"проба не отправлялась: {denied.reason}",
+                )
+            )
+            continue
+        for url in spec.catalogue_urls:
+            found = explore.fetch(url)
+            result.append(
+                CatalogueOut(
+                    source_id=spec.source_id,
+                    url=found.url,
+                    status=found.status,
+                    content_type=found.content_type,
+                    size=found.size,
+                    matched=found.matched,
+                    sample=found.sample,
+                    head=found.head,
+                    error=found.error,
                 )
             )
     session.commit()
