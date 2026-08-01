@@ -19,7 +19,7 @@ import '../widgets/common.dart';
 /// вообще стоит держать», то есть на тот же вопрос, что и состав пакета, —
 /// только раньше и по другим данным.
 ///
-/// Экран обязан объяснять пустоту. Контур зависит от источников, у которых
+/// Экран обязан объяснять emptyту. Контур зависит от источников, у которых
 /// разный правовой режим, и «гипотез нет, потому что рынок спокоен»
 /// неотличимо от «гипотез нет, потому что ни один источник не подключён» —
 /// а это разные новости, и вторая требует действия владельца.
@@ -61,25 +61,25 @@ class _SignalsScreenState extends State<SignalsScreen> {
       );
     }
 
+    // Порядок здесь и есть ответ на вопрос «что у меня по сигналам».
+    // Гипотезы сверху, устройство контура — под раскрытием: пока их нет,
+    // объяснение нужно, а когда они есть, оно отодвигает результат вниз и
+    // заставляет искать его прокруткой.
+    final empty = state.hypotheses.isEmpty;
     return ListView(
       padding: const EdgeInsets.fromLTRB(S.screen, 12, S.screen, 90),
       children: [
-        const _Explainer(),
-        const SizedBox(height: 12),
-        if (state.hypotheses.isEmpty) ...[
-          _Engines(state: state),
+        if (empty) ...[
+          const _Explainer(),
           const SizedBox(height: 12),
-          _Sources(state: state),
-        ] else ...[
+          _Waiting(state: state),
+        ] else
           for (final h in state.hypotheses) ...[
             _HypothesisCard(hypothesis: h),
             const SizedBox(height: 10),
           ],
-          const SizedBox(height: 2),
-          _Engines(state: state),
-          const SizedBox(height: 12),
-          _Sources(state: state),
-        ],
+        const SizedBox(height: 12),
+        _Details(state: state),
       ],
     );
   }
@@ -295,7 +295,7 @@ class _Score extends StatelessWidget {
 
 /// Девять движков и чего каждому не хватает.
 ///
-/// Блок отвечает на вопрос, который иначе останется без ответа: пустой
+/// Блок отвечает на вопрос, который иначе останется без ответа: emptyй
 /// экран — это «система не дописана» или «система готова, но её нечем
 /// кормить»? Разница определяет, что делать дальше, и потому показывается
 /// числом, а не подразумевается.
@@ -440,6 +440,82 @@ class _Note extends StatelessWidget {
               ],
             ),
           ),
+        ],
+      );
+}
+
+/// Одна строка вместо трёх карточек, пока гипотез нет.
+///
+/// «Почему empty» — вопрос из одного предложения, и отвечать на него
+/// страницей про правовые режимы источников значит топить ответ в
+/// подробностях. Подробности никуда не делись: они под раскрытием ниже.
+class _Waiting extends StatelessWidget {
+  const _Waiting({required this.state});
+
+  final ResearchState state;
+
+  @override
+  Widget build(BuildContext context) {
+    final computing = state.engines.where((e) => e.fed || e.partial).length;
+    return SectionCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Гипотез пока нет', style: T.jost(15, weight: 700, color: C.text)),
+          const SizedBox(height: 6),
+          Text(
+            computing == 0
+                ? 'Ни один движок ещё не получил данных. '
+                    'Подробности — ниже.'
+                : 'Данные computing $computing из ${state.engines.length} движков. '
+                    'Для гипотезы нужно совпадение из независимых источников.',
+            style: T.body(12.5, color: C.muted, height: 1.4),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Устройство контура под раскрытием.
+///
+/// Владельцу нужен результат, а не отчёт о том, как он получается. Но и
+/// спрятать это насовсем нельзя: когда гипотез нет, единственный способ
+/// понять, что делать, — увидеть, чего не хватает движкам.
+class _Details extends StatefulWidget {
+  const _Details({required this.state});
+
+  final ResearchState state;
+
+  @override
+  State<_Details> createState() => _DetailsState();
+}
+
+class _DetailsState extends State<_Details> {
+  bool open = false;
+
+  @override
+  Widget build(BuildContext context) => Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          GestureDetector(
+            onTap: () => setState(() => open = !open),
+            behavior: HitTestBehavior.opaque,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              child: Text(
+                open ? 'Скрыть устройство контура' : 'Как это считается',
+                style: T.jost(13, weight: 600, color: C.accent),
+              ),
+            ),
+          ),
+          if (open) ...[
+            const _Explainer(),
+            const SizedBox(height: 12),
+            _Engines(state: widget.state),
+            const SizedBox(height: 12),
+            _Sources(state: widget.state),
+          ],
         ],
       );
 }
