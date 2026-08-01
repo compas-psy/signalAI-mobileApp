@@ -24,9 +24,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ...db import get_db
-from ...models import HypothesisEvidence, ResearchHypothesis
+from ...models import HypothesisEvidence, ResearchHypothesis, ResearchSource
 from ...models.enums import HypothesisState
-from ...research.sources import CONNECT_ORDER, readiness, sync_registry
+from ...research.engines import ENGINES
+from ...research.sources import ALL_SOURCES, CONNECT_ORDER, readiness, sync_registry
 from ...schemas.common import ApiModel, Money
 
 router = APIRouter(prefix="/research", tags=["research"])
@@ -88,9 +89,22 @@ class SourceStateOut(ApiModel):
     note: str
 
 
+class EngineStateOut(ApiModel):
+    """Движок и то, чем его кормить."""
+
+    key: str
+    version: str
+    ready: bool = True
+    feeds_from: list[str] = Field(default_factory=list)
+    blocked_by: list[str] = Field(default_factory=list)
+
+
 class ResearchStatusOut(ApiModel):
     """Почему выдача выглядит так, как выглядит."""
 
+    engines: list[EngineStateOut] = Field(default_factory=list)
+    engines_ready: int = 0
+    engines_fed: int = 0
     total_sources: int = 0
     free_route: int = 0
     awaiting_terms_check: list[str] = Field(default_factory=list)
@@ -143,6 +157,47 @@ def _evidence(session: Session, hypothesis_id) -> list[EvidenceOut]:
         )
         for row in rows
     ]
+
+
+def _engines(session: Session) -> list[EngineStateOut]:
+    """Состояние движков: что посчитано и чего не хватает для расчёта.
+
+    Разделение важнее, чем кажется. «Движок не написан» и «движок написан,
+    но кормить его нечем» выглядят снаружи одинаково — пустым экраном, — а
+    требуют совершенно разного: первое работы, второе проверки условий
+    использования источника. Без этого списка владелец не знает, что
+    именно он может сделать сегодня.
+    """
+    feeds: dict[str, list[str]] = {}
+    blocked: dict[str, list[str]] = {}
+    live = {
+        row.source_id
+        for row in session.execute(select(ResearchSource)).scalars()
+        if row.enabled and row.terms_review_due_at is not None
+    }
+    for spec in ALL_SOURCES:
+        for key in spec.feeds:
+            feeds.setdefault(key, []).append(spec.source_id)
+            if spec.source_id not in live:
+                blocked.setdefault(key, []).append(spec.source_id)
+
+    result: list[EngineStateOut] = []
+    for engine in ENGINES:
+        key = engine.STRATEGY_KEY
+        sources = sorted(feeds.get(key, ()))
+        missing = sorted(blocked.get(key, ()))
+        result.append(
+            EngineStateOut(
+                key=key,
+                version=engine.STRATEGY_VERSION,
+                # Движок написан и проверен всегда: сюда попадают только
+                # реализованные. «Готов» здесь про код, а не про данные.
+                ready=True,
+                feeds_from=sources,
+                blocked_by=missing,
+            )
+        )
+    return result
 
 
 def _out(session: Session, row: ResearchHypothesis) -> HypothesisOut:
@@ -219,8 +274,12 @@ def hypotheses(
         else:
             reason = "источники подключены, гипотез пока нет"
 
+    engines = _engines(session)
     return ResearchResponse(
         status=ResearchStatusOut(
+            engines=engines,
+            engines_ready=sum(1 for e in engines if e.ready),
+            engines_fed=sum(1 for e in engines if e.ready and not e.blocked_by),
             total_sources=state["total"],
             free_route=state["free_route"],
             awaiting_terms_check=state["awaiting_terms_check"],
@@ -252,7 +311,11 @@ def sync_sources(session: Session = Depends(get_db)) -> ResearchStatusOut:
     sync_registry(session, now=datetime.now(UTC))
     session.commit()
     state = readiness(session)
+    engines = _engines(session)
     return ResearchStatusOut(
+        engines=engines,
+        engines_ready=sum(1 for e in engines if e.ready),
+        engines_fed=sum(1 for e in engines if e.ready and not e.blocked_by),
         total_sources=state["total"],
         free_route=state["free_route"],
         awaiting_terms_check=state["awaiting_terms_check"],

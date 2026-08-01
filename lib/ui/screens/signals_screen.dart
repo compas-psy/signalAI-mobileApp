@@ -67,6 +67,8 @@ class _SignalsScreenState extends State<SignalsScreen> {
         const _Explainer(),
         const SizedBox(height: 12),
         if (state.hypotheses.isEmpty) ...[
+          _Engines(state: state),
+          const SizedBox(height: 12),
           _Sources(state: state),
         ] else ...[
           for (final h in state.hypotheses) ...[
@@ -74,6 +76,8 @@ class _SignalsScreenState extends State<SignalsScreen> {
             const SizedBox(height: 10),
           ],
           const SizedBox(height: 2),
+          _Engines(state: state),
+          const SizedBox(height: 12),
           _Sources(state: state),
         ],
       ],
@@ -284,6 +288,42 @@ class _Score extends StatelessWidget {
             ),
             Text(label, style: T.body(10, color: C.muted)),
             Text(hint, style: T.body(9, color: C.faint)),
+          ],
+        ),
+      );
+}
+
+/// Девять движков и чего каждому не хватает.
+///
+/// Блок отвечает на вопрос, который иначе останется без ответа: пустой
+/// экран — это «система не дописана» или «система готова, но её нечем
+/// кормить»? Разница определяет, что делать дальше, и потому показывается
+/// числом, а не подразумевается.
+class _Engines extends StatelessWidget {
+  const _Engines({required this.state});
+
+  final ResearchState state;
+
+  @override
+  Widget build(BuildContext context) => SectionCard(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const SectionLabel('Движки'),
+            const SizedBox(height: 6),
+            Text(
+              'Написано и проверено ${state.enginesReady} из '
+              '${state.engines.length}; данные есть у ${state.enginesFed}.',
+              style: T.body(11.5, color: C.text, height: 1.45),
+            ),
+            const SizedBox(height: 10),
+            for (final engine in state.engines)
+              KeyValueRow(
+                name: engine.title,
+                value: engine.fed ? 'считает' : 'ждёт источников',
+                valueStyle: T.mono(11, color: engine.fed ? C.green : C.warning),
+                showDivider: engine != state.engines.last,
+              ),
           ],
         ),
       );

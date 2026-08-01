@@ -248,6 +248,61 @@ class Hypothesis {
       };
 }
 
+/// Движок ранних сигналов и то, чем его кормить.
+///
+/// Разделение важнее, чем кажется. «Движок не написан» и «движок написан,
+/// но кормить его нечем» выглядят снаружи одинаково — пустым экраном, — а
+/// требуют разного: первое работы, второе проверки условий использования
+/// источника. Владелец должен видеть, что именно он может сделать сегодня.
+class EngineState {
+  const EngineState({
+    required this.key,
+    this.version = '',
+    this.ready = true,
+    this.feedsFrom = const [],
+    this.blockedBy = const [],
+  });
+
+  final String key;
+  final String version;
+
+  /// Написан и проверен. Это про код, а не про данные.
+  final bool ready;
+
+  final List<String> feedsFrom;
+
+  /// Источники, которых не хватает для расчёта.
+  final List<String> blockedBy;
+
+  bool get fed => ready && blockedBy.isEmpty;
+
+  /// Человеческое название движка.
+  String get title => switch (key) {
+        'WCQ' => 'Качество роста',
+        'DEMAND' => 'Конечный спрос',
+        'HIRING' => 'Структура найма',
+        'SPREAD' => 'Маржинальный спред',
+        'SUPPLIER' => 'Разведка по поставщикам',
+        'BUDGET' => 'Бюджетный импульс',
+        'CAPACITY' => 'Дефицит мощности',
+        'CRYPTO_ECON' => 'Экономика протокола',
+        'CRYPTO_SUPPLY' => 'Давление эмиссии',
+        _ => key,
+      };
+
+  factory EngineState.fromJson(Map<String, dynamic> j) => EngineState(
+        key: j['key'] as String? ?? '',
+        version: j['version'] as String? ?? '',
+        ready: j['ready'] as bool? ?? true,
+        feedsFrom: [
+          for (final s in j['feeds_from'] as List<dynamic>? ?? const []) '$s',
+        ],
+        blockedBy: [
+          for (final s in j['blocked_by'] as List<dynamic>? ?? const []) '$s',
+        ],
+      );
+}
+
 /// Источник, из которого сбор невозможен, и почему.
 class BlockedSource {
   const BlockedSource({
@@ -281,6 +336,9 @@ class BlockedSource {
 class ResearchState {
   const ResearchState({
     this.hypotheses = const [],
+    this.engines = const [],
+    this.enginesReady = 0,
+    this.enginesFed = 0,
     this.totalSources = 0,
     this.freeRoute = 0,
     this.awaitingTermsCheck = const [],
@@ -293,6 +351,9 @@ class ResearchState {
 
   const ResearchState.unavailable(String reason)
       : hypotheses = const [],
+        engines = const [],
+        enginesReady = 0,
+        enginesFed = 0,
         totalSources = 0,
         freeRoute = 0,
         awaitingTermsCheck = const [],
@@ -303,6 +364,16 @@ class ResearchState {
         unavailableReason = reason;
 
   final List<Hypothesis> hypotheses;
+
+  /// Девять движков ТЗ и состояние каждого.
+  final List<EngineState> engines;
+
+  /// Сколько написано и проверено.
+  final int enginesReady;
+
+  /// Сколько из них имеют все нужные источники.
+  final int enginesFed;
+
   final int totalSources;
 
   /// Сколько источников имеет бесплатный официальный маршрут.
@@ -327,6 +398,12 @@ class ResearchState {
         for (final h in j['hypotheses'] as List<dynamic>? ?? const [])
           Hypothesis.fromJson(h as Map<String, dynamic>),
       ],
+      engines: [
+        for (final e in status['engines'] as List<dynamic>? ?? const [])
+          EngineState.fromJson(e as Map<String, dynamic>),
+      ],
+      enginesReady: (status['engines_ready'] as num?)?.toInt() ?? 0,
+      enginesFed: (status['engines_fed'] as num?)?.toInt() ?? 0,
       totalSources: (status['total_sources'] as num?)?.toInt() ?? 0,
       freeRoute: (status['free_route'] as num?)?.toInt() ?? 0,
       awaitingTermsCheck: [

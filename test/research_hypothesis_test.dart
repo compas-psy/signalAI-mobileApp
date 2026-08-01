@@ -201,4 +201,41 @@ void main() {
       expect(state.unavailableReason, 'сеть недоступна');
     });
   });
+
+  group('Готовность движков', () {
+    test('«не написан» и «нечем кормить» — разные состояния', () {
+      // Пустой экран выглядит одинаково в обоих случаях, а требует
+      // разного: первое — работы, второе — проверки условий источника.
+      final state = ResearchState.fromJson({
+        'status': {
+          'engines': [
+            {'key': 'WCQ', 'version': '1.0.0', 'ready': true,
+             'feeds_from': ['fns_open_data'], 'blocked_by': ['fns_open_data']},
+            {'key': 'DEMAND', 'version': '1.0.0', 'ready': true,
+             'feeds_from': ['rosstat'], 'blocked_by': const []},
+          ],
+          'engines_ready': 2,
+          'engines_fed': 1,
+        },
+        'hypotheses': const [],
+      });
+
+      expect(state.enginesReady, 2);
+      expect(state.enginesFed, 1);
+      expect(state.engines.first.fed, isFalse);
+      expect(state.engines.first.blockedBy, ['fns_open_data']);
+      expect(state.engines.last.fed, isTrue);
+    });
+
+    test('у каждого движка есть человеческое название', () {
+      const keys = [
+        'WCQ', 'DEMAND', 'HIRING', 'SPREAD', 'SUPPLIER',
+        'BUDGET', 'CAPACITY', 'CRYPTO_ECON', 'CRYPTO_SUPPLY',
+      ];
+      for (final key in keys) {
+        final engine = EngineState(key: key);
+        expect(engine.title, isNot(key), reason: key);
+      }
+    });
+  });
 }
