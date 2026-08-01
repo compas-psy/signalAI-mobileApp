@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from decimal import Decimal
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import Field
@@ -26,6 +27,7 @@ from sqlalchemy.orm import Session
 from ...db import get_db
 from ...models import HypothesisEvidence, ResearchHypothesis, ResearchSource
 from ...models.enums import HypothesisState
+from ...research import reach
 from ...research.engines import ENGINES
 from ...research.policy import CollectionDenied, authorize
 from ...research.sources import ALL_SOURCES, CONNECT_ORDER, readiness, sync_registry
@@ -317,14 +319,32 @@ def hypotheses(
     )
 
 
+class HostReachOut(ApiModel):
+    """Один хост источника."""
+
+    host: str = ""
+    #: Выпустила ли сеть сервера. Это и есть вопрос про брандмауэр.
+    network_open: bool = False
+    #: Ответил ли источник по HTTP. Любой код — это ответ.
+    answered: bool = False
+    status: int | None = None
+    detail: str = ""
+
+
 class ReachabilityOut(ApiModel):
-    """Дошёл ли запрос до источника."""
+    """Дошёл ли запрос до источника.
+
+    `reachable` — про сеть, а не про здоровье источника: молчащий сервер
+    при открытом исходящем доступе достижим. Слить их в один флаг значило
+    бы посылать владельца править брандмауэр из-за чужого простоя.
+    """
 
     source_id: str
     host: str = ""
     reachable: bool = False
     status: int | None = None
     detail: str = ""
+    hosts: list[HostReachOut] = []
 
 
 @router.get("/sources/reachability", response_model=list[ReachabilityOut])
@@ -342,9 +362,10 @@ def reachability(session: Session = Depends(get_db)) -> list[ReachabilityOut]:
     """
     result: list[ReachabilityOut] = []
     for spec in ALL_SOURCES:
-        if not spec.base_url:
+        urls = tuple(u for u in (spec.base_url, *spec.extra_urls) if u)
+        if not urls:
             continue
-        host = spec.base_url.split("//")[-1].split("/")[0]
+        host = urlsplit(urls[0]).hostname or ""
         try:
             authorize(session, spec.source_id, {"fetch"}, now=datetime.now(UTC))
         except CollectionDenied as denied:
@@ -357,50 +378,49 @@ def reachability(session: Session = Depends(get_db)) -> list[ReachabilityOut]:
                 )
             )
             continue
-        result.append(_probe(spec.source_id, spec.base_url, host))
+        result.append(_probe(spec.source_id, urls))
     session.commit()
     return result
 
 
-def _probe(source_id: str, url: str, host: str) -> ReachabilityOut:
-    """Один короткий запрос к источнику.
+def _probe(source_id: str, urls: tuple[str, ...]) -> ReachabilityOut:
+    """Пройти по всем хостам источника и свести ответ к одной строке.
 
-    HEAD и короткий тайм-аут: цель — узнать, пускает ли сеть, а не забрать
-    данные. Долгая проба на недоступном хосте вешает весь ответ.
+    Сводка берёт худшее: источник доступен ровно настолько, насколько
+    доступен его самый закрытый хост. У ФНС описания наборов и сами файлы
+    лежат на разных хостах, и «один из трёх открыт» — это не «открыт».
     """
-    import urllib.error
-    import urllib.request
+    probes = [reach.probe(url) for url in urls]
+    closed = [p for p in probes if p.blocked_by_network]
+    silent = [p for p in probes if p.network_open and not p.answered]
 
-    request = urllib.request.Request(url, method="HEAD")
-    try:
-        with urllib.request.urlopen(request, timeout=8) as response:
-            return ReachabilityOut(
-                source_id=source_id,
-                host=host,
-                reachable=True,
-                status=response.status,
-                detail="источник отвечает",
+    if closed:
+        detail = "; ".join(f"{p.host}: {p.detail}" for p in closed)
+    elif silent:
+        detail = "; ".join(f"{p.host}: {p.detail}" for p in silent)
+    else:
+        detail = "; ".join(f"{p.host}: {p.detail}" for p in probes)
+
+    return ReachabilityOut(
+        source_id=source_id,
+        host=probes[0].host,
+        # Про сеть, а не про здоровье источника: молчащий сервер при
+        # открытом доступе достижим, и звать владельца к брандмауэру
+        # из-за чужого простоя — ложная тревога.
+        reachable=not closed,
+        status=probes[0].status,
+        detail=detail[:600],
+        hosts=[
+            HostReachOut(
+                host=p.host,
+                network_open=p.network_open,
+                answered=p.answered,
+                status=p.status,
+                detail=p.detail,
             )
-    except urllib.error.HTTPError as error:
-        # Ответ есть — сеть пускает. Код может быть любым: часть источников
-        # не принимает HEAD, и это не проблема доступности.
-        return ReachabilityOut(
-            source_id=source_id,
-            host=host,
-            reachable=True,
-            status=error.code,
-            detail=f"сеть пускает, источник ответил {error.code}",
-        )
-    except Exception as error:  # noqa: BLE001 — причина важнее типа
-        return ReachabilityOut(
-            source_id=source_id,
-            host=host,
-            reachable=False,
-            detail=(
-                f"{type(error).__name__}: {error}. Проверьте исходящий HTTPS "
-                f"с сервера к {host}"
-            )[:400],
-        )
+            for p in probes
+        ],
+    )
 
 
 @router.post("/sources/sync", response_model=ResearchStatusOut)

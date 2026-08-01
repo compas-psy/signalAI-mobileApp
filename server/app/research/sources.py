@@ -84,6 +84,11 @@ class SourceSpec:
     license_status: LicenseStatus
     note: str
     base_url: str = ""
+    # Остальные хосты источника, кроме базового. У ФНС описания наборов, их
+    # структура и сами файлы лежат на разных хостах, и открытый доступ к
+    # одному ничего не говорит о двух других. Проба по базовому адресу дала
+    # бы ответ про четверть маршрута, выглядящий как ответ про весь.
+    extra_urls: tuple[str, ...] = ()
     auth_type: str = "none"
     expected_frequency: str = ""
     source_timezone: str = "Europe/Moscow"
@@ -154,6 +159,10 @@ RUSSIA_FREE: tuple[SourceSpec, ...] = (
         "представление. Перепубликация сырого массива отключена решением "
         "продукта, хотя условия её допускают",
         base_url="https://file.nalog.ru/opendata/",
+        extra_urls=(
+            "https://www.nalog.gov.ru/opendata/",
+            "https://data.nalog.ru/",
+        ),
         expected_frequency="yearly",
         allowed_operations=dict(_READ),
         # Финансовое состояние поставщика — да; контракты, исполнение, авансы
