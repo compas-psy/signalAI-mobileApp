@@ -263,6 +263,36 @@ def _first(element: ElementTree.Element, tags: tuple[str, ...]) -> str | None:
     return None
 
 
+def _metric(
+    node: ElementTree.Element, *, dataset: str, period_end: date
+) -> EntityMetric | None:
+    """Показатель одной записи — или ничего.
+
+    Вынесено отдельно, потому что разбор идёт двумя путями: целиком из
+    памяти для маленьких файлов и потоком для стомегабайтных архивов. Две
+    копии этой логики разошлись бы, и разошлись бы молча.
+    """
+    inn = _own(node, _INN_TAGS)
+    if not inn:
+        return None
+    value = _decimal(_first(node, _VALUE_TAGS.get(dataset, ())))
+    secondary = (
+        _decimal(_first(node, _EXPENSE_TAGS))
+        if dataset == "revenue_expenses"
+        else None
+    )
+    if value is None and secondary is None:
+        return None
+    return EntityMetric(
+        inn=inn.strip(),
+        dataset=dataset,
+        period_end=period_end,
+        value=value,
+        secondary_value=secondary,
+        unit="people" if dataset == "headcount" else "RUB",
+    )
+
+
 def parse_xml(
     data: bytes, *, dataset: str, period_end: date
 ) -> list[EntityMetric]:
@@ -283,27 +313,9 @@ def parse_xml(
     # всему поддереву тоже не годится — корень файла тогда становится ещё
     # одной записью с числами первой попавшейся компании.
     for node in root.iter():
-        inn = _own(node, _INN_TAGS)
-        if not inn:
-            continue
-        value = _decimal(_first(node, value_tags))
-        secondary = (
-            _decimal(_first(node, _EXPENSE_TAGS))
-            if dataset == "revenue_expenses"
-            else None
-        )
-        if value is None and secondary is None:
-            continue
-        result.append(
-            EntityMetric(
-                inn=inn.strip(),
-                dataset=dataset,
-                period_end=period_end,
-                value=value,
-                secondary_value=secondary,
-                unit="people" if dataset == "headcount" else "RUB",
-            )
-        )
+        metric = _metric(node, dataset=dataset, period_end=period_end)
+        if metric is not None:
+            result.append(metric)
     return result
 
 
@@ -328,6 +340,56 @@ def parse(
                 result.extend(
                     parse_xml(handle.read(), dataset=dataset, period_end=period_end)
                 )
+    return result
+
+
+def parse_archive(
+    path, *, dataset: str, period_end: date
+) -> list[EntityMetric]:
+    """Разобрать архив с диска, не читая его в память целиком.
+
+    Живой прогон дал размеры: 104, 98, 218 и 75 мегабайт. На сервере с
+    восемью гигабайтами, где рядом база и модель, `BytesIO` на таком
+    архиве — не замедление сбора, а выселение базы.
+
+    `zipfile` умеет читать члены по одному прямо из файла, и распакованный
+    XML тоже отдаётся потоком: у ФНС внутри архива лежат части по сотне
+    мегабайт, и разворачивать их целиком незачем.
+    """
+    result: list[EntityMetric] = []
+    with zipfile.ZipFile(path) as archive:
+        for name in archive.namelist():
+            if not name.lower().endswith(".xml"):
+                continue
+            with archive.open(name) as handle:
+                result.extend(
+                    parse_stream(handle, dataset=dataset, period_end=period_end)
+                )
+    return result
+
+
+def parse_stream(handle, *, dataset: str, period_end: date) -> list[EntityMetric]:
+    """Разобрать XML по мере чтения.
+
+    `iterparse` с очисткой разобранных узлов: без неё дерево целиком
+    остаётся в памяти, и выигрыш от потокового чтения теряется на
+    последнем шаге.
+    """
+    result: list[EntityMetric] = []
+    try:
+        for _, element in ElementTree.iterparse(handle, events=("end",)):
+            metric = _metric(element, dataset=dataset, period_end=period_end)
+            if metric is not None:
+                result.append(metric)
+                # Разобранный узел больше не нужен. Без очистки дерево
+                # остаётся в памяти целиком, и выигрыш от потокового
+                # чтения теряется на последнем шаге.
+                element.clear()
+    except ElementTree.ParseError:
+        # Оборванный архив разбирается до места обрыва. Отдать то, что
+        # прочиталось, честнее, чем потерять всё из-за хвоста, — а
+        # неполнота видна по количеству записей.
+        return result
     return result
 
 

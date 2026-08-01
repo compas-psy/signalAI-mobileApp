@@ -134,13 +134,11 @@ RUSSIA_FREE: tuple[SourceSpec, ...] = (
         # Несколько кандидатов, а не один: раскладка сервиса данных должна
         # быть установлена прогоном, а не угадана. Собранный адрес
         # `/dataservice/data?dataset=...` отвечал 501 на все четыре набора.
-        catalogue_urls=(
-            "https://www.cbr.ru/dataservice/datasets",
-            "https://www.cbr.ru/dataservice/measures",
-            "https://www.cbr.ru/dataservice/publications",
-            "https://www.cbr.ru/dataservice/swagger/v1/swagger.json",
-            "https://www.cbr.ru/development/SXML/",
-        ),
+        # Прогон установил: publications отвечает 200 и JSON, остальные
+        # кандидаты — 501 и 404. Оставлен работающий; держать в реестре
+        # проверенно-мёртвые адреса значит каждый деплой заново
+        # доказывать, что они мертвы.
+        catalogue_urls=("https://www.cbr.ru/dataservice/publications",),
         expected_frequency="monthly",
         allowed_operations=dict(_READ),
         # Мониторинг предприятий закрывает спрос целиком. Мощности — частично:
@@ -174,19 +172,19 @@ RUSSIA_FREE: tuple[SourceSpec, ...] = (
         "коммерчески. Обязательны ссылка на ФНС, законная цель и достоверное "
         "представление. Перепубликация сырого массива отключена решением "
         "продукта, хотя условия её допускают",
-        base_url="https://file.nalog.ru/opendata/",
+        # Адрес файла, а не каталога. Файловый хост ФНС не делает листинга
+        # директорий: на `/opendata/` он держит соединение до таймаута, и
+        # проба по каталогу три прогона подряд сообщала «источник молчит»
+        # про хост, который на файлы отвечает за девяносто миллисекунд.
+        base_url="https://file.nalog.ru/opendata/reestrod.csv",
         extra_urls=(
             "https://www.nalog.gov.ru/opendata/",
-            "https://data.nalog.ru/",
+            "https://data.nalog.ru/opendata/",
         ),
         # Каталог отвечает 200, а собранные имена файлов — 404. Значит
         # раскладку надо прочитать: наборы ФНС нумеруются идентификатором
         # вида «ИНН-код», а дата выпуска входит в имя файла.
-        catalogue_urls=(
-            "https://www.nalog.gov.ru/opendata/",
-            "https://data.nalog.ru/opendata/",
-            "https://file.nalog.ru/opendata/7707329152-revexp/",
-        ),
+        catalogue_urls=("https://www.nalog.gov.ru/opendata/",),
         expected_frequency="yearly",
         allowed_operations=dict(_READ),
         # Финансовое состояние поставщика — да; контракты, исполнение, авансы
