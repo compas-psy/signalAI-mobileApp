@@ -57,6 +57,20 @@ object Notifications {
         return true
     }
 
+    /**
+     * Убрать уведомление из шторки.
+     *
+     * Нужно потому, что система хранит показанное до тех пор, пока его не
+     * смахнут руками. Идея, которая уже отработала, продолжает висеть и
+     * звать открыть себя — а открывать там нечего. Пуш при этом врёт не
+     * содержанием, а самим фактом присутствия: он утверждает, что есть
+     * повод действовать.
+     */
+    fun cancel(context: Context, id: Int): Boolean {
+        manager(context).cancel(id)
+        return true
+    }
+
     /** Уведомление, с которым живёт foreground-сервис. */
     fun ongoing(context: Context, text: String): Notification =
         build(context, MONITOR, "SignalAI следит за рынком", text)

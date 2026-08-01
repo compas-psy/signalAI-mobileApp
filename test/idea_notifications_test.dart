@@ -15,7 +15,12 @@ import 'package:signalai/state/app_controller.dart';
 
 /// Уведомление о событии, у которого идеи нет.
 MonitorNotice closedTradeNotice() =>
-    (title: 'BTCUSDT: позиция без стопа', body: 'Выставьте стоп', payload: '');
+    (
+      title: 'BTCUSDT: позиция без стопа',
+      body: 'Выставьте стоп',
+      payload: '',
+      key: 'naked:BTCUSDT',
+    );
 
 void main() {
   Map<String, dynamic> detail({String status = 'TRIGGERED'}) => {

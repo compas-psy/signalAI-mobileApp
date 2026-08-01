@@ -43,24 +43,38 @@ abstract interface class MonitorTarget {
 /// Адрес — часть уведомления, а не необязательное дополнение. Пуш без него
 /// приводит владельца на тот экран, где он был вчера, и заставляет искать
 /// идею руками, то есть перестаёт работать ровно там, ради чего послан.
-typedef MonitorNotice = ({String title, String body, String payload});
+/// Уведомление вместе с тем, чем оно опознаётся.
+///
+/// [key] нужен затем, что пуш надо не только показать, но и снять. Без
+/// устойчивого ключа связи между идеей и её уведомлением не существует, и
+/// отработавшая идея висит в шторке до тех пор, пока её не смахнут руками.
+typedef MonitorNotice = ({String title, String body, String payload, String key});
 
 /// Итог одного прогона.
 class CycleReport {
   const CycleReport({
     required this.notices,
     required this.summary,
+    this.withdrawn = const [],
     this.skipped = false,
     this.error,
   });
 
   const CycleReport.skipped()
       : notices = const [],
+        withdrawn = const [],
         summary = 'Приложение открыто — считает оно',
         skipped = true,
         error = null;
 
   final List<MonitorNotice> notices;
+
+  /// Ключи уведомлений, которые пора убрать из шторки.
+  ///
+  /// Отдельно от [notices] намеренно: снятие — не побочный эффект показа.
+  /// Идея, которая отработала и нового повода не создала, обязана исчезать
+  /// сама, иначе пуш врёт не текстом, а фактом присутствия.
+  final List<String> withdrawn;
 
   /// Строка для служебного уведомления постоянного режима.
   final String summary;
@@ -168,6 +182,7 @@ class BackgroundCycle {
     };
 
     final notices = <MonitorNotice>[];
+    final withdrawn = <String>[];
     String? error;
     try {
       await lock.heartbeat(StateLock.monitor);
@@ -180,6 +195,9 @@ class BackgroundCycle {
       notices.addAll(await _positions(state));
       notices.addAll(await _protectPositions(state));
       notices.addAll(await _investNightly(state));
+      // Снятие идёт после показа: идея, которая только что закрылась,
+      // сначала сообщает об этом, и лишь потом уходит её прежний пуш.
+      withdrawn.addAll(_stale(digest, state));
     } on Object catch (e) {
       // Фон обязан пережить любой отказ: сети может не быть вовсе, а сервис
       // должен дожить до следующего часа и попробовать снова.
@@ -190,7 +208,12 @@ class BackgroundCycle {
 
     state.lastRun = now;
     state.lastError = error;
-    return CycleReport(notices: notices, summary: _summary(error), error: error);
+    return CycleReport(
+      notices: notices,
+      withdrawn: withdrawn,
+      summary: _summary(error),
+      error: error,
+    );
   }
 
   /// Закрылся ли новый часовой бар с прошлого прогона.
@@ -218,6 +241,7 @@ class BackgroundCycle {
         // Идея за сделкой есть не всегда: журнал ведёт и скринер на
         // устройстве. Нет — уведомление просто открывает приложение.
         payload: trade.signalId.isEmpty ? '' : 'idea:${trade.signalId}',
+        key: 'trade:${trade.id}',
       ));
     }
     state._trim(state.notifiedTrades);
@@ -229,7 +253,7 @@ class BackgroundCycle {
     for (final signal in digest.signals) {
       if (signal.score < minPushScore) continue;
       // Ключ включает вход: та же идея с переставленным уровнем — новая идея.
-      final key = '${signal.symbol}@${signal.entry}';
+      final key = 'signal:${signal.symbol}@${signal.entry}';
       if (!state.notifiedSignals.add(key)) continue;
       notices.add(signalNotice(signal));
     }
@@ -237,12 +261,37 @@ class BackgroundCycle {
     return notices;
   }
 
+  /// Пуши по идеям, которых больше нет среди живых.
+  ///
+  /// Идея уходит из выдачи, когда отработала, протухла или перестала
+  /// проходить допуск. Её уведомление при этом остаётся в шторке навсегда:
+  /// система хранит показанное, пока его не смахнут руками. Владелец
+  /// открывает такой пуш и не находит там ничего — то есть пуш врёт не
+  /// содержанием, а самим фактом присутствия.
+  List<String> _stale(DailyDigest digest, MonitorState state) {
+    final live = {
+      for (final signal in digest.signals) 'signal:${signal.symbol}@${signal.entry}',
+    };
+    final stale = state.notifiedSignals
+        .where((key) => key.startsWith('signal:') && !live.contains(key))
+        .toList();
+    // Ключ забывается вместе с уведомлением: если идея вернётся, о ней
+    // нужно сообщить заново, а не промолчать из-за старой отметки.
+    state.notifiedSignals.removeAll(stale);
+    return stale;
+  }
+
   /// Ночной пересчёт «Инвеста» — раз в сутки, дедупликация как у сигналов.
   Future<List<MonitorNotice>> _investNightly(MonitorState state) async {
     final notices = <MonitorNotice>[];
     for (final notice in await target.investNightly()) {
       if (!state.notifiedSignals.add('invest:${notice.title}')) continue;
-      notices.add((title: notice.title, body: notice.body, payload: ''));
+      notices.add((
+        title: notice.title,
+        body: notice.body,
+        payload: '',
+        key: 'invest:${notice.title}',
+      ));
     }
     return notices;
   }
@@ -257,6 +306,7 @@ class BackgroundCycle {
             title: '$symbol: позиции на бирже больше нет',
             body: 'Проверьте историю сделок',
             payload: '',
+            key: 'position:$symbol',
           ),
     ];
     state.knownPositions
@@ -289,6 +339,7 @@ class BackgroundCycle {
             body: 'Приложение её не открывало — уровень защиты неизвестен. '
                 'Выставьте стоп сами.',
             payload: '',
+            key: 'naked:${position.symbol}',
           ));
         }
         continue;
@@ -306,6 +357,7 @@ class BackgroundCycle {
           title: '${position.symbol}: защита восстановлена',
           body: 'Стоп выставлен заново на ${_price(planned)}.',
           payload: '',
+          key: 'stop:${position.symbol}',
         ));
         continue;
       }
@@ -318,6 +370,7 @@ class BackgroundCycle {
           body: 'Выставить защиту не удалось $failures раза подряд. '
               'Закройте позицию или поставьте стоп вручную.',
           payload: '',
+          key: 'naked:${position.symbol}',
         ));
       }
     }
@@ -372,6 +425,7 @@ MonitorNotice ideaNotice(Idea idea, {bool armed = false}) {
       title: head,
       body: '${idea.strategy.label}. Плана пока нет — открыть разбор.',
       payload: payload,
+      key: 'idea:${idea.id}',
     );
   }
   final decimals = _planDecimals(plan);
@@ -383,6 +437,7 @@ MonitorNotice ideaNotice(Idea idea, {bool armed = false}) {
         'R:R ${plan.rrToSecondTarget.toStringAsFixed(1).replaceAll('.', ',')}. '
         '${idea.strategy.label}.',
     payload: payload,
+    key: 'idea:${idea.id}',
   );
 }
 
@@ -406,4 +461,7 @@ MonitorNotice signalNotice(TradingSignal signal) => (
           'SL ${signal.stopLoss.toStringAsFixed(signal.priceDecimals)} · '
           'R:R ${signal.riskReward}. Открыть SignalAI, чтобы посмотреть разбор.',
       payload: 'idea:${signal.id}',
+      // Ключ включает вход: та же бумага с переставленным уровнем — другая
+      // идея, и снимать вместе с ней прежний пуш было бы неверно.
+      key: 'signal:${signal.symbol}@${signal.entry}',
     );

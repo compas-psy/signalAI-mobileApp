@@ -134,6 +134,39 @@ class NativeBridge {
   /// [payload] — что открыть по нажатию: идентификатор идеи. Без него пуш
   /// приводит владельца на тот экран, где он был вчера, и заставляет искать
   /// идею руками — то есть перестаёт работать ровно там, ради чего послан.
+  /// Идентификатор уведомления по идее.
+  ///
+  /// Стабильный, а не порядковый. Порядковый означал две беды сразу:
+  /// повторное уведомление об одной идее ложится рядом вместо замены, и
+  /// снять его потом нечем — связи между идеей и её пушем не существует.
+  static int noticeId(String ideaId) {
+    if (ideaId.isEmpty) return 500;
+    var hash = 7;
+    for (final unit in ideaId.codeUnits) {
+      hash = (hash * 31 + unit) & 0x7fffffff;
+    }
+    return 1000 + hash % 9000;
+  }
+
+  /// Убрать уведомление из шторки.
+  ///
+  /// Система хранит показанное, пока его не смахнут руками. Отработавшая
+  /// идея продолжает висеть и звать открыть себя — а открывать там нечего.
+  /// Врёт при этом не текст, а сам факт присутствия: пуш утверждает, что
+  /// есть повод действовать.
+  Future<bool> cancelNotice(String ideaId) async {
+    try {
+      return await _channel.invokeMethod<bool>('cancelNotification', {
+            'id': noticeId(ideaId),
+          }) ??
+          false;
+    } on PlatformException {
+      return false;
+    } on MissingPluginException {
+      return false;
+    }
+  }
+
   Future<bool> notify({
     required String title,
     required String body,

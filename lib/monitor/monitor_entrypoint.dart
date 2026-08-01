@@ -34,7 +34,6 @@ Future<void> signalaiMonitorMain() async {
   const bridge = NativeBridge();
 
   final mode = await _mode();
-  var notificationId = 500;
 
   while (true) {
     final state = await _loadState(store);
@@ -54,15 +53,22 @@ Future<void> signalaiMonitorMain() async {
       await _saveState(store, state);
 
       for (final notice in report.notices) {
+        // Идентификатор выводится из ключа, а не из счётчика. Счётчик
+        // означал две беды сразу: повторное уведомление об одной идее
+        // ложилось рядом вместо замены, и снять его потом было нечем —
+        // связи между идеей и её пушем не существовало.
         await bridge.notify(
-          id: notificationId++,
+          id: NativeBridge.noticeId(notice.key),
           title: notice.title,
           body: notice.body,
           payload: notice.payload,
         );
-        // Идентификаторы не должны расти бесконечно: система хранит их
-        // пожизненно, а нам нужен только различимый набор.
-        if (notificationId > 599) notificationId = 500;
+      }
+      // Отработавшие идеи уходят из шторки сами. Иначе пуш врёт не
+      // текстом, а фактом присутствия: он утверждает, что есть повод
+      // действовать, когда действовать уже не по чему.
+      for (final key in report.withdrawn) {
+        await bridge.cancelNotice(key);
       }
       await _report('${report.summary} · ${pace.reason}');
     } else {
