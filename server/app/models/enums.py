@@ -228,3 +228,84 @@ class SkipReason(StrEnum):
     TECHNICAL = "TECHNICAL"
     PSYCHOLOGICAL = "PSYCHOLOGICAL"
     OTHER = "OTHER"
+
+
+# ── Исследовательский контур ранних сигналов ────────────────────────────────
+#
+# Отдельные перечисления, а не переиспользование торговых: состояние идеи
+# отвечает на вопрос «пора ли входить», состояние гипотезы — «доказано ли
+# утверждение». Общий тип означал бы, что где-то в коде эти два вопроса
+# однажды перепутают.
+
+
+class LicenseStatus(StrEnum):
+    """Правовой режим источника (ТЗ Early Signals §5.2).
+
+    ``UNKNOWN`` — не «пока не заполнили», а полноценный запрет: ТЗ §2.1
+    требует fail-closed, и непроверенный источник блокируется так же
+    надёжно, как прямо запрещённый.
+    """
+
+    APPROVED = "approved"
+    REQUIRES_CONTRACT = "requires_contract"
+    MANUAL_ONLY = "manual_only"
+    PROHIBITED = "prohibited"
+    UNKNOWN = "unknown"
+
+
+class FactLabel(StrEnum):
+    """Чем является утверждение (§16.2).
+
+    Заявление компании о будущем и проверенный факт из отчётности выглядят
+    в тексте одинаково, а стоят разного. Метка не позволяет второму
+    подменить первое.
+    """
+
+    FACT = "fact"
+    MANAGEMENT_CLAIM = "management_claim"
+    ESTIMATE = "estimate"
+    INFERENCE = "inference"
+    ASSUMPTION = "assumption"
+    DATA_GAP = "data_gap"
+
+
+class ResearchDirection(StrEnum):
+    """Направление экономического изменения.
+
+    Не сторона сделки: гипотеза не говорит «покупать» или «продавать»
+    (§16.4). ``POSITIVE`` означает «показатель улучшается», и что с этим
+    делать — решает владелец.
+    """
+
+    POSITIVE = "positive"
+    NEGATIVE = "negative"
+    NEUTRAL = "neutral"
+
+
+class SignalStatus(StrEnum):
+    ACTIVE = "active"
+    SUPERSEDED = "superseded"
+    EXPIRED = "expired"
+
+
+class HypothesisState(StrEnum):
+    """Жизненный цикл гипотезы (§12.7).
+
+    ``DILIGENCE_READY`` — максимум, который система выдаёт: «стоит изучить
+    вручную». Это не «покупать», и следующего состояния за ним нет.
+    """
+
+    OBSERVATION = "observation"
+    EARLY_CANDIDATE = "early_candidate"
+    CONFIRMED = "confirmed_hypothesis"
+    DILIGENCE_READY = "diligence_ready"
+    INVALIDATED = "invalidated"
+    EXPIRED = "expired"
+    REJECTED = "rejected"
+
+
+class EvidenceRole(StrEnum):
+    SUPPORT = "support"
+    CONTRADICT = "contradict"
+    CONTEXT = "context"
+    FALSIFIER = "falsifier"
