@@ -24,6 +24,7 @@
 from __future__ import annotations
 
 import io
+import re
 import zipfile
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -76,15 +77,83 @@ class EntityMetric:
         return self.value is not None
 
 
+# Адрес паспорта набора. Не файла: имя файла содержит дату выпуска и дату
+# версии структуры (`data-20260725-structure-20180110.zip`) и меняется при
+# каждой публикации. Собранный по шаблону адрес выглядит правдоподобно и
+# отвечает 404 — ровно это и показал живой прогон по всем четырём наборам.
+PASSPORTS: dict[str, str] = {
+    "revenue_expenses": "https://www.nalog.gov.ru/opendata/7707329152-revexp/",
+    "headcount": "https://www.nalog.gov.ru/opendata/7707329152-sshr2019/",
+    "paid_taxes": "https://www.nalog.gov.ru/opendata/7707329152-paytax/",
+    "tax_debt": "https://www.nalog.gov.ru/opendata/7707329152-debtam/",
+}
+
+
+def passport_urls(datasets: tuple[str, ...] = tuple(DATASETS)) -> list[RemoteObject]:
+    """Страницы паспортов, с которых начинается сбор."""
+    return [
+        RemoteObject(url=PASSPORTS[name], kind=name)
+        for name in datasets
+        if name in PASSPORTS
+    ]
+
+
+def links_from_passport(html: str, base: str = "") -> dict[str, str]:
+    """Вытащить из паспорта адреса выгрузки и структуры.
+
+    Ищутся не строки таблицы по номеру, а расширения файлов. Номер строки
+    — свойство вёрстки: ведомство переставит поля местами, и разбор по
+    восьмой и десятой строке начнёт молча брать не то. Расширение —
+    свойство самого файла.
+
+    Берётся первое совпадение: паспорт перечисляет версии по убыванию
+    свежести, и первая ссылка — актуальная публикация.
+    """
+    from urllib.parse import urljoin
+
+    found: dict[str, str] = {}
+    for raw in re.findall(r'href=["\']([^"\']+)["\']', html, flags=re.IGNORECASE):
+        url = urljoin(base, raw.strip())
+        lowered = url.lower()
+        if lowered.endswith(".zip") and "data" not in found:
+            found["data"] = url
+        elif lowered.endswith(".xsd") and "structure" not in found:
+            found["structure"] = url
+        elif lowered.endswith(".csv") and "csv" not in found:
+            found["csv"] = url
+    return found
+
+
 def discover(
     datasets: tuple[str, ...] = tuple(DATASETS),
+    passports: dict[str, str] | None = None,
 ) -> list[RemoteObject]:
-    """Наборы, которые предстоит забрать."""
-    return [
-        RemoteObject(url=f"{BASE_URL}/{name}.zip", kind=name)
-        for name in datasets
-        if name in DATASETS
-    ]
+    """Наборы, которые предстоит забрать.
+
+    Без прочитанных паспортов возвращаются сами паспорта: следующий шаг
+    сбора — прочитать их. Возвращать здесь выдуманные имена файлов значило
+    бы обещать план, который не сработает, и узнать об этом только по
+    пустому экрану.
+    """
+    pages = passports or {}
+    result: list[RemoteObject] = []
+    for name in datasets:
+        if name not in DATASETS:
+            continue
+        html = pages.get(name)
+        if html is None:
+            result.append(RemoteObject(url=PASSPORTS[name], kind=f"{name}:passport"))
+            continue
+        links = links_from_passport(html, PASSPORTS[name])
+        # Структура идёт первой намеренно: она маленькая, и если молчит
+        # именно она, дело не в размере выгрузки.
+        if "structure" in links:
+            result.append(
+                RemoteObject(url=links["structure"], kind=f"{name}:structure")
+            )
+        if "data" in links:
+            result.append(RemoteObject(url=links["data"], kind=name))
+    return result
 
 
 def _decimal(raw: str | None) -> Decimal | None:

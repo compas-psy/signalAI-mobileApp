@@ -233,6 +233,43 @@ jobs:
             || echo 'каталоги не прочитаны: смотрите логи api'
           echo
 
+          # Подробная диагностика из контейнера: все фазы поимённо.
+          echo '── диагностика источников (контейнер) ──'
+          curl --fail --silent --show-error --max-time 300 \
+            http://127.0.0.1:8000/api/v1/research/sources/diagnose \
+            || echo 'диагностика не ответила: смотрите логи api'
+          echo
+
+          # Та же проверка с хоста. Различие «на хосте работает, в
+          # контейнере нет» указывает на docker-сеть, DNS или MTU — то
+          # есть на место, куда изнутри контейнера не видно вовсе.
+          #
+          # Формат вывода одинаков для всех проб, чтобы строки можно было
+          # сравнивать глазами, а не пересчитывать.
+          echo '── диагностика с хоста ──'
+          fmt='ip=%{remote_ip} proto=%{http_version} code=%{http_code}'
+          fmt="$fmt ttfb=%{time_starttransfer} type=%{content_type}"
+          fmt="$fmt size=%{size_download} redirects=%{num_redirects}\n"
+          host_probe() {
+            printf '%s  ' "$1"
+            curl --silent --show-error --location --max-time 60 \
+                 --output /dev/null --write-out "$fmt" $2 "$3" \
+              || printf 'curl завершился с ошибкой %s\n' "$?"
+          }
+          host_probe 'цб:publications      ' '' \
+            'https://www.cbr.ru/dataservice/publications'
+          host_probe 'фнс:паспорт revexp   ' '' \
+            'https://www.nalog.gov.ru/opendata/7707329152-revexp/'
+          host_probe 'фнс:паспорт ipv4     ' '--ipv4' \
+            'https://www.nalog.gov.ru/opendata/7707329152-revexp/'
+          host_probe 'фнс:файловый хост    ' '' \
+            'https://file.nalog.ru/opendata/7707329152-revexp/'
+          host_probe 'фнс:файловый ipv4    ' '--ipv4' \
+            'https://file.nalog.ru/opendata/7707329152-revexp/'
+          host_probe 'фнс:файловый http1.1 ' '--http1.1' \
+            'https://file.nalog.ru/opendata/7707329152-revexp/'
+          echo
+
           # Модель критика. Три разных «нет» выглядят снаружи одинаково:
           # не настроена, не отвечает, установлена другая. Последнее
           # коварнее прочих — опечатка в теге неотличима от молчания.

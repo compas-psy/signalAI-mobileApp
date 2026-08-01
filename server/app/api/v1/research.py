@@ -27,7 +27,8 @@ from sqlalchemy.orm import Session
 from ...db import get_db
 from ...models import HypothesisEvidence, ResearchHypothesis, ResearchSource
 from ...models.enums import HypothesisState
-from ...research import adapters, explore, gateway, reach
+from ...research import adapters, explore, gateway, netdiag, reach
+from ...research.adapters import cbr, fns
 from ...research.engines import ENGINES
 from ...research.policy import CollectionDenied, authorize
 from ...research.sources import ALL_SOURCES, CONNECT_ORDER, readiness, sync_registry
@@ -560,6 +561,121 @@ def catalogue(session: Session = Depends(get_db)) -> list[CatalogueOut]:
             )
     session.commit()
     return result
+
+
+class DiagnoseOut(ApiModel):
+    """Подробная проба одного адреса."""
+
+    label: str = ""
+    url: str = ""
+    forced_ipv4: bool = False
+    used_range: bool = False
+    http_version: str = ""
+    resolved_ip: str = ""
+    status: int | None = None
+    content_type: str = ""
+    content_length: str = ""
+    connect_ms: int | None = None
+    ttfb_ms: int | None = None
+    total_ms: int | None = None
+    bytes_read: int = 0
+    redirects: list[str] = []
+    phase: str = ""
+    error: str = ""
+
+
+@router.get("/sources/diagnose", response_model=list[DiagnoseOut])
+def diagnose(session: Session = Depends(get_db)) -> list[DiagnoseOut]:
+    """Довести молчание ФНС до однозначного вывода.
+
+    Порядок проб не произволен, он повторяет разветвление причин.
+
+    ЦБ проверяется по `publications`, а не по корню: корень отвечает 404,
+    и это ничего не значит — сервис данных состоит из именованных методов.
+
+    У ФНС сначала читаются паспорта наборов, из них берутся настоящие
+    адреса. Потом проверяется XSD — он маленький, и если молчит именно он,
+    дело не в размере выгрузки. Потом ZIP потоково: заголовки, первый
+    кусок, закрыть. `Range` идёт отдельной пробой последним: файловые
+    серверы обрабатывают частичный запрос по-разному, и молчание из-за
+    неподдержанного заголовка неотличимо от молчания вообще.
+
+    Каждая проба повторяется с принудительным IPv4. Если у хоста есть
+    AAAA, а маршрут по IPv6 сломан, соединение уходит именно туда и виснет
+    — а выглядит это как молчание сервера.
+    """
+    result: list[DiagnoseOut] = []
+    now = datetime.now(UTC)
+
+    def записать(label: str, detail) -> None:
+        result.append(DiagnoseOut(label=label, **vars(detail)))
+
+    # ── ЦБ ──────────────────────────────────────────────────────────────
+    try:
+        authorize(session, "cbr_data", {"fetch"}, now=now)
+    except CollectionDenied as denied:
+        result.append(DiagnoseOut(label="cbr:publications", error=str(denied.reason)))
+    else:
+        for ipv4 in (False, True):
+            записать(
+                "cbr:publications",
+                netdiag.probe(f"{cbr.BASE_URL}/publications", ipv4=ipv4),
+            )
+
+    # ── ФНС ─────────────────────────────────────────────────────────────
+    try:
+        authorize(session, "fns_open_data", {"fetch"}, now=now)
+    except CollectionDenied as denied:
+        result.append(DiagnoseOut(label="fns", error=str(denied.reason)))
+        session.commit()
+        return result
+
+    pages: dict[str, str] = {}
+    for target in fns.passport_urls():
+        found = explore.fetch(target.url)
+        записать(
+            f"fns:passport:{target.kind}",
+            netdiag.probe(target.url),
+        )
+        if found.status == 200 and not found.error:
+            pages[target.kind] = found.head or ""
+        # Паспорт нужен целиком, а не первыми шестьюстами символами:
+        # ссылки лежат в таблице ниже.
+        полный = _passport_html(target.url)
+        if полный:
+            pages[target.kind] = полный
+
+    for target in fns.discover(passports=pages):
+        if target.kind.endswith(":passport"):
+            continue
+        поток = not target.kind.endswith(":structure")
+        for ipv4 in (False, True):
+            записать(
+                f"fns:{target.kind}",
+                netdiag.probe(target.url, ipv4=ipv4, read_body=поток),
+            )
+        # Диапазон — дополнительная проба, а не основная.
+        записать(
+            f"fns:{target.kind}:range",
+            netdiag.probe(target.url, use_range=True, read_body=False),
+        )
+
+    session.commit()
+    return result
+
+
+def _passport_html(url: str) -> str:
+    """Забрать паспорт целиком, чтобы дотянуться до таблицы со ссылками."""
+    import urllib.request
+
+    request = urllib.request.Request(
+        url, headers={"User-Agent": reach.USER_AGENT, "Accept": "text/html,*/*"}
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=25) as response:
+            return response.read(explore.MAX_BYTES).decode("utf-8", errors="replace")
+    except Exception:  # noqa: BLE001 — недоступный паспорт виден отдельной пробой
+        return ""
 
 
 @router.post("/sources/sync", response_model=ResearchStatusOut)

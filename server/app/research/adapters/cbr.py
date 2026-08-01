@@ -76,12 +76,42 @@ def discover(datasets: tuple[str, ...] = tuple(DATASETS)) -> list[RemoteObject]:
     Отдельным шагом, потому что §10.1 разделяет «узнать, что есть» и
     «забрать»: первое дешёвое и его можно делать часто, второе стоит
     лимита.
+
+    Начинается с `publications`, а не с корня. Корень `/dataservice/`
+    отвечает 404, и это ничего не значит: сервис данных состоит из
+    именованных методов, а не из индексной страницы. Собранный адрес
+    `/dataservice/data?dataset=...` отвечал 501 на все четыре набора —
+    метода с таким именем в сервисе просто нет.
+
+    Публикации перечисляют доступные наборы; идентификаторы для запроса
+    данных берутся оттуда, а не из имени набора у нас.
     """
     return [
-        RemoteObject(url=f"{BASE_URL}/data?dataset={name}", kind=name)
-        for name in datasets
-        if name in DATASETS
+        RemoteObject(url=f"{BASE_URL}/publications", kind="publications"),
+        *(
+            RemoteObject(url=f"{BASE_URL}/datasets?publicationId={name}", kind=name)
+            for name in datasets
+            if name in DATASETS
+        ),
     ]
+
+
+def publications(payload: bytes) -> list[dict]:
+    """Разобрать список публикаций.
+
+    Проверяется, что пришёл именно JSON: сервис данных на неверный метод
+    отвечает HTML-страницей с кодом 200, и попытка прочитать её как список
+    наборов даёт пустоту — неотличимую от «наборов нет».
+    """
+    import json
+
+    try:
+        body = json.loads(payload.decode("utf-8", errors="replace"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return []
+    if isinstance(body, dict):
+        body = body.get("publications") or body.get("items") or []
+    return [item for item in body if isinstance(item, dict)]
 
 
 def _decimal(raw: object) -> Decimal | None:
