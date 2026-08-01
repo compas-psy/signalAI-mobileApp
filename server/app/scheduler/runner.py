@@ -133,6 +133,7 @@ def build_default_scheduler(
     trigger_every: timedelta = timedelta(minutes=15),
     scan_every: timedelta = timedelta(minutes=15),
     portfolio_every: timedelta = timedelta(hours=24),
+    research_every: timedelta = timedelta(hours=12),
     fetch=None,
 ) -> Scheduler:
     """Расписание по умолчанию: вселенная → загрузка → допуск → скан.
@@ -155,6 +156,8 @@ def build_default_scheduler(
     from ..pipeline.scan import scan as run_scan
     from ..pipeline.supervise import supervise as run_supervise
     from ..pipeline.trigger import recheck as run_trigger_recheck
+    from ..research.pipeline import expire as expire_hypotheses
+    from ..research.sources import readiness, sync_registry
     from ..portfolio.build import build_all
 
     scheduler = Scheduler()
@@ -296,6 +299,33 @@ def build_default_scheduler(
             detail += f"; {report.note}"
         return detail
 
+    def research(session: Session) -> str:
+        # Что этот шаг делает сегодня и чего не делает.
+        #
+        # Реестр источников синхронизируется из кода — правовой режим это
+        # зафиксированное решение, и расхождение репозитория с базой здесь
+        # самый неприятный вид расхождения. Протухшие гипотезы закрываются:
+        # без срока они живут вечно и превращаются в кладбище решений.
+        #
+        # Сбора данных здесь нет, и это не недоделка. Ни один источник не
+        # получил проверки условий использования, а без неё правовой шлюз
+        # не выдаёт разрешения — по построению, а не по забывчивости.
+        sync_registry(session)
+        expired = expire_hypotheses(session)
+        state = readiness(session)
+        detail = (
+            f"источников {state['total']}, бесплатный маршрут у "
+            f"{state['free_route']}"
+        )
+        if state["awaiting_terms_check"]:
+            detail += (
+                f", ждут проверки условий {len(state['awaiting_terms_check'])}"
+                " — до неё сбор не запускается"
+            )
+        if expired:
+            detail += f", протухло гипотез {expired}"
+        return detail
+
     scheduler.add("universe", universe_every, universe)
     scheduler.add("ingest", ingest_every, ingest)
     scheduler.add("review", review_every, review)
@@ -303,6 +333,7 @@ def build_default_scheduler(
     scheduler.add("trigger", trigger_every, trigger)
     scheduler.add("scan", scan_every, scan)
     scheduler.add("portfolio", portfolio_every, portfolio)
+    scheduler.add("research", research_every, research)
     return scheduler
 
 
