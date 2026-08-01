@@ -30,7 +30,7 @@ on:
   workflow_dispatch:
     inputs:
       api_base_url:
-        description: 'Адрес движка (пусто — возьмётся секрет SIGNALAI_API_BASE_URL)'
+        description: 'Адрес движка (пусто — рабочий сервер проекта)'
         required: false
         default: ''
       mode:
@@ -202,7 +202,13 @@ jobs:
         # сервер (§18), а адрес зашивается на этапе сборки, чтобы ни его, ни
         # токен устройства не лежало в репозитории.
         env:
-          API_BASE_URL: ${{ inputs.api_base_url || secrets.SIGNALAI_API_BASE_URL }}
+          # Адрес рабочего сервера — не тайна и не переменная: он один и
+          # тот же с самого начала. Требовать его секретом означало ронять
+          # каждую сборку до тех пор, пока владелец не заведёт секрет со
+          # значением, которое и так записано в документации проекта.
+          # Секрет и параметр по-прежнему перекрывают значение — на случай
+          # второго стенда.
+          API_BASE_URL: ${{ inputs.api_base_url || secrets.SIGNALAI_API_BASE_URL || 'https://api.ilyamartynov.ru' }}
           DEVICE_TOKEN: ${{ secrets.SIGNALAI_DEVICE_TOKEN }}
           SSH_KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
           MODE: ${{ inputs.mode || 'local' }}

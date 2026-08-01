@@ -7,7 +7,7 @@ name: Android release
 #   ANDROID_KEYSTORE_PASSWORD
 #   ANDROID_KEY_PASSWORD
 #   ANDROID_KEY_ALIAS        — signalai-upload
-#   SIGNALAI_API_BASE_URL    — адрес мобильного гейтвея Server B (https://…)
+#   SIGNALAI_API_BASE_URL    — адрес гейтвея; без секрета берётся рабочий сервер
 #
 # Сборка без секретов не выполняется: подписать релиз отладочным ключом
 # означает получить блокировку Play Protect на устройстве.
@@ -70,12 +70,12 @@ jobs:
       - name: Сборка AAB (для Play Console)
         run: |
           flutter build appbundle --release \
-            --dart-define=SIGNALAI_API_BASE_URL=${{ secrets.SIGNALAI_API_BASE_URL }}
+            --dart-define=SIGNALAI_API_BASE_URL=${{ secrets.SIGNALAI_API_BASE_URL || 'https://api.ilyamartynov.ru' }}
 
       - name: Сборка APK (для установки на своё устройство)
         run: |
           flutter build apk --release \
-            --dart-define=SIGNALAI_API_BASE_URL=${{ secrets.SIGNALAI_API_BASE_URL }}
+            --dart-define=SIGNALAI_API_BASE_URL=${{ secrets.SIGNALAI_API_BASE_URL || 'https://api.ilyamartynov.ru' }}
 
       - name: Проверка подписи APK
         run: |
