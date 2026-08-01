@@ -630,17 +630,14 @@ def diagnose(session: Session = Depends(get_db)) -> list[DiagnoseOut]:
         session.commit()
         return result
 
+    # Каталог отвечает 200 и знает настоящие идентификаторы наборов. Год в
+    # имени набора меняется, и угаданный адрес паспорта отвечает 404 —
+    # снаружи неотличимо от «источник ничего не приносит».
+    каталог = _passport_html(fns.CATALOGUE)
     pages: dict[str, str] = {}
-    for target in fns.passport_urls():
-        found = explore.fetch(target.url)
-        записать(
-            f"fns:passport:{target.kind}",
-            netdiag.probe(target.url),
-        )
-        if found.status == 200 and not found.error:
-            pages[target.kind] = found.head or ""
-        # Паспорт нужен целиком, а не первыми шестьюстами символами:
-        # ссылки лежат в таблице ниже.
+    for target in fns.passport_urls(catalogue_html=каталог):
+        записать(f"fns:passport:{target.kind}", netdiag.probe(target.url))
+        # Паспорт нужен целиком: ссылки лежат в таблице ниже заголовка.
         полный = _passport_html(target.url)
         if полный:
             pages[target.kind] = полный

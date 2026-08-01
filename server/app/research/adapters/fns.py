@@ -77,24 +77,76 @@ class EntityMetric:
         return self.value is not None
 
 
+#: Каталог открытых данных. Отвечает 200 и перечисляет все наборы с их
+#: настоящими идентификаторами — в отличие от файлового хоста, который на
+#: каталог не отвечает вовсе.
+CATALOGUE = "https://www.nalog.gov.ru/opendata/"
+
+#: По какому куску идентификатора узнаётся набор. Идентификаторы ФНС имеют
+#: вид `7707329152-revexp`; полный адрес паспорта берётся из каталога, а не
+#: собирается здесь — год в имени набора меняется (`sshr`, `sshr2019`), и
+#: угаданный адрес отвечает 404, что снаружи выглядит как пустой источник.
+DATASET_KEYS: dict[str, tuple[str, ...]] = {
+    "revenue_expenses": ("revexp",),
+    "headcount": ("sshr",),
+    "paid_taxes": ("paytax",),
+    "tax_debt": ("debtam", "debtpp"),
+}
+
 # Адрес паспорта набора. Не файла: имя файла содержит дату выпуска и дату
 # версии структуры (`data-20260725-structure-20180110.zip`) и меняется при
 # каждой публикации. Собранный по шаблону адрес выглядит правдоподобно и
 # отвечает 404 — ровно это и показал живой прогон по всем четырём наборам.
+#
+# Значения здесь — запасной вариант на случай недоступного каталога, а не
+# источник правды. Правда приходит из `passports_from_catalogue`.
 PASSPORTS: dict[str, str] = {
-    "revenue_expenses": "https://www.nalog.gov.ru/opendata/7707329152-revexp/",
-    "headcount": "https://www.nalog.gov.ru/opendata/7707329152-sshr2019/",
-    "paid_taxes": "https://www.nalog.gov.ru/opendata/7707329152-paytax/",
-    "tax_debt": "https://www.nalog.gov.ru/opendata/7707329152-debtam/",
+    "revenue_expenses": f"{CATALOGUE}7707329152-revexp",
+    "headcount": f"{CATALOGUE}7707329152-sshr2019",
+    "paid_taxes": f"{CATALOGUE}7707329152-paytax",
+    "tax_debt": f"{CATALOGUE}7707329152-debtam",
 }
 
 
-def passport_urls(datasets: tuple[str, ...] = tuple(DATASETS)) -> list[RemoteObject]:
-    """Страницы паспортов, с которых начинается сбор."""
+def passports_from_catalogue(html: str) -> dict[str, str]:
+    """Найти в каталоге адреса паспортов нужных наборов.
+
+    Совпадение по куску идентификатора, а не по полному имени: ФНС
+    добавляет год в имя набора при смене структуры, и жёсткое имя ломается
+    молча — набор просто перестаёт находиться.
+    """
+    from urllib.parse import urljoin
+
+    ссылки = [
+        urljoin(CATALOGUE, raw)
+        for raw in re.findall(r'href=["\']([^"\']+)["\']', html, flags=re.IGNORECASE)
+        if "opendata/7707329152-" in raw.lower()
+    ]
+    found: dict[str, str] = {}
+    for name, keys in DATASET_KEYS.items():
+        for url in ссылки:
+            хвост = url.rstrip("/").rsplit("-", 1)[-1].lower()
+            if any(хвост.startswith(key) for key in keys):
+                found[name] = url
+                break
+    return found
+
+
+def passport_urls(
+    datasets: tuple[str, ...] = tuple(DATASETS),
+    catalogue_html: str = "",
+) -> list[RemoteObject]:
+    """Страницы паспортов, с которых начинается сбор.
+
+    Из каталога, если он прочитан; из запасного списка, если нет. Второе
+    честнее, чем ничего, и хуже, чем первое: запасной адрес может успеть
+    устареть между выкладками.
+    """
+    known = {**PASSPORTS, **passports_from_catalogue(catalogue_html)}
     return [
-        RemoteObject(url=PASSPORTS[name], kind=name)
+        RemoteObject(url=known[name], kind=name)
         for name in datasets
-        if name in PASSPORTS
+        if name in known
     ]
 
 

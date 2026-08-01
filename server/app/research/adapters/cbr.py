@@ -86,13 +86,31 @@ def discover(datasets: tuple[str, ...] = tuple(DATASETS)) -> list[RemoteObject]:
     Публикации перечисляют доступные наборы; идентификаторы для запроса
     данных берутся оттуда, а не из имени набора у нас.
     """
+    return [RemoteObject(url=f"{BASE_URL}/publications", kind="publications")]
+
+
+def datasets_of(publication_id: int) -> str:
+    """Адрес списка наборов внутри публикации.
+
+    Идентификатор числовой и приходит из `publications`. Подставлять сюда
+    наше имя набора бессмысленно: у сервиса своя нумерация, и живой прогон
+    это показал — `data?dataset=key_rate` отвечал 501 просто потому, что
+    метода `data` в сервисе нет.
+    """
+    return f"{BASE_URL}/datasets?publicationId={int(publication_id)}"
+
+
+def leaf_publications(payload: bytes) -> list[dict]:
+    """Публикации, у которых есть данные.
+
+    Ответ — дерево категорий: `NoActive: 1` означает узел-раздел, ноль —
+    лист с данными. Забирать разделы бессмысленно, а отличить их можно
+    только здесь: снаружи и то и другое выглядит публикацией.
+    """
     return [
-        RemoteObject(url=f"{BASE_URL}/publications", kind="publications"),
-        *(
-            RemoteObject(url=f"{BASE_URL}/datasets?publicationId={name}", kind=name)
-            for name in datasets
-            if name in DATASETS
-        ),
+        item
+        for item in publications(payload)
+        if not item.get("NoActive") and item.get("id") is not None
     ]
 
 

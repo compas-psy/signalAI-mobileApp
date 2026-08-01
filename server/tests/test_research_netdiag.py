@@ -71,6 +71,37 @@ def test_структура_проверяется_раньше_выгрузки
     assert свои[1].kind == "revenue_expenses"
 
 
+def test_паспорта_находятся_в_каталоге_а_не_угадываются():
+    """Год в имени набора меняется: sshr стал sshr2019.
+
+    Жёсткое имя ломается молча — набор просто перестаёт находиться.
+    """
+    каталог = (
+        '<a href="/opendata/7707329152-revexp">1</a>'
+        '<a href="/opendata/7707329152-sshr2019">2</a>'
+        '<a href="/opendata/7707329152-paytax">3</a>'
+        '<a href="/opendata/7707329152-debtam">4</a>'
+        '<a href="/opendata/7707329152-fias">лишний</a>'
+    )
+    found = fns.passports_from_catalogue(каталог)
+    assert found["headcount"].endswith("sshr2019")
+    assert "fias" not in " ".join(found.values())
+
+
+def test_публикации_цб_делятся_на_разделы_и_данные():
+    """`NoActive: 1` — узел-раздел, забирать из него нечего.
+
+    Снаружи раздел и лист выглядят одинаково публикацией.
+    """
+    payload = b'[{"id":1,"NoActive":1},{"id":14,"NoActive":0}]'
+    assert [p["id"] for p in cbr.leaf_publications(payload)] == [14]
+
+
+def test_идентификатор_публикации_числовой():
+    """У сервиса своя нумерация, наше имя набора туда не подставляется."""
+    assert cbr.datasets_of(14).endswith("datasets?publicationId=14")
+
+
 def test_цб_начинается_с_публикаций_а_не_с_корня():
     """Корень отвечает 404, и это ничего не значит: сервис — набор методов.
 
