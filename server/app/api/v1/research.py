@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 from ...db import get_db
 from ...models import HypothesisEvidence, ResearchHypothesis, ResearchSource
 from ...models.enums import HypothesisState
-from ...research import reach
+from ...research import adapters, reach
 from ...research.engines import ENGINES
 from ...research.policy import CollectionDenied, authorize
 from ...research.sources import ALL_SOURCES, CONNECT_ORDER, readiness, sync_registry
@@ -421,6 +421,61 @@ def _probe(source_id: str, urls: tuple[str, ...]) -> ReachabilityOut:
             for p in probes
         ],
     )
+
+
+class PlanCheckOut(ApiModel):
+    """Один адрес из плана сбора и что он ответил."""
+
+    source_id: str
+    kind: str = ""
+    url: str = ""
+    network_open: bool = False
+    answered: bool = False
+    status: int | None = None
+    detail: str = ""
+
+
+@router.get("/sources/plan-check", response_model=list[PlanCheckOut])
+def plan_check(session: Session = Depends(get_db)) -> list[PlanCheckOut]:
+    """Проверить адреса, по которым адаптер собирается ходить на самом деле.
+
+    Доступность хоста и доступность данных — разные вещи, и вторую до сих
+    пор не проверял никто. Хост может отвечать 200 на корень и 404 на
+    каждый файл, который мы намерены забрать; снаружи разницы не видно, а
+    сбор не пойдёт.
+
+    Произвольный адрес сюда передать нельзя: проверяются ровно те ссылки,
+    которые вернул `fetch_plan` адаптера, и только после выданного
+    пропуска. Иначе это был бы способ ходить чужими руками куда угодно.
+    """
+    result: list[PlanCheckOut] = []
+    now = datetime.now(UTC)
+    for source_id, adapter in adapters.BY_SOURCE.items():
+        try:
+            granted = authorize(session, source_id, {"fetch"}, now=now)
+        except CollectionDenied as denied:
+            result.append(
+                PlanCheckOut(
+                    source_id=source_id,
+                    detail=f"проба не отправлялась: {denied.reason}",
+                )
+            )
+            continue
+        for target in adapter.fetch_plan(granted):
+            probe = reach.probe(target.url)
+            result.append(
+                PlanCheckOut(
+                    source_id=source_id,
+                    kind=target.kind,
+                    url=target.url,
+                    network_open=probe.network_open,
+                    answered=probe.answered,
+                    status=probe.status,
+                    detail=probe.detail,
+                )
+            )
+    session.commit()
+    return result
 
 
 @router.post("/sources/sync", response_model=ResearchStatusOut)

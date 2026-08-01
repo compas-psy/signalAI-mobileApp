@@ -13,11 +13,14 @@ from __future__ import annotations
 
 import socket
 import ssl
+from datetime import UTC, datetime
 
 import pytest
 
 from app.research import reach
 from app.research.sources import ALL_SOURCES
+
+NOW = datetime(2026, 8, 1, tzinfo=UTC)
 
 
 class FakeSocket:
@@ -188,3 +191,85 @@ def test_каждый_дополнительный_адрес_это_https():
     for spec in ALL_SOURCES:
         for url in spec.extra_urls:
             assert url.startswith("https://"), spec.source_id
+
+
+# ── Проверка плана сбора ────────────────────────────────────────────────────
+
+
+def test_у_каждого_адаптера_есть_источник_в_реестре():
+    """Адаптер без записи в реестре собирать не сможет никогда.
+
+    Связь держится строкой `SOURCE_ID` внутри модуля, и опечатка в ней
+    выглядит как «источник просто ничего не приносит».
+    """
+    from app.research.adapters import BY_SOURCE
+
+    known = {s.source_id for s in ALL_SOURCES}
+    assert set(BY_SOURCE) <= known
+
+
+def test_план_проверяется_только_по_ссылкам_адаптера(session, monkeypatch):
+    """Через этот адрес нельзя сходить по произвольной ссылке.
+
+    Иначе диагностика превратилась бы в способ ходить в сеть чужими
+    руками — с сервера владельца и в обход правового шлюза.
+    """
+    from fastapi.testclient import TestClient
+
+    from app.db import get_db
+    from app.main import app
+    from app.research.adapters import fns
+    from app.research.sources import sync_registry
+
+    посещённые: list[str] = []
+
+    def записать(url, **_):
+        посещённые.append(url)
+        return reach.HostProbe(
+            host=url.split("/")[2], url=url, network_open=True,
+            answered=True, status=200, detail="источник отвечает",
+        )
+
+    monkeypatch.setattr("app.api.v1.research.reach.probe", записать)
+    sync_registry(session, now=NOW)
+    app.dependency_overrides[get_db] = lambda: session
+    try:
+        with TestClient(app) as client:
+            body = client.get(
+                "/api/v1/research/sources/plan-check?url=https://зло.test/"
+            ).json()
+    finally:
+        app.dependency_overrides.clear()
+
+    ожидаемые = {o.url for o in fns.discover()}
+    assert ожидаемые <= set(посещённые)
+    assert not any("зло.test" in url for url in посещённые)
+    assert {row["source_id"] for row in body} <= {"cbr_data", "fns_open_data"}
+
+
+def test_закрытый_по_праву_источник_в_плане_не_проверяется(session, monkeypatch):
+    """Пропуск запрашивается по-настоящему, и отказ виден в ответе."""
+    from fastapi.testclient import TestClient
+
+    from app.db import get_db
+    from app.main import app
+    from app.research.sources import sync_registry
+
+    monkeypatch.setattr(
+        "app.api.v1.research.reach.probe",
+        lambda url, **_: reach.HostProbe(
+            host="", url=url, network_open=True, answered=True,
+            status=200, detail="ок",
+        ),
+    )
+    # Пропуск для ЦБ не выдаётся, если реестр не синхронизирован.
+    app.dependency_overrides[get_db] = lambda: session
+    try:
+        with TestClient(app) as client:
+            body = client.get("/api/v1/research/sources/plan-check").json()
+    finally:
+        app.dependency_overrides.clear()
+
+    for row in body:
+        assert row["url"] == ""
+        assert "проба не отправлялась" in row["detail"]
