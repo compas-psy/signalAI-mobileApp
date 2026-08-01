@@ -29,11 +29,14 @@ from ..models import ResearchObservation
 from ..models.enums import ResearchDirection
 from .engines import demand
 from .fusion import Falsifier, SignalInput
-from .issuers import Issuer, automatic, in_section
+from .confirmations import Reading, count as count_confirmations, history_verdict
+from .issuers import Issuer, automatic, in_section, of
 from .pipeline import run as run_pipeline
 
-#: Сколько периодов нужно движку спроса, чтобы было с чем сравнивать.
-MIN_PERIODS = 5
+#: Периодичность мониторинга предприятий. Общий порог в пять периодов был
+#: одинаково неверен для всех рядов: месячному мало, годовому много.
+#: Требование считается из периодичности — сезонный лаг плюс подтверждения.
+DEMAND_FREQUENCY = "monthly"
 
 #: Наблюдения мониторинга предприятий. Префикс, а не точное имя: у ЦБ в
 #: одном наборе несколько показателей, и все они про спрос.
@@ -110,14 +113,18 @@ def _signal(issuer: Issuer, result: demand.DemandResult) -> SignalInput:
     )
 
 
-def _resolve(bucket: list[SignalInput]) -> dict:
-    """Что движки не знают: уверенность в сущности и чем это опровергнуть."""
-    from .issuers import of
+def _resolve(bucket: list[SignalInput], readings: list[Reading] | None = None) -> dict:
+    """Что движки не знают: уверенность в сущности и чем это опровергнуть.
 
+    ``confirmations`` считается по различным экономическим периодам, а не
+    по числу прогонов. Раньше здесь стояла единица, и любая её замена на
+    «сколько раз мы это видели» превратила бы повторный сбор в
+    подтверждение — система подтверждала бы гипотезы своей активностью.
+    """
     issuer = of(bucket[0].entity_id)
     confidence = issuer.confidence if issuer else Decimal(0)
     return {
-        "confirmations": 1,
+        "confirmations": count_confirmations(readings or []).periods,
         "entity_confidence": confidence,
         "effect_size": float(max(abs(s.strength) for s in bucket)),
         # Отраслевое наблюдение относится к эмитенту тем хуже, чем меньше
@@ -193,12 +200,12 @@ def run_demand(session: Session, *, now: datetime | None = None) -> EngineReport
     report.sections = len(by_section)
 
     signals: list[SignalInput] = []
+    readings_by_section: dict[str, list[Reading]] = {}
     for section, bucket in by_section.items():
         periods = demand_periods(bucket)
-        if len(periods) < MIN_PERIODS:
-            report.skipped.append(
-                f"раздел {section}: периодов {len(periods)} из {MIN_PERIODS}"
-            )
+        enough, why = history_verdict(len(periods), DEMAND_FREQUENCY)
+        if not enough:
+            report.skipped.append(f"раздел {section}: {why}")
             continue
         result = demand.evaluate(periods)
         if not result.applicable:
@@ -210,6 +217,17 @@ def run_demand(session: Session, *, now: datetime | None = None) -> EngineReport
             # торгуется её часть. Но и гипотезы из него не выйдет.
             report.skipped.append(f"раздел {section}: эмитентов в реестре нет")
             continue
+        readings_by_section[section] = [
+            Reading(
+                fingerprint=f"demand:{section}",
+                period_end=row.period_end,
+                direction=result.direction,
+                strength=result.strength,
+                revision=row.revision_number,
+            )
+            for row in bucket
+            if row.period_end is not None
+        ]
         for issuer in issuers:
             if not automatic(issuer):
                 report.skipped.append(
@@ -222,11 +240,17 @@ def run_demand(session: Session, *, now: datetime | None = None) -> EngineReport
     if not signals:
         return report
 
+    # Показания по периодам собираются один раз и раздаются по разделам:
+    # подтверждение — это тот же сигнал в другом экономическом периоде.
+    def resolve(bucket: list[SignalInput]) -> dict:
+        issuer_section = getattr(of(bucket[0].entity_id), "section", "")
+        return _resolve(bucket, readings_by_section.get(issuer_section, []))
+
     outcome = run_pipeline(
-        session, signals, resolve=_resolve, critic=_critic, now=moment
+        session, signals, resolve=resolve, critic=_critic, now=moment
     )
     report.hypotheses = outcome.created + outcome.updated
     return report
 
 
-__all__ = ["DEMAND_PREFIX", "EngineReport", "demand_periods", "run_demand"]
+__all__ = ["DEMAND_FREQUENCY", "DEMAND_PREFIX", "EngineReport", "demand_periods", "run_demand"]

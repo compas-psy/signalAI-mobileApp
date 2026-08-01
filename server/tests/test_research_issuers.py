@@ -129,7 +129,7 @@ def test_короткого_ряда_не_хватает_и_это_сказан�
 
     assert report.observations == 1
     assert report.hypotheses == 0
-    assert any("периодов 1" in note for note in report.skipped)
+    assert any("истории 1 из 14" in note for note in report.skipped)
 
 
 def test_без_наблюдений_это_результат_а_не_ошибка(session):
@@ -163,8 +163,10 @@ def test_недоступный_критик_не_подтверждает_ги�
     class Гипотеза:
         state = HypothesisState.CONFIRMED
         state_reason = ""
+        promotion_blockers: list[str] = []
 
     fused = Гипотеза()
+    fused.promotion_blockers = []
     report = RunReport()
 
     def падает(*_):
@@ -174,6 +176,8 @@ def test_недоступный_критик_не_подтверждает_ги�
 
     assert fused.state is HypothesisState.EARLY_CANDIDATE
     assert "критик недоступен" in fused.state_reason
+    # Видимость сохраняется, подтверждение запрещено — отдельной строкой.
+    assert "critic_unavailable" in fused.promotion_blockers
     assert report.notes
 
 
@@ -206,12 +210,16 @@ def test_отказ_критика_опускает_состояние_с_при
     class Гипотеза:
         state = HypothesisState.CONFIRMED
         state_reason = ""
+        promotion_blockers: list[str] = []
 
     fused = Гипотеза()
+    fused.promotion_blockers = []
     _apply_critic(lambda *_: Вердикт(), fused, [], RunReport())
 
     assert fused.state is HypothesisState.EARLY_CANDIDATE
     assert fused.state_reason == "причинная цепочка неполна"
+    # Кандидат виден, но подтвердить его нечем — и это названо отдельно.
+    assert "critic_rejected" in fused.promotion_blockers
 
 
 # ── Сектор брокера вместо биржи ─────────────────────────────────────────────

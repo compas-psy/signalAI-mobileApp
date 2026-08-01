@@ -21,16 +21,23 @@ from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ...db import get_db
-from ...models import HypothesisEvidence, ResearchHypothesis, ResearchSource
+from ...models import (
+    HypothesisEvidence,
+    ResearchHypothesis,
+    ResearchObservation,
+    ResearchSource,
+)
 from ...models.enums import HypothesisState
 from ...research import adapters, explore, gateway, netdiag, reach
 from ...research.adapters import cbr, fns
 from ...research.engines import ENGINES
+from ...research.confirmations import history_verdict
 from ...research.policy import CollectionDenied, authorize
+from ...research.run_engines import DEMAND_FREQUENCY
 from ...research.sources import ALL_SOURCES, CONNECT_ORDER, readiness, sync_registry
 from ...schemas.common import ApiModel, Money
 
@@ -72,6 +79,9 @@ class HypothesisOut(ApiModel):
     research_priority: Money = Decimal(0)
 
     three_two_one: dict = Field(default_factory=dict)
+    #: Что мешает повышению до подтверждённой. Отдельно от причины
+    #: состояния: кандидат виден, а список говорит, чего ему не хватает.
+    promotion_blockers: list[str] = Field(default_factory=list)
     target_kpis: list = Field(default_factory=list)
     causal_path: dict = Field(default_factory=dict)
     fact_summary: list = Field(default_factory=list)
@@ -102,16 +112,33 @@ class EngineStateOut(ApiModel):
     feeds_from: list[str] = Field(default_factory=list)
     blocked_by: list[str] = Field(default_factory=list)
     # full — все входы движка закрыты подключёнными источниками;
-    # partial — часть; none — ни одного.
+    # partial — часть; none — ни одного. Это про реестр, а не про данные.
     coverage: str = "none"
+
+    # Дальше — что происходит на самом деле. Разделено потому, что
+    # «источник объявлен входом» и «данные обрабатываются» — разные
+    # утверждения, а экран показывал первое, называя вторым.
+    wired: bool = False           # переходник наблюдений → движок написан
+    observations: int = 0         # сколько наблюдений есть
+    unique_periods: int = 0       # сколько различных периодов
+    last_seen_at: datetime | None = None
+    history_ready: bool = False   # хватает ли истории по периодичности
+    history_note: str = ""        # если нет — чего именно не хватает
+    evaluated: bool = False       # движок реально запускался
+    signals: int = 0              # сколько сигналов сформировал
 
 
 class ResearchStatusOut(ApiModel):
     """Почему выдача выглядит так, как выглядит."""
 
     engines: list[EngineStateOut] = Field(default_factory=list)
-    engines_ready: int = 0
-    engines_fed: int = 0
+    engines_ready: int = 0      # написано и проверено
+    engines_fed: int = 0        # источники объявлены входами
+    engines_wired: int = 0      # переходник наблюдений написан
+    engines_with_data: int = 0  # наблюдения есть
+    engines_evaluated: int = 0  # движок отработал
+    early_candidates: int = 0
+    confirmed: int = 0
     total_sources: int = 0
     free_route: int = 0
     awaiting_terms_check: list[str] = Field(default_factory=list)
@@ -214,9 +241,47 @@ def _engines(session: Session) -> list[EngineStateOut]:
                 # половина входов, считает половину картины — и обещать по
                 # нему полный ответ значит обещать несуществующее.
                 coverage=fullness.get(key, "none"),
+                **_facts(session, key),
             )
         )
     return result
+
+
+#: Какой префикс наблюдений кормит какой движок. Пусто — переходник ещё
+#: не написан, и это отдельное состояние: «источник объявлен входом» и
+#: «данные действительно обрабатываются» — разные вещи, а раньше экран
+#: показывал первое, называя вторым.
+_OBSERVATION_PREFIX = {"DEMAND": "cbr:enterprise_monitoring:"}
+
+
+def _facts(session: Session, key: str) -> dict:
+    """Что на самом деле происходит с движком.
+
+    Шесть отдельных фактов вместо одного слова. «Пять движков считают» при
+    одном реально работающем — не преувеличение, а другое утверждение: там
+    измерялось объявленное в реестре, а не сделанное.
+    """
+    prefix = _OBSERVATION_PREFIX.get(key, "")
+    if not prefix:
+        return {"wired": False}
+    rows = session.execute(
+        select(
+            func.count(ResearchObservation.id),
+            func.count(func.distinct(ResearchObservation.period_end)),
+            func.max(ResearchObservation.first_seen_at),
+        ).where(ResearchObservation.observation_type.like(f"{prefix}%"))
+    ).one()
+    total, periods, last_seen = rows
+    frequency = DEMAND_FREQUENCY if key == "DEMAND" else "quarterly"
+    enough, why = history_verdict(int(periods or 0), frequency)
+    return {
+        "wired": True,
+        "observations": int(total or 0),
+        "unique_periods": int(periods or 0),
+        "last_seen_at": last_seen,
+        "history_ready": enough,
+        "history_note": why,
+    }
 
 
 def _out(session: Session, row: ResearchHypothesis) -> HypothesisOut:
@@ -239,6 +304,9 @@ def _out(session: Session, row: ResearchHypothesis) -> HypothesisOut:
         market_context_state=row.market_context_state,
         research_priority=row.research_priority,
         three_two_one=row.three_two_one_json or {},
+        promotion_blockers=list(
+            (row.three_two_one_json or {}).get("promotion_blockers", [])
+        ),
         target_kpis=row.target_kpis_json or [],
         causal_path=row.causal_path_json or {},
         fact_summary=row.fact_summary_json or [],
@@ -299,6 +367,13 @@ def hypotheses(
             engines=engines,
             engines_ready=sum(1 for e in engines if e.ready),
             engines_fed=sum(1 for e in engines if e.coverage == "full"),
+            engines_wired=sum(1 for e in engines if e.wired),
+            engines_with_data=sum(1 for e in engines if e.observations > 0),
+            engines_evaluated=sum(1 for e in engines if e.evaluated),
+            early_candidates=sum(
+                1 for r in rows if r.state is HypothesisState.EARLY_CANDIDATE
+            ),
+            confirmed=sum(1 for r in rows if r.state is HypothesisState.CONFIRMED),
             total_sources=state["total"],
             free_route=state["free_route"],
             awaiting_terms_check=state["awaiting_terms_check"],

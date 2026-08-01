@@ -454,7 +454,11 @@ class _Waiting extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final fed = state.engines.where((e) => e.fed || e.partial).length;
+    // Считаются работающие, а не объявленные. Прежняя строка брала
+    // покрытие из реестра и сообщала «считают пять» при одном движке,
+    // который действительно обрабатывает данные.
+    final working = state.engines.where((e) => e.working).length;
+    final waiting = state.engines.where((e) => e.wired && !e.working).length;
     return SectionCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -462,10 +466,13 @@ class _Waiting extends StatelessWidget {
           Text('Гипотез пока нет', style: T.jost(15, weight: 700, color: C.text)),
           const SizedBox(height: 6),
           Text(
-            fed == 0
-                ? 'Движки ещё не получили данных.'
-                : 'Считают $fed из ${state.engines.length}. '
-                    'Гипотеза появится, когда сойдутся независимые источники.',
+            working == 0
+                ? (waiting == 0
+                    ? 'Переходники к движкам ещё не написаны.'
+                    : 'Данные пока не пришли.')
+                : 'Обрабатывают данные $working из ${state.engines.length}. '
+                    'Для подтверждения нужны независимые источники и '
+                    'подтверждение в разных периодах.',
             style: T.body(12.5, color: C.muted, height: 1.4),
           ),
         ],

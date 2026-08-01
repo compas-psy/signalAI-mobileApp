@@ -142,7 +142,12 @@ def store(
             "unknown" if fused.market_context_missing else "measured"
         ),
         research_priority=fused.priority,
-        three_two_one_json=fused.gate.facts,
+        # Блокировки повышения живут вместе с фактами шлюза: они и есть
+        # ответ на вопрос «почему кандидат до сих пор кандидат».
+        three_two_one_json={
+            **fused.gate.facts,
+            "promotion_blockers": list(fused.promotion_blockers),
+        },
         investability_json=(
             fused.investability.as_dict() if fused.investability else {}
         ),
@@ -220,12 +225,17 @@ def _apply_critic(critic, fused, bucket, report: RunReport) -> None:
             f"критик недоступен ({type(error).__name__}) — подтверждение "
             "отложено до проверки"
         )
+        # Кандидат остаётся видимым: недоступность проверки — не порок
+        # гипотезы. Но и подтвердить её нечем, и это названо отдельной
+        # строкой, а не спрятано в тексте причины.
+        fused.promotion_blockers.append("critic_unavailable")
         report.notes.append(f"критик недоступен: {error}")
         return
     if verdict is None or not verdict.blocks_confirmation:
         return
     fused.state = HypothesisState.EARLY_CANDIDATE
     fused.state_reason = verdict.summary or "критик не подтвердил гипотезу"
+    fused.promotion_blockers.append("critic_rejected")
     report.notes.append(f"критик отклонил подтверждение: {fused.state_reason}")
 
 

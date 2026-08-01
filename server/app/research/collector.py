@@ -33,6 +33,7 @@ from ..models import ResearchObservation
 from .adapters import cbr, fns
 from .collect import Fetched
 from .policy import CollectionDenied, Permit, authorize
+from .provenance import Provenance, cbr as cbr_provenance, fns as fns_provenance
 from .reach import USER_AGENT
 from .timeline import tradable_at
 
@@ -99,6 +100,7 @@ def collect_cbr(session: Session, *, now: datetime | None = None) -> CollectRepo
                 first_seen_at=moment,
                 locator={"url": target.url, "indicator": datum.indicator},
                 raw_sha256=fetched.sha256,
+                provenance=cbr_provenance(datum.dataset),
             )
             report.written += int(written)
             report.duplicates += int(not written)
@@ -168,6 +170,7 @@ def _record_plan(
             first_seen_at=moment,
             locator={"passport": fns.PASSPORTS.get(kind, ""), **links},
             raw_sha256="",
+            provenance=fns_provenance(kind),
         )
         report.written += int(written)
         report.duplicates += int(not written)
@@ -189,6 +192,7 @@ def _write(
     first_seen_at: datetime,
     locator: dict,
     raw_sha256: str,
+    provenance: Provenance,
     text: str = "",
 ) -> bool:
     """Записать наблюдение, если такого ещё нет.
@@ -220,10 +224,12 @@ def _write(
             first_seen_at=first_seen_at,
             tradable_at=when.tradable_at,
             publication_time_uncertain=when.publication_time_uncertain,
-            # Корень происхождения — сам источник: пересказов у ведомственных
-            # выгрузок нет, и придумывать им отдельный корень значило бы
-            # считать один источник за два в правиле 3–2–1.
-            lineage_root_id=source_id,
+            # Корень — не источник. Источник говорит, откуда байты и по
+            # какому праву; корень — из чего факт возник. Приравняв их, мы
+            # получили вывод «два источника — максимум два корня», и вывод
+            # был неверен: у одного источника наборов несколько, и рождаются
+            # они по-разному.
+            lineage_root_id=provenance.lineage_root_id,
             source_locator=locator,
             raw_sha256=raw_sha256,
             value_numeric=value,

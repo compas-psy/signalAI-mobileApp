@@ -132,6 +132,10 @@ class Fused:
     missing_evidence: list[str] = field(default_factory=list)
     signals: tuple[str, ...] = ()
     expires_at: datetime | None = None
+    #: Что мешает повышению до подтверждённой. Не то же, что причина
+    #: состояния: кандидат виден и жив, а список говорит, чего именно ему
+    #: не хватает. Пустое состояние экрана без него необъяснимо.
+    promotion_blockers: list[str] = field(default_factory=list)
 
 
 def _overlap(a: SignalInput, b: SignalInput) -> float:
@@ -324,6 +328,9 @@ def fuse(
         title=_title(signals),
         state=state,
         state_reason=reason,
+        # Список заполняется всегда, а не только при отказе: у подтверждённой
+        # гипотезы он пуст, и это тоже факт, который видно.
+        promotion_blockers=list(gate.failures),
         expected_lag=lag,
         evidence=e_score,
         economic=k_score.value,

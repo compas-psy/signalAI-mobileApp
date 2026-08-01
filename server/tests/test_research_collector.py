@@ -75,7 +75,11 @@ def test_наблюдение_доходит_до_базы(session, monkeypatch)
     факт = rows[0]
     assert факт.source_id == "cbr_data"
     assert факт.value_numeric is not None
-    assert факт.lineage_root_id == "cbr_data"
+    # Корень — не источник: у ЦБ наборов несколько, и рождаются они
+    # по-разному. Приравняв их, мы получили неверный вывод о недостижимости
+    # правила 3–2–1.
+    assert факт.source_id == "cbr_data"
+    assert факт.lineage_root_id.startswith("cbr:")
 
 
 def test_повтор_не_плодит_копий(session, monkeypatch):

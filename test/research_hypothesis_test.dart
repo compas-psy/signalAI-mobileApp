@@ -155,6 +155,8 @@ void main() {
     });
   });
 
+  honestCoverage();
+
   group('Место раздела', () {
     test('сигналы живут в «Портфеле», а не в «Идеях»', () {
       // Идея говорит, когда входить; гипотеза — что вообще стоит держать.
@@ -254,9 +256,11 @@ void main() {
       expect(half.partial, isTrue);
       expect(none.partial, isFalse);
 
-      expect(full.stateLabel, 'считает');
-      expect(half.stateLabel, 'считает частично');
-      expect(none.stateLabel, 'ждёт источников');
+      // Ярлык теперь говорит о работе, а не об объявленном покрытии:
+      // без переходника и наблюдений «считает» — неправда.
+      expect(full.stateLabel, 'нет переходника');
+      expect(half.stateLabel, 'нет переходника');
+      expect(none.stateLabel, 'нет переходника');
     });
 
     test('полнота разбирается из контракта', () {
@@ -273,6 +277,77 @@ void main() {
       });
       expect(state.engines.single.partial, isTrue);
       expect(state.engines.single.blockedBy, ['eis_open_data']);
+    });
+  });
+}
+
+/// Экран обязан различать объявленное и сделанное.
+///
+/// «Пять из девяти считают» при одном реально работающем движке — не
+/// преувеличение, а другое утверждение: там измерялось покрытие по
+/// реестру источников, а не обработка данных.
+void honestCoverage() {
+  group('Честное состояние движка', () {
+    test('объявленный вход — ещё не работа', () {
+      const declared = EngineState(key: 'DEMAND', coverage: 'full');
+      expect(declared.working, isFalse);
+      expect(declared.stateLabel, 'нет переходника');
+    });
+
+    test('переходник есть, наблюдений нет', () {
+      const wired = EngineState(key: 'DEMAND', coverage: 'full', wired: true);
+      expect(wired.stateLabel, 'нет наблюдений');
+    });
+
+    test('наблюдения есть, истории мало', () {
+      const young = EngineState(
+        key: 'DEMAND',
+        coverage: 'full',
+        wired: true,
+        observations: 3,
+        uniquePeriods: 3,
+      );
+      expect(young.working, isTrue);
+      expect(young.stateLabel, 'копит историю');
+    });
+
+    test('считает — только когда действительно посчитал', () {
+      const done = EngineState(
+        key: 'DEMAND',
+        coverage: 'full',
+        wired: true,
+        observations: 40,
+        uniquePeriods: 20,
+        historyReady: true,
+        evaluated: true,
+      );
+      expect(done.stateLabel, 'считает');
+    });
+
+    test('состояние разбирается из контракта', () {
+      final state = ResearchState.fromJson({
+        'status': {
+          'engines': [
+            {
+              'key': 'DEMAND',
+              'version': '1.0.0',
+              'ready': true,
+              'coverage': 'full',
+              'wired': true,
+              'observations': 40,
+              'unique_periods': 6,
+              'history_ready': false,
+              'history_note': 'истории 6 из 14 периодов',
+              'evaluated': false,
+            },
+          ],
+        },
+        'hypotheses': const [],
+      });
+      final engine = state.engines.single;
+      expect(engine.uniquePeriods, 6);
+      expect(engine.historyNote, contains('6 из 14'));
+      expect(engine.stateLabel, 'копит историю');
     });
   });
 }

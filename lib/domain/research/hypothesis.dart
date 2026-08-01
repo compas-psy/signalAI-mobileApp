@@ -262,6 +262,12 @@ class EngineState {
     this.feedsFrom = const [],
     this.blockedBy = const [],
     this.coverage = 'none',
+    this.wired = false,
+    this.observations = 0,
+    this.uniquePeriods = 0,
+    this.historyReady = false,
+    this.historyNote = '',
+    this.evaluated = false,
   });
 
   final String key;
@@ -283,14 +289,36 @@ class EngineState {
   /// «считает» значило бы обещать ответ, которого не будет.
   final String coverage;
 
+  /// Переходник наблюдений → движок написан.
+  ///
+  /// Отдельно от [coverage] потому, что это разные утверждения. Реестр
+  /// говорит «источник объявлен входом», и по нему выходило «пять из
+  /// девяти считают» при одном реально работающем.
+  final bool wired;
+  final int observations;
+  final int uniquePeriods;
+  final bool historyReady;
+  final String historyNote;
+  final bool evaluated;
+
+  /// Реально ли движок обрабатывает данные.
+  bool get working => wired && observations > 0;
+
   bool get fed => ready && coverage == 'full';
   bool get partial => ready && coverage == 'partial';
 
-  String get stateLabel => switch (coverage) {
-        'full' => 'считает',
-        'partial' => 'считает частично',
-        _ => 'ждёт источников',
-      };
+  /// Что движок делает на самом деле.
+  ///
+  /// «Считает» говорится только когда данные действительно обрабатываются.
+  /// Раньше это слово означало «источник объявлен входом», и экран
+  /// сообщал о пяти считающих движках при одном работающем.
+  String get stateLabel {
+    if (!wired) return 'нет переходника';
+    if (observations == 0) return 'нет наблюдений';
+    if (!historyReady) return 'копит историю';
+    if (!evaluated) return 'готов считать';
+    return coverage == 'full' ? 'считает' : 'считает частично';
+  }
 
   /// Человеческое название движка.
   String get title => switch (key) {
@@ -317,6 +345,12 @@ class EngineState {
           for (final s in j['blocked_by'] as List<dynamic>? ?? const []) '$s',
         ],
         coverage: j['coverage'] as String? ?? 'none',
+        wired: j['wired'] as bool? ?? false,
+        observations: (j['observations'] as num?)?.toInt() ?? 0,
+        uniquePeriods: (j['unique_periods'] as num?)?.toInt() ?? 0,
+        historyReady: j['history_ready'] as bool? ?? false,
+        historyNote: j['history_note'] as String? ?? '',
+        evaluated: j['evaluated'] as bool? ?? false,
       );
 }
 
