@@ -114,6 +114,47 @@ def leaf_publications(payload: bytes) -> list[dict]:
     ]
 
 
+#: По каким словам публикация узнаётся среди дерева категорий. Ключевые
+#: слова, а не номера: нумерация — собственность сервиса, и она уже один
+#: раз оказалась не той, которую мы придумали.
+PUBLICATION_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "enterprise_monitoring": ("мониторинг предприят", "деловой климат"),
+    "key_rate": ("ключевая ставка",),
+    "fx_usd_rub": ("курс",),
+    "industry_indicators": ("отрасл",),
+}
+
+
+def match_publications(payload: bytes) -> dict[str, list[int]]:
+    """Найти в дереве публикаций листья наших наборов.
+
+    Ответ сервиса — дерево категорий с parent_id, и имя листа само по
+    себе ничего не значит: «В целом по Российской Федерации» встречается
+    под десятком разделов. Совпадение ищется по полному пути от корня.
+    """
+    rows = publications(payload)
+    names = {r.get("id"): str(r.get("category_name", "")) for r in rows}
+    parents = {r.get("id"): r.get("parent_id") for r in rows}
+
+    def path(node_id) -> str:
+        parts, current, hops = [], node_id, 0
+        while current in names and hops < 10:
+            parts.append(names[current])
+            current = parents.get(current)
+            hops += 1
+        return " / ".join(reversed(parts)).lower()
+
+    found: dict[str, list[int]] = {}
+    for row in rows:
+        if row.get("NoActive") or row.get("id") is None:
+            continue
+        full = path(row["id"])
+        for dataset, keys in PUBLICATION_KEYWORDS.items():
+            if any(k in full for k in keys):
+                found.setdefault(dataset, []).append(int(row["id"]))
+    return found
+
+
 def publications(payload: bytes) -> list[dict]:
     """Разобрать список публикаций.
 

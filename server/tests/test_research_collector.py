@@ -55,10 +55,21 @@ class Ответ:
         return False
 
 
+ДЕРЕВО = json.dumps([
+    {"id": 1, "parent_id": -1, "category_name": "Мониторинг предприятий",
+     "NoActive": 1},
+    {"id": 14, "parent_id": 1, "category_name": "В целом по РФ", "NoActive": 0},
+]).encode()
+
+
 def отдаёт(monkeypatch, body: bytes):
-    monkeypatch.setattr(
-        collector.urllib.request, "urlopen", lambda *a, **k: Ответ(body)
-    )
+    """Сервис двухшаговый: дерево публикаций, затем ряды набора."""
+
+    def ответ(request, **_):
+        url = request.full_url if hasattr(request, "full_url") else str(request)
+        return Ответ(ДЕРЕВО if "publications" in url else body)
+
+    monkeypatch.setattr(collector.urllib.request, "urlopen", ответ)
 
 
 def test_наблюдение_доходит_до_базы(session, monkeypatch):

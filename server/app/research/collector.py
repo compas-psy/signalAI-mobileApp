@@ -77,14 +77,50 @@ def collect_cbr(session: Session, *, now: datetime | None = None) -> CollectRepo
         report.skipped.append(f"{cbr.SOURCE_ID}: {denied.reason}")
         return report
 
-    for target in cbr.fetch_plan(permit):
+    # Двухшаговый сбор: сначала дерево публикаций, из него — числовые
+    # идентификаторы наших наборов, и только потом сами ряды. Прежний
+    # проход останавливался на первом шаге: список публикаций забирался,
+    # разбирался в ноль строк, и «сбор идёт» означало «сбор не приносит
+    # ничего». Подставлять в запрос наши имена наборов бессмысленно — у
+    # сервиса своя нумерация, что живой прогон и показал (501 на все).
+    план = cbr.fetch_plan(permit)
+    report.attempted += 1
+    публикации = _get(план[0].url, moment)
+    if публикации is None or not публикации.ok:
+        report.errors.append(f"{план[0].url}: нет ответа")
+        return report
+    report.fetched += 1
+    найдено = cbr.match_publications(публикации.body)
+    if not найдено:
+        report.errors.append(
+            "в дереве публикаций не нашлось ни одного нашего набора — "
+            "проверить ключевые слова по живому ответу"
+        )
+        return report
+
+    targets = [
+        (dataset, cbr.datasets_of(pub_id))
+        for dataset, ids in найдено.items()
+        for pub_id in ids[:3]
+    ]
+    for dataset, url in targets:
         report.attempted += 1
-        fetched = _get(target.url, moment)
+        fetched = _get(url, moment)
         if fetched is None or not fetched.ok:
-            report.errors.append(f"{target.url}: нет ответа")
+            report.errors.append(f"{url}: нет ответа")
             continue
         report.fetched += 1
-        for datum in cbr.parse(fetched, dataset=target.kind):
+        rows = cbr.parse(fetched, dataset=dataset)
+        if not rows:
+            # Пустой разбор — новость, а не тишина: формат ответа мог
+            # оказаться не тем, который ждёт разбор. Первые байты уходят в
+            # отчёт, чтобы следующий шаг делался по факту, а не по догадке.
+            report.errors.append(
+                f"{dataset}: разбор дал 0 строк, ответ начинается с "
+                f"{fetched.body[:120]!r}"
+            )
+            continue
+        for datum in rows:
             when = cbr.availability(datum, first_seen_at=moment)
             written = _write(
                 session,
@@ -98,7 +134,7 @@ def collect_cbr(session: Session, *, now: datetime | None = None) -> CollectRepo
                 published_at=datum.published_at,
                 availability=when,
                 first_seen_at=moment,
-                locator={"url": target.url, "indicator": datum.indicator},
+                locator={"url": url, "indicator": datum.indicator},
                 raw_sha256=fetched.sha256,
                 provenance=cbr_provenance(datum.dataset),
             )
