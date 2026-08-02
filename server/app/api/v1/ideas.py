@@ -212,13 +212,19 @@ def list_ideas(
 def today(db: Session = Depends(get_db)) -> DailyCards:
     """Карточки дня (§16): до трёх, с явной причиной, если торговать нечего."""
     now = datetime.now(UTC)
-    rows = list(
-        db.execute(
+    rows = [
+        r
+        for r in db.execute(
             select(TradeIdea)
             .where(TradeIdea.expires_at > now, TradeIdea.was_presented.is_(True))
             .order_by(TradeIdea.presentation_rank)
         ).scalars()
-    )
+        # Терминальная идея — не предложение. Здесь проверялся только срок,
+        # и убитая kill-условием идея с непросроченным expires_at
+        # оставалась в карточках дня: владелец видел «сделку», по которой
+        # входить уже некуда. Журнал её хранит, лента дня — нет.
+        if not IdeaStatus(r.status).is_terminal
+    ]
     trade_now = [_summary(r) for r in rows if r.quality_status == QualityStatus.ACTIVE]
     waiting = [_summary(r) for r in rows if r.quality_status == QualityStatus.WATCH]
     reason = ""

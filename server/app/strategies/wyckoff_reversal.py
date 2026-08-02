@@ -118,14 +118,20 @@ def build(ctx: SetupContext, params: WyckoffReversalParams | None = None) -> Out
     )
 
     # 6. Пространство до цели.
+    # Стоп — за самым глубоким проколом диапазона, а не за конкретным
+    # спрингом. Диапазон допускает несколько спрингов, и второй бывает
+    # глубже первого: стоп за первым выбивается вторым при верном замысле.
+    # Ровно это произошло на живой идее — цена сняла ликвидность на 0.20
+    # ATR ниже, вернулась в диапазон и пошла вверх уже без нас.
+    range_bars = bars[trading_range.start_index:] or bars[-1:]
     if direction is Direction.LONG:
         entry_zone_low = trading_range.support
         entry_zone_high = trading_range.support + atr_setup * Decimal("0.5")
-        stop_base = sweep.price
+        stop_base = min(sweep.price, min(c.low for c in range_bars))
     else:
         entry_zone_low = trading_range.resistance - atr_setup * Decimal("0.5")
         entry_zone_high = trading_range.resistance
-        stop_base = sweep.price
+        stop_base = max(sweep.price, max(c.high for c in range_bars))
 
     buffer = max(atr_setup * p.stop_atr_buffer, ctx.tick_size * p.min_stop_ticks)
     stop = round_to_tick(

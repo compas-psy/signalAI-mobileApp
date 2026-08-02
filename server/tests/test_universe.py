@@ -486,7 +486,7 @@ def test_candidate_pool_is_wider_than_the_active_limit():
 def test_active_crypto_universe_is_capped_after_admission(session):
     """Допущенных больше предела — лишние выбывают с названной причиной."""
     instruments = []
-    for i in range(15):
+    for i in range(30):
         item = Instrument(
             instrument_id=f"CRYPTO:PERP:C{i}USDT", venue=Venue.CRYPTO,
             asset_class=AssetClass.CRYPTO_PERPETUAL, symbol=f"C{i}USDT",
@@ -505,8 +505,9 @@ def test_active_crypto_universe_is_capped_after_admission(session):
         item.is_tradable = True
 
     universe._cap_active_crypto(session, instruments, report, cfg=get_config())
+    cap = int(get_config().get("universe.crypto.max_active"))
     tradable = [i.symbol for i in instruments if i.is_tradable]
-    assert len(tradable) == 12
+    assert len(tradable) == cap
     # Отсечены самые тонкие по обороту, а не случайные.
     assert set(tradable).isdisjoint({"C0USDT", "C1USDT", "C2USDT"})
     dropped = report.verdicts["CRYPTO:PERP:C0USDT"]
@@ -516,7 +517,7 @@ def test_active_crypto_universe_is_capped_after_admission(session):
 def test_mandatory_pair_keeps_its_place_when_capping(session):
     """BTC и ETH обязательны по §5.3 — предел их не выталкивает."""
     instruments = []
-    for symbol in ["BTCUSDT", "ETHUSDT", *[f"C{i}USDT" for i in range(13)]]:
+    for symbol in ["BTCUSDT", "ETHUSDT", *[f"C{i}USDT" for i in range(28)]]:
         item = Instrument(
             instrument_id=f"CRYPTO:PERP:{symbol}", venue=Venue.CRYPTO,
             asset_class=AssetClass.CRYPTO_PERPETUAL, symbol=symbol,
@@ -538,4 +539,4 @@ def test_mandatory_pair_keeps_its_place_when_capping(session):
     universe._cap_active_crypto(session, instruments, report, cfg=get_config())
     tradable = {i.symbol for i in instruments if i.is_tradable}
     assert {"BTCUSDT", "ETHUSDT"} <= tradable
-    assert len(tradable) == 12
+    assert len(tradable) == int(get_config().get("universe.crypto.max_active"))

@@ -254,3 +254,23 @@ def test_triggered_idea_can_also_be_overtaken(session: Session, instrument):
 
     supervise(session, now=NOW + timedelta(hours=2))
     assert idea.status is IdeaStatus.MISSED
+
+
+def test_вход_и_стоп_одной_свечой_убивают_идею(instrument):
+    """Быстрый прокол: свеча коснулась зоны и в тот же час прошла стоп.
+
+    Раньше свеча входа исключалась из проверки стопа, и если цена тут же
+    вернулась, идея оставалась живой навсегда: следующие бары стоп уже не
+    трогали. Ровно так ETHUSDT неделю висел в «наблюдении» с пройденным
+    стопом — спринг случился за одну H1-свечу.
+    """
+    idea = short_idea(instrument.instrument_id)
+    # SHORT: зона 90000–90200, стоп 90800. Одна свеча: вход в зону и
+    # прокол стопа сразу (верх 90900), затем возврат вниз.
+    bars = [
+        bar(instrument.instrument_id, NOW + timedelta(hours=1), 90100, 90900, 90150),
+        bar(instrument.instrument_id, NOW + timedelta(hours=2), 89900, 90200, 90000),
+    ]
+    verdict = judge(idea, bars, now=NOW + timedelta(hours=3))
+    assert verdict.status is IdeaStatus.CANCELLED
+    assert verdict.reason_code == "stopped_after_entry"

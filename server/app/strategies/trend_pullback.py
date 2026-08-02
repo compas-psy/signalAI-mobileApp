@@ -216,7 +216,30 @@ def build(ctx: SetupContext, params: TrendPullbackParams | None = None) -> Outco
         return reject(STRATEGY, checks)
 
     atr_trigger = ctx.atr_trigger or Decimal(0)
-    buffer = max(atr_trigger * p.stop_atr_buffer, ctx.tick_size * p.min_stop_ticks)
+    # §10.4 дословно: «stop за sweep + max(0.1 ATR, 2 tick)». Прежняя
+    # реализация потеряла «за sweep»: буфер был 0.10 ATR от зоны, а рынок
+    # в этом же диапазоне снимал ликвидность на 0.20–0.55 ATR — движок сам
+    # это детектировал и печатал на графике. Стоп ставился внутрь зоны,
+    # куда ходят за стопами, и две идеи подряд выбило при верном
+    # направлении: BTC после выбивания дошёл до TP3 без нас.
+    #
+    # Буфер обязан покрыть наблюдаемую глубину свипов в сторону стопа.
+    # Для лонга стоп снизу — смотрим проколы минимумов, для шорта наоборот.
+    stop_side_low = direction is Direction.LONG
+    known_sweeps = ctx.smc.payload.get("sweeps", []) if ctx.smc is not None else []
+    sweep_depth = max(
+        (
+            Decimal(str(s.penetration_atr))
+            for s in known_sweeps
+            if s.is_high != stop_side_low
+        ),
+        default=Decimal(0),
+    )
+    buffer = max(
+        atr_trigger * (sweep_depth + p.stop_atr_buffer),
+        atr_trigger * p.stop_atr_buffer,
+        ctx.tick_size * p.min_stop_ticks,
+    )
 
     zone_low = min((z.low for z in hit), default=price)
     zone_high = max((z.high for z in hit), default=price)
