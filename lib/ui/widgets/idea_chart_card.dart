@@ -110,6 +110,9 @@ class IdeaChartCard extends StatelessWidget {
                 TradeChart(
                   signal: signal,
                   chart: chart,
+                  // Свеча, на которой движок принял решение (§10.7):
+                  // без неё точка постановки идеи выглядит взятой с потолка.
+                  bornAt: idea?.createdAt,
                   // Разметка §10.6 — та, что нашли детекторы движка.
                   annotations: idea?.annotations ?? const [],
                   visibleLayers: visible,

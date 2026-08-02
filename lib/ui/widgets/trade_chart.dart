@@ -28,7 +28,13 @@ class TradeChart extends StatefulWidget {
     this.visibleLayers = allLayers,
     this.highlight = const {},
     this.chart,
+    this.bornAt,
   });
+
+  /// Когда идея появилась. На графике это свеча, по которой движок принял
+  /// решение, — и владелец вправе видеть её, а не угадывать: «непонятно,
+  /// на какой свече идея появилась» превращает план в шум.
+  final DateTime? bornAt;
 
   /// Свечи, загруженные с движка (§23, `market/{id}/bars`).
   ///
@@ -116,6 +122,7 @@ class _TradeChartState extends State<TradeChart> with SingleTickerProviderStateM
           builder: (context, _) => CustomPaint(
             painter: _ChartPainter(
               signal: widget.signal,
+              bornAt: widget.bornAt,
               chart: chart,
               annotations: widget.annotations,
               layers: widget.visibleLayers,
@@ -208,7 +215,10 @@ class _ChartPainter extends CustomPainter {
     required this.layers,
     required this.highlight,
     required this.pulse,
+    this.bornAt,
   });
+
+  final DateTime? bornAt;
 
   final TradingSignal signal;
   final SignalChart chart;
@@ -429,6 +439,7 @@ class _ChartPainter extends CustomPainter {
     // Порядок — по display_priority §10.7, от низкого к высокому, чтобы
     // важное легло сверху. Сервер отдаёт список уже отсортированным по
     // убыванию, поэтому идём с конца.
+    _paintBirth(canvas, x: x, size: size, candleWidth: candleWidth);
     _paintAnnotations(canvas, x: x, y: y, candleWidth: candleWidth, count: n);
 
     // Маркер текущей цены — пульсирует, как в макете.
@@ -619,6 +630,46 @@ class _ChartPainter extends CustomPainter {
         ChartLayer.events => C.warning,
         ChartLayer.candles => C.muted,
       };
+
+  /// Свеча, на которой идея появилась.
+  ///
+  /// Вертикальный пунктир с подписью. Рисуется только когда время свечи
+  /// известно: метка, поставленная наугад, выглядела бы как факт,
+  /// которого не было. Если идея родилась раньше видимого окна — метки
+  /// нет, и это честно: показывать её на первой попавшейся свече значит
+  /// врать о моменте решения.
+  void _paintBirth(
+    Canvas canvas, {
+    required double Function(num) x,
+    required Size size,
+    required double candleWidth,
+  }) {
+    final born = bornAt;
+    if (born == null) return;
+    final index = _indexAt(born.toUtc());
+    if (index == null) return;
+    final first = chart.candles.first.openTime;
+    if (first != null && born.toUtc().isBefore(first)) return;
+
+    final cx = x(index) + candleWidth / 2;
+    final paint = Paint()
+      ..color = C.accent.withValues(alpha: 0.55)
+      ..strokeWidth = 1;
+    const dash = 4.0;
+    var yPos = 14.0;
+    while (yPos < size.height - 6) {
+      canvas.drawLine(Offset(cx, yPos), Offset(cx, yPos + dash), paint);
+      yPos += dash * 2;
+    }
+    final label = TextPainter(
+      text: TextSpan(
+        text: 'идея',
+        style: T.mono(9, color: C.accent.withValues(alpha: 0.9)),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    label.paint(canvas, Offset(cx - label.width / 2, 2));
+  }
 
   void _paintAnnotations(
     Canvas canvas, {
