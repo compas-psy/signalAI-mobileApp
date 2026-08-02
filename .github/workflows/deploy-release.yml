@@ -101,12 +101,13 @@ jobs:
           if [ "${FREE_GB:-0}" -lt 12 ]; then
             echo 'модель не включается: меньше 12G свободно'
           else
+            $SUDO sed -i 's/^SIGNALAI_LLM_MEMORY_LIMIT=5g$/SIGNALAI_LLM_MEMORY_LIMIT=3g/' "$ENV_FILE"
             grep -q '^SIGNALAI_LLM_BASE_URL=' "$ENV_FILE" || printf '%s\n' \
               'SIGNALAI_LLM_BASE_URL=http://ollama:11434' \
               'SIGNALAI_LLM_MODEL=qwen3.5:4b' \
               'SIGNALAI_LLM_NUM_CTX=4096' \
               'SIGNALAI_LLM_TIMEOUT_SECONDS=180' \
-              'SIGNALAI_LLM_MEMORY_LIMIT=5g' \
+              'SIGNALAI_LLM_MEMORY_LIMIT=3g' \
               | $SUDO tee -a "$ENV_FILE" >/dev/null
             LLM_PROFILE='--profile llm'
           fi
@@ -277,6 +278,21 @@ jobs:
           curl --fail --silent --show-error --max-time 30 \
             http://127.0.0.1:8000/api/v1/research/model \
             || echo 'состояние модели не получено: смотрите логи api'
+          echo
+
+          echo '── память хоста ──'
+          free -h
+          $SUDO docker stats --no-stream --format \
+            'table {{.Name}}\t{{.MemUsage}}\t{{.CPUPerc}}' 2>/dev/null | head -8 || true
+          echo
+
+          # Старые образы копятся с каждой пересборкой и съедают диск
+          # молча: каждый деплой оставляет прежний слой безымянным. Чистка
+          # трогает только безымянные и неиспользуемые — работающие
+          # контейнеры и веса модели не задевает.
+          echo '── чистка старых образов ──'
+          $SUDO docker image prune -f 2>/dev/null | tail -1 || true
+          $SUDO docker builder prune -f --keep-storage 2GB 2>/dev/null | tail -1 || true
           echo
 
           echo '── исходящие правила хоста ──'
