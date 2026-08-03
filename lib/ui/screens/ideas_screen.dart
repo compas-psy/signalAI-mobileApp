@@ -78,11 +78,16 @@ class IdeasScreen extends StatelessWidget {
             // в выдаче открывала пустой разбор под подписью «идеи за ней
             // нет». Ссылка ведёт туда, где что-то есть, или её нет вовсе.
             final source = all.where((i) => i.id == trade.signalId).firstOrNull;
+            // Идея могла уйти из выдачи терминальной, пока сделка жива, —
+            // разбор при этом существует на сервере и догружается по
+            // идентификатору. Мёртвая ссылка остаётся только у сделок
+            // скринера без идентификатора вовсе.
+            final ideaId = trade.signalId;
             return PaperPositionCard(
               trade: trade,
               idea: source,
               onOpenIdea:
-                  source == null ? null : () => controller.openSignal(source.id),
+                  ideaId.isEmpty ? null : () => controller.openSignal(ideaId),
             );
           }(),
       ],

@@ -1773,11 +1773,17 @@ class AppController extends ChangeNotifier {
     if (demoData) return;
     final current = _engineIdeas.ideas.where((i) => i.id == id).firstOrNull;
     // Уже полная — доказательства бывают только в детальном ответе.
-    if (current == null || current.evidence.isNotEmpty) return;
+    if (current != null && current.evidence.isNotEmpty) return;
     final full = await _engine.detail(id);
     if (full == null) return;
+    // Идеи может не быть в ленте вовсе: терминальная ушла из выдачи, а
+    // бумажная сделка по ней жива и ссылается сюда из журнала. Раньше
+    // здесь стоял выход — и разбор такой идеи оставался пустым навсегда:
+    // «сделка есть, идей по ней нет». Сервер деталь терминальной идеи
+    // хранит и отдаёт; добавляем её в ленту, а не только заменяем.
     _engineIdeas = EngineIdeas(
       ideas: [
+        if (current == null) full,
         for (final idea in _engineIdeas.ideas) idea.id == id ? full : idea,
       ],
       unavailableReason: _engineIdeas.unavailableReason,
