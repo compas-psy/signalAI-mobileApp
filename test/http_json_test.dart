@@ -131,4 +131,32 @@ void main() {
     );
     expect(hits, 3);
   });
+
+  test('403 с телом CloudFront доходит как блокировка страны', () async {
+    // Тело выбрасывалось вместе с причиной: владелец видел «ответил 403» и
+    // шёл проверять свои ключи, хотя ключи ни при чём.
+    final server = await serve((request) {
+      request.response.statusCode = 403;
+      request.response.write(
+        '<HTML><HEAD><title>ERROR: The request could not be satisfied</title>'
+        '</HEAD><BODY>The Amazon CloudFront distribution is configured to '
+        'block access from your country.</BODY></HTML>',
+      );
+      request.response.close();
+    });
+    addTearDown(() => server.close(force: true));
+
+    final http = HttpJson(timeout: const Duration(seconds: 3));
+    addTearDown(http.close);
+
+    await expectLater(
+      http.get(Uri.parse('http://127.0.0.1:${server.port}/'), attempts: 3),
+      throwsA(
+        isA<MarketDataException>()
+            .having((e) => e.kind, 'kind', NetFailureKind.geoBlocked)
+            .having((e) => e.isEnvironment, 'isEnvironment', isTrue)
+            .having((e) => e.message, 'message', contains('страны')),
+      ),
+    );
+  });
 }

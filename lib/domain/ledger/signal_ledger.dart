@@ -328,7 +328,16 @@ class SignalLedger {
     if (trades.length > maxTrades) trades.removeRange(0, trades.length - maxTrades);
   }
 
+  /// Сколько живёт отбраковка.
+  ///
+  /// Срок, а не только количество. Предел в 300 записей значил, что на
+  /// редком инструменте строка висела месяцами: форвард-проверка «а что было
+  /// бы, если бы взяли» считается за сутки, после чего запись — история, а
+  /// не новость. Владелец видел это как «в журнале висят непонятные ошибки».
+  static const rejectionTtl = Duration(days: 14);
+
   void recordRejection(String symbol, String reason, double price, DateTime now) {
+    pruneRejections(now);
     // Одна запись на символ в сутки: отбраковка повторяется каждый час,
     // журналу нужен факт, а не эхо.
     final duplicate = rejected.any((r) =>
@@ -338,6 +347,15 @@ class SignalLedger {
     if (rejected.length > maxRejected) {
       rejected.removeRange(0, rejected.length - maxRejected);
     }
+  }
+
+  /// Убрать протухшие отбраковки.
+  ///
+  /// Отдельным методом, потому что вызывать его нужно и при чтении: журнал
+  /// может месяц пролежать без единой новой записи, и тогда сам факт записи
+  /// протухшее не вычистит.
+  void pruneRejections(DateTime now) {
+    rejected.removeWhere((r) => now.difference(r.createdAt) > rejectionTtl);
   }
 
   /// Сверка всех живых записей по свежим свечам (символ → бары рабочего ТФ).

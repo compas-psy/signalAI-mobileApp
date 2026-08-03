@@ -4,6 +4,7 @@ import 'dart:io';
 import '../../domain/broker/broker.dart';
 import '../../domain/broker/tinvest_role.dart';
 import '../local_store.dart';
+import '../market/net_failure.dart';
 import '../net/resilient_http.dart';
 
 /// Курс инструмента в формате Т-Инвестиций: целая часть и миллиардные доли.
@@ -805,8 +806,8 @@ class TInvestBroker implements Broker {
       throw const BrokerException('Токен Т-Инвестиций не задан');
     }
 
+    final uri = Uri.parse('$_base/$_ns.$service/$method');
     try {
-      final uri = Uri.parse('$_base/$_ns.$service/$method');
       final request = await _client.postUrl(uri).timeout(timeout);
       request.headers
         ..set(HttpHeaders.authorizationHeader, 'Bearer $token')
@@ -827,7 +828,10 @@ class TInvestBroker implements Broker {
     } on BrokerException {
       rethrow;
     } on Object catch (e) {
-      throw BrokerException('Нет связи с Т-Инвестициями: $e');
+      // Именно здесь владелец получал в журнал сырой `HandshakeException`
+      // с `CERTIFICATE_VERIFY_FAILED` под подписью «нет связи». Связь есть —
+      // TLS до брокера перехвачен, и это разные починки.
+      throw BrokerException(brokerFailureText(e, uri.host));
     }
   }
 

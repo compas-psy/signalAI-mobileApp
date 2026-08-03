@@ -11,6 +11,7 @@ import '../data/local_analysis_repository.dart';
 import '../data/local_store.dart';
 import '../data/market/idea_chart_source.dart';
 import '../data/market/iss_client.dart';
+import '../data/market/net_failure.dart';
 import '../data/mock/demo_ideas.dart';
 import '../data/mock/demo_repository.dart';
 import '../data/native_bridge.dart';
@@ -1552,6 +1553,50 @@ class AppController extends ChangeNotifier {
     }
     _venues = result;
     notifyListeners();
+  }
+
+  /// Здоровье данных для чипа в шапке.
+  ///
+  /// Признаки деградации приложение считало давно — `lastResultPartial`,
+  /// оговорка в `sourceNote`, журнал прогонов, — но не показывало нигде.
+  /// Экран выглядел одинаково и когда всё посчитано, и когда половина
+  /// источников молчала: владелец видел пустую ленту и решал, что приложение
+  /// мертво.
+  ///
+  /// Через `RiskMode.caution` это выражать нельзя: он означает «допуск к
+  /// живым деньгам урезан» — про риск, а не про источники.
+  DataHealth get dataHealth {
+    final repository = _repository;
+    if (repository is! LocalAnalysisRepository) return DataHealth.full;
+    if (_digest == null || repository.lastRefreshError != null) {
+      return DataHealth.blind;
+    }
+    return repository.lastResultPartial ? DataHealth.partial : DataHealth.full;
+  }
+
+  /// Чем именно болеют данные — строкой для подсказки под чипом.
+  ///
+  /// Собирается из того, что уже посчитано: оговорка расчёта и журнал
+  /// прогонов. Без неё чип сообщает диагноз, но не причину, а «неполные»
+  /// без «чего именно не хватило» — та же отписка, что и молчание.
+  String get dataHealthDetail {
+    final repository = _repository;
+    final parts = <String>[];
+    if (repository is LocalAnalysisRepository) {
+      final failure = repository.lastRefreshError;
+      if (failure != null) {
+        parts.add(failure is MarketDataException
+            ? failure.message
+            : 'последний пересчёт не удался');
+      }
+    }
+    final note = _digest?.sourceNote ?? '';
+    final marker = note.indexOf('Внимание: расчёт неполный —');
+    if (marker >= 0) {
+      parts.add(note.substring(marker).replaceAll('\n', ' ').trim());
+    }
+    parts.add(digestRunsNote);
+    return parts.join(' · ');
   }
 
   /// Подпись о свежести данных для шапки раздела.

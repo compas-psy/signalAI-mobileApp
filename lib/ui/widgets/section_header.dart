@@ -18,6 +18,9 @@ class SectionHeader extends StatelessWidget {
     required this.onPill,
     required this.mode,
     this.dataAt,
+    this.health = DataHealth.full,
+    this.healthDetail = '',
+    this.onHealth,
     this.trailing,
   });
 
@@ -28,6 +31,13 @@ class SectionHeader extends StatelessWidget {
 
   /// Подпись со временем данных: «данные 12:40 МСК».
   final String? dataAt;
+
+  /// На чём посчитано то, что на экране. Показывается только при деградации:
+  /// «всё в порядке» — это состояние по умолчанию, и занимать им место в
+  /// шапке значит приучить не замечать чип, когда он наконец загорится.
+  final DataHealth health;
+  final String healthDetail;
+  final VoidCallback? onHealth;
 
   final Widget? trailing;
 
@@ -56,12 +66,31 @@ class SectionHeader extends StatelessWidget {
                       const SizedBox(height: 2),
                       Text(dataAt!, style: T.mono(10.5, color: C.muted)),
                     ],
+                    // Причина прямо под заголовком, а не в диагностике.
+                    // Пустая лента без объяснения читается как «приложение
+                    // мертво» — именно так владелец её и прочитал.
+                    if (health.isDegraded && healthDetail.isNotEmpty) ...[
+                      const SizedBox(height: 3),
+                      Text(
+                        healthDetail,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: T.body(
+                          10.5,
+                          color: health == DataHealth.blind ? C.red : C.warning,
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               ),
               const SizedBox(width: 10),
               ?trailing,
               if (trailing != null) const SizedBox(width: 8),
+              if (health.isDegraded) ...[
+                DataHealthChip(health: health, onTap: onHealth),
+                const SizedBox(width: 6),
+              ],
               RiskModeChip(mode: mode),
             ],
           ),
@@ -138,6 +167,45 @@ class RiskModeChip extends StatelessWidget {
         borderRadius: BorderRadius.circular(R.chip),
       ),
       child: Text(mode.label, style: T.body(9.5, weight: 800, color: color)),
+    );
+  }
+}
+
+/// Индикатор здоровья данных: на чём посчитано то, что на экране.
+///
+/// Отдельный чип, а не оттенок [RiskModeChip]. `CAUTION` означает «допуск к
+/// живым деньгам урезан» — утверждение про риск; молчащая биржа риском не
+/// управляет, и подменять одно другим значит врать в обе стороны. Владелец
+/// видел пустую ленту при полностью нормальном на вид заголовке и делал
+/// единственный доступный вывод: приложение мертво.
+class DataHealthChip extends StatelessWidget {
+  const DataHealthChip({super.key, required this.health, this.onTap});
+
+  final DataHealth health;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = switch (health) {
+      DataHealth.full => C.green,
+      DataHealth.partial => C.warning,
+      DataHealth.blind => C.red,
+    };
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.12),
+          border: Border.all(color: color.withValues(alpha: 0.35)),
+          borderRadius: BorderRadius.circular(R.chip),
+        ),
+        child: Text(
+          health.label.toUpperCase(),
+          style: T.body(9.5, weight: 800, color: color),
+        ),
+      ),
     );
   }
 }

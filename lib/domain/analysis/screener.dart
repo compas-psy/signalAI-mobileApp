@@ -201,11 +201,28 @@ class ScoreComponent {
 /// [price] — цена инструмента на момент отбраковки: по ней журнал сигналов
 /// потом честно меряет, что было бы, если бы фильтр не сработал.
 class RejectedCandidate {
-  const RejectedCandidate(this.symbol, this.reason, {this.price});
+  const RejectedCandidate(
+    this.symbol,
+    this.reason, {
+    this.price,
+    this.infrastructure = false,
+  });
+
+  /// Отбраковка не по существу идеи, а из-за недоступности данных.
+  ///
+  /// Отдельный признак нужен потому, что вечный журнал отбраковок отвечает
+  /// на вопрос «а что было бы, если бы взяли». У строки «источник не
+  /// ответил» такого ответа нет: инструмент не был отвергнут, его просто не
+  /// посмотрели. Владелец видел эти строки годами копящимся мусором вида
+  /// «нет данных: MarketDataException…».
+  const RejectedCandidate.unreachable(this.symbol, this.reason)
+      : price = null,
+        infrastructure = true;
 
   final String symbol;
   final String reason;
   final double? price;
+  final bool infrastructure;
 }
 
 /// Результат работы скринера по инструменту.

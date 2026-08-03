@@ -121,6 +121,9 @@ class AppShell extends StatelessWidget {
             onPill: controller.goPill,
             mode: controller.riskMode,
             dataAt: controller.dataFreshness,
+            health: controller.dataHealth,
+            healthDetail: controller.dataHealthDetail,
+            onHealth: () => controller.showToast(controller.dataHealthDetail),
           ),
           Expanded(
             child: Row(
@@ -157,6 +160,9 @@ class AppShell extends StatelessWidget {
             onPill: controller.goPill,
             mode: controller.riskMode,
             dataAt: controller.dataFreshness,
+            health: controller.dataHealth,
+            healthDetail: controller.dataHealthDetail,
+            onHealth: () => controller.showToast(controller.dataHealthDetail),
           ),
         Expanded(child: _screen(controller)),
       ],

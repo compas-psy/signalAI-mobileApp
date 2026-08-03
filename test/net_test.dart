@@ -183,5 +183,91 @@ void main() {
         isTrue,
       );
     });
+
+    test('перехваченный TLS — не «нет сети» и не ретраится', () {
+      // Ровно то, что владелец видел от Т-Инвестиций на устройстве. Прежняя
+      // классификация звала это «соединение не установилось», относила к
+      // отсутствию сети и повторяла — диагноз обратный настоящему.
+      final failure = MarketDataException.from(
+        const HandshakeException(
+          'Handshake error in client (OS Error: CERTIFICATE_VERIFY_FAILED: '
+          'self signed certificate in certificate chain)',
+        ),
+        'invest-public-api.tinkoff.ru',
+      );
+
+      expect(failure.kind, NetFailureKind.tlsIntercepted);
+      expect(failure.retryable, isFalse);
+      expect(failure.isConnectivity, isFalse);
+      expect(failure.isEnvironment, isTrue);
+      expect(failure.advice, isNotEmpty);
+    });
+
+    test('обычный отказ TLS остаётся отказом соединения', () {
+      final failure = MarketDataException.from(
+        const HandshakeException('Connection terminated during handshake'),
+        'iss.moex.com',
+      );
+
+      expect(failure.kind, NetFailureKind.connection);
+      expect(failure.isEnvironment, isFalse);
+    });
+  });
+
+  group('MarketDataException.fromResponse', () {
+    test('403 CloudFront — блокировка страны, а не ошибка запроса', () {
+      // Тело раньше выбрасывалось вместе с причиной, и владелец получал
+      // «api.bybit.com ответил 403» — то есть шёл проверять свои ключи,
+      // хотя ключи ни при чём и повтор не поможет никогда.
+      final failure = MarketDataException.fromResponse(
+        403,
+        'api.bybit.com',
+        body: '<HTML><HEAD>The Amazon CloudFront distribution is configured '
+            'to block access from your country.</HEAD></HTML>',
+      );
+
+      expect(failure.kind, NetFailureKind.geoBlocked);
+      expect(failure.retryable, isFalse);
+      expect(failure.isConnectivity, isFalse);
+      expect(failure.isEnvironment, isTrue);
+      expect(failure.message, contains('страны'));
+    });
+
+    test('403 без маркеров остаётся отказом запроса', () {
+      final failure = MarketDataException.fromResponse(
+        403,
+        'api.bybit.com',
+        body: '{"retCode":10003,"retMsg":"API key is invalid"}',
+      );
+
+      expect(failure.kind, NetFailureKind.badRequest);
+      expect(failure.isEnvironment, isFalse);
+    });
+
+    test('429 и 5xx ретраятся', () {
+      expect(
+        MarketDataException.fromResponse(429, 'iss.moex.com').retryable,
+        isTrue,
+      );
+      expect(
+        MarketDataException.fromResponse(503, 'iss.moex.com').retryable,
+        isTrue,
+      );
+    });
+  });
+
+  group('brokerFailureText', () {
+    test('брокер говорит причину и совет, а не бросает сырое исключение', () {
+      final text = brokerFailureText(
+        const HandshakeException(
+          'OS Error: CERTIFICATE_VERIFY_FAILED: self signed certificate',
+        ),
+        'invest-public-api.tinkoff.ru',
+      );
+
+      expect(text, contains('перехвачено'));
+      expect(text, contains('VPN'));
+      expect(text, isNot(contains('CERTIFICATE_VERIFY_FAILED')));
+    });
   });
 }

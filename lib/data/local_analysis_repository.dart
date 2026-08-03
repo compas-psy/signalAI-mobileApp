@@ -1752,6 +1752,10 @@ class LocalAnalysisRepository
         );
       }
       for (final r in lastRejections) {
+        // Недоступность источника — не отбраковка. Вечный журнал отвечает на
+        // «а что было бы, если бы взяли», а у «данные не пришли» такого
+        // ответа нет: инструмент не отвергли, его не посмотрели.
+        if (r.infrastructure) continue;
         final price = r.price;
         if (price != null) ledger.recordRejection(r.symbol, r.reason, price, now);
       }
@@ -1795,9 +1799,19 @@ class LocalAnalysisRepository
     return count == 0 ? 1 : count;
   }
 
-  /// Короткая причина отказа для подписи дайджеста.
-  static String _shortReason(Object e) =>
-      e is MarketDataException ? e.message : 'источник не ответил';
+  /// Короткая причина отказа для подписи дайджеста и строк журнала.
+  ///
+  /// Сырое `$e` сюда попадать не должно: владелец видел в журнале
+  /// `нет данных: MarketDataException: HandshakeException...` и справедливо
+  /// назвал это непонятной ошибкой. Класс исключения — деталь реализации,
+  /// причина — то, что можно починить.
+  static String _shortReason(Object e) {
+    if (e is MarketDataException) {
+      final advice = e.advice;
+      return advice.isEmpty ? e.message : '${e.message}. $advice';
+    }
+    return 'источник не ответил';
+  }
 
   /// Сверка журнала: живым записям без свежих свечей (символ выпал из
   /// вселенной) свечи дотягиваются отдельно.
@@ -1908,7 +1922,8 @@ class LocalAnalysisRepository
         changeUp: snapshot.changePercent >= 0,
       );
     } on Exception catch (e) {
-      lastRejections.add(RejectedCandidate(snapshot.spec.symbol, 'нет свечей: $e'));
+      lastRejections.add(RejectedCandidate.unreachable(
+          snapshot.spec.symbol, 'свечи не пришли: ${_shortReason(e)}'));
       return null;
     }
   }
@@ -1976,7 +1991,8 @@ class LocalAnalysisRepository
         );
         if (result != null) results.add(result);
       } on Exception catch (e) {
-        lastRejections.add(RejectedCandidate(ticker.symbol, 'нет данных: $e'));
+        lastRejections.add(RejectedCandidate.unreachable(
+            ticker.symbol, 'данные не пришли: ${_shortReason(e)}'));
       }
     }
     return results;
@@ -2735,7 +2751,8 @@ class LocalAnalysisRepository
             changeUp: share.changePercent >= 0,
           );
         } on Exception catch (e) {
-          rejected.add(RejectedCandidate(share.spec.symbol, 'нет данных: $e'));
+          rejected.add(RejectedCandidate.unreachable(
+              share.spec.symbol, 'данные не пришли: ${_shortReason(e)}'));
           return null;
         }
       },
@@ -3464,7 +3481,12 @@ class LocalAnalysisRepository
   }
 
   /// Последние отбраковки с форвард-проверкой «а что было бы, если бы взяли».
+  ///
+  /// Возраст режется здесь тоже, а не только при записи: журнал может месяц
+  /// пролежать без единой новой отбраковки, и тогда чистка при записи не
+  /// случится ни разу — а на экране всё это время висит позапрошлый месяц.
   List<RejectionRow> _rejectionRows() {
+    ledger.pruneRejections(DateTime.now());
     final recent = ledger.rejected.reversed.take(20);
     return [
       for (final r in recent)

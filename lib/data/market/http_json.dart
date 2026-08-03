@@ -70,12 +70,14 @@ class HttpJson {
           );
         });
         if (response.statusCode >= 400) {
-          final code = response.statusCode;
-          final error = MarketDataException(
-            '${uri.host} ответил $code',
-            kind: code == 429 || code >= 500
-                ? NetFailureKind.serverError
-                : NetFailureKind.badRequest,
+          // Тело обязано дойти до классификатора. Причина отказа лежит
+          // именно там: CloudFront на 403 прямо пишет «block access from
+          // your country», а сама по себе тройка 403 неотличима от «ключ
+          // без прав» — и владелец идёт искать ошибку не туда.
+          final error = MarketDataException.fromResponse(
+            response.statusCode,
+            uri.host,
+            body: body,
           );
           if (!error.retryable) throw error;
           lastError = error;

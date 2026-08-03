@@ -217,4 +217,28 @@ void main() {
     expect(ledger.rejected.single.movePercent24h, isNotNull);
     expect(ledger.rejected.single.movePercent24h!, greaterThan(5));
   });
+
+  test('отбраковка протухает по возрасту, а не только по количеству', () {
+    // Предел в 300 записей значил, что на редком инструменте строка висела
+    // месяцами. Владелец увидел это как «в журнале висят непонятные ошибки».
+    final ledger = SignalLedger();
+    ledger.recordRejection('OLDU6', 'score ниже порога', 100, start);
+    ledger.recordRejection(
+      'NEWU6',
+      'score ниже порога',
+      100,
+      start.add(SignalLedger.rejectionTtl + const Duration(days: 1)),
+    );
+
+    expect(ledger.rejected.map((r) => r.symbol), ['NEWU6']);
+  });
+
+  test('чистка возможна без новой записи: журнал мог месяц молчать', () {
+    final ledger = SignalLedger();
+    ledger.recordRejection('OLDU6', 'мало истории', 100, start);
+
+    ledger.pruneRejections(start.add(const Duration(days: 40)));
+
+    expect(ledger.rejected, isEmpty);
+  });
 }

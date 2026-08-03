@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import '../../domain/broker/broker.dart';
+import '../market/net_failure.dart';
 import '../net/resilient_http.dart';
 
 /// Подписыватель запроса: принимает строку, возвращает hex HMAC-SHA256.
@@ -349,7 +350,10 @@ class BybitBroker implements Broker {
     } on BrokerException {
       rethrow;
     } on Object catch (e) {
-      throw BrokerException('Нет связи с Bybit: $e');
+      // Сырое `$e` владельцу ничего не говорит и вдобавок врёт: перехваченный
+      // TLS выглядел как «нет связи», хотя связь есть и чинится в настройках
+      // сети, а не ожиданием. Классификатор один на всё приложение.
+      throw BrokerException(brokerFailureText(e, uri.host));
     }
   }
 
