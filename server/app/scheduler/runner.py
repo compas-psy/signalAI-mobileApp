@@ -155,6 +155,7 @@ def build_default_scheduler(
     from ..market.universe import review_universe, sync_crypto, sync_futures
     from ..pipeline.scan import scan as run_scan
     from ..pipeline.supervise import supervise as run_supervise
+    from ..paper.tracker import track as run_paper
     from ..pipeline.trigger import recheck as run_trigger_recheck
     from ..research.collector import collect_all
     from ..research.run_engines import run_demand
@@ -227,6 +228,15 @@ def build_default_scheduler(
         else:
             detail += ", живых изменений нет"
         return detail
+
+    def paper(session: Session) -> str:
+        # После триггера и до скана: сделка заводится по идее, которая
+        # только что стала сработавшей, и ведётся по свежим барам.
+        #
+        # Владелец разрешил старт без подтверждения. Требование его же:
+        # «она сама отслеживается и закрывается, не зависает до времён,
+        # пока срок жизни идеи закончился».
+        return run_paper(session).summary()
 
     def trigger(session: Session) -> str:
         # Идёт после супервизора и до скана. После — потому что подтверждать
@@ -349,6 +359,7 @@ def build_default_scheduler(
     scheduler.add("review", review_every, review)
     scheduler.add("supervise", supervise_every, supervise)
     scheduler.add("trigger", trigger_every, trigger)
+    scheduler.add("paper", supervise_every, paper)
     scheduler.add("scan", scan_every, scan)
     scheduler.add("portfolio", portfolio_every, portfolio)
     scheduler.add("research", research_every, research)

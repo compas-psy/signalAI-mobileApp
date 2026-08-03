@@ -25,6 +25,7 @@ from fastapi import APIRouter, FastAPI
 from sqlalchemy import text
 
 from .api.v1 import ideas as ideas_routes
+from .api.v1 import paper as paper_routes
 from .api.v1 import market as market_routes
 from .api.v1 import portfolio as portfolio_routes
 from .api.v1 import research as research_routes
@@ -57,6 +58,7 @@ v1.include_router(ideas_routes.router)
 v1.include_router(risk_routes.router)
 v1.include_router(portfolio_routes.router)
 v1.include_router(research_routes.router)
+v1.include_router(paper_routes.router)
 app.include_router(v1)
 
 

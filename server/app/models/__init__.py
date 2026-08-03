@@ -34,6 +34,7 @@ from .enums import (
     VolatilityRegime,
 )
 from .ideas import IdeaEvent, IdeaOutcome, IdeaSkip, TradeIdea
+from .paper import PaperTrade
 from .research import (
     CollectionPermit,
     HypothesisEvidence,
@@ -70,6 +71,7 @@ __all__ = [
     "DataQualityEvent",
     "FxRate",
     # ideas
+    "PaperTrade",
     "TradeIdea",
     "IdeaEvent",
     "IdeaOutcome",
