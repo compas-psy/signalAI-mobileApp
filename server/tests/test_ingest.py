@@ -16,8 +16,14 @@ from app.market.ingest import (
     store_candles,
 )
 from app.market.candles import Candle
-from app.models import Bar, DataQualityEvent, Instrument
-from app.models.enums import AssetClass, QualityFlag, Timeframe, Venue
+from app.models import Bar, DataQualityEvent, Instrument, TradeIdea
+from app.models.enums import (
+    AssetClass,
+    IdeaStatus,
+    QualityFlag,
+    Timeframe,
+    Venue,
+)
 from app.scheduler.runner import (
     Scheduler,
     build_default_scheduler,
@@ -200,6 +206,44 @@ def test_пустой_успешный_ответ_записывается_ка�
     events = session.execute(select(DataQualityEvent)).scalars().all()
     assert [e.flag for e in events] == ["empty"]
     assert "свечей" in events[0].detail
+
+
+def test_выпавший_из_вселенной_но_с_живой_сделкой_всё_равно_грузится(session):
+    """Причина вечной слепоты по HYPEUSDT, найденная по живому логу.
+
+        supervise: без баров 4 (CRYPTO:PERP:HYPEUSDT) — надзор по ним слеп
+        paper: сверено 0, без баров 4 (CRYPTO:PERP:HYPEUSDT)
+
+    И ни одного записанного отказа загрузки — потому что загрузка по нему
+    не запускалась. Вселенная пересобирается по обороту, инструмент из неё
+    ушёл, а идея и позиция по нему остались: судить их не по чему, закрыть
+    нечем, надзор слеп навсегда.
+
+    Отбор во вселенную решает, о чём искать **новые** идеи, и не должен
+    решать, чем сопровождать уже открытое.
+    """
+    from tests.conftest import idea_kwargs
+
+    inst = make_instrument(session)
+    inst.in_universe = False
+    idea = TradeIdea(**idea_kwargs(inst.instrument_id, NOW))
+    idea.status = IdeaStatus.TRIGGERED
+    session.add(idea)
+    session.flush()
+
+    reports = ingest_universe(session, now=NOW, fetch=fixed(CANDLES))
+
+    assert [r.instrument_id for r in reports] == [inst.instrument_id] * len(reports)
+    assert any(r.written for r in reports), "бары так и не пришли"
+
+
+def test_выпавший_без_живого_не_грузится(session):
+    """Вселенная всё-таки отбор: держать всё подряд значит не иметь отбора."""
+    inst = make_instrument(session)
+    inst.in_universe = False
+    session.flush()
+
+    assert ingest_universe(session, now=NOW, fetch=fixed(CANDLES)) == []
 
 
 def test_unsupported_timeframe_is_reported_not_substituted(session):

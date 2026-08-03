@@ -58,6 +58,37 @@ def _record_failure(
     )
 
 
+def _supervised_ids(session: Session) -> set[str]:
+    """Инструменты, по которым что-то живое: идея или бумажная сделка.
+
+    Отдельным запросом, а не флагом на инструменте: «в отборе дня» и «по
+    нему открыта позиция» — разные вопросы, и первый пересчитывается по
+    обороту каждые несколько часов.
+    """
+    from ..models import PaperTrade, TradeIdea
+    from ..models.enums import IdeaStatus, PaperStatus
+
+    живые_идеи = session.execute(
+        select(TradeIdea.instrument_id).where(
+            TradeIdea.status.notin_(
+                [
+                    IdeaStatus.CLOSED,
+                    IdeaStatus.STOPPED,
+                    IdeaStatus.TIMED_OUT,
+                    IdeaStatus.CANCELLED,
+                    IdeaStatus.MISSED,
+                ]
+            )
+        )
+    ).scalars()
+    живые_сделки = session.execute(
+        select(PaperTrade.instrument_id).where(
+            PaperTrade.status.in_([PaperStatus.PENDING, PaperStatus.OPEN])
+        )
+    ).scalars()
+    return set(живые_идеи) | set(живые_сделки)
+
+
 def _note_empty(
     session: Session,
     source: str,
@@ -399,6 +430,26 @@ def ingest_universe(
             select(Instrument).where(Instrument.in_universe.is_(True))
         ).scalars()
     )
+    # Инструмент, выпавший из вселенной, но с живой идеей или живой
+    # сделкой, загружается всё равно.
+    #
+    # Найдено по живому логу: «без баров 4 (CRYPTO:PERP:HYPEUSDT)» из
+    # прогона в прогон, и ни одного записанного отказа загрузки — потому
+    # что загрузка по нему просто не запускалась. Вселенная пересобирается
+    # по обороту, инструмент из неё ушёл, а идеи и позиция по нему
+    # остались: судить их не по чему, закрыть нечем, и надзор слеп
+    # навсегда. Отбор во вселенную решает, о чём искать **новые** идеи, и
+    # не должен решать, чем сопровождать уже открытое.
+    держим = _supervised_ids(session)
+    известные = {i.instrument_id for i in instruments}
+    if держим - известные:
+        instruments += list(
+            session.execute(
+                select(Instrument).where(
+                    Instrument.instrument_id.in_(держим - известные)
+                )
+            ).scalars()
+        )
     budget = first_load_budget
     fresh: list[Instrument] = []
     for instrument in instruments:
