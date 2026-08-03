@@ -265,6 +265,14 @@ def _day(raw: object) -> date | None:
     if raw is None:
         return None
     text = str(raw).strip()
+    # Дата со временем — та же дата. Набор форматов был закрытым списком без
+    # ISO-варианта, поэтому «2026-05-31T00:00:00» не разбирался ни одним из
+    # них, период уходил в None и подхватывался годом — то есть весь ряд
+    # схлопывался в 31 декабря.
+    if "T" in text:
+        text = text.split("T", 1)[0]
+    elif " " in text and len(text) > 10:
+        text = text.split(" ", 1)[0]
     for pattern in ("%Y-%m-%d", "%d.%m.%Y", "%Y-%m", "%Y"):
         try:
             parsed = datetime.strptime(text, pattern)
@@ -337,7 +345,11 @@ def parse(fetched: Fetched, *, dataset: str) -> list[Datum]:
                     or row.get("elname")
                     or row.get("element_name")
                     or row.get("name")
+                    # И по `element_id`, и по `colId`: живой ответ несёт оба,
+                    # а `headerData` — это описание **колонок**, и связь с
+                    # ним у строки значения может идти через любой из них.
                     or названия.get(_key(row.get("element_id")), "")
+                    or названия.get(_key(row.get("colId")), "")
                 ),
                 period_start=_day(row.get("period_start") or row.get("dt_from")),
                 # `date` впереди `dt`: первое — полная дата, второе у этого

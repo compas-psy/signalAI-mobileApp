@@ -325,6 +325,64 @@ def test_ряд_не_схлопывается_в_одну_ячейку(session, 
     assert any("долл" in (f.unit or "") for f in факты)
 
 
+def test_дата_со_временем_остаётся_датой(session, monkeypatch):
+    """Вторая причина того же схлопывания.
+
+    Набор форматов был закрытым списком без ISO-варианта, поэтому
+    «2026-05-31T00:00:00» не разбирался ни одним из них. Период уходил в
+    None и подхватывался годом — и весь ряд ложился на 31 декабря, то есть
+    в один период.
+    """
+    sync_registry(session, now=NOW)
+    со_временем = json.dumps({
+        "headerData": [{"id": 7, "elname": "Курс"}],
+        "units": [{"id": 3, "val": "руб."}],
+        "RawData": [
+            {"element_id": 7, "unit_id": 3, "obs_val": "88.5",
+             "date": "2026-05-31T00:00:00", "dt": 2026},
+            {"element_id": 7, "unit_id": 3, "obs_val": "89.1",
+             "date": "2026-06-30T00:00:00", "dt": 2026},
+        ],
+    }).encode()
+    отдаёт(monkeypatch, со_временем)
+
+    collector.collect_cbr(session, now=NOW)
+    session.flush()
+
+    периоды = {
+        f.period_end for f in session.execute(select(ResearchObservation)).scalars()
+    }
+    assert len(периоды) == 2, периоды
+    assert all(p.month in (5, 6) for p in периоды), периоды
+
+
+def test_имя_показателя_находится_и_по_colId(session, monkeypatch):
+    """`headerData` описывает колонки, и связь может идти через `colId`.
+
+    Живой ответ несёт оба поля — `element_id` и `colId`, — и опираться
+    только на первое значит для части наборов остаться без имени
+    показателя, то есть снова свести весь ряд к одному ключу.
+    """
+    sync_registry(session, now=NOW)
+    через_колонку = json.dumps({
+        "headerData": [{"id": 11, "elname": "Спрос"}, {"id": 12, "elname": "Ожидания"}],
+        "RawData": [
+            {"colId": 11, "obs_val": "1.5", "date": "2026-06-30"},
+            {"colId": 12, "obs_val": "2.5", "date": "2026-06-30"},
+        ],
+    }).encode()
+    отдаёт(monkeypatch, через_колонку)
+
+    collector.collect_cbr(session, now=NOW)
+    session.flush()
+
+    типы = {
+        f.observation_type
+        for f in session.execute(select(ResearchObservation)).scalars()
+    }
+    assert len(типы) == 2, типы
+
+
 def test_отчёт_называет_числа_а_не_настроение():
     """Строка журнала — единственное место, где видно, идёт ли сбор."""
     report = collector.CollectReport(attempted=4, fetched=3, written=120, duplicates=7)
