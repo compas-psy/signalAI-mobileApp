@@ -215,7 +215,8 @@ def build_default_scheduler(
         report = run_supervise(session)
         detail = f"проверено {report.checked}"
         if report.no_data:
-            detail += f", без баров {report.no_data}"
+            named = ", ".join(report.no_data_instruments[:3])
+            detail += f", без баров {report.no_data} ({named}) — надзор по ним слеп"
         if report.changed:
             detail += (
                 f", закрыто {report.changed}"
@@ -238,7 +239,8 @@ def build_default_scheduler(
             # не подтверждения, а качества, и новые свечи его не добавят.
             detail += f", вне перепроверки {report.not_eligible}"
         if report.no_data:
-            detail += f", без баров {report.no_data}"
+            named = ", ".join(report.no_data_instruments[:3])
+            detail += f", без баров {report.no_data} ({named}) — надзор по ним слеп"
         if report.promoted:
             detail += f", подтверждено {report.promoted}"
             detail += "; " + "; ".join(report.details[:2])

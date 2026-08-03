@@ -89,6 +89,10 @@ class SuperviseReport:
     cancelled: int = 0
     timed_out: int = 0
     no_data: int = 0
+    #: Кто именно остался без баров. Счётчик без имён три дня прятал
+    #: слепоту по ETHUSDT: идея с пройденным стопом висела в Watch, потому
+    #: что судить её было не по чему, а «без баров 1» не говорил, у кого.
+    no_data_instruments: list[str] = field(default_factory=list)
     details: list[str] = field(default_factory=list)
 
     @property
@@ -264,6 +268,7 @@ def supervise(
             # Баров нет — сказать нечего. Закрывать идею по отсутствию данных
             # нельзя: это отказ загрузки, а не событие рынка.
             report.no_data += 1
+            report.no_data_instruments.append(idea.instrument_id)
             continue
 
         verdict = judge(idea, bars, now=moment)
