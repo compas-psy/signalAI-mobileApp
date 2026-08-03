@@ -599,7 +599,10 @@ abstract final class EngineContract {
         ],
         tpsTaken: (item['tps_taken'] as num?)?.toInt() ?? 0,
         breakevenAt: _time(item['breakeven_at']),
+        // Зафиксированное, а не плавающее: сервер суммирует взятые цели и
+        // открытый остаток в это число не входит.
         resultR: _numOrNull(item['realized_r']),
+        resultRealized: true,
         lastReconciledAt: _time(item['last_reconciled_at']),
         staleHours: (item['stale_hours'] as num?)?.toInt(),
         fromServer: true,

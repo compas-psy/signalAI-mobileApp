@@ -25,6 +25,7 @@ void main() {
     DateTime? breakevenAt,
     int? staleHours,
     bool fromServer = false,
+    bool resultRealized = false,
   }) =>
       PaperPosition(
         id: 'p1',
@@ -41,6 +42,7 @@ void main() {
         resultR: unrealizedR,
         staleHours: staleHours,
         fromServer: fromServer,
+        resultRealized: resultRealized,
       );
 
   Future<void> pump(WidgetTester tester, Widget child) => tester.pumpWidget(
@@ -197,6 +199,20 @@ void main() {
     await pump(tester, PaperPositionCard(trade: trade(staleHours: 1)));
 
     expect(find.textContaining('сверка не идёт'), findsNothing);
+  });
+
+  testWidgets('зафиксированное не выдаётся за плавающее', (tester) async {
+    // Сервер считает сумму по уже взятым целям без открытого остатка,
+    // устройство — сколько сделка стоит целиком, если закрыть сейчас. Числа
+    // разные, подпись «R» была одна.
+    await pump(
+      tester,
+      PaperPositionCard(trade: trade(resultRealized: true, fromServer: true)),
+    );
+    expect(find.text('зафикс.'), findsOneWidget);
+
+    await pump(tester, PaperPositionCard(trade: trade()));
+    expect(find.text('зафикс.'), findsNothing);
   });
 
   testWidgets('видно, кто ведёт сделку', (tester) async {

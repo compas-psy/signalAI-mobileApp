@@ -27,6 +27,7 @@ class PaperPosition {
     this.ideaId = '',
     this.breakevenAt,
     this.resultR,
+    this.resultRealized = false,
     this.lastReconciledAt,
     this.staleHours,
     this.fromServer = false,
@@ -65,8 +66,18 @@ class PaperPosition {
 
   bool get atBreakeven => breakevenAt != null;
 
-  /// Результат в R: плавающий у открытой, окончательный у закрытой.
+  /// Результат в R.
+  ///
+  /// Что именно он означает, зависит от [resultRealized], и это не педантизм.
+  /// Сервер считает **зафиксированное**: сумму по уже взятым целям, без
+  /// открытого остатка. Устройство считает **плавающее**: сколько сделка
+  /// стоит целиком, если закрыть её сейчас. Числа разные, а подпись «R» у
+  /// них была одна — то есть карточка утверждала одно и то же о двух разных
+  /// величинах, и владелец не мог знать, какую видит.
   final double? resultR;
+
+  /// Зафиксированный результат, а не плавающий.
+  final bool resultRealized;
 
   /// Когда сверка последний раз действительно смотрела бары.
   final DateTime? lastReconciledAt;
@@ -105,6 +116,8 @@ class PaperPosition {
         currentStop: trade.stopLoss,
         tpPrices: trade.tpPrices,
         tpsTaken: trade.tpsTaken,
+        // Плавающий: локальная сверка переигрывает сделку целиком и знает,
+        // сколько она стоит сейчас.
         resultR: trade.unrealizedR ?? trade.resultR,
       );
 }

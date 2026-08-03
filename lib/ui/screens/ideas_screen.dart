@@ -509,6 +509,15 @@ class PaperPositionCard extends StatelessWidget {
                     '${r >= 0 ? '+' : '−'}${r.abs().toStringAsFixed(2).replaceAll('.', ',')}R',
                     style: T.mono(13, weight: 600, color: r >= 0 ? C.green : C.red),
                   ),
+                  // Зафиксированное и плавающее — разные величины, а подпись
+                  // «R» у них была одна. Сервер считает сумму по уже взятым
+                  // целям без открытого остатка, устройство — сколько сделка
+                  // стоит целиком, если закрыть сейчас. Не назвать разницу
+                  // значит утверждать одно и то же о двух разных числах.
+                  if (trade.resultRealized && !waiting) ...[
+                    const SizedBox(width: 4),
+                    Text('зафикс.', style: T.body(9.5, color: C.faint)),
+                  ],
                 ],
               ],
             ),
