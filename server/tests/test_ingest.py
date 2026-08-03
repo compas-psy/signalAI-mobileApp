@@ -179,6 +179,29 @@ def test_source_failure_is_an_event_not_silence(session):
     assert "не отвечает" in events[0].detail
 
 
+def test_пустой_успешный_ответ_записывается_как_событие(session):
+    """Дыра, найденная по живому логу.
+
+    Отказ загрузки записывался, а пустой успешный ответ — нет: биржа
+    отвечает 200 с пустым списком, исключения нет, и в журнале не остаётся
+    ничего. Инструмент при этом сидит без баров, надзор по нему слеп, а на
+    вопрос «почему» ответить нечем:
+
+        supervise: проверено 17, без баров 4 (CRYPTO:PERP:HYPEUSDT)
+        — надзор по ним слеп
+    """
+    inst = make_instrument(session)
+    пусто = {"candles": {"columns": CANDLES["candles"]["columns"], "data": []}}
+
+    result = ingest_moex(session, inst, Timeframe.D1, now=NOW, fetch=fixed(пусто))
+
+    assert result.ok, "это не отказ загрузки: источник ответил"
+    assert result.written == 0
+    events = session.execute(select(DataQualityEvent)).scalars().all()
+    assert [e.flag for e in events] == ["empty"]
+    assert "свечей" in events[0].detail
+
+
 def test_unsupported_timeframe_is_reported_not_substituted(session):
     """4H у ISS нет, и подменять его часовым нельзя."""
     inst = make_instrument(session)

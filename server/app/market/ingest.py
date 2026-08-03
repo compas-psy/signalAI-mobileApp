@@ -58,6 +58,38 @@ def _record_failure(
     )
 
 
+def _note_empty(
+    session: Session,
+    source: str,
+    instrument: Instrument,
+    timeframe: Timeframe,
+    candles: list,
+) -> None:
+    """Записать, что источник ответил и не дал ни одной свечи.
+
+    Дыра, найденная по живому логу. Отказ загрузки записывался, а пустой
+    успешный ответ — нет: биржа отвечает `200` с пустым списком, исключения
+    нет, и в журнале не остаётся ничего. Инструмент при этом остаётся без
+    баров, надзор по нему слеп, а на вопрос «почему» ответить нечем:
+
+        supervise: проверено 17, без баров 4 (CRYPTO:PERP:HYPEUSDT)
+        — надзор по ним слеп
+
+    Причины у пустого ответа разные — символ снят с торгов, инструмент
+    только что появился, у биржи нет такого таймфрейма, — и все они
+    выглядят одинаково, пока факт пустоты нигде не записан.
+    """
+    if candles:
+        return
+    _record_failure(
+        session,
+        source,
+        instrument.instrument_id,
+        "empty",
+        f"источник ответил без ошибки, но свечей {timeframe.value} не дал",
+    )
+
+
 def store_candles(
     session: Session,
     instrument_id: str,
@@ -221,6 +253,7 @@ def ingest_moex(
             )
 
     report.fetched = len(candles)
+    _note_empty(session, "moex", instrument, timeframe, candles)
     report.gaps = len(detect_gaps(candles, timeframe))
     if report.gaps:
         report.flags.append(QualityFlag.GAP.value)
@@ -272,6 +305,7 @@ def ingest_crypto(
             )
 
     report.fetched = len(candles)
+    _note_empty(session, "bybit", instrument, timeframe, candles)
     report.gaps = len(detect_gaps(candles, timeframe))
     if report.gaps:
         report.flags.append(QualityFlag.GAP.value)
