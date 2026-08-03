@@ -244,6 +244,25 @@ def test_слепота_видна_поимённо(session, instrument):
     assert instrument.instrument_id in report.summary()
 
 
+def test_инструмент_не_называется_дважды(session, instrument):
+    """Из живого лога: «без баров 2 (HYPEUSDT, HYPEUSDT)».
+
+    Счёт идёт по сделкам, а перечисление читается как перечисление
+    инструментов — и один слепой инструмент выглядел как два.
+    """
+    for _ in range(2):
+        idea = триггерная_идея(instrument.instrument_id)
+        session.add(idea)
+        session.flush()
+        open_for(session, idea, now=NOW)
+    session.flush()
+
+    report = track(session, now=NOW + timedelta(hours=1))
+
+    assert report.no_data == 2
+    assert report.no_data_instruments == [instrument.instrument_id]
+
+
 # ── Связь с идеей ───────────────────────────────────────────────────────────
 
 

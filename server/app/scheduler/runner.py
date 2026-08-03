@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session
 
 from ..models import Bar, DataQualityEvent, PortfolioModel
 from ..models.enums import Timeframe
+from ..market.blindness import annotate as annotate_blind
 
 log = logging.getLogger("signalai.scheduler")
 
@@ -216,7 +217,10 @@ def build_default_scheduler(
         report = run_supervise(session)
         detail = f"проверено {report.checked}"
         if report.no_data:
-            named = ", ".join(report.no_data_instruments[:3])
+            # С причиной, а не только с именем: «биржа не знает символа»,
+            # «биржа ответила 429» и «инструмент только что попал в отбор»
+            # требуют разных действий, а первые два ещё и чинятся.
+            named = annotate_blind(session, report.no_data_instruments)
             detail += f", без баров {report.no_data} ({named}) — надзор по ним слеп"
         if report.changed:
             detail += (
@@ -249,7 +253,7 @@ def build_default_scheduler(
             # не подтверждения, а качества, и новые свечи его не добавят.
             detail += f", вне перепроверки {report.not_eligible}"
         if report.no_data:
-            named = ", ".join(report.no_data_instruments[:3])
+            named = annotate_blind(session, report.no_data_instruments)
             detail += f", без баров {report.no_data} ({named}) — надзор по ним слеп"
         if report.confirmed_but_blocked:
             # «Подтвердилось и повысили» и «подтвердилось, но качества всё

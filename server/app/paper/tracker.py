@@ -34,6 +34,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..journal.lifecycle import TransitionRequest, transition
+from ..market.blindness import annotate as annotate_blind
 from ..models import Bar, Instrument, PaperTrade, TradeIdea
 from ..models.enums import Direction, IdeaStatus, PaperStatus, Timeframe
 
@@ -62,6 +63,10 @@ class PaperReport:
     stale: int = 0
     no_data: int = 0
     no_data_instruments: list[str] = field(default_factory=list)
+    #: Почему по этим инструментам нет баров. Имя отвечает «по кому мы
+    #: слепы» и молчит о том, почему, — а «биржа не знает символа» и
+    #: «инструмент только что попал в отбор» требуют разных действий.
+    no_data_reasons: str = ""
     details: list[str] = field(default_factory=list)
 
     def summary(self) -> str:
@@ -75,7 +80,7 @@ class PaperReport:
         if self.closed:
             parts.append(f"закрыто {self.closed}")
         if self.no_data:
-            named = ", ".join(self.no_data_instruments[:3])
+            named = self.no_data_reasons or ", ".join(self.no_data_instruments[:3])
             parts.append(f"без баров {self.no_data} ({named})")
         if self.details:
             parts.append("; ".join(self.details[:2]))
@@ -380,7 +385,8 @@ def track(session: Session, *, now: datetime | None = None) -> PaperReport:
         bars = _bars_since(session, trade)
         if not bars:
             report.no_data += 1
-            report.no_data_instruments.append(trade.instrument_id)
+            if trade.instrument_id not in report.no_data_instruments:
+                report.no_data_instruments.append(trade.instrument_id)
         else:
             was_open = trade.status is PaperStatus.OPEN
             events = advance(trade, bars, now=moment)
@@ -405,6 +411,10 @@ def track(session: Session, *, now: datetime | None = None) -> PaperReport:
         if idea is not None:
             _sync_idea(session, trade, idea)
 
+    if report.no_data_instruments:
+        report.no_data_reasons = annotate_blind(
+            session, report.no_data_instruments, now=moment
+        )
     return report
 
 

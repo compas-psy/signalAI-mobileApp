@@ -184,7 +184,8 @@ def recheck(
         candles = _candles(session, idea)
         if not candles:
             report.no_data += 1
-            report.no_data_instruments.append(idea.instrument_id)
+            if idea.instrument_id not in report.no_data_instruments:
+                report.no_data_instruments.append(idea.instrument_id)
             continue
 
         reading = price_action.detect(

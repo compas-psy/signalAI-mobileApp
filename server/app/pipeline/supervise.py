@@ -268,7 +268,11 @@ def supervise(
             # Баров нет — сказать нечего. Закрывать идею по отсутствию данных
             # нельзя: это отказ загрузки, а не событие рынка.
             report.no_data += 1
-            report.no_data_instruments.append(idea.instrument_id)
+            # Имя записывается один раз: две идеи по одному инструменту
+            # давали «без баров 2 (HYPEUSDT, HYPEUSDT)» — счёт по идеям,
+            # а перечисление читается как перечисление инструментов.
+            if idea.instrument_id not in report.no_data_instruments:
+                report.no_data_instruments.append(idea.instrument_id)
             continue
 
         verdict = judge(idea, bars, now=moment)
