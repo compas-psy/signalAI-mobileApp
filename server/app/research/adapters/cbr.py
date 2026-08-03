@@ -150,26 +150,26 @@ def shape_of(fetched: Fetched) -> str:
     except (UnicodeDecodeError, json.JSONDecodeError):
         return f"не JSON, первые байты {fetched.body[:60]!r}"
     if isinstance(payload, dict):
-        keys = ", ".join(sorted(payload)[:8])
-        # Сначала известные имена контейнера, потом любой список объектов.
-        # Второе важнее первого: неизвестное имя — это как раз тот случай,
-        # ради которого форма и нужна, и отвечать на него «нет строк»
-        # значит промолчать ровно там, где нас спросили.
-        rows = None
-        for name in ("RawData", "rawData", "data", "items"):
-            value = payload.get(name)
-            if isinstance(value, list) and value and isinstance(value[0], dict):
-                rows = value[0]
-                break
-        if rows is None:
-            for value in payload.values():
-                if isinstance(value, list) and value and isinstance(value[0], dict):
-                    rows = value[0]
-                    break
-        inner = (
-            ", ".join(sorted(rows)[:10]) if isinstance(rows, dict) else "нет строк"
-        )
-        return f"объект с полями [{keys}]; строка: [{inner}]"
+        # Перечисляются **все** списки, а не первый подошедший. Живой прогон
+        # показал, почему: у ответа метода данных пять полей верхнего
+        # уровня, значения лежат не в том, которое выглядит очевидным, и
+        # отчёт про один контейнер оставляет остальные четыре загадкой —
+        # то есть требует ещё одного круга «деплой → лог → догадка».
+        parts = []
+        for name in sorted(payload):
+            value = payload[name]
+            if not isinstance(value, list):
+                parts.append(f"{name}=скаляр")
+                continue
+            if not value:
+                parts.append(f"{name}[0]")
+                continue
+            if isinstance(value[0], dict):
+                поля = ", ".join(sorted(value[0])[:12])
+                parts.append(f"{name}[{len(value)}]: {поля}")
+            else:
+                parts.append(f"{name}[{len(value)}] не объекты")
+        return "объект — " + "; ".join(parts)
     if isinstance(payload, list) and payload and isinstance(payload[0], dict):
         return f"список; строка: [{', '.join(sorted(payload[0])[:10])}]"
     return f"список из {len(payload)} элементов" if isinstance(payload, list) else "пусто"
