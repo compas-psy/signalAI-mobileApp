@@ -97,6 +97,22 @@ void main() {
     expect(tester.widget<Pressable>(find.byType(Pressable)).onTap, isNull);
   });
 
+  testWidgets('сделка скринера с открываемым разбором не врёт «идей нет»',
+      (tester) async {
+    // Идеи движка и сигналы дайджеста — два разных множества, а карточка
+    // смотрела только в первое. Сделка скринера устройства несла
+    // идентификатор своего сигнала, но подписывалась «идей по ней нет» и не
+    // нажималась — при том, что разбор существовал.
+    await pump(
+      tester,
+      PaperPositionCard(trade: trade(signalId: 's1'), onOpenIdea: () {}),
+    );
+
+    expect(find.textContaining('нет в текущей выдаче'), findsNothing);
+    expect(find.textContaining('разбор открыт'), findsOneWidget);
+    expect(tester.widget<Pressable>(find.byType(Pressable)).onTap, isNotNull);
+  });
+
   testWidgets('карточка без идеи не притворяется нажимаемой', (tester) async {
     await pump(tester, PaperPositionCard(trade: trade()));
     final pressable = tester.widget<Pressable>(find.byType(Pressable));
