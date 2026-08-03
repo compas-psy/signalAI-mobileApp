@@ -4,6 +4,7 @@ import '../../domain/idea/idea.dart';
 import '../../domain/models/signal.dart';
 import 'bybit_client.dart';
 import 'iss_client.dart';
+import 'net_failure.dart';
 
 /// Свечи для графика идеи прямо с биржи.
 ///
@@ -31,9 +32,21 @@ class IdeaChartSource {
 
   /// [timeframe] — тот, что просит экран. Пустая строка означает «сетапный»:
   /// именно на нём построена идея и лежит её разметка.
-  Future<SignalChart?> load(Idea idea, {String timeframe = ''}) async {
+  ///
+  /// [onFailure] получает причину человеческими словами. Она нужна экрану:
+  /// заглушка «свечей источник не дал» одинаково выглядит и когда биржа
+  /// закрыта для страны владельца, и когда инструмента просто нет в выдаче,
+  /// — а это разные вещи и разные действия.
+  Future<SignalChart?> load(
+    Idea idea, {
+    String timeframe = '',
+    void Function(String reason)? onFailure,
+  }) async {
     final symbol = symbolOf(idea.instrumentId);
-    if (symbol.isEmpty) return null;
+    if (symbol.isEmpty) {
+      onFailure?.call('у инструмента нет биржевого кода');
+      return null;
+    }
     final wanted = timeframe.isEmpty ? timeframeOf(idea) : parse(timeframe);
     try {
       final crypto = idea.market == Market.crypto;
@@ -44,7 +57,10 @@ class IdeaChartSource {
       final candles = crypto
           ? await _bybit.candles(symbol, timeframe: actual, limit: bars)
           : await _iss.candles(symbol, timeframe: actual, from: from);
-      if (candles.length < 2) return null;
+      if (candles.length < 2) {
+        onFailure?.call('биржа отдала меньше двух свечей');
+        return null;
+      }
       final window = candles.length <= bars
           ? candles
           : candles.sublist(candles.length - bars);
@@ -55,9 +71,15 @@ class IdeaChartSource {
             ChartCandle(c.open, c.high, c.low, c.close, c.time),
         ],
       );
-    } catch (_) {
+    } on Object catch (e) {
       // График — не то, ради чего стоит рушить разбор идеи. Его отсутствие
-      // видно на самом графике, и там же написана причина.
+      // видно на самом графике, и там же теперь написана причина: раньше
+      // этот перехват был нем, и заглушка ничего не объясняла.
+      onFailure?.call(
+        e is MarketDataException
+            ? (e.advice.isEmpty ? e.message : '${e.message}. ${e.advice}')
+            : 'источник не ответил',
+      );
       return null;
     }
   }

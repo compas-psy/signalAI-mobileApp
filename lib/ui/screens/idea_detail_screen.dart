@@ -138,6 +138,8 @@ class _IdeaDetailScreenState extends State<IdeaDetailScreen> {
                   : (tf) => controller.selectIdeaTimeframe(idea, tf),
               loading: idea != null && controller.ideaChartLoading(idea),
               failed: idea != null && controller.ideaChartFailed(idea),
+              failureReason:
+                  idea == null ? '' : controller.ideaChartFailureReason(idea),
               available: available,
               visible: visible,
               highlight: _highlightKeys(idea, _selectedEvidence),

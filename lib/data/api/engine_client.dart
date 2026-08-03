@@ -138,8 +138,12 @@ class EngineClient {
     String instrumentId, {
     required String timeframe,
     int limit = 200,
+    void Function(String reason)? onFailure,
   }) async {
-    if (!isConfigured) return null;
+    if (!isConfigured) {
+      onFailure?.call('адрес движка не задан');
+      return null;
+    }
     try {
       final raw = await _api.getList(
         '$_base/market/$instrumentId/bars?timeframe=$timeframe&limit=$limit',
@@ -164,11 +168,16 @@ class EngineClient {
           DateTime.tryParse('${item['open_time']}')?.toLocal(),
         ));
       }
-      if (candles.isEmpty) return null;
+      if (candles.isEmpty) {
+        onFailure?.call('у движка нет свечей $timeframe по этому инструменту');
+        return null;
+      }
       return SignalChart(timeframeLabel: timeframe, candles: candles);
-    } catch (_) {
-      // Молча: график — не то, ради чего стоит рушить разбор идеи. Его
-      // отсутствие видно на самом графике, и там же написана причина.
+    } catch (error) {
+      // График — не то, ради чего стоит рушить разбор идеи. Его отсутствие
+      // видно на самом графике, и там же теперь написана причина: раньше
+      // перехват был нем, и заглушка ничего не объясняла.
+      onFailure?.call('движок: ${_reason(error)}');
       return null;
     }
   }

@@ -684,6 +684,18 @@ class AppController extends ChangeNotifier {
   bool ideaChartFailed(Idea idea) =>
       _ideaChartsFailed.contains(_chartKey(idea.id, ideaTimeframe(idea)));
 
+  /// Почему свечей нет. Пусто — причина не записана.
+  ///
+  /// Заглушка «свечей источник не дал» выглядела одинаково и когда биржа
+  /// закрыта для страны владельца, и когда движок просто не знает такого
+  /// инструмента. Это разные вещи и разные действия, а оба перехвата были
+  /// немыми — владелец получал «живой график недоступен» без единого слова
+  /// о том, почему.
+  final Map<String, String> _chartFailureReason = {};
+
+  String ideaChartFailureReason(Idea idea) =>
+      _chartFailureReason[_chartKey(idea.id, ideaTimeframe(idea))] ?? '';
+
   /// Переключить таймфрейм графика идеи.
   void selectIdeaTimeframe(Idea idea, String timeframe) {
     if (timeframe.isEmpty || ideaTimeframe(idea) == timeframe) return;
@@ -722,15 +734,31 @@ class AppController extends ChangeNotifier {
     // В демо-режиме за свечами на биржу не ходим: настоящие цены под
     // выдуманным планом уводят зону входа и стоп за пределы графика, и
     // картинка выглядит сломанной, хотя сломаны данные.
+    // Причины собираются от обоих источников: движок мог не знать
+    // инструмента, а биржа — быть закрытой для страны владельца, и на экране
+    // это должно читаться по-разному.
+    final reasons = <String>[];
     final chart = demoData
         ? DemoIdeas.chartFor(idea)
-        : await _engine.bars(idea.instrumentId, timeframe: timeframe) ??
-            await _chartSource.load(idea, timeframe: timeframe);
+        : await _engine.bars(
+              idea.instrumentId,
+              timeframe: timeframe,
+              onFailure: reasons.add,
+            ) ??
+            await _chartSource.load(
+              idea,
+              timeframe: timeframe,
+              onFailure: reasons.add,
+            );
     if (chart == null) {
       _ideaChartsFailed.add(key);
+      if (reasons.isNotEmpty) {
+        _chartFailureReason[key] = reasons.join(' · ');
+      }
       notifyListeners();
       return;
     }
+    _chartFailureReason.remove(key);
     // Ряд кладётся под тем таймфреймом, который реально нарисован, а не под
     // запрошенным: у ISS нет четырёхчасовых свечей, и вместо них приезжают
     // часовые. Подписать их «4H» значило бы соврать на картинке, по которой

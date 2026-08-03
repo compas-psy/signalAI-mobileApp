@@ -218,4 +218,43 @@ void main() {
       findsOneWidget,
     );
   });
+
+  testWidgets('причина отказа приезжает на заглушку', (tester) async {
+    // «Свечей источник не дал» выглядело одинаково и когда биржа закрыта для
+    // страны владельца, и когда движок не знает такого инструмента. Оба
+    // перехвата были немыми, и владелец получал «живой график недоступен»
+    // без единого слова о том, почему.
+    final idea = EngineContract.idea(detail());
+    await tester.pumpWidget(
+      Directionality(
+        textDirection: TextDirection.ltr,
+        child: MediaQuery(
+          data: const MediaQueryData(size: Size(400, 900)),
+          child: Align(
+            alignment: Alignment.topCenter,
+            child: SizedBox(
+              width: 380,
+              child: IdeaChartCard(
+                signal: EngineContract.signalFrom(idea),
+                idea: idea,
+                timeframe: '1h',
+                failed: true,
+                failureReason: 'api.bybit.com закрыт для вашей страны',
+                onTimeframe: (_) {},
+                available: const {ChartLayer.candles, ChartLayer.levels},
+                visible: const {ChartLayer.candles, ChartLayer.levels},
+                highlight: const {},
+                onToggle: (_) {},
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    expect(
+      find.textContaining('закрыт для вашей страны'),
+      findsOneWidget,
+    );
+  });
 }

@@ -28,6 +28,7 @@ class IdeaChartCard extends StatelessWidget {
     this.onTimeframe,
     this.loading = false,
     this.failed = false,
+    this.failureReason = '',
   });
 
   final TradingSignal signal;
@@ -45,6 +46,9 @@ class IdeaChartCard extends StatelessWidget {
 
   /// Источник не дал свечей этого таймфрейма.
   final bool failed;
+
+  /// Почему свечей нет — словами владельца, а не кодом.
+  final String failureReason;
 
   /// Свечи с движка. null — рисуем то, что пришло с сигналом.
   final SignalChart? chart;
@@ -102,9 +106,10 @@ class IdeaChartCard extends StatelessWidget {
                 _ChartPending('Загружаем свечи $active…')
               else if (failed && !hasChart)
                 _ChartPending(
-                  'Свечей $active источник не дал. Разметка и уровни ниже '
-                  'считаны на ${_setupLabel()} и от таймфрейма картинки не '
-                  'зависят.',
+                  'Свечей $active источник не дал'
+                  '${failureReason.isEmpty ? '' : ': $failureReason'}. '
+                  'Разметка и уровни ниже считаны на ${_setupLabel()} и от '
+                  'таймфрейма картинки не зависят.',
                 )
               else
                 TradeChart(
