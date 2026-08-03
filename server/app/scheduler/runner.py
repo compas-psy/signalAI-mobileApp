@@ -241,6 +241,13 @@ def build_default_scheduler(
         if report.no_data:
             named = ", ".join(report.no_data_instruments[:3])
             detail += f", без баров {report.no_data} ({named}) — надзор по ним слеп"
+        if report.confirmed_but_blocked:
+            # «Подтвердилось и повысили» и «подтвердилось, но качества всё
+            # ещё не хватает» — разные новости, и вторая объясняет, почему
+            # экран не изменился после подтверждения.
+            detail += (
+                f", подтверждено но не допущено {report.confirmed_but_blocked}"
+            )
         if report.promoted:
             detail += f", подтверждено {report.promoted}"
             detail += "; " + "; ".join(report.details[:2])

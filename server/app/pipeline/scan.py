@@ -39,7 +39,14 @@ from ..models.enums import (
     QualityStatus,
     Timeframe,
 )
-from ..probability.barrier import ConfidenceInput, confidence, expected_value, rule_prior
+from ..probability.barrier import (
+    ConfidenceInput,
+    confidence,
+    expected_value,
+    rule_prior,
+    unmeasured_components,
+)
+from .trigger import confirmed as trigger_confirmed
 from ..regime.classifier import (
     RegimeResult,
     classify_derivatives_flow,
@@ -364,10 +371,13 @@ def scan_instrument(
     probability = rule_prior(
         quality.total, cap=Decimal(str(cfg.get("probability.rule_prior_cap")))
     )
-    conf_value, conf_band, _ = confidence(
+    # `None`, а не ноль: статистики закрытых сделок ещё нет, и это
+    # незнание, а не приговор. Ноль здесь занулял 0,55 веса и делал порог
+    # допуска непроходимым для любой идеи при любом рынке.
+    conf_value, conf_band, conf_weights = confidence(
         ConfidenceInput(
-            sample_adequacy=Decimal(0),          # статистики ещё нет
-            calibration=Decimal(0),
+            sample_adequacy=None,                # статистики ещё нет
+            calibration=None,                    # сравнивать оценки не с чем
             data_completeness=quality.data_quality,
             regime_similarity=Decimal("0.5"),
             stability=Decimal("0.5"),
@@ -387,7 +397,13 @@ def scan_instrument(
         rr_tp2=rr_tp2,
         confidence=conf_value,
         liquidity=liquidity,
-        has_trigger=pa_reading is not None,
+        # Та же семантика, что у перепроверки (`trigger.confirmed`):
+        # детектор возвращает чтение и вне зоны входа, и «паттерн есть
+        # где-то» — не подтверждение. Асимметрия давала идее пройти
+        # ворота при скане и стать недоступной для перепроверки: отказа
+        # по триггеру в `admission_failed` не было, а подтверждения не
+        # было тоже.
+        has_trigger=trigger_confirmed(pa_reading),
         risk_blocked=False,
         thresholds=AdmissionThresholds(
             active_probability_min=Decimal(str(cfg.get("ideas.active_probability_min"))),
@@ -503,6 +519,11 @@ def scan_instrument(
             # появится. Идея, которой не хватило вероятности или ожидания,
             # не обязана: качество перепроверкой не улучшается.
             "admission_failed": [g.name for g in verdict.failed],
+            # Что в уверенности осталось неизмеренным. Без этого списка
+            # число 0,60 выглядит суждением, а оно наполовину признание
+            # незнания: статистики закрытых сделок ещё нет, и калибровку
+            # сравнивать не с чем.
+            "confidence_unmeasured": unmeasured_components(conf_weights),
             "binding_limit": budget.binding,
             "score_breakdown": [
                 {

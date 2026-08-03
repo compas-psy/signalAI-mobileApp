@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from app.models import Bar, IdeaEvent, TradeIdea
 from app.models.enums import IdeaStatus, Timeframe
-from app.pipeline.trigger import eligible, recheck
+from app.pipeline.trigger import eligible, recheck, still_blocked
 from tests.conftest import idea_kwargs
 
 NOW = datetime(2026, 7, 29, 10, 0, tzinfo=UTC)
@@ -100,13 +100,29 @@ def test_идея_без_списка_ворот_не_перепроверяет
     assert not eligible(watch_idea(instrument.instrument_id, None))
 
 
-def test_перепроверяется_только_нехватка_триггера(instrument):
+def test_перепроверяется_нехватка_триггера_даже_не_единственная(instrument):
+    """Прежнее «триггер — единственный отказ» было недостижимым условием.
+
+    Ворота уверенности не проходил никто, поэтому в списке всегда лежало
+    минимум два имени, и перепроверка не повышала ничего никогда. Теперь
+    достаточно присутствия триггера среди отказов, а остальные ворота
+    перепрогоняются после подтверждения.
+    """
     iid = instrument.instrument_id
     assert eligible(watch_idea(iid, ["trigger"]))
-    # Вероятность новыми свечами не улучшается: делать вид, что улучшилась,
-    # значит подменить порог допуска ожиданием.
+    assert eligible(watch_idea(iid, ["trigger", "confidence"]))
+    # Идея без отказа по триггеру перепроверке недоступна: новых свечей ей
+    # не нужно, ей не хватает качества.
     assert not eligible(watch_idea(iid, ["probability"]))
-    assert not eligible(watch_idea(iid, ["trigger", "expected_r"]))
+
+
+def test_подтверждение_не_отменяет_остальные_ворота(instrument):
+    """Триггер — одно из ворот §15.6, а не пропуск мимо остальных."""
+    iid = instrument.instrument_id
+    assert still_blocked(watch_idea(iid, ["trigger"])) == []
+    assert still_blocked(watch_idea(iid, ["trigger", "expected_r"])) == [
+        "expected_r"
+    ]
 
 
 def test_без_баров_статус_не_меняется(session: Session, instrument):
@@ -188,3 +204,28 @@ def test_сработавшая_идея_повторно_не_трогаетс�
     report = recheck(session, now=NOW + timedelta(days=1))
 
     assert report.checked == 0
+
+
+def test_задача_планировщика_не_падает_без_баров(session, instrument):
+    """Регрессия: отчёт перепроверки печатается по образцу супервизора.
+
+    Поля `no_data_instruments` у него не было, и первый же инструмент без
+    баров ронял задачу с AttributeError. `Scheduler.tick` на исключении
+    откатывает транзакцию — вместе с подтверждениями, которые в этом же
+    прогоне уже прошли. То есть одна опечатка в строке журнала молча
+    отменяла работу всего цикла.
+    """
+    from app.scheduler.runner import build_default_scheduler
+
+    idea = TradeIdea(**idea_kwargs(instrument.instrument_id, NOW))
+    idea.explanation_json = {"admission_failed": ["trigger"]}
+    session.add(idea)
+    session.flush()
+
+    scheduler = build_default_scheduler()
+    job = next(j for j in scheduler.jobs if j.name == "trigger")
+    # Баров нет вовсе — ровно то состояние, на котором падало.
+    detail = job.run(session)
+
+    assert "без баров" in detail
+    assert instrument.instrument_id in detail

@@ -218,20 +218,45 @@ def empirical(
     )
 
 
+#: Чему равен неизмеренный компонент.
+#:
+#: Половине — то есть незнанию. Это не мягкость, а единственное честное
+#: значение: «статистики закрытых сделок ещё нет» и «калибровка плохая» —
+#: разные утверждения, и подставлять вместо первого ноль значит выносить
+#: приговор вместо признания незнания.
+#:
+#: Цена прежней подстановки нуля была видна на экране. Два компонента из
+#: пяти зануляли 0,55 веса, потолок достижимого падал до 0,325 при пороге
+#: 0,50 — ворота не мог пройти никто и никогда. Каскадом это выключало
+#: `quality_status = ACTIVE`, перевод в `TRIGGERED` и перепроверку
+#: триггера, а на устройстве вкладка «Решения» оставалась пустой
+#: структурно, сколько бы хороших сетапов ни нашёл движок.
+UNKNOWN = Decimal("0.5")
+
+
 @dataclass(frozen=True, slots=True)
 class ConfidenceInput:
-    sample_adequacy: Decimal
-    calibration: Decimal
-    data_completeness: Decimal
-    regime_similarity: Decimal
-    stability: Decimal
+    """Компоненты уверенности. ``None`` — «не измерено», а не «плохо»."""
+
+    sample_adequacy: Decimal | None
+    calibration: Decimal | None
+    data_completeness: Decimal | None
+    regime_similarity: Decimal | None
+    stability: Decimal | None
 
 
-def confidence(inputs: ConfidenceInput) -> tuple[Decimal, str, tuple[tuple[str, Decimal, Decimal], ...]]:
+def confidence(
+    inputs: ConfidenceInput,
+) -> tuple[Decimal, str, tuple[tuple[str, Decimal, Decimal | None], ...]]:
     """Уверенность §15.4 — не вероятность.
 
     Веса из ТЗ: адекватность выборки 0,30; калибровка 0,25; полнота данных
-    0,20; похожесть режима 0,15; устойчивость 0,10.
+    0,20; похожесть режима 0,15; устойчивость 0,10. Неизмеренный компонент
+    считается за ``UNKNOWN``.
+
+    Полосу «высокая» неизмеренное закрывает: заявлять высокую уверенность,
+    не зная калибровки, нельзя — именно калибровка отвечает на вопрос,
+    совпадали ли прошлые оценки с исходом.
     """
     weights = (
         ("sample_adequacy", Decimal("0.30"), inputs.sample_adequacy),
@@ -241,12 +266,25 @@ def confidence(inputs: ConfidenceInput) -> tuple[Decimal, str, tuple[tuple[str, 
         ("stability", Decimal("0.10"), inputs.stability),
     )
     for name, _, value in weights:
-        if not (Decimal(0) <= value <= Decimal(1)):
+        if value is not None and not (Decimal(0) <= value <= Decimal(1)):
             raise ValueError(f"{name}: {value} вне 0..1")
-    total = sum(w * v for _, w, v in weights)
+    total = sum(w * (UNKNOWN if v is None else v) for _, w, v in weights)
     value = total.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
-    band = "LOW" if value < Decimal("0.45") else ("HIGH" if value > Decimal("0.70") else "MEDIUM")
+    unmeasured = any(v is None for _, _, v in weights)
+    if value < Decimal("0.45"):
+        band = "LOW"
+    elif value > Decimal("0.70") and not unmeasured:
+        band = "HIGH"
+    else:
+        band = "MEDIUM"
     return value, band, weights
+
+
+def unmeasured_components(
+    weights: tuple[tuple[str, Decimal, Decimal | None], ...],
+) -> list[str]:
+    """Что осталось неизмеренным. Причина обязана быть видна в карточке."""
+    return [name for name, _, value in weights if value is None]
 
 
 def expected_value(
