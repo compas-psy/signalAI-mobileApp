@@ -148,7 +148,13 @@ class ResearchObservation(UuidPk, Base):
 
     __tablename__ = "research_observations"
 
-    observation_type: Mapped[str] = mapped_column(String(48), nullable=False)
+    #: Машинный ключ ряда, а не подпись. Человекочитаемое название
+    #: показателя живёт в `source_locator`, где его никто не ограничивает;
+    #: сюда оно попадало напрямую, и первое же длинное название роняло весь
+    #: шаг разведки на `value too long for character varying(48)` — унося с
+    #: собой всё, что шаг успел собрать. Код собирается в `research.codes`
+    #: так, чтобы влезать по построению; ширина здесь — запас, не защита.
+    observation_type: Mapped[str] = mapped_column(String(96), nullable=False)
     entity_id: Mapped[str] = mapped_column(String(64), nullable=False)
     source_id: Mapped[str] = mapped_column(
         String(64), ForeignKey("research_sources.source_id"), nullable=False

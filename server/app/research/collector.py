@@ -31,6 +31,7 @@ from sqlalchemy.orm import Session
 
 from ..models import ResearchObservation
 from .adapters import cbr, fns
+from .codes import observation_code
 from .collect import Fetched
 from .policy import CollectionDenied, Permit, authorize
 from .provenance import Provenance, cbr as cbr_provenance, fns as fns_provenance
@@ -120,12 +121,23 @@ def collect_cbr(session: Session, *, now: datetime | None = None) -> CollectRepo
                 f"{fetched.body[:120]!r}"
             )
             continue
+        empty = 0
         for datum in rows:
+            # Строка без числа и без периода — не факт, а описание набора:
+            # сервис данных отдаёт их вперемешку со значениями. Записать её
+            # наблюдением значит положить в правило 3–2–1 утверждение,
+            # которого никто не делал, и вдобавок столкнуть все такие строки
+            # в один дедуп-ключ (период у всех пустой).
+            if datum.value is None and datum.period_end is None:
+                empty += 1
+                continue
             when = cbr.availability(datum, first_seen_at=moment)
             written = _write(
                 session,
                 source_id=cbr.SOURCE_ID,
-                observation_type=f"cbr:{datum.dataset}:{datum.indicator}",
+                observation_type=observation_code(
+                    "cbr", datum.dataset, datum.indicator
+                ),
                 entity_id=datum.industry or datum.region or "RU",
                 value=datum.value,
                 unit=datum.unit,
@@ -140,6 +152,14 @@ def collect_cbr(session: Session, *, now: datetime | None = None) -> CollectRepo
             )
             report.written += int(written)
             report.duplicates += int(not written)
+        if empty:
+            # Молчать нельзя: если пустыми окажутся все строки, «наблюдений
+            # 0» будет выглядеть как спокойный рынок вместо неразобранного
+            # формата.
+            report.skipped.append(
+                f"{dataset}: {empty} строк без значения и периода — описание "
+                f"набора, а не факт"
+            )
     return report
 
 
@@ -194,7 +214,7 @@ def _record_plan(
         written = _write(
             session,
             source_id=fns.SOURCE_ID,
-            observation_type=f"fns:plan:{kind}",
+            observation_type=observation_code("fns", "plan", kind),
             entity_id="fns_open_data",
             value=None,
             text=links["data"],
