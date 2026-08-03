@@ -257,5 +257,100 @@ void main() {
       final json = ideaJson()..remove('plan');
       expect(EngineContract.idea(json).plan, isNull);
     });
+
+    test('исполнительные состояния — это позиция, а не наблюдение', () {
+      // Здесь стояли `PARTIAL` и `SCALED`, которых у движка нет вовсе: цикл
+      // §18 называет их иначе. Все пять падали в `_ => watch`, и владелец
+      // видел «идея всё ещё в наблюдении, хотя точка входа уже случилась».
+      for (final status in [
+        'ACTIVE',
+        'PARTIALLY_FILLED',
+        'FILLED',
+        'TP1_HIT',
+        'MANAGING',
+        'TP2_HIT',
+      ]) {
+        final json = ideaJson()..['status'] = status;
+        expect(
+          EngineContract.idea(json).state,
+          IdeaState.active,
+          reason: '$status — сделка в работе',
+        );
+      }
+    });
+
+    test('снятая риском идея не выглядит наблюдением', () {
+      for (final status in ['RISK_BLOCKED', 'DATA_BLOCKED']) {
+        final json = ideaJson()..['status'] = status;
+        expect(EngineContract.idea(json).state, IdeaState.invalidated);
+      }
+    });
+  });
+
+  group('Бумажные сделки движка', () {
+    Map<String, dynamic> tradeJson() => {
+          'id': 't1',
+          'idea_id': 'i1',
+          'instrument_id': 'CRYPTO:PERP:BTCUSDT',
+          'symbol': 'BTCUSDT',
+          'direction': 'LONG',
+          'status': 'OPEN',
+          'entry': '90100.5',
+          'initial_stop': '89400',
+          'current_stop': '90100.5',
+          'at_breakeven': true,
+          'breakeven_at': '2026-08-03T12:00:00Z',
+          'tp_prices': ['91000', '92000', '93000'],
+          'tps_taken': 1,
+          'realized_r': '0.4',
+          'opened_at': '2026-08-03T10:00:00Z',
+          'expires_at': '2026-08-08T10:00:00Z',
+          'last_reconciled_at': '2026-08-03T12:00:00Z',
+          'stale_hours': 3,
+        };
+
+    test('цены разбираются строками, а не числами', () {
+      // `Money` в схемах сервера — строка намеренно: JSON-число это double,
+      // и шаг цены 0,005 на другом конце становится 0,004999999999999999.
+      final trade = EngineContract.paperTrades([tradeJson()]).single;
+
+      expect(trade.entry, 90100.5);
+      expect(trade.initialStop, 89400);
+      expect(trade.tpPrices, [91000, 92000, 93000]);
+    });
+
+    test('перенос стопа доезжает до устройства', () {
+      final trade = EngineContract.paperTrades([tradeJson()]).single;
+
+      expect(trade.currentStop, 90100.5);
+      expect(trade.atBreakeven, isTrue);
+      expect(trade.tpsTaken, 1);
+      expect(trade.tpsTotal, 3);
+      expect(trade.fromServer, isTrue);
+    });
+
+    test('молчание сверки приезжает числом часов', () {
+      final fresh = EngineContract.paperTrades([tradeJson()]).single;
+      expect(fresh.stale, isFalse);
+
+      final frozen = EngineContract.paperTrades([
+        tradeJson()..['stale_hours'] = 52,
+      ]).single;
+      expect(frozen.stale, isTrue);
+      expect(frozen.staleHours, 52);
+    });
+
+    test('сделка без входа не разбирается вовсе', () {
+      // Дорисованный нулём стоп на карточке читается как «защиты нет» —
+      // утверждение, которого никто не делал.
+      final broken = tradeJson()..remove('entry');
+      expect(EngineContract.paperTrades([broken]), isEmpty);
+    });
+
+    test('выставленная заявка отличается от исполненной', () {
+      final pending = tradeJson()..['status'] = 'PENDING';
+      expect(EngineContract.paperTrades([pending]).single.pending, isTrue);
+      expect(EngineContract.paperTrades([tradeJson()]).single.pending, isFalse);
+    });
   });
 }

@@ -41,6 +41,7 @@ import '../domain/idea/final_check.dart';
 import '../domain/idea/idea.dart';
 import '../domain/idea/idea_state.dart';
 import '../domain/idea/journal_metrics.dart';
+import '../domain/idea/paper_position.dart';
 import '../domain/idea/risk_center.dart';
 import '../domain/idea/skip_record.dart';
 import '../domain/invest/invest_models.dart';
@@ -431,6 +432,12 @@ class AppController extends ChangeNotifier {
       noSetupsReason: fetched.noSetupsReason,
     );
     _engineDataStatus = await _engine.dataStatus();
+    // Сделки спрашиваются здесь же: сопровождение живёт на сервере, и
+    // карточка позиции обязана обновляться тем же тактом, что и лента. При
+    // недоступности движка остаётся `null` — прошлый ответ не затираем,
+    // иначе обрыв связи выглядит как «позиции закрылись».
+    final trades = await _engine.paperTrades();
+    if (trades != null) _serverPaperTrades = trades;
     notifyListeners();
     await _recordTriggeredOnPaper();
     await _notifyNewIdeas(previous, _engineIdeas.ideas);
@@ -753,6 +760,32 @@ class AppController extends ChangeNotifier {
     return repository is LocalAnalysisRepository
         ? repository.ledger.openOrPending
         : const [];
+  }
+
+  /// Сделки, которые ведёт сервер. Пусто — движок ещё не отвечал.
+  List<PaperPosition> _serverPaperTrades = const [];
+
+  /// Открытые позиции для экрана: сервер, а при его молчании — устройство.
+  ///
+  /// Приоритет у сервера не из вкусовщины. Устройство брало свечи только у
+  /// биржи напрямую, Bybit отвечает телефону владельца `403 — CloudFront
+  /// блокирует доступ из вашей страны`, свечей нет, `reconcile` не
+  /// вызывается ни разу — и позиция замирает навсегда, при этом выглядя
+  /// живой. Так BTCUSDT провисел несколько дней на «взято тейков: 2 из 3».
+  /// Сервер до биржи доходит и считает, когда телефон выключен.
+  ///
+  /// Местные сделки не выбрасываются: журнал ведёт и скринер на устройстве,
+  /// у которого свои сигналы, и без них экран потерял бы часть позиций.
+  /// Совпадения снимаются по инструменту — одна и та же сделка, посчитанная
+  /// дважды, на экране должна быть одна, и показывается серверная.
+  List<PaperPosition> get paperPositions {
+    final server = _serverPaperTrades;
+    final seen = {for (final p in server) p.symbol};
+    return [
+      ...server,
+      for (final trade in openPaperTrades)
+        if (!seen.contains(trade.symbol)) PaperPosition.fromLedger(trade),
+    ];
   }
 
   JournalMetrics? get journalMetrics {

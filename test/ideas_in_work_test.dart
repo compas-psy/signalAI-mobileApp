@@ -12,33 +12,36 @@ library;
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:signalai/data/api/engine_contract.dart';
-import 'package:signalai/domain/ledger/signal_ledger.dart';
+import 'package:signalai/domain/idea/paper_position.dart';
 import 'package:signalai/ui/screens/ideas_screen.dart';
 import 'package:signalai/ui/widgets/common.dart';
 
 void main() {
-  PaperTrade trade({
+  PaperPosition trade({
     String signalId = '',
-    PaperStatus status = PaperStatus.open,
+    bool pending = false,
     double? unrealizedR = 0.13,
-  }) {
-    final t = PaperTrade(
-      id: 'p1',
-      signalId: signalId,
-      symbol: 'BTCUSDT',
-      strategyId: 'trend',
-      long: false,
-      entry: 64038.30,
-      stopLoss: 65208.20,
-      tpPrices: const [64469.4, 64199.3, 63929.1],
-      tpShares: const [40, 40, 20],
-      score: 80,
-      createdAt: DateTime.utc(2026, 7, 31, 9),
-    );
-    t.status = status;
-    t.unrealizedR = unrealizedR;
-    return t;
-  }
+    double? currentStop,
+    DateTime? breakevenAt,
+    int? staleHours,
+    bool fromServer = false,
+  }) =>
+      PaperPosition(
+        id: 'p1',
+        ideaId: signalId,
+        symbol: 'BTCUSDT',
+        long: false,
+        pending: pending,
+        entry: 64038.30,
+        initialStop: 65208.20,
+        currentStop: currentStop ?? 65208.20,
+        tpPrices: const [64469.4, 64199.3, 63929.1],
+        tpsTaken: 0,
+        breakevenAt: breakevenAt,
+        resultR: unrealizedR,
+        staleHours: staleHours,
+        fromServer: fromServer,
+      );
 
   Future<void> pump(WidgetTester tester, Widget child) => tester.pumpWidget(
         Directionality(
@@ -64,7 +67,7 @@ void main() {
   testWidgets('выставленная заявка отличается от исполненной', (tester) async {
     await pump(
       tester,
-      PaperPositionCard(trade: trade(status: PaperStatus.pending)),
+      PaperPositionCard(trade: trade(pending: true)),
     );
     expect(find.textContaining('цена до неё не дошла'), findsOneWidget);
     expect(find.textContaining('в позиции с'), findsNothing);
@@ -130,5 +133,63 @@ void main() {
     await tester.tap(find.byType(PaperPositionCard));
     await tester.pump();
     expect(opened, 1);
+  });
+
+  // ── Чем защищена позиция и жива ли сверка ────────────────────────────────
+
+  testWidgets('текущий стоп виден, и безубыток назван безубытком',
+      (tester) async {
+    // Стоп на устройстве был одним неизменяемым полем, а перенос в безубыток
+    // жил во временной переменной внутри пересчёта — то есть не существовал
+    // ни в базе, ни на экране. Владелец видел исходный стоп даже тогда,
+    // когда позиция фактически была защищена.
+    await pump(
+      tester,
+      PaperPositionCard(
+        trade: trade(
+          currentStop: 64038.30,
+          breakevenAt: DateTime.utc(2026, 7, 31, 14),
+          fromServer: true,
+        ),
+      ),
+    );
+
+    expect(find.textContaining('стоп в безубытке'), findsOneWidget);
+    expect(find.textContaining('65 208'), findsNothing);
+  });
+
+  testWidgets('без переноса стоп называется просто стопом', (tester) async {
+    await pump(tester, PaperPositionCard(trade: trade()));
+
+    expect(find.textContaining('стоп в безубытке'), findsNothing);
+    expect(find.textContaining('стоп '), findsOneWidget);
+  });
+
+  testWidgets('замершая сверка названа вслух', (tester) async {
+    // Корень зависшей BTCUSDT: Bybit ответил телефону 403, свечей нет,
+    // сверка не вызывалась ни разу — и позиция несколько дней выглядела
+    // живой, показывая «взято тейков: 2 из 3».
+    await pump(
+      tester,
+      PaperPositionCard(trade: trade(staleHours: 52, fromServer: true)),
+    );
+
+    expect(find.textContaining('сверка не идёт 2 дн'), findsOneWidget);
+  });
+
+  testWidgets('свежая сверка экран не засоряет', (tester) async {
+    await pump(tester, PaperPositionCard(trade: trade(staleHours: 1)));
+
+    expect(find.textContaining('сверка не идёт'), findsNothing);
+  });
+
+  testWidgets('видно, кто ведёт сделку', (tester) async {
+    // У серверной сопровождение идёт круглосуточно, у местной — только пока
+    // открыто приложение и биржа отвечает телефону. Это разная надёжность.
+    await pump(tester, PaperPositionCard(trade: trade(fromServer: true)));
+    expect(find.text('ведёт сервер'), findsOneWidget);
+
+    await pump(tester, PaperPositionCard(trade: trade()));
+    expect(find.text('бумажная'), findsOneWidget);
   });
 }

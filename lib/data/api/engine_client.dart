@@ -1,5 +1,6 @@
 import '../../domain/models/signal.dart';
 import '../../domain/idea/idea.dart';
+import '../../domain/idea/paper_position.dart';
 import '../../domain/portfolio/package.dart';
 import '../../domain/research/hypothesis.dart';
 import 'api_client.dart';
@@ -248,6 +249,30 @@ class EngineClient {
         String s => double.tryParse(s),
         _ => null,
       };
+
+  /// Живые бумажные сделки (§18, §21, `GET /api/v1/paper/trades`).
+  ///
+  /// Сопровождение переехало на сервер целиком. На устройстве оно брало
+  /// свечи только у биржи напрямую, Bybit отвечает телефону владельца
+  /// `403 — CloudFront блокирует доступ из вашей страны`, свечей нет, сверка
+  /// не вызывается ни разу — и позиция замирает навсегда: ни тейки, ни стоп,
+  /// ни срок не проверяются, а карточка выглядит живой. Так BTCUSDT провисел
+  /// несколько дней на «взято тейков: 2 из 3».
+  ///
+  /// `null` — не «сделок нет», а «спросить не удалось»: пустой список и
+  /// молчание движка должны различаться, иначе экран объявит журнал пустым
+  /// на ровном месте.
+  Future<List<PaperPosition>?> paperTrades({bool liveOnly = true}) async {
+    if (!isConfigured) return null;
+    try {
+      final raw = await _api.getList(
+        '$_base/paper/trades?live_only=$liveOnly&limit=100',
+      );
+      return EngineContract.paperTrades(raw);
+    } catch (_) {
+      return null;
+    }
+  }
 
   /// Состояние загрузки данных: без него пустая выдача неотличима от
   /// «данные не приехали».

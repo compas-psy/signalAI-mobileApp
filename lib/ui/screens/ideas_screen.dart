@@ -5,7 +5,7 @@ import '../../data/api/engine_contract.dart';
 import '../../domain/enums.dart';
 import '../../domain/idea/idea.dart';
 import '../../domain/idea/idea_state.dart';
-import '../../domain/ledger/signal_ledger.dart';
+import '../../domain/idea/paper_position.dart';
 import '../../state/app_scope.dart';
 import '../../state/navigation.dart';
 import '../../theme/tokens.dart';
@@ -50,8 +50,8 @@ class IdeasScreen extends StatelessWidget {
     // экран писал «открытых позиций нет», пока в журнале висела открытая
     // позиция по тому же инструменту.
     final paper = filter == IdeasPill.active
-        ? controller.openPaperTrades
-        : const <PaperTrade>[];
+        ? controller.paperPositions
+        : const <PaperPosition>[];
 
     if (visible.isEmpty && paper.isEmpty) {
       return _Empty(
@@ -77,12 +77,12 @@ class IdeasScreen extends StatelessWidget {
             // у сделки идентификатор. Сделка с идентификатором, но без идеи
             // в выдаче открывала пустой разбор под подписью «идеи за ней
             // нет». Ссылка ведёт туда, где что-то есть, или её нет вовсе.
-            final source = all.where((i) => i.id == trade.signalId).firstOrNull;
+            final source = all.where((i) => i.id == trade.ideaId).firstOrNull;
             // Идея могла уйти из выдачи терминальной, пока сделка жива, —
             // разбор при этом существует на сервере и догружается по
             // идентификатору. Мёртвая ссылка остаётся только у сделок
             // скринера без идентификатора вовсе.
-            final ideaId = trade.signalId;
+            final ideaId = trade.ideaId;
             return PaperPositionCard(
               trade: trade,
               idea: source,
@@ -439,7 +439,7 @@ class PaperPositionCard extends StatelessWidget {
     this.onOpenIdea,
   });
 
-  final PaperTrade trade;
+  final PaperPosition trade;
 
   /// Идея движка, из которой сделка родилась. null — её нет: журнал ведёт и
   /// скринер на устройстве, у которого сигналы свои.
@@ -451,7 +451,7 @@ class PaperPositionCard extends StatelessWidget {
   String _origin() {
     final source = idea;
     if (source != null) return 'из идеи ${source.strategy.label}';
-    if (trade.signalId.isEmpty) {
+    if (trade.ideaId.isEmpty) {
       return 'заведена расчётом на устройстве — идеи за ней не записано';
     }
     return 'идеи за ней нет в текущей выдаче — открывать нечего';
@@ -459,8 +459,8 @@ class PaperPositionCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final waiting = trade.status == PaperStatus.pending;
-    final r = trade.unrealizedR;
+    final waiting = trade.pending;
+    final r = trade.resultR;
     final decimals = trade.entry >= 1000 ? 2 : 4;
     return Pressable(
       onTap: onOpenIdea,
@@ -503,15 +503,44 @@ class PaperPositionCard extends StatelessWidget {
                   ? 'заявка выставлена по ${fmtPrice(trade.entry, decimals)} — '
                       'цена до неё не дошла'
                   : 'в позиции с ${fmtPrice(trade.entry, decimals)} · '
-                      'взято тейков: ${trade.tpsTaken} из ${trade.tpPrices.length}',
+                      'взято тейков: ${trade.tpsTaken} из ${trade.tpsTotal}',
               style: T.body(11.5, color: C.textSecondary, height: 1.4),
             ),
+            // Чем защищена позиция сейчас — вопрос, на который экран не
+            // отвечал вовсе. Стоп был одним неизменяемым полем, а перенос в
+            // безубыток жил во временной переменной внутри пересчёта: на
+            // карточке всегда стоял исходный стоп, даже когда позиция была
+            // уже защищена.
+            const SizedBox(height: 4),
+            Text(
+              trade.atBreakeven
+                  ? 'стоп в безубытке: ${fmtPrice(trade.currentStop, decimals)}'
+                  : 'стоп ${fmtPrice(trade.currentStop, decimals)}',
+              style: T.mono(
+                11,
+                color: trade.atBreakeven ? C.green : C.textSecondary,
+              ),
+            ),
+            // «Сверка не идёт» и «сделка спокойно живёт» на экране выглядели
+            // одинаково. Именно так замершая BTCUSDT несколько дней читалась
+            // как живая позиция.
+            if (trade.stale) ...[
+              const SizedBox(height: 4),
+              Text(
+                'сверка не идёт ${_hours(trade.staleHours!)} — '
+                    'результат может быть устаревшим',
+                style: T.body(11, color: C.warning, height: 1.4),
+              ),
+            ],
             const SizedBox(height: 8),
             Wrap(
               spacing: 6,
               runSpacing: 6,
               children: [
-                const ContextChip('бумажная'),
+                // Кто ведёт сделку — не мелочь: у серверной сопровождение
+                // идёт круглосуточно, у местной только пока открыто
+                // приложение и биржа отвечает телефону.
+                ContextChip(trade.fromServer ? 'ведёт сервер' : 'бумажная'),
                 // Происхождение сделки названо прямо. Без этого позиция по
                 // тому же тикеру, что и идея движка, читается как «та самая
                 // идея» — а вход у неё другой.
@@ -528,4 +557,8 @@ class PaperPositionCard extends StatelessWidget {
       ),
     );
   }
+
+  /// «7 ч» / «2 дн»: часы после суток перестают читаться.
+  static String _hours(int hours) =>
+      hours < 48 ? '$hours ч' : '${hours ~/ 24} дн';
 }

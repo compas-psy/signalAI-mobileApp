@@ -2,6 +2,7 @@ import '../../domain/enums.dart';
 import '../../domain/idea/evidence.dart';
 import '../../domain/idea/idea.dart';
 import '../../domain/idea/idea_state.dart';
+import '../../domain/idea/paper_position.dart';
 import '../../domain/idea/quality_score.dart';
 import '../../domain/idea/trade_plan.dart';
 import '../../domain/models/signal.dart';
@@ -415,9 +416,26 @@ abstract final class EngineContract {
   static IdeaState _state(String? raw) => switch (raw) {
         'DISCOVERED' || 'WATCH' || 'PENDING' => IdeaState.watch,
         'TRIGGERED' || 'ARMED' => IdeaState.triggered,
-        'ACTIVE' || 'PARTIAL' || 'SCALED' => IdeaState.active,
+        // Исполнительные состояния §18 — это позиция, а не наблюдение.
+        //
+        // Здесь стояли `PARTIAL` и `SCALED`, которых у движка нет вовсе:
+        // цикл называет их `PARTIALLY_FILLED`, `FILLED`, `TP1_HIT`,
+        // `MANAGING`, `TP2_HIT`. Все пять падали в `_ => watch`, и владелец
+        // видел «Идея всё ещё в наблюдении, хотя точка входа уже случилась»
+        // — причём чем дальше сделка ушла по плану, тем увереннее карточка
+        // утверждала, что ничего не происходит.
+        'ACTIVE' ||
+        'PARTIALLY_FILLED' ||
+        'FILLED' ||
+        'TP1_HIT' ||
+        'MANAGING' ||
+        'TP2_HIT' =>
+          IdeaState.active,
         'CLOSED' || 'STOPPED' || 'TARGET_REACHED' => IdeaState.closed,
         'CANCELLED' || 'REJECTED' => IdeaState.invalidated,
+        // Идея, снятая риском или качеством данных, — не наблюдение: ждать
+        // от неё нечего, пока не снимут блокировку.
+        'RISK_BLOCKED' || 'DATA_BLOCKED' => IdeaState.invalidated,
         // Рынок ушёл без входа — своё состояние, а не «срок истёк».
         // Раньше оба падали в watch, и обогнанная рынком идея неделю
         // выглядела живой: «Watch, сигнал живёт 4 дн 6 ч» под ценой у TP3.
@@ -545,6 +563,49 @@ abstract final class EngineContract {
       generatedAt: _time(json['generated_at']) ?? now,
       validUntil: _time(json['valid_until']) ?? now,
     );
+  }
+
+  /// Бумажные сделки движка (§18, §21).
+  ///
+  /// Цены приходят строками намеренно (`Money` в схемах сервера): JSON-число
+  /// это double, и шаг цены 0,005 на другом конце становится
+  /// 0,004999999999999999.
+  ///
+  /// Сделка без входа или без стопа не разбирается вовсе. Дорисованный нулём
+  /// стоп на карточке выглядит как «защиты нет», и это утверждение, которого
+  /// никто не делал.
+  static List<PaperPosition> paperTrades(List<dynamic> raw) {
+    final out = <PaperPosition>[];
+    for (final item in raw) {
+      if (item is! Map<String, dynamic>) continue;
+      final entry = _numOrNull(item['entry']);
+      final initial = _numOrNull(item['initial_stop']);
+      if (entry == null || initial == null) continue;
+      final status = '${item['status']}';
+      out.add(PaperPosition(
+        id: '${item['id']}',
+        ideaId: '${item['idea_id'] ?? ''}',
+        symbol: '${item['symbol'] ?? item['instrument_id'] ?? ''}',
+        long: '${item['direction']}'.toUpperCase() == 'LONG',
+        pending: status == 'PENDING',
+        entry: entry,
+        initialStop: initial,
+        // Текущий стоп отсутствовать не должен, но если сервер старой версии
+        // его не прислал — исходный честнее нуля.
+        currentStop: _numOrNull(item['current_stop']) ?? initial,
+        tpPrices: [
+          for (final p in (item['tp_prices'] as List<dynamic>? ?? const []))
+            ?_numOrNull(p),
+        ],
+        tpsTaken: (item['tps_taken'] as num?)?.toInt() ?? 0,
+        breakevenAt: _time(item['breakeven_at']),
+        resultR: _numOrNull(item['realized_r']),
+        lastReconciledAt: _time(item['last_reconciled_at']),
+        staleHours: (item['stale_hours'] as num?)?.toInt(),
+        fromServer: true,
+      ));
+    }
+    return out;
   }
 
   static DateTime? _time(Object? raw) =>
