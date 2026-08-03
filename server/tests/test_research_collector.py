@@ -270,6 +270,61 @@ def test_значение_называется_так_как_его_зовёт_�
     assert факт.period_end.year == 2026
 
 
+#: Ответ метода данных ровно той формы, которую назвал живой прогон:
+#:
+#:   RawData[129]: colId, date, digits, dt, element_id, measure_id,
+#:                 obs_val, periodicity, rowId, unit_id
+#:   headerData[3]: elname, id
+#:   units[10]: id, val
+ОТВЕТ_ДАННЫХ = json.dumps({
+    "DTRange": [{"FromY": 2023, "ToY": 2026}],
+    "SType": [{"PublName": "Курс", "dsName": "Официальный курс", "sType": 1}],
+    "headerData": [
+        {"id": 7, "elname": "Средний номинальный курс за период"},
+        {"id": 8, "elname": "Курс на конец периода"},
+    ],
+    "units": [{"id": 3, "val": "руб. за долл. США"}],
+    "RawData": [
+        {"element_id": 7, "unit_id": 3, "obs_val": "88.5",
+         "date": "2026-05-31", "dt": 2026, "periodicity": "M"},
+        {"element_id": 7, "unit_id": 3, "obs_val": "89.1",
+         "date": "2026-06-30", "dt": 2026, "periodicity": "M"},
+        {"element_id": 8, "unit_id": 3, "obs_val": "90.4",
+         "date": "2026-06-30", "dt": 2026, "periodicity": "M"},
+    ],
+}).encode()
+
+
+def test_ряд_не_схлопывается_в_одну_ячейку(session, monkeypatch):
+    """Ровно то, что показал живой прогон: «наблюдений 1, повторов 516».
+
+    Ответ метода данных нормализован: значения в одном списке, названия
+    показателей и единицы — в других, связь по идентификатору. Читать
+    только `RawData` мало — у строки значения нет имени показателя, и все
+    строки получают один ключ. Плюс `dt` у этого сервиса не дата, а год:
+    разбирая его, весь ряд схлопывается в 31 декабря.
+    """
+    sync_registry(session, now=NOW)
+    отдаёт(monkeypatch, ОТВЕТ_ДАННЫХ)
+
+    report = collector.collect_cbr(session, now=NOW)
+    session.flush()
+
+    факты = session.execute(select(ResearchObservation)).scalars().all()
+    # Три строки — три разных наблюдения: два периода одного показателя и
+    # один другого. Ни одно не должно съесть остальные.
+    assert len({(f.observation_type, f.period_end) for f in факты}) == 3
+    assert report.written == 3
+
+    типы = {f.observation_type for f in факты}
+    assert len(типы) == 2, "показатели различаются по имени из headerData"
+    # Период — из полной даты, а не из года.
+    периоды = {f.period_end for f in факты}
+    assert all(p.month in (5, 6) for p in периоды), периоды
+    # Единица подтянута из справочника, а не потеряна.
+    assert any("долл" in (f.unit or "") for f in факты)
+
+
 def test_отчёт_называет_числа_а_не_настроение():
     """Строка журнала — единственное место, где видно, идёт ли сбор."""
     report = collector.CollectReport(attempted=4, fetched=3, written=120, duplicates=7)

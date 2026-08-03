@@ -309,6 +309,22 @@ def parse(fetched: Fetched, *, dataset: str) -> list[Datum]:
     if not rows:
         return []
 
+    # Ответ метода данных нормализован: значения в одном списке, названия
+    # показателей и единицы — в других, а связь по идентификатору. Живой
+    # прогон показал это дословно:
+    #
+    #   RawData[129]: colId, date, digits, dt, element_id, measure_id,
+    #                 obs_val, periodicity, rowId, unit_id
+    #   headerData[3]: elname, id
+    #   units[10]: id, val
+    #
+    # Читать только `RawData` мало: у строки значения нет имени показателя,
+    # и все сто двадцать девять строк получают один и тот же ключ. В сводке
+    # это выглядело как «наблюдений 1, повторов 516» — то есть ряд лёг в
+    # одну ячейку, а число повторов сошло за нормальную работу.
+    названия = _lookup(payload, "headerData", "elname")
+    единицы = _lookup(payload, "units", "val")
+
     result: list[Datum] = []
     for row in rows:
         if not isinstance(row, dict):
@@ -321,13 +337,16 @@ def parse(fetched: Fetched, *, dataset: str) -> list[Datum]:
                     or row.get("elname")
                     or row.get("element_name")
                     or row.get("name")
-                    or ""
+                    or названия.get(_key(row.get("element_id")), "")
                 ),
                 period_start=_day(row.get("period_start") or row.get("dt_from")),
+                # `date` впереди `dt`: первое — полная дата, второе у этого
+                # сервиса год. Разбирая год, все месяцы ряда схлопываются в
+                # 31 декабря, то есть в один период.
                 period_end=_day(
                     row.get("period_end")
-                    or row.get("dt")
                     or row.get("date")
+                    or row.get("dt")
                     or _period_from_parts(row)
                 ),
                 # `obs_val` — как значение называет сам сервис данных в
@@ -338,13 +357,44 @@ def parse(fetched: Fetched, *, dataset: str) -> list[Datum]:
                     if row.get("obs_val") is not None
                     else (row.get("value") or row.get("val"))
                 ),
-                unit=str(row.get("unit") or row.get("unit_name") or ""),
+                unit=str(
+                    row.get("unit")
+                    or row.get("unit_name")
+                    or единицы.get(_key(row.get("unit_id")), "")
+                ),
                 region=str(row.get("region") or ""),
                 industry=str(row.get("industry") or row.get("okved") or ""),
                 published_at=_moment(row.get("published_at") or row.get("publish_dt")),
             )
         )
     return result
+
+
+def _key(raw: object) -> str:
+    """Идентификатор строкой: сервис смешивает числа и строки в одном поле."""
+    return "" if raw is None else str(raw).strip()
+
+
+def _lookup(payload: object, container: str, field: str) -> dict[str, str]:
+    """Справочник «идентификатор → значение» из бокового списка ответа.
+
+    Пустой, если списка нет: подставлять выдуманное имя показателя хуже,
+    чем оставить его пустым, — по выдуманному ряд не найдёшь.
+    """
+    if not isinstance(payload, dict):
+        return {}
+    rows = payload.get(container)
+    if not isinstance(rows, list):
+        return {}
+    out: dict[str, str] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        key = _key(row.get("id"))
+        value = row.get(field)
+        if key and value is not None:
+            out[key] = str(value).strip()
+    return out
 
 
 def _rows_of(payload: object) -> list:
