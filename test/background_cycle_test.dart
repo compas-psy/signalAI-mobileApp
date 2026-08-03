@@ -188,6 +188,50 @@ void main() {
     expect(second.notices, isEmpty);
   });
 
+  test('взятый тейк будит, и перенос стопа назван прямо', () async {
+    // Пуш был только на закрытие: промежуток между «идея сработала» и «всё
+    // кончилось» оставался немым — при том, что именно там и происходит
+    // сопровождение, которого владелец потребовал прямым текстом.
+    final ledger = SignalLedger(trades: [
+      tradeOf('BTCUSDT', status: PaperStatus.open, breakeven: true),
+    ]);
+    final target = FakeTarget(
+      ledger: ledger,
+      onFetch: () => ledger.trades[0].tpsTaken = 1,
+    );
+    final cycle = BackgroundCycle(target: target, lock: freeLock());
+    final state = MonitorState();
+
+    final first = await cycle.run(state: state, now: now);
+    expect(first.notices, hasLength(1));
+    expect(first.notices.single.title, contains('взят тейк 1 из 1'));
+    expect(first.notices.single.body, contains('безубыток'));
+
+    // Повторно о том же тейке не будим.
+    final second = await cycle.run(
+      state: state,
+      now: now.add(const Duration(hours: 1)),
+    );
+    expect(second.notices, isEmpty);
+  });
+
+  test('без правила безубытка про перенос не сочиняется', () async {
+    // Правило хранится в самой сделке: оно могло смениться, а открытая
+    // сделка ведётся так, как была открыта.
+    final ledger = SignalLedger(trades: [
+      tradeOf('ETHUSDT', status: PaperStatus.open),
+    ]);
+    final target = FakeTarget(
+      ledger: ledger,
+      onFetch: () => ledger.trades[0].tpsTaken = 1,
+    );
+    final cycle = BackgroundCycle(target: target, lock: freeLock());
+
+    final report = await cycle.run(state: MonitorState(), now: now);
+
+    expect(report.notices.single.body, isNot(contains('безубыток')));
+  });
+
   test('сделка, закрытая до начала наблюдения, не будит', () async {
     // Журнал уже содержит закрытую сделку — это история, а не событие.
     final target = FakeTarget(

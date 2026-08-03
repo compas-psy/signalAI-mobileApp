@@ -180,6 +180,14 @@ class BackgroundCycle {
     final before = {
       for (final t in target.ledger.trades) t.id: t.status,
     };
+    // И сколько тейков было взято. Владелец потребовал, чтобы сделка
+    // «ответственно отслеживалась»: исполнение TP, перестановка стопа в
+    // безубыток, выход. Первые два происходили молча — пуш был только на
+    // закрытие, то есть о самом важном шаге сопровождения владелец узнавал
+    // постфактум и только открыв приложение.
+    final beforeTps = {
+      for (final t in target.ledger.trades) t.id: t.tpsTaken,
+    };
 
     final notices = <MonitorNotice>[];
     final withdrawn = <String>[];
@@ -191,6 +199,7 @@ class BackgroundCycle {
       final digest = await target.fetchDigest(force: _barClosed(state.lastRun, now));
 
       notices.addAll(_closedTrades(before, state));
+      notices.addAll(_tradeProgress(beforeTps, state));
       notices.addAll(_newSignals(digest, state));
       notices.addAll(await _positions(state));
       notices.addAll(await _protectPositions(state));
@@ -242,6 +251,48 @@ class BackgroundCycle {
         // устройстве. Нет — уведомление просто открывает приложение.
         payload: trade.signalId.isEmpty ? '' : 'idea:${trade.signalId}',
         key: 'trade:${trade.id}',
+      ));
+    }
+    state._trim(state.notifiedTrades);
+    return notices;
+  }
+
+  /// Ход живой сделки: взят тейк, стоп ушёл в безубыток.
+  ///
+  /// Пуш был только на закрытие, и промежуток между «идея сработала» и «всё
+  /// кончилось» оставался немым — при том, что именно там происходит
+  /// сопровождение. Владелец сформулировал требование прямо: исполнение TP,
+  /// перестановка стопа в безубыток, выход.
+  List<MonitorNotice> _tradeProgress(
+    Map<String, int> beforeTps,
+    MonitorState state,
+  ) {
+    final notices = <MonitorNotice>[];
+    for (final trade in target.ledger.openOrPending) {
+      final was = beforeTps[trade.id];
+      // Сделка, которой не было до пересчёта, — не «взяла тейк», а
+      // открылась: о ней сообщают по своему поводу.
+      if (was == null || trade.tpsTaken <= was) continue;
+      // Ключ памяти включает номер тейка: второй тейк по той же сделке —
+      // отдельное событие, а не повтор первого.
+      if (!state.notifiedTrades.add('tp:${trade.id}:${trade.tpsTaken}')) {
+        continue;
+      }
+      // Перенос происходит ровно на первом тейке и только если правило было
+      // включено при открытии. Правило хранится в самой сделке: оно могло
+      // смениться, а уже открытая сделка ведётся так, как была открыта.
+      final movedToBreakeven = trade.breakevenAfterTp1 && was == 0;
+      notices.add((
+        title: '${trade.symbol}: взят тейк '
+            '${trade.tpsTaken} из ${trade.tpPrices.length}',
+        body: movedToBreakeven
+            ? 'Стоп переставлен в безубыток — ${_price(trade.entry)}. '
+                'Остаток идёт дальше без риска.'
+            : 'Остаток ведём дальше, стоп ${_price(trade.stopLoss)}.',
+        payload: trade.signalId.isEmpty ? '' : 'idea:${trade.signalId}',
+        // Идентификатор пуша один на сделку: новый тейк заменяет прежнее
+        // уведомление в шторке, а не выкладывает рядом второе.
+        key: 'tp:${trade.id}',
       ));
     }
     state._trim(state.notifiedTrades);
