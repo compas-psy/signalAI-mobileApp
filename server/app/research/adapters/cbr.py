@@ -100,6 +100,81 @@ def datasets_of(publication_id: int) -> str:
     return f"{BASE_URL}/datasets?publicationId={int(publication_id)}"
 
 
+def data_of(publication_id: int, dataset_id: int, *, y1: int, y2: int) -> str:
+    """Адрес самих значений набора.
+
+    Недостающее звено цепочки. Сбор доходил до списка наборов и разбирал
+    **его** как данные: у каждой строки было название показателя и не было
+    ни числа, ни периода — потому что это описание набора, а не факт. В
+    журнале это выглядело как «забрано 11/11, наблюдений 0», то есть сеть
+    открыта, источник отвечает, а наблюдений нет.
+
+    Годы обязательны: сервис отдаёт ряд за диапазон, и без него запрос
+    смысла не имеет.
+    """
+    return (
+        f"{BASE_URL}/data?y1={int(y1)}&y2={int(y2)}"
+        f"&publicationId={int(publication_id)}&datasetId={int(dataset_id)}"
+    )
+
+
+def dataset_ids(payload: bytes) -> list[int]:
+    """Числовые идентификаторы наборов внутри публикации.
+
+    Читаются из ответа, а не собираются из наших имён: нумерация —
+    собственность сервиса, и она уже один раз оказалась не той, которую мы
+    придумали.
+    """
+    out: list[int] = []
+    for row in publications(payload):
+        raw = row.get("id") if row.get("id") is not None else row.get("datasetId")
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if value not in out:
+            out.append(value)
+    return out
+
+
+def shape_of(fetched: Fetched) -> str:
+    """Как выглядит ответ, если разобрать его не удалось.
+
+    Нужна затем, что «разобрано 0 строк» не отвечает на вопрос почему.
+    Контракт источника меняется, и следующий шаг должен делаться по факту
+    ответа, а не по догадке о нём. Возвращаются только имена полей —
+    значения в журнал не попадают.
+    """
+    try:
+        payload = json.loads(fetched.body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return f"не JSON, первые байты {fetched.body[:60]!r}"
+    if isinstance(payload, dict):
+        keys = ", ".join(sorted(payload)[:8])
+        # Сначала известные имена контейнера, потом любой список объектов.
+        # Второе важнее первого: неизвестное имя — это как раз тот случай,
+        # ради которого форма и нужна, и отвечать на него «нет строк»
+        # значит промолчать ровно там, где нас спросили.
+        rows = None
+        for name in ("RawData", "rawData", "data", "items"):
+            value = payload.get(name)
+            if isinstance(value, list) and value and isinstance(value[0], dict):
+                rows = value[0]
+                break
+        if rows is None:
+            for value in payload.values():
+                if isinstance(value, list) and value and isinstance(value[0], dict):
+                    rows = value[0]
+                    break
+        inner = (
+            ", ".join(sorted(rows)[:10]) if isinstance(rows, dict) else "нет строк"
+        )
+        return f"объект с полями [{keys}]; строка: [{inner}]"
+    if isinstance(payload, list) and payload and isinstance(payload[0], dict):
+        return f"список; строка: [{', '.join(sorted(payload[0])[:10])}]"
+    return f"список из {len(payload)} элементов" if isinstance(payload, list) else "пусто"
+
+
 def leaf_publications(payload: bytes) -> list[dict]:
     """Публикации, у которых есть данные.
 
@@ -230,8 +305,8 @@ def parse(fetched: Fetched, *, dataset: str) -> list[Datum]:
     except (UnicodeDecodeError, json.JSONDecodeError):
         return []
 
-    rows = payload if isinstance(payload, list) else payload.get("data", [])
-    if not isinstance(rows, list):
+    rows = _rows_of(payload)
+    if not rows:
         return []
 
     result: list[Datum] = []
@@ -241,19 +316,72 @@ def parse(fetched: Fetched, *, dataset: str) -> list[Datum]:
         result.append(
             Datum(
                 dataset=dataset,
-                indicator=str(row.get("indicator") or row.get("name") or ""),
+                indicator=str(
+                    row.get("indicator")
+                    or row.get("elname")
+                    or row.get("element_name")
+                    or row.get("name")
+                    or ""
+                ),
                 period_start=_day(row.get("period_start") or row.get("dt_from")),
                 period_end=_day(
-                    row.get("period_end") or row.get("dt") or row.get("date")
+                    row.get("period_end")
+                    or row.get("dt")
+                    or row.get("date")
+                    or _period_from_parts(row)
                 ),
-                value=_decimal(row.get("value") or row.get("val")),
-                unit=str(row.get("unit") or ""),
+                # `obs_val` — как значение называет сам сервис данных в
+                # ответе метода `data`. Прежний разбор его не знал, потому
+                # что и до метода не доходил.
+                value=_decimal(
+                    row.get("obs_val")
+                    if row.get("obs_val") is not None
+                    else (row.get("value") or row.get("val"))
+                ),
+                unit=str(row.get("unit") or row.get("unit_name") or ""),
                 region=str(row.get("region") or ""),
                 industry=str(row.get("industry") or row.get("okved") or ""),
                 published_at=_moment(row.get("published_at") or row.get("publish_dt")),
             )
         )
     return result
+
+
+def _rows_of(payload: object) -> list:
+    """Строки значений, как бы их ни назвал сервис.
+
+    Имена разные у разных методов, и перебор здесь честнее, чем одно
+    угаданное: неизвестное имя даёт пустой разбор, а он попадает в отчёт
+    вместе с формой ответа — то есть следующий шаг делается по факту.
+    """
+    if isinstance(payload, list):
+        return payload
+    if not isinstance(payload, dict):
+        return []
+    for name in ("RawData", "rawData", "data", "items", "dataset"):
+        rows = payload.get(name)
+        if isinstance(rows, list):
+            return rows
+    return []
+
+
+def _period_from_parts(row: dict) -> str:
+    """Период, собранный из года и месяца/квартала по отдельности.
+
+    Сервис отдаёт их разными полями, а не одной датой, и без сборки период
+    остаётся пустым — то есть наблюдение выглядит вневременным и в правиле
+    3–2–1 не считается ни за какой период.
+    """
+    year = row.get("year") or row.get("dt_year")
+    if year is None:
+        return ""
+    month = row.get("month") or row.get("dt_month")
+    if month is not None:
+        return f"{int(year):04d}-{int(month):02d}"
+    quarter = row.get("quarter") or row.get("dt_quarter")
+    if quarter is not None:
+        return f"{int(year):04d}-{int(quarter) * 3:02d}"
+    return f"{int(year):04d}"
 
 
 def availability(datum: Datum, *, first_seen_at: datetime) -> Availability:
@@ -287,7 +415,10 @@ __all__ = [
     "Datum",
     "SOURCE_ID",
     "availability",
+    "data_of",
+    "dataset_ids",
     "discover",
     "fetch_plan",
     "parse",
+    "shape_of",
 ]

@@ -62,12 +62,28 @@ class Ответ:
 ]).encode()
 
 
-def отдаёт(monkeypatch, body: bytes):
-    """Сервис двухшаговый: дерево публикаций, затем ряды набора."""
+#: Список наборов внутри публикации.
+#:
+#: Отдельный шаг, а не тот же ответ. Сбор доходил до этого списка и
+#: разбирал **его** как данные: у каждой строки есть название показателя и
+#: нет ни числа, ни периода — потому что это описание набора, а не факт.
+#: В журнале это выглядело как «забрано 11/11, наблюдений 0».
+НАБОРЫ = json.dumps([
+    {"id": 51, "name": "Спрос на продукцию"},
+    {"id": 52, "name": "Ожидания"},
+]).encode()
+
+
+def отдаёт(monkeypatch, body: bytes, наборы: bytes = НАБОРЫ):
+    """Сервис трёхшаговый: дерево публикаций → наборы → сами значения."""
 
     def ответ(request, **_):
         url = request.full_url if hasattr(request, "full_url") else str(request)
-        return Ответ(ДЕРЕВО if "publications" in url else body)
+        if "publications" in url:
+            return Ответ(ДЕРЕВО)
+        if "datasets" in url:
+            return Ответ(наборы)
+        return Ответ(body)
 
     monkeypatch.setattr(collector.urllib.request, "urlopen", ответ)
 
@@ -173,6 +189,85 @@ def test_план_фнс_записывается_как_факт_об_исто�
     ).scalars().first()
     assert факт.value_text.endswith(".zip")
     assert факт.value_numeric is None
+
+
+def test_сбор_доходит_до_значений_а_не_до_списка_наборов(session, monkeypatch):
+    """Недостающее звено цепочки, найденное по живому логу.
+
+        research: ок — сбор: забрано 11/11, наблюдений 0, повторов 4,
+        пропущено 6
+
+    Сбор доходил до списка наборов и разбирал его как данные. У каждой
+    строки было название показателя и не было ни числа, ни периода —
+    потому что это описание набора, а не факт. Сеть открыта, источник
+    отвечает, наблюдений нет.
+    """
+    sync_registry(session, now=NOW)
+    запрошено: list[str] = []
+
+    def ответ(request, **_):
+        url = request.full_url if hasattr(request, "full_url") else str(request)
+        запрошено.append(url)
+        if "publications" in url:
+            return Ответ(ДЕРЕВО)
+        if "datasets" in url:
+            return Ответ(НАБОРЫ)
+        return Ответ(ОТВЕТ_ЦБ)
+
+    monkeypatch.setattr(collector.urllib.request, "urlopen", ответ)
+
+    report = collector.collect_cbr(session, now=NOW)
+    session.flush()
+
+    данные = [u for u in запрошено if "/data?" in u]
+    assert данные, "к самим значениям запрос так и не ушёл"
+    # Идентификатор набора берётся из ответа, а не из нашего имени:
+    # нумерация — собственность сервиса.
+    assert "datasetId=51" in данные[0]
+    assert report.written >= 1
+
+
+def test_непонятый_ответ_называет_форму_а_не_молчит(session, monkeypatch):
+    """«Разобрано 0 строк» не отвечает на вопрос почему.
+
+    Контракт источника меняется, и следующий шаг должен делаться по факту
+    ответа, а не по догадке о нём. В отчёт идут имена полей, не значения:
+    журнал — не место для выгрузки чужих данных.
+    """
+    sync_registry(session, now=NOW)
+    чужая_форма = json.dumps({"payload": [{"someField": 1, "otherField": 2}]}).encode()
+    отдаёт(monkeypatch, чужая_форма)
+
+    report = collector.collect_cbr(session, now=NOW)
+
+    assert report.written == 0
+    assert any("someField" in e for e in report.errors), report.errors
+    assert not any("1" == e for e in report.errors)
+
+
+def test_значение_называется_так_как_его_зовёт_сервис(session, monkeypatch):
+    """`obs_val` — имя значения в ответе метода данных.
+
+    Прежний разбор его не знал, потому что и до метода не доходил.
+    """
+    sync_registry(session, now=NOW)
+    ответ_данных = json.dumps({
+        "RawData": [
+            {"elname": "Спрос", "obs_val": "3.4", "year": 2026, "month": 6},
+        ]
+    }).encode()
+    отдаёт(monkeypatch, ответ_данных)
+
+    report = collector.collect_cbr(session, now=NOW)
+    session.flush()
+
+    assert report.written >= 1
+    факт = session.execute(select(ResearchObservation)).scalars().first()
+    assert факт.value_numeric is not None
+    # Период собран из года и месяца по отдельности: без сборки наблюдение
+    # выглядит вневременным и в правиле 3–2–1 не считается ни за какой период.
+    assert факт.period_end is not None
+    assert факт.period_end.year == 2026
 
 
 def test_отчёт_называет_числа_а_не_настроение():

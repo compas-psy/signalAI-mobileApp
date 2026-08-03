@@ -41,6 +41,14 @@ from .timeline import tradable_at
 #: Сколько ждать ответа на обычный (не файловый) запрос.
 TIMEOUT = 30.0
 
+#: За сколько лет просить ряд у сервиса данных.
+#:
+#: Три года, а не один: движку спроса нужно двенадцать месяцев на сравнение
+#: с прошлым годом плюс два на подтверждения — четырнадцать периодов, и
+#: одного года на них не хватает. Запас на пересмотры и на месяцы, которых
+#: в наборе может не оказаться.
+HISTORY_YEARS = 3
+
 
 @dataclass
 class CollectReport:
@@ -99,11 +107,40 @@ def collect_cbr(session: Session, *, now: datetime | None = None) -> CollectRepo
         )
         return report
 
-    targets = [
-        (dataset, cbr.datasets_of(pub_id))
-        for dataset, ids in найдено.items()
-        for pub_id in ids[:3]
-    ]
+    # Трёхшаговый, а не двухшаговый. Прежний проход доходил до списка
+    # наборов и разбирал **его** как данные: у каждой строки было название
+    # показателя и не было ни числа, ни периода — потому что это описание
+    # набора, а не факт. В журнале это выглядело как «забрано 11/11,
+    # наблюдений 0»: сеть открыта, источник отвечает, наблюдений нет.
+    год = moment.year
+    targets: list[tuple[str, str]] = []
+    for dataset, ids in найдено.items():
+        for pub_id in ids[:3]:
+            report.attempted += 1
+            каталог = _get(cbr.datasets_of(pub_id), moment)
+            if каталог is None or not каталог.ok:
+                report.errors.append(f"{dataset}: список наборов не пришёл")
+                continue
+            report.fetched += 1
+            наборы = cbr.dataset_ids(каталог.body)
+            if not наборы:
+                report.errors.append(
+                    f"{dataset}: в публикации {pub_id} не нашлось наборов; "
+                    f"{cbr.shape_of(каталог)}"
+                )
+                continue
+            targets.extend(
+                (
+                    dataset,
+                    cbr.data_of(pub_id, набор, y1=год - HISTORY_YEARS, y2=год),
+                )
+                # Не больше трёх наборов на публикацию: лимит источника один
+                # запрос в секунду, и выгребать всё дерево за один прогон
+                # значит подойти к блокировке ради данных, которые движку
+                # сегодня не нужны.
+                for набор in наборы[:3]
+            )
+
     for dataset, url in targets:
         report.attempted += 1
         fetched = _get(url, moment)
@@ -113,12 +150,11 @@ def collect_cbr(session: Session, *, now: datetime | None = None) -> CollectRepo
         report.fetched += 1
         rows = cbr.parse(fetched, dataset=dataset)
         if not rows:
-            # Пустой разбор — новость, а не тишина: формат ответа мог
-            # оказаться не тем, который ждёт разбор. Первые байты уходят в
-            # отчёт, чтобы следующий шаг делался по факту, а не по догадке.
+            # Пустой разбор — новость, а не тишина: контракт источника
+            # меняется, и следующий шаг должен делаться по факту ответа, а
+            # не по догадке о нём. В отчёт идут имена полей, не значения.
             report.errors.append(
-                f"{dataset}: разбор дал 0 строк, ответ начинается с "
-                f"{fetched.body[:120]!r}"
+                f"{dataset}: разбор дал 0 строк; {cbr.shape_of(fetched)}"
             )
             continue
         empty = 0
