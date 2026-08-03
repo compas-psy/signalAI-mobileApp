@@ -399,6 +399,10 @@ class HostReachOut(ApiModel):
     """Один хост источника."""
 
     host: str = ""
+    #: Что именно спрашивали. Имя хоста на это не отвечает: у одного хоста
+    #: точек входа несколько, и «www.cbr.ru ответил 404» не позволяет
+    #: отличить мёртвый корень сервиса от мёртвого каталога.
+    url: str = ""
     #: Выпустила ли сеть сервера. Это и есть вопрос про брандмауэр.
     network_open: bool = False
     #: Ответил ли источник по HTTP. Любой код — это ответ.
@@ -438,7 +442,13 @@ def reachability(session: Session = Depends(get_db)) -> list[ReachabilityOut]:
     """
     result: list[ReachabilityOut] = []
     for spec in ALL_SOURCES:
-        urls = tuple(u for u in (spec.base_url, *spec.extra_urls) if u)
+        # Каталог впереди базового адреса. Корень сервиса данных ЦБ
+        # (`/dataservice/`) отвечает 404 и это ничего не значит — сервис
+        # состоит из именованных точек входа, — но панель показывала именно
+        # его, и живой источник читался как сломанный.
+        urls = tuple(
+            u for u in (*spec.catalogue_urls, spec.base_url, *spec.extra_urls) if u
+        )
         if not urls:
             continue
         host = urlsplit(urls[0]).hostname or ""
@@ -489,6 +499,7 @@ def _probe(source_id: str, urls: tuple[str, ...]) -> ReachabilityOut:
         hosts=[
             HostReachOut(
                 host=p.host,
+                url=p.url,
                 network_open=p.network_open,
                 answered=p.answered,
                 status=p.status,
