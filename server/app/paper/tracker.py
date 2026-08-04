@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..journal.lifecycle import TransitionRequest, transition
@@ -65,6 +65,9 @@ class PaperReport:
     #: открыта другая. Защита обязана быть видна: молча отброшенная идея
     #: неотличима от идеи, которой не было.
     same_instrument: int = 0
+    #: Сделок, по которым новый бар просто ещё не закрылся. Не слепота:
+    #: отдельный счётчик, чтобы нормальный такт не выглядел отказом.
+    awaiting_bar: int = 0
     no_data: int = 0
     no_data_instruments: list[str] = field(default_factory=list)
     #: Почему по этим инструментам нет баров. Имя отвечает «по кому мы
@@ -87,6 +90,8 @@ class PaperReport:
             parts.append(
                 f"пропущено {self.same_instrument} — по инструменту уже есть сделка"
             )
+        if self.awaiting_bar:
+            parts.append(f"ждут нового бара {self.awaiting_bar}")
         if self.no_data:
             named = self.no_data_reasons or ", ".join(self.no_data_instruments[:3])
             parts.append(f"без баров {self.no_data} ({named})")
@@ -201,6 +206,32 @@ def _bars_since(session: Session, trade: PaperTrade) -> list[Bar]:
             .order_by(Bar.open_time)
         ).scalars()
     )
+
+
+#: После какого молчания источник действительно считается замолчавшим.
+#:
+#: Три часовых бара. Сопровождение идёт каждые пятнадцать минут, а бары
+#: часовые: в трёх прогонах из четырёх нового бара просто нет, и это не
+#: слепота, а нормальный такт. Прежний порог отсутствовал вовсе, и лог
+#: кричал «надзор слеп» там, где всё в порядке, — а крик, звучащий всё
+#: время, перестаёт что-либо значить ровно тогда, когда он верен.
+BLIND_AFTER = timedelta(hours=3)
+
+
+def _blind(session: Session, trade: PaperTrade, *, now: datetime) -> bool:
+    """Правда ли по инструменту нет данных, а не просто нет нового бара."""
+    latest = session.execute(
+        select(func.max(Bar.open_time)).where(
+            Bar.instrument_id == trade.instrument_id,
+            Bar.timeframe == TRACK_TF,
+            Bar.is_closed.is_(True),
+        )
+    ).scalar()
+    if latest is None:
+        return True
+    if latest.tzinfo is None:
+        latest = latest.replace(tzinfo=UTC)
+    return now - latest > BLIND_AFTER
 
 
 def _is_long(trade: PaperTrade) -> bool:
@@ -421,9 +452,15 @@ def track(session: Session, *, now: datetime | None = None) -> PaperReport:
     for trade in live:
         bars = _bars_since(session, trade)
         if not bars:
-            report.no_data += 1
-            if trade.instrument_id not in report.no_data_instruments:
-                report.no_data_instruments.append(trade.instrument_id)
+            # Пусто — ещё не слепота: часовой бар закрывается раз в час, а
+            # прогон идёт каждые пятнадцать минут. Слепота — это когда по
+            # инструменту нет свежих баров вообще.
+            if _blind(session, trade, now=moment):
+                report.no_data += 1
+                if trade.instrument_id not in report.no_data_instruments:
+                    report.no_data_instruments.append(trade.instrument_id)
+            else:
+                report.awaiting_bar += 1
         else:
             was_open = trade.status is PaperStatus.OPEN
             events = advance(trade, bars, now=moment)

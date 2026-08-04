@@ -280,6 +280,41 @@ def test_слепота_видна_поимённо(session, instrument):
     assert instrument.instrument_id in report.summary()
 
 
+def test_ожидание_бара_не_называется_слепотой(session, instrument):
+    """Крик, звучащий всё время, перестаёт значить что-либо.
+
+    Сопровождение идёт каждые пятнадцать минут, бары часовые: в трёх
+    прогонах из четырёх нового бара нет, и это нормальный такт. В живом
+    логе это выглядело как «без баров 1 — надзор по ним слеп» при
+    полностью исправном источнике.
+    """
+    trade = сделка(session, instrument)
+    session.add(bar(instrument.instrument_id, 1, 90000, 90200))
+    session.flush()
+    track(session, now=NOW + timedelta(hours=2))
+    assert trade.last_reconciled_at is not None
+
+    # Пятнадцать минут спустя нового бара ещё нет — но источник жив.
+    report = track(session, now=NOW + timedelta(hours=2, minutes=15))
+
+    assert report.no_data == 0, "нормальный такт назван слепотой"
+    assert report.awaiting_bar == 1
+    assert "ждут нового бара" in report.summary()
+
+
+def test_молчание_дольше_порога_остаётся_слепотой(session, instrument):
+    """Источник, замолчавший всерьёз, обязан быть назван."""
+    сделка(session, instrument)
+    session.add(bar(instrument.instrument_id, 1, 90000, 90200))
+    session.flush()
+    track(session, now=NOW + timedelta(hours=2))
+
+    report = track(session, now=NOW + timedelta(hours=8))
+
+    assert report.no_data == 1
+    assert report.awaiting_bar == 0
+
+
 def test_вторая_идея_по_инструменту_сделки_не_открывает(session, instrument):
     """Тот самый экран владельца: десять позиций по HYPEUSDT подряд.
 
