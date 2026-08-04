@@ -276,3 +276,96 @@ def test_scan_is_deterministic(session):
         assert first.entry_reference == second.entry_reference
         assert first.stop == second.stop
         assert first.p_tp1_before_sl == second.p_tp1_before_sl
+
+
+# ── Повторный скан не плодит идей ───────────────────────────────────────────
+
+
+def _идея(session, instrument_id: str, **overrides) -> TradeIdea:
+    from tests.conftest import idea_kwargs
+
+    base = idea_kwargs(instrument_id, NOW)
+    base.update(overrides)
+    return TradeIdea(**base)
+
+
+def test_повторный_скан_не_создаёт_вторую_идею(session, monkeypatch):
+    """Экран владельца: десять позиций по HYPEUSDT подряд.
+
+    Скан идёт каждые пятнадцать минут и находит один и тот же сетап. Раньше
+    каждая находка записывалась отдельной идеей, и по каждой открывалась
+    отдельная бумажная сделка: входы 52,2860 … 52,2950 — одна сделка,
+    пересчитанная десять раз.
+
+    Конвейер здесь подменён намеренно: проверяется страж в `scan()`, а не
+    то, даёт ли сетап конкретный набор баров. Иначе тест молча
+    превращается в пропуск ровно тогда, когда рынок спокоен.
+    """
+    inst = add_instrument(session)
+    import app.pipeline.scan as scan_module
+
+    monkeypatch.setattr(
+        scan_module,
+        "scan_instrument",
+        lambda session, instrument, **kw: (
+            _идея(session, instrument.instrument_id), [], []
+        ),
+    )
+
+    первый = scan(session, now=NOW)
+    assert первый.produced == 1
+
+    второй = scan(session, now=NOW + timedelta(minutes=15))
+
+    assert второй.produced == 0
+    дубли = [s for s in второй.skipped if s.stage == "дубль"]
+    assert дубли, "повтор пропал молча"
+    assert "уже есть живая идея" in дубли[0].reason
+    живых = session.execute(
+        select(TradeIdea).where(TradeIdea.instrument_id == inst.instrument_id)
+    ).scalars().all()
+    assert len(живых) == 1
+
+
+def test_терминальная_идея_новой_не_мешает(session, monkeypatch):
+    """Сетап действительно может появиться снова — после того как прошлый
+    отработал, был обогнан рынком или протух."""
+    inst = add_instrument(session)
+    import app.pipeline.scan as scan_module
+
+    monkeypatch.setattr(
+        scan_module,
+        "scan_instrument",
+        lambda session, instrument, **kw: (
+            _идея(session, instrument.instrument_id), [], []
+        ),
+    )
+
+    первый = scan(session, now=NOW)
+    for idea in первый.ideas:
+        idea.status = IdeaStatus.CLOSED
+    session.flush()
+
+    второй = scan(session, now=NOW + timedelta(minutes=15))
+
+    assert второй.produced == 1
+    assert not [s for s in второй.skipped if s.stage == "дубль"]
+
+
+def test_один_проход_не_плодит_дублей_внутри_себя(session, monkeypatch):
+    """Два инструмента — две идеи; повтор внутри прохода тоже ловится."""
+    add_instrument(session)
+    import app.pipeline.scan as scan_module
+
+    monkeypatch.setattr(
+        scan_module,
+        "scan_instrument",
+        lambda session, instrument, **kw: (
+            _идея(session, instrument.instrument_id), [], []
+        ),
+    )
+
+    первый = scan(session, now=NOW)
+    assert первый.produced == 1
+    # Тот же проход ещё раз, без изменения статуса: идея уже живая.
+    assert scan(session, now=NOW).produced == 0

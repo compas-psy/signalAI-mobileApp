@@ -567,6 +567,30 @@ def scan_instrument(
     return idea, skipped, rejections
 
 
+def _live_idea_ids(session: Session) -> dict[str, str]:
+    """Инструмент → идентификатор живой идеи по нему.
+
+    Живая — любая нетерминальная: от наблюдения до сопровождаемой позиции.
+    Терминальная (закрыта, обогнана рынком, отменена, протухла) созданию
+    новой не мешает — сетап действительно может появиться снова.
+
+    Один запрос на весь проход, а не по запросу на инструмент: скан ходит
+    по всей вселенной каждые пятнадцать минут.
+    """
+    terminal = [s for s in IdeaStatus if s.is_terminal]
+    rows = session.execute(
+        select(TradeIdea.instrument_id, TradeIdea.id)
+        .where(TradeIdea.status.notin_(terminal))
+        .order_by(TradeIdea.created_at)
+    ).all()
+    # Первая по времени и остаётся: если живых почему-то несколько, ссылаться
+    # надо на ту, которую владельцу показали раньше.
+    out: dict[str, str] = {}
+    for instrument_id, idea_id in rows:
+        out.setdefault(instrument_id, str(idea_id))
+    return out
+
+
 def scan(
     session: Session,
     *,
@@ -596,6 +620,8 @@ def scan(
     )
     result.scanned = len(instruments)
 
+    живые = _live_idea_ids(session)
+
     for instrument in instruments:
         try:
             idea, skipped, rejections = scan_instrument(
@@ -609,6 +635,24 @@ def scan(
         result.skipped.extend(skipped)
         result.rejections.extend(rejections)
         if idea is not None:
+            # Тот же сетап, найденный через пятнадцать минут, — не новая
+            # идея, а прежняя, подтверждённая ещё раз. Записывать её второй
+            # строкой значит плодить план: у владельца в «В работе»
+            # оказалось десять позиций по HYPEUSDT с входами 52,2860 …
+            # 52,2950 — одна сделка, пересчитанная десять раз.
+            #
+            # §12 требует хранить найденное, и оно хранится: повтор уходит в
+            # пропуски с причиной, а не исчезает молча.
+            прежняя = живые.get(instrument.instrument_id)
+            if прежняя is not None:
+                result.skipped.append(
+                    Skipped(
+                        instrument.instrument_id,
+                        "дубль",
+                        f"по инструменту уже есть живая идея {прежняя}",
+                    )
+                )
+                continue
             session.add(idea)
             session.flush()
             record_initial(
@@ -616,6 +660,7 @@ def scan(
                 reason_detail=idea.explanation_json.get("admission", ""),
             )
             result.ideas.append(idea)
+            живые[instrument.instrument_id] = str(idea.id)
 
     # ── Отбор карточек дня §16 ───────────────────────────────────────────
     ranked = [

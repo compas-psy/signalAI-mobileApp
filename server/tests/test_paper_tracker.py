@@ -280,23 +280,36 @@ def test_слепота_видна_поимённо(session, instrument):
     assert instrument.instrument_id in report.summary()
 
 
-def test_инструмент_не_называется_дважды(session, instrument):
-    """Из живого лога: «без баров 2 (HYPEUSDT, HYPEUSDT)».
+def test_вторая_идея_по_инструменту_сделки_не_открывает(session, instrument):
+    """Тот самый экран владельца: десять позиций по HYPEUSDT подряд.
 
-    Счёт идёт по сделкам, а перечисление читается как перечисление
-    инструментов — и один слепой инструмент выглядел как два.
+    Скан находит один и тот же сетап каждые пятнадцать минут, дедуп шёл по
+    идее — и каждая находка становилась отдельной сделкой. Входы 52,2860 …
+    52,2950: одна сделка, пересчитанная десять раз. Быть одновременно в
+    десяти позициях по одному активу — не диверсификация, а
+    десятикратный риск на нём.
     """
-    for _ in range(2):
-        idea = триггерная_идея(instrument.instrument_id)
-        session.add(idea)
-        session.flush()
-        open_for(session, idea, now=NOW)
+    первая = триггерная_идея(instrument.instrument_id)
+    вторая = триггерная_идея(instrument.instrument_id)
+    session.add_all([первая, вторая])
+    session.flush()
+
+    assert open_for(session, первая, now=NOW) is not None
+    session.flush()
+    assert open_for(session, вторая, now=NOW) is None
+
+
+def test_защита_от_дублей_видна_в_отчёте(session, instrument):
+    """Молча отброшенная идея неотличима от идеи, которой не было."""
+    for _ in range(3):
+        session.add(триггерная_идея(instrument.instrument_id))
     session.flush()
 
     report = track(session, now=NOW + timedelta(hours=1))
 
-    assert report.no_data == 2
-    assert report.no_data_instruments == [instrument.instrument_id]
+    assert report.opened == 1
+    assert report.same_instrument == 2
+    assert "уже есть сделка" in report.summary()
 
 
 # ── Связь с идеей ───────────────────────────────────────────────────────────
@@ -321,3 +334,91 @@ def test_идея_получает_живые_статусы_исполнени�
     session.flush()
 
     assert idea.status is IdeaStatus.TP1_HIT
+
+
+# ── Схлопывание уже наплодившегося ──────────────────────────────────────────
+
+
+def test_дубли_схлопываются_в_одну_живую(session, instrument):
+    """То, что миграция делает с боевой базой владельца.
+
+    На сервере уже лежали десять живых сделок по HYPEUSDT. Индекс по
+    инструменту на таких данных не создастся, поэтому сначала схлопывание,
+    потом ограничение — иначе миграция падает на боевой базе, а это хуже
+    отсутствующей.
+    """
+    from sqlalchemy import text
+
+    from app.paper.dedup import collapse_duplicates
+
+    # Ограничение уже стоит (тесты гоняют настоящий alembic), поэтому
+    # состояние «до миграции» воспроизводится буквально: индекс снимается
+    # внутри откатываемой транзакции теста.
+    session.execute(text("DROP INDEX uq_paper_live_per_instrument"))
+
+    сделки = []
+    for i in range(3):
+        idea = триггерная_идея(instrument.instrument_id)
+        session.add(idea)
+        session.flush()
+        trade = PaperTrade(
+            idea_id=idea.id,
+            instrument_id=instrument.instrument_id,
+            direction=idea.direction,
+            status=PaperStatus.PENDING,
+            entry=Decimal("90100"),
+            initial_stop=Decimal("89400"),
+            current_stop=Decimal("89400"),
+            tp_prices=["91000"],
+            tp_shares=["1"],
+            opened_at=NOW + timedelta(minutes=15 * i),
+            expires_at=NOW + timedelta(days=5),
+        )
+        session.add(trade)
+        сделки.append(trade)
+    session.flush()
+
+    снято = collapse_duplicates(session)
+    session.expire_all()
+
+    assert снято == 2
+    живые = [t for t in сделки if t.status is PaperStatus.PENDING]
+    assert len(живые) == 1
+    # Осталась самая ранняя — та, которую владельцу показали первой.
+    assert живые[0].opened_at.replace(tzinfo=UTC) == NOW
+    снятые = [t for t in сделки if t.status is PaperStatus.CANCELLED]
+    assert all(t.close_reason == "дубль по инструменту" for t in снятые)
+    # Не CLOSED: позиции не было, и допуск к живым деньгам эти записи не
+    # считает — он берёт только закрытые сделки.
+    assert all(t.status is PaperStatus.CANCELLED for t in снятые)
+
+
+def test_схлопывание_не_трогает_чужие_инструменты(session, instrument):
+    """Вселенная — не один инструмент: соседа задеть нельзя."""
+    from sqlalchemy import text
+
+    from app.models import Instrument
+    from app.paper.dedup import collapse_duplicates
+
+    session.execute(text("DROP INDEX uq_paper_live_per_instrument"))
+    сосед = Instrument(
+        instrument_id="CRYPTO:PERP:XXXUSDT",
+        venue=instrument.venue,
+        asset_class=instrument.asset_class,
+        symbol="XXXUSDT",
+        currency=instrument.currency,
+        tick_size=instrument.tick_size,
+        tick_value=instrument.tick_value,
+        quantity_step=instrument.quantity_step,
+        min_quantity=instrument.min_quantity,
+        contract_multiplier=instrument.contract_multiplier,
+    )
+    session.add(сосед)
+    session.flush()
+
+    одиночка = сделка(session, сосед)
+    session.flush()
+
+    assert collapse_duplicates(session) == 0
+    session.expire_all()
+    assert одиночка.status is PaperStatus.PENDING

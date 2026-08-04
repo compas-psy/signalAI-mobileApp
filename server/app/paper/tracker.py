@@ -61,6 +61,10 @@ class PaperReport:
     tp_hits: int = 0
     closed: int = 0
     stale: int = 0
+    #: Сколько идей не получили сделки, потому что по инструменту уже
+    #: открыта другая. Защита обязана быть видна: молча отброшенная идея
+    #: неотличима от идеи, которой не было.
+    same_instrument: int = 0
     no_data: int = 0
     no_data_instruments: list[str] = field(default_factory=list)
     #: Почему по этим инструментам нет баров. Имя отвечает «по кому мы
@@ -79,6 +83,10 @@ class PaperReport:
             parts.append(f"целей взято {self.tp_hits}")
         if self.closed:
             parts.append(f"закрыто {self.closed}")
+        if self.same_instrument:
+            parts.append(
+                f"пропущено {self.same_instrument} — по инструменту уже есть сделка"
+            )
         if self.no_data:
             named = self.no_data_reasons or ", ".join(self.no_data_instruments[:3])
             parts.append(f"без баров {self.no_data} ({named})")
@@ -113,9 +121,20 @@ def open_for(
     if not prices:
         return None
 
+    # Дедуп по инструменту, а не по идее. Разница денежная: скан находит
+    # тот же сетап каждые пятнадцать минут, и дедуп по идее пропускал
+    # каждую находку в отдельную сделку — у владельца в «В работе»
+    # оказалось десять позиций по HYPEUSDT с почти одинаковыми входами.
+    # Быть одновременно в десяти позициях по одному активу — не
+    # диверсификация, а десятикратный риск на нём.
+    #
+    # Прежний довод против дедупа по символу (зависшая сделка заблокирует
+    # новые идеи по инструменту) остался в силе, но лечится он не
+    # отсутствием дедупа: зависание закрывает календарное протухание, а
+    # сверка больше не переигрывает уже прожитый бар.
     existing = session.execute(
         select(PaperTrade).where(
-            PaperTrade.idea_id == idea.id,
+            PaperTrade.instrument_id == idea.instrument_id,
             PaperTrade.status.in_([PaperStatus.PENDING, PaperStatus.OPEN]),
         )
     ).scalars().first()
@@ -388,7 +407,9 @@ def track(session: Session, *, now: datetime | None = None) -> PaperReport:
     for idea in triggered:
         if open_for(session, idea, now=moment) is not None:
             report.opened += 1
-    session.flush()
+        else:
+            report.same_instrument += 1
+        session.flush()
 
     live = list(
         session.execute(
