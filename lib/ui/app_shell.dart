@@ -55,7 +55,10 @@ class AppShell extends StatelessWidget {
                     child: Center(
                       child: ConstrainedBox(
                         constraints: const BoxConstraints(maxWidth: 440),
-                        child: AppToast(message: controller.toast!),
+                        child: AppToast(
+                          message: controller.toast!,
+                          tone: controller.toastTone,
+                        ),
                       ),
                     ),
                   ),
@@ -123,7 +126,10 @@ class AppShell extends StatelessWidget {
             dataAt: controller.dataFreshness,
             health: controller.dataHealth,
             healthDetail: controller.dataHealthDetail,
-            onHealth: () => controller.showToast(controller.dataHealthDetail),
+            onHealth: () => controller.showToast(
+              controller.dataHealthDetail,
+              tone: ToastTone.warning,
+            ),
           ),
           Expanded(
             child: Row(
@@ -162,7 +168,10 @@ class AppShell extends StatelessWidget {
             dataAt: controller.dataFreshness,
             health: controller.dataHealth,
             healthDetail: controller.dataHealthDetail,
-            onHealth: () => controller.showToast(controller.dataHealthDetail),
+            onHealth: () => controller.showToast(
+              controller.dataHealthDetail,
+              tone: ToastTone.warning,
+            ),
           ),
         Expanded(child: _screen(controller)),
       ],

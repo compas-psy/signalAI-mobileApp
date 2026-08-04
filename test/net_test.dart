@@ -203,6 +203,29 @@ void main() {
       expect(failure.advice, isNotEmpty);
     });
 
+    test('совет не пересказывает диагноз', () {
+      // Владелец видел в диагностике одно и то же дважды: «Соединение …
+      // перехвачено: в цепочке чужой сертификат. Соединение подменяется в
+      // сети: в цепочке сертификатов чужой. Проверьте VPN…».
+      final failure = MarketDataException.from(
+        const HandshakeException('CERTIFICATE_VERIFY_FAILED'),
+        'invest-public-api.tinkoff.ru',
+      );
+
+      expect(failure.advice, isNot(contains('перехвач')));
+      expect(failure.advice, isNot(contains('сертификат')));
+      expect(failure.advice, contains('VPN'));
+    });
+
+    test('у отказа DNS совета нет: сообщение уже полное', () {
+      final failure = MarketDataException.from(
+        const SocketException("Failed host lookup: 'iss.moex.com'"),
+        'iss.moex.com',
+      );
+
+      expect(failure.advice, isEmpty);
+    });
+
     test('обычный отказ TLS остаётся отказом соединения', () {
       final failure = MarketDataException.from(
         const HandshakeException('Connection terminated during handshake'),
@@ -268,6 +291,9 @@ void main() {
       expect(text, contains('перехвачено'));
       expect(text, contains('VPN'));
       expect(text, isNot(contains('CERTIFICATE_VERIFY_FAILED')));
+      // Диагноз ровно один раз: склейка сообщения с советом не должна
+      // давать владельцу читать одну мысль дважды.
+      expect('сертификат'.allMatches(text).length, 1);
     });
   });
 }

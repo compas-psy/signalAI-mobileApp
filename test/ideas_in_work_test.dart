@@ -215,6 +215,20 @@ void main() {
     expect(find.text('зафикс.'), findsNothing);
   });
 
+  testWidgets('невыкупленная заявка не рисует нулевой результат',
+      (tester) async {
+    // На экране владельца десять карточек подряд показывали «+0,00R» —
+    // читается как «десять сделок в нуле», хотя ни одна даже не открылась.
+    await pump(
+      tester,
+      PaperPositionCard(trade: trade(pending: true, resultRealized: true)),
+    );
+
+    // Ищем именно число в R: «SHORT» тоже содержит букву R.
+    expect(find.textContaining(RegExp(r'\d,\d\dR')), findsNothing);
+    expect(find.text('зафикс.'), findsNothing);
+  });
+
   testWidgets('видно, кто ведёт сделку', (tester) async {
     // У серверной сопровождение идёт круглосуточно, у местной — только пока
     // открыто приложение и биржа отвечает телефону. Это разная надёжность.

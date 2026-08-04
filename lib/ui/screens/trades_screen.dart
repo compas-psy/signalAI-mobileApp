@@ -3,6 +3,7 @@ import 'package:flutter/widgets.dart';
 import '../../core/format.dart';
 import '../../domain/models/portfolio.dart';
 import '../../state/app_scope.dart';
+import '../../state/navigation.dart';
 import '../../theme/tokens.dart';
 import '../../theme/typography.dart';
 import '../layout.dart';
@@ -369,7 +370,10 @@ class _OpensIdea extends StatelessWidget {
         onTap: () {
           final controller = AppScope.read(context);
           if (signalId.isEmpty) {
-            controller.showToast('У этой сделки нет идеи — открывать нечего');
+            controller.showToast(
+              'У этой сделки нет идеи — открывать нечего',
+              tone: ToastTone.warning,
+            );
             return;
           }
           controller.openSignal(signalId);

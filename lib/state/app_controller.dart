@@ -171,6 +171,7 @@ class AppController extends ChangeNotifier {
   String? _selectedSignalId;
   bool _sheetOpen = false;
   String? _toast;
+  ToastTone _toastTone = ToastTone.success;
   Timer? _toastTimer;
   bool _backtestRunning = false;
   bool _confirming = false;
@@ -201,6 +202,10 @@ class AppController extends ChangeNotifier {
   AppTab get tab => _tab;
   bool get sheetOpen => _sheetOpen;
   String? get toast => _toast;
+
+  /// Чем закончилось действие. Отказ не должен выглядеть успехом: через
+  /// один и тот же тост идут «Ордер отправлен» и «Проверка не пропустила».
+  ToastTone get toastTone => _toastTone;
   bool get backtestRunning => _backtestRunning;
   bool get confirming => _confirming;
   DailyDigest? get digest => _digest;
@@ -800,10 +805,18 @@ class AppController extends ChangeNotifier {
   /// устройстве, честно несла идентификатор своего сигнала, но подписывалась
   /// «идеи за ней нет в текущей выдаче» и не нажималась: владелец увидел это
   /// как «идея появилась сразу в журнале, и написано, что идей по ней нет».
-  bool canOpenSignal(String id) {
+  bool canOpenSignal(String id, {bool fromServer = false}) {
     if (id.isEmpty) return false;
     if (_engineIdeas.ideas.any((i) => i.id == id)) return true;
-    return (_digest?.signals ?? const <TradingSignal>[]).any((s) => s.id == id);
+    if ((_digest?.signals ?? const <TradingSignal>[]).any((s) => s.id == id)) {
+      return true;
+    }
+    // Сделка с сервера ссылается на серверную идею. Её может не быть в
+    // ленте — лента показывает три карточки дня, — но разбор существует и
+    // догружается по идентификатору (`_hydrateIdea`). «Нет в текущей
+    // выдаче» — утверждение про ленту, а владелец читал его как «идеи не
+    // существует» и упирался в нерабочую карточку.
+    return fromServer;
   }
 
   /// Открытые позиции для экрана: сервер, а при его молчании — устройство.
@@ -936,7 +949,10 @@ class AppController extends ChangeNotifier {
     // Кнопка не должна быть немой: если расчёт уже идёт, честно об этом
     // сказать, а не проглотить нажатие.
     if (_digestLoading) {
-      showToast('Расчёт уже идёт${_analysisStage == null ? '' : ': $_analysisStage'}');
+      showToast(
+        'Расчёт уже идёт${_analysisStage == null ? '' : ': $_analysisStage'}',
+        tone: ToastTone.warning,
+      );
       return;
     }
     _digestLoading = true;
@@ -1075,7 +1091,7 @@ class AppController extends ChangeNotifier {
       _strategies = await _repository.fetchStrategies();
       showToast(auto ? 'Недельная оптимизация: $note' : note);
     } catch (e) {
-      if (!auto) showToast(_errorText(e));
+      if (!auto) showError(e);
     } finally {
       _optimizing = false;
       _analysisStage = null;
@@ -1325,7 +1341,10 @@ class AppController extends ChangeNotifier {
     try {
       _packageHistory[plan.id] = await repository.simulatePackage(plan);
     } catch (e) {
-      showToast('История пакета не посчиталась: ${_errorText(e)}');
+      showToast(
+        'История пакета не посчиталась: ${_errorText(e)}',
+        tone: ToastTone.failure,
+      );
     } finally {
       _packageLoading.remove(plan.id);
       notifyListeners();
@@ -1390,7 +1409,10 @@ class AppController extends ChangeNotifier {
         holdings: holdings,
       );
     } catch (e) {
-      showToast('Цены инструментов не пришли: ${_errorText(e)}');
+      showToast(
+        'Цены инструментов не пришли: ${_errorText(e)}',
+        tone: ToastTone.failure,
+      );
     } finally {
       _packageLoading.remove('alloc:${plan.id}');
       notifyListeners();
@@ -1540,7 +1562,7 @@ class AppController extends ChangeNotifier {
       final answer = await repository.saveTinvestToken(role, token);
       showToast(answer);
     } on FeatureUnavailableException catch (e) {
-      showToast(e.message);
+      showError(e);
     }
     await refreshTinvestTokens();
     await refreshTinvestAccounts();
@@ -1851,7 +1873,7 @@ class AppController extends ChangeNotifier {
       final result = await desk.runInvestBacktest();
       showToast('Бэктест акций завершён · PF ${_profitFactor(result)}');
     } catch (e) {
-      showToast(_errorText(e));
+      showError(e);
     } finally {
       _investBacktestRunning = false;
       _analysisStage = null;
@@ -1870,7 +1892,7 @@ class AppController extends ChangeNotifier {
     try {
       showToast(await desk.optimizeInvestParameters());
     } catch (e) {
-      showToast(_errorText(e));
+      showError(e);
     } finally {
       _investBacktestRunning = false;
       notifyListeners();
@@ -1966,7 +1988,10 @@ class AppController extends ChangeNotifier {
         );
         await _saveExecution(execution);
         _sheetOpen = false;
-        showToast('Проверка не пропустила: ${blockers.first.kind.label}');
+        showToast(
+          'Проверка не пропустила: ${blockers.first.kind.label}',
+          tone: ToastTone.failure,
+        );
         return;
       }
 
@@ -1986,7 +2011,7 @@ class AppController extends ChangeNotifier {
       // тост: заявка могла уйти, и знать об этом важнее, чем закрыть шит.
       await _saveExecution(execution.toSafeState(_errorText(e)));
       _sheetOpen = false;
-      showToast(_errorText(e));
+      showError(e);
     } finally {
       _confirming = false;
       notifyListeners();
@@ -2078,7 +2103,7 @@ class AppController extends ChangeNotifier {
       // «идея больше не в выдаче» на идею, открытую прямо сейчас.
       showToast(await paper.trackSignalOnPaper(signal));
     } catch (e) {
-      showToast(_errorText(e));
+      showError(e);
     }
     notifyListeners();
     // Журнал изменился — вкладка «Сделки» должна показывать это сразу, а не
@@ -2104,7 +2129,7 @@ class AppController extends ChangeNotifier {
       await _repository.setStrategyEnabled(id, enabled);
     } catch (e) {
       _strategies = snapshot; // откат оптимистичного переключения
-      showToast(_errorText(e));
+      showError(e);
       notifyListeners();
     }
   }
@@ -2125,7 +2150,7 @@ class AppController extends ChangeNotifier {
       _strategies = _strategies?.copyWith(backtest: result);
       showToast('Бэктест завершён · PF ${_profitFactor(result)}');
     } catch (e) {
-      showToast(_errorText(e));
+      showError(e);
     } finally {
       _backtestRunning = false;
       _analysisStage = null;
@@ -2148,7 +2173,7 @@ class AppController extends ChangeNotifier {
       );
       showToast('${updated.name} подключена по API-ключу');
     } catch (e) {
-      showToast(_errorText(e));
+      showError(e);
     }
     notifyListeners();
   }
@@ -2181,7 +2206,7 @@ class AppController extends ChangeNotifier {
       );
       showToast(answer);
     } catch (e) {
-      showToast(_errorText(e));
+      showError(e);
     }
     await _reloadSettings();
   }
@@ -2203,7 +2228,7 @@ class AppController extends ChangeNotifier {
       await desk.setTradingMode(broker, mode);
       showToast('${broker.title}: ${mode.labelFor(broker)}');
     } catch (e) {
-      showToast(_errorText(e));
+      showError(e);
     }
     await _reloadSettings();
   }
@@ -2300,7 +2325,7 @@ class AppController extends ChangeNotifier {
       await _repository.setChannelEnabled(id, enabled);
     } catch (e) {
       _settings = snapshot;
-      showToast(_errorText(e));
+      showError(e);
       notifyListeners();
     }
   }
@@ -2342,7 +2367,7 @@ class AppController extends ChangeNotifier {
       await _repository.setNotificationEnabled(id, enabled);
     } catch (e) {
       _settings = snapshot;
-      showToast(_errorText(e));
+      showError(e);
       notifyListeners();
     }
   }
@@ -2366,15 +2391,16 @@ class AppController extends ChangeNotifier {
       _strategies = await _repository.fetchStrategies();
     } catch (e) {
       _settings = snapshot;
-      showToast(_errorText(e));
+      showError(e);
     }
     notifyListeners();
   }
 
   // ── Тост ───────────────────────────────────────────────────────────────
 
-  void showToast(String message) {
+  void showToast(String message, {ToastTone tone = ToastTone.success}) {
     _toast = message;
+    _toastTone = tone;
     notifyListeners();
     _toastTimer?.cancel();
     _toastTimer = Timer(const Duration(milliseconds: 2600), () {
@@ -2403,6 +2429,14 @@ class AppController extends ChangeNotifier {
   /// Текст ошибки для пользователя. «Нет связи с сервером» здесь возможен
   /// только для серверного режима: в автономном сервера нет, и сваливать на
   /// него честнее всего не получится.
+  /// Показать отказ. Тон обязателен, поэтому он не параметр, а сам метод.
+  ///
+  /// Ручная пометка каждого места вызова не работает: их дюжина, и первый
+  /// же новый отказ, добавленный не глядя, снова выйдет зелёной галочкой.
+  /// Здесь тон задан происхождением текста — он приходит из исключения.
+  void showError(Object e) =>
+      showError(e);
+
   String _errorText(Object e) => switch (e) {
         ApiException(:final message) => message,
         FeatureUnavailableException(:final message) => message,

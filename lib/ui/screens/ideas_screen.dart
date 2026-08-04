@@ -86,7 +86,10 @@ class IdeasScreen extends StatelessWidget {
             // обоим множествам: идеи движка и сигналы дайджеста живут
             // раздельно, и сделка скринера ссылается во второе.
             final ideaId = trade.ideaId;
-            final openable = controller.canOpenSignal(ideaId);
+            final openable = controller.canOpenSignal(
+              ideaId,
+              fromServer: trade.fromServer,
+            );
             return PaperPositionCard(
               trade: trade,
               idea: source,
@@ -503,7 +506,11 @@ class PaperPositionCard extends StatelessWidget {
                     trade.long ? Direction.long : Direction.short,
                   ),
                 ),
-                if (r != null) ...[
+                // У невыкупленной заявки результата нет вовсе — ни
+                // зафиксированного, ни плавающего. «+0,00R» на десяти
+                // карточках подряд читается как «десять сделок в нуле»,
+                // хотя ни одна даже не открылась.
+                if (r != null && !waiting) ...[
                   const SizedBox(width: 8),
                   Text(
                     '${r >= 0 ? '+' : '−'}${r.abs().toStringAsFixed(2).replaceAll('.', ',')}R',
@@ -514,7 +521,7 @@ class PaperPositionCard extends StatelessWidget {
                   // целям без открытого остатка, устройство — сколько сделка
                   // стоит целиком, если закрыть сейчас. Не назвать разницу
                   // значит утверждать одно и то же о двух разных числах.
-                  if (trade.resultRealized && !waiting) ...[
+                  if (trade.resultRealized) ...[
                     const SizedBox(width: 4),
                     Text('зафикс.', style: T.body(9.5, color: C.faint)),
                   ],
