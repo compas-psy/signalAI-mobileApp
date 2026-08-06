@@ -127,7 +127,12 @@ def test_concurrent_approval_recovers_from_unique_constraint_race(engine):
             in_universe=True,
         )
         idea = триггерная_идея(instrument_id)
-        seed.add_all([instrument, idea])
+        # Здесь объекты связаны строковым instrument_id, а не ORM relationship.
+        # Явно фиксируем родителя до TradeIdea, чтобы тест гонки approve не
+        # зависел от порядка INSERT независимых mapper-объектов.
+        seed.add(instrument)
+        seed.flush()
+        seed.add(idea)
         seed.commit()
         idea_id = idea.id
 

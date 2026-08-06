@@ -256,6 +256,9 @@ def test_closed_d1_overlay_reaches_pipeline_storage(session: Session):
         in_universe=True,
     )
     session.add(instrument)
+    # Bar ссылается на инструмент только строковым ключом. Без relationship
+    # unit of work не обязан поставить INSERT родителя раньше ста свечей.
+    session.flush()
     closes = [D(100) + D("0.1") * index for index in range(99)] + [D("110.4")]
     for index, close in enumerate(closes):
         previous = closes[max(0, index - 1)]
