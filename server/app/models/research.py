@@ -204,10 +204,11 @@ class ResearchObservation(UuidPk, Base):
         Index("ix_research_obs_entity", "entity_id", "tradable_at"),
         Index("ix_research_obs_type", "observation_type", "tradable_at"),
         # Migration 0008 stored the already-prefixed constraint name under
-        # the active naming convention.  Keep metadata aligned with the
-        # deployed schema instead of scheduling a no-op drop/recreate.
+        # the active naming convention. PostgreSQL truncated that persisted
+        # identifier with the deterministic ``c95d`` suffix. Keep metadata
+        # aligned instead of scheduling a no-op drop/recreate on every check.
         CheckConstraint(
-            "scale > 0", name="ck_research_observations_scale_positive"
+            "scale > 0", name="ck_research_observations_scale_c95d"
         ),
     )
 
