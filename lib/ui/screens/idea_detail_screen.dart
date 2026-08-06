@@ -91,12 +91,13 @@ class _IdeaDetailScreenState extends State<IdeaDetailScreen> {
     final checks = idea == null || !controller.demoData
         ? const <CheckResult>[]
         : _checks(controller, idea);
-    final blocked =
-        (checks.isNotEmpty && !FinalCheck.passes(checks)) ||
-            (!controller.demoData &&
-                idea != null &&
-                idea.readiness.canAct &&
-                !idea.canApprovePaper);
+    // Проверка способна заблокировать только готовый вход. У идеи, которая
+    // ещё ждёт триггера, входа нет по определению: красный вердикт здесь
+    // подменял честное «наблюдать» сообщением о несуществующей сделке.
+    final blocked = idea != null &&
+        idea.readiness.canAct &&
+        ((checks.isNotEmpty && !FinalCheck.passes(checks)) ||
+            (!controller.demoData && !idea.canApprovePaper));
     // Показываем пересечение: слой должен и стоять за доказательством
     // (§9.1), и уметь быть нарисованным.
     final available = {
