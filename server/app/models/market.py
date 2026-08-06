@@ -235,4 +235,11 @@ class FxRate(Base):
     as_of: Mapped[datetime] = utcnow_column()
     source: Mapped[str] = mapped_column(String(64), nullable=False, default="")
 
-    __table_args__ = (CheckConstraint("rate_rub > 0", name="rate_positive"),)
+    # Migration 0007 persisted the already-prefixed name while the metadata
+    # naming convention was active.  Mirror that historical database name so
+    # Alembic does not propose a destructive drop/recreate on every check.
+    __table_args__ = (
+        CheckConstraint(
+            "rate_rub > 0", name="ck_fx_rates_rate_positive"
+        ),
+    )

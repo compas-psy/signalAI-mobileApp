@@ -203,7 +203,12 @@ class ResearchObservation(UuidPk, Base):
     __table_args__ = (
         Index("ix_research_obs_entity", "entity_id", "tradable_at"),
         Index("ix_research_obs_type", "observation_type", "tradable_at"),
-        CheckConstraint("scale > 0", name="scale_positive"),
+        # Migration 0008 stored the already-prefixed constraint name under
+        # the active naming convention.  Keep metadata aligned with the
+        # deployed schema instead of scheduling a no-op drop/recreate.
+        CheckConstraint(
+            "scale > 0", name="ck_research_observations_scale_positive"
+        ),
     )
 
 

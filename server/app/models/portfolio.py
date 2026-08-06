@@ -221,3 +221,7 @@ class PortfolioRun(UuidPk, Base):
     reasons_json: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     # Что не взято в пересчёт и почему: бумаги без истории, без оборота.
     dropped_json: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+
+    __table_args__ = (
+        Index("ix_portfolio_runs_started", "started_at"),
+    )

@@ -2109,7 +2109,7 @@ class AppController extends ChangeNotifier {
     // Для серверной идеи одного программного вызова недостаточно: владелец
     // обязан сначала открыть sheet с полным paper-планом. Биометрия ниже —
     // дополнительный рубеж, а не замена явному подтверждению на экране.
-    if (serverIdea && (!_sheetOpen || !idea!.canApprovePaper)) return;
+    if (serverIdea && (!_sheetOpen || !idea.canApprovePaper)) return;
 
     _confirming = true;
     notifyListeners();
@@ -2119,7 +2119,7 @@ class AppController extends ChangeNotifier {
     // телефоне и мог даже отправить брокерскую заявку — при том что экран
     // показывал план другого, серверного контура.
     if (serverIdea) {
-      final server = idea!;
+      final server = idea;
       try {
         if (!await _confirmOnDeviceIfAvailable(server)) {
           _sheetOpen = false;
