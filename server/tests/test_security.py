@@ -3,6 +3,7 @@
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from app.main import app as signalai_app
 from app.security import DeviceTokenMiddleware
 
 
@@ -52,3 +53,23 @@ def test_external_api_accepts_matching_token(monkeypatch):
     )
     assert response.status_code == 200
     assert response.json() == {"ok": True}
+
+
+def test_real_approve_route_requires_bearer_and_authorized_request_reaches_route(
+    monkeypatch,
+):
+    """Middleware protects the actual paper-decision endpoint, not a mock only."""
+    monkeypatch.setenv("SIGNALAI_DEVICE_TOKEN", "correct-token")
+    with TestClient(signalai_app) as client:
+        health = client.get("/health")
+        denied = client.post("/api/v1/ideas/not-a-uuid/approve-paper")
+        reached = client.post(
+            "/api/v1/ideas/not-a-uuid/approve-paper",
+            headers={"Authorization": "Bearer correct-token"},
+        )
+
+    assert health.status_code == 200
+    assert denied.status_code == 401
+    # UUID validation belongs to the endpoint contract and proves the
+    # authorized request crossed the middleware without touching the DB.
+    assert reached.status_code == 422

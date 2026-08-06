@@ -51,27 +51,30 @@ class StrategiesScreen extends StatelessWidget {
                   // читался как список действующих стратегий.
                   const _MethodologyCard(),
                   const _EngineLimitsCard(),
-                  if (snapshot.packs.isNotEmpty) const _LocalScreenerNote(),
-                  for (final pack in snapshot.packs)
-                    _PackCard(
-                      pack: pack,
-                      onToggle: (value) => controller.toggleStrategy(pack.id, value),
+                  if (!controller.thinMode) ...[
+                    if (snapshot.packs.isNotEmpty) const _LocalScreenerNote(),
+                    for (final pack in snapshot.packs)
+                      _PackCard(
+                        pack: pack,
+                        onToggle: (value) =>
+                            controller.toggleStrategy(pack.id, value),
+                      ),
+                    _BacktestCard(
+                      backtest: snapshot.backtest,
+                      running: backtestRunning,
+                      optimizing: optimizing,
+                      stage: backtestStage,
+                      onRun: () => controller.runBacktest(
+                        snapshot.packs.isEmpty ? 's1' : snapshot.packs.first.id,
+                      ),
+                      onOptimize: controller.runOptimization,
                     ),
-                  _BacktestCard(
-                    backtest: snapshot.backtest,
-                    running: backtestRunning,
-                    optimizing: optimizing,
-                    stage: backtestStage,
-                    onRun: () => controller.runBacktest(
-                      snapshot.packs.isEmpty ? 's1' : snapshot.packs.first.id,
-                    ),
-                    onOptimize: controller.runOptimization,
-                  ),
-                  _ParamsCard(snapshot: snapshot),
-                  if (snapshot.riskLimits != null)
-                    _RiskLimitsCard(limits: snapshot.riskLimits!),
-                  if (snapshot.factorEdges.isNotEmpty)
-                    _FactorEdgeCard(edges: snapshot.factorEdges),
+                    _ParamsCard(snapshot: snapshot),
+                    if (snapshot.riskLimits != null)
+                      _RiskLimitsCard(limits: snapshot.riskLimits!),
+                    if (snapshot.factorEdges.isNotEmpty)
+                      _FactorEdgeCard(edges: snapshot.factorEdges),
+                  ],
                 ],
               ),
             ],

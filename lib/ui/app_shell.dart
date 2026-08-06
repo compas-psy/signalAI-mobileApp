@@ -208,6 +208,10 @@ class AppShell extends StatelessWidget {
               optimizing: controller.optimizing,
               backtestStage: controller.analysisStage,
             ),
+          SettingsPill.data when controller.thinMode => SettingsScreen(
+              snapshot: controller.settings!,
+              pill: controller.pill,
+            ),
           SettingsPill.data => const DiagnosticsScreen(),
           _ => SettingsScreen(
               snapshot: controller.settings!,
@@ -238,6 +242,8 @@ class AppShell extends StatelessWidget {
                 risk: risk,
                 impact: controller.currentImpact,
                 busy: controller.confirming,
+                paperOnly:
+                    controller.currentIdea != null && !controller.demoData,
                 onExecute: controller.confirmCurrentSignal,
                 onClose: controller.closeSheet,
               )
@@ -252,6 +258,8 @@ class AppShell extends StatelessWidget {
                     risk: risk,
                     impact: controller.currentImpact,
                     busy: controller.confirming,
+                    paperOnly:
+                        controller.currentIdea != null && !controller.demoData,
                     onExecute: controller.confirmCurrentSignal,
                     onClose: controller.closeSheet,
                   ),

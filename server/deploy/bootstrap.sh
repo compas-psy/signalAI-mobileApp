@@ -4,7 +4,12 @@
 #
 #   git clone https://github.com/compas-psy/signalAI-mobileApp.git
 #   cd signalAI-mobileApp/server
-#   sudo bash deploy/bootstrap.sh
+#   umask 077
+#   openssl rand -hex 32 > /root/signalai-device-token
+#   # Сохраните это же значение в менеджере паролей.
+#   sudo env SIGNALAI_DEVICE_TOKEN_FILE=/root/signalai-device-token \
+#     bash deploy/bootstrap.sh
+#   sudo shred -u /root/signalai-device-token
 #
 # Что делает: пакеты, Docker, firewall, TLS, база, миграции, автозапуск,
 # ежедневный бэкап с проверкой восстановления.
@@ -18,6 +23,7 @@
 # Скрипт идемпотентен: повторный запуск не ломает уже настроенное.
 
 set -euo pipefail
+umask 077
 
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_DIR=/etc/signalai
@@ -31,6 +37,34 @@ warn() { printf '  \033[33m!\033[0m %s\n' "$*"; }
 die()  { printf '\n\033[31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
 
 [ "$(id -u)" -eq 0 ] || die "нужен root: sudo bash deploy/bootstrap.sh"
+
+# Device token должен быть известен владельцу: он один раз вводит то же
+# значение в приложении, а клиент хранит его в Android Keystore. На чистом
+# сервере bootstrap поэтому не генерирует неизвестный токен. Для CI безопаснее
+# передать защищённый файл, чем секрет в argv.
+TOKEN_WAS_PROVIDED=false
+DEVICE_TOKEN="${SIGNALAI_DEVICE_TOKEN:-}"
+DEVICE_TOKEN_FILE="${SIGNALAI_DEVICE_TOKEN_FILE:-}"
+if [ -n "$DEVICE_TOKEN" ] && [ -n "$DEVICE_TOKEN_FILE" ]; then
+  die "задайте только SIGNALAI_DEVICE_TOKEN или SIGNALAI_DEVICE_TOKEN_FILE"
+fi
+if [ -n "$DEVICE_TOKEN_FILE" ]; then
+  [ -f "$DEVICE_TOKEN_FILE" ] || die "файл device token не найден"
+  DEVICE_TOKEN="$(<"$DEVICE_TOKEN_FILE")"
+  TOKEN_WAS_PROVIDED=true
+elif [ -n "$DEVICE_TOKEN" ]; then
+  TOKEN_WAS_PROVIDED=true
+elif [ -f "$ENV_FILE" ]; then
+  DEVICE_TOKEN="$(sed -n 's/^SIGNALAI_DEVICE_TOKEN=//p' "$ENV_FILE" | tail -1)"
+else
+  die "для первой установки задайте и сохраните SIGNALAI_DEVICE_TOKEN (>=32 URL-safe символов)"
+fi
+unset SIGNALAI_DEVICE_TOKEN SIGNALAI_DEVICE_TOKEN_FILE
+
+case "$DEVICE_TOKEN" in
+  *[!A-Za-z0-9._~-]*) die "device token должен быть одной URL-safe строкой" ;;
+esac
+[ "${#DEVICE_TOKEN}" -ge 32 ] || die "device token должен содержать не менее 32 символов"
 
 # ── Что спросить у владельца ─────────────────────────────────────────────
 #
@@ -107,10 +141,19 @@ ok "docker $(docker --version | awk '{print $3}' | tr -d ,)"
 say "Секреты"
 install -d -m 0700 "$ENV_DIR"
 if [ -f "$ENV_FILE" ]; then
-  ok "$ENV_FILE уже существует — оставляю как есть"
+  if [ "$TOKEN_WAS_PROVIDED" = true ]; then
+    TMP_ENV="$(mktemp "${ENV_DIR}/.env.XXXXXX")"
+    awk '!/^SIGNALAI_DEVICE_TOKEN=/' "$ENV_FILE" > "$TMP_ENV"
+    printf 'SIGNALAI_DEVICE_TOKEN=%s\n' "$DEVICE_TOKEN" >> "$TMP_ENV"
+    chmod 0600 "$TMP_ENV"
+    chown --reference="$ENV_FILE" "$TMP_ENV"
+    mv -f "$TMP_ENV" "$ENV_FILE"
+    ok "$ENV_FILE уже существовал; device token обновлён из явного ввода"
+  else
+    ok "$ENV_FILE уже существует — сохранён его device token"
+  fi
 else
   POSTGRES_PASSWORD="$(head -c 32 /dev/urandom | base64 | tr -d '/+=' | head -c 40)"
-  DEVICE_TOKEN="$(head -c 32 /dev/urandom | base64 | tr -d '/+=' | head -c 43)"
   cat > "$ENV_FILE" <<EOF
 # Создан bootstrap $(date -u +%Y-%m-%dT%H:%M:%SZ). Права 0600, владелец root.
 # В git этот файл не попадает никогда.
@@ -118,8 +161,8 @@ POSTGRES_USER=signalai
 POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
 POSTGRES_DB=signalai
 
-# Токен устройства: его нужно передать в сборку приложения через
-#   --dart-define=SIGNALAI_DEVICE_TOKEN=...
+# Токен устройства: server runtime only. В APK не компилируется;
+# владелец один раз вводит тот же токен, клиент хранит его в Android Keystore.
 SIGNALAI_DEVICE_TOKEN=${DEVICE_TOKEN}
 
 # Ключи брокеров добавляются ПОЗЖЕ, когда сервер докажет, что считает верно.
@@ -135,8 +178,9 @@ TINVEST_SANDBOX_TOKEN=
 EOF
   chmod 0600 "$ENV_FILE"
   ok "создан $ENV_FILE (0600, root)"
-  warn "токен устройства лежит в $ENV_FILE — он понадобится при сборке приложения"
+  ok "device token записан только как server runtime secret"
 fi
+unset DEVICE_TOKEN
 
 # ── Firewall ──────────────────────────────────────────────────────────────
 #
@@ -362,12 +406,16 @@ cat <<FINAL
 Что дальше, по порядку:
 
   1. Проверьте снаружи:   curl https://${DOMAIN:-<домен не задан>}/health
-     Через 15–20 минут — что данные поехали:
-       curl -s https://${DOMAIN:-ВАШ_ДОМЕН}/api/v1/market/status | jq '{in_universe, tradable, with_data, last_bar_time}'
-  2. Соберите приложение с адресом сервера и токеном устройства:
+     Через 15–20 минут проверьте данные, не печатая token:
+       read -rsp 'Device token: ' SIGNALAI_TOKEN; echo
+       curl -s -H "Authorization: Bearer \$SIGNALAI_TOKEN" https://${DOMAIN:-ВАШ_ДОМЕН}/api/v1/market/status | jq '{in_universe, tradable, with_data, last_bar_time}'
+       unset SIGNALAI_TOKEN
+  2. Соберите тонкий клиент только с адресом сервера:
        flutter build apk --release \\
-         --dart-define=SIGNALAI_API_BASE_URL=https://${DOMAIN:-ВАШ_ДОМЕН} \\
-         --dart-define=SIGNALAI_DEVICE_TOKEN=<из ${ENV_FILE}>
+         --dart-define=SIGNALAI_MODE=thin \\
+         --dart-define=SIGNALAI_API_BASE_URL=https://${DOMAIN:-ВАШ_ДОМЕН}
+     При первом запуске введите тот же заранее сохранённый device token.
+     Он не лежит в APK; мобильный клиент хранит его в Android Keystore.
   3. Ключи бирж добавляйте ТОЛЬКО после того, как сервер начнёт показывать
      осмысленные идеи. Редактировать: sudo nano ${ENV_FILE}
      Bybit — без права вывода средств. Т-Инвестиции — read и exec раздельно.
@@ -377,7 +425,9 @@ cat <<FINAL
 Полезное:
   журналы API:        docker compose --env-file ${ENV_FILE} logs -f api
   журналы загрузки:   docker compose --env-file ${ENV_FILE} logs -f scheduler
-  что загружено:      curl -s http://127.0.0.1:8000/api/v1/market/status | jq
+  что загружено:      read -rsp 'Device token: ' SIGNALAI_TOKEN; echo
+                       curl -s -H "Authorization: Bearer \$SIGNALAI_TOKEN" http://127.0.0.1:8000/api/v1/market/status | jq
+                       unset SIGNALAI_TOKEN
   перезапуск: systemctl restart ${SERVICE}
   бэкап:      /usr/local/bin/signalai-backup
 ────────────────────────────────────────────────────────────────────────

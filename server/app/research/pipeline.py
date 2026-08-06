@@ -11,9 +11,10 @@
 и это ровно тот способ обмануться, от которого защищает правило 3–2–1.
 
 Второе правило: версия поднимается только при изменении по существу.
-Пересчёт, давший то же состояние, тот же приоритет и тот же состав
-источников, — не событие. История, забитая одинаковыми версиями,
-перестаёт быть читаемой, а значит перестаёт работать как доказательство.
+Пересчёт с тем же состоянием, экономикой, доказательствами и практически
+тем же техническим контекстом — не событие. История, забитая одинаковыми
+версиями, перестаёт быть читаемой, а значит перестаёт работать как
+доказательство.
 
 Прежняя версия не переписывается никогда. Гипотеза, у которой сняли
 блокировку или изменили состояние, обязана сохранить и то, как выглядела
@@ -24,6 +25,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -32,6 +34,7 @@ from ..models import HypothesisEvidence, ResearchHypothesis, ResearchSignal
 from ..models.enums import EvidenceRole, HypothesisState, SignalStatus
 from ..version import ENGINE_VERSION
 from .fusion import Fused, SignalInput, fuse, group
+from .market_context import MATERIAL_SCORE_STEP
 
 
 @dataclass
@@ -66,15 +69,27 @@ def latest_version(
 def _changed(previous: ResearchHypothesis, current: Fused) -> bool:
     """Изменилось ли что-то по существу.
 
-    Состояние, приоритет и число независимых источников. Всё остальное —
-    оттенки формулировки, и поднимать из-за них версию значит превратить
-    историю в шум.
+    Новый рыночный снимок материален только при смене именованного состояния
+    или шага score. Свежая дата D1 с практически теми же измерениями остаётся
+    той же версией гипотезы, иначе ежедневный шум забьёт историю.
     """
     was_roots = (previous.three_two_one_json or {}).get("unique_lineage_roots")
+    previous_market = previous.market_context_score
+    current_market = current.market_context_score
+    market_presence_changed = (previous_market is None) != (current_market is None)
+    market_score_changed = (
+        previous_market is not None
+        and current_market is not None
+        and abs(Decimal(previous_market) - current_market) >= MATERIAL_SCORE_STEP
+    )
     return (
         str(previous.state) != str(current.state)
-        or previous.research_priority != current.priority
+        or previous.evidence_score != current.evidence.value
+        or previous.economic_score != current.economic
         or was_roots != current.evidence.unique_lineage_roots
+        or previous.market_context_state != current.market_context_state
+        or market_presence_changed
+        or market_score_changed
     )
 
 
@@ -137,10 +152,8 @@ def store(
         expected_lag=fused.expected_lag,
         evidence_score=fused.evidence.value,
         economic_score=fused.economic,
-        market_context_score=None if fused.market_context_missing else None,
-        market_context_state=(
-            "unknown" if fused.market_context_missing else "measured"
-        ),
+        market_context_score=fused.market_context_score,
+        market_context_state=fused.market_context_state,
         research_priority=fused.priority,
         # Блокировки повышения живут вместе с фактами шлюза: они и есть
         # ответ на вопрос «почему кандидат до сих пор кандидат».
@@ -150,6 +163,23 @@ def store(
         },
         investability_json=(
             fused.investability.as_dict() if fused.investability else {}
+        ),
+        # Измерения лежат в уже существующем summary JSON и явно помечены
+        # timing-overlay. В evidence/3-2-1 они не попадают и подтверждением
+        # фундаментальной гипотезы не считаются.
+        fact_summary_json=(
+            [
+                {
+                    **fused.market_context_detail,
+                    "score": (
+                        str(fused.market_context_score)
+                        if fused.market_context_score is not None
+                        else None
+                    ),
+                }
+            ]
+            if fused.market_context_detail
+            else []
         ),
         falsifiers_json=fused.falsifiers,
         missing_evidence_json=fused.missing_evidence,

@@ -8,31 +8,26 @@ import android.content.Intent
 import android.os.Build
 
 /**
- * Часовой будильник фонового контура.
+ * Будильник server polling фонового thin-клиента.
  *
- * Ставится в обоих режимах. В режиме коротких пробуждений он единственный
- * источник запуска; в постоянном — страховка: система снимает foreground-сервис
- * и по лимиту шести часов в сутки (Android 15+), и по оптимизации батареи, и
- * при нехватке памяти. Без будильника контур после этого молчал бы до
- * следующего открытия приложения, продолжая показывать, что «следит».
+ * Старые имена режимов сохранены только для совместимости с настройками. Оба
+ * запускают один bounded foreground-service poll и сразу завершаются; следующий
+ * запуск целиком зависит от этого будильника.
  *
  * Будильник неточный (`setAndAllowWhileIdle`): точный потребовал бы разрешения
- * SCHEDULE_EXACT_ALARM, а часовому каденсу минутная точность не нужна.
+ * SCHEDULE_EXACT_ALARM, а пятнадцатиминутному polling минутная точность не
+ * нужна. Doze вправе отложить запуск — это ограничение Android, не обещание
+ * точного таймера.
  */
 object MonitorAlarm {
 
     const val EXTRA_MODE = "mode"
 
     private const val REQUEST = 4242
-    private const val DEFAULT_MINUTES = 60
+    const val DEFAULT_MINUTES = 15
     private const val PREFS = "signalai.monitor"
 
-    /**
-     * [minutes] — через сколько будить. Интервал задаёт контур, а не
-     * константа: он знает, есть ли за чем следить и сколько осталось
-     * заряда, а будильник обязан просыпаться тогда же, когда собирался
-     * проснуться сам контур, — иначе страховка сама становится расходом.
-     */
+    /** [minutes] — через сколько будить; production использует не меньше 15 минут. */
     fun schedule(context: Context, mode: String, minutes: Int = DEFAULT_MINUTES) {
         val manager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
         val at = System.currentTimeMillis() + minutes.coerceIn(15, 720) * 60_000L
@@ -73,7 +68,8 @@ class MonitorAlarmReceiver : BroadcastReceiver() {
         val mode = intent.getStringExtra(MonitorAlarm.EXTRA_MODE)
             ?: MonitorService.MODE_PERSISTENT
         if (MonitorService.running) {
-            // Сервис жив и сам сходит по расписанию — продлеваем страховку.
+            // Предыдущий bounded poll ещё не закончен. Не запускаем второй,
+            // а безопасно переносим следующую попытку.
             MonitorAlarm.schedule(context, mode)
             return
         }

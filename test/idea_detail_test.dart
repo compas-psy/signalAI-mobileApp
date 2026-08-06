@@ -88,7 +88,7 @@ void main() {
     // долистывать разбор.
     expect(find.text('Пропустить'), findsOneWidget);
     // Подпись главной кнопки зависит от финальной проверки §11.1: пройдена —
-    // «Подтвердить план», нет — причина отказа прямо на кнопке. Проверяется
+    // явное подтверждение, нет — причина отказа прямо на кнопке. Проверяется
     // положение полосы, а не исход проверки.
     final confirm = find.text('Подтвердить план').evaluate().isNotEmpty
         ? find.text('Подтвердить план')
@@ -97,6 +97,21 @@ void main() {
 
     final bar = tester.getRect(find.text('Пропустить'));
     expect(bar.bottom, lessThan(892));
+  });
+
+  testWidgets('ожидание названо наблюдением и не имеет подтверждения',
+      (tester) async {
+    final controller = await pumpDetail(tester);
+
+    // Вторая демо-идея находится в Ready: серверный эквивалент —
+    // wait_for_trigger. Даже при полном плане она не должна выглядеть как
+    // подтверждённая сделка.
+    controller.openSignal('btc');
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(find.text('Наблюдать'), findsWidgets);
+    expect(find.text('Наблюдать · ждём триггер'), findsOneWidget);
+    expect(find.text('Подтвердить paper-сделку'), findsNothing);
   });
 
   testWidgets('пилюли ленты не висят над открытым разбором', (tester) async {

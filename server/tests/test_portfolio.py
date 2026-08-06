@@ -25,6 +25,7 @@ from app.models import Bar, Instrument, PortfolioModel, PortfolioRun
 from app.models.enums import AssetClass, PackageSize, RiskProfile, Timeframe, Venue
 from app.portfolio import fundamentals as fund
 from app.portfolio.build import INCOME_CLASSES, PROFILES, build_all
+from tests.conftest import DEVICE_HEADERS
 
 
 def _no_network(url: str):
@@ -35,7 +36,7 @@ def _no_network(url: str):
 @pytest.fixture
 def client(session):
     app.dependency_overrides[get_db] = lambda: session
-    with TestClient(app) as c:
+    with TestClient(app, headers=DEVICE_HEADERS) as c:
         yield c
     app.dependency_overrides.clear()
 

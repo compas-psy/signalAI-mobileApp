@@ -2,10 +2,12 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
+import '../core/app_mode.dart';
 import '../data/api/api_client.dart';
 import '../data/api/api_config.dart';
 import '../data/api/engine_contract.dart';
 import '../data/api/engine_client.dart';
+import '../data/api/engine_runtime.dart';
 import '../data/broker/tinvest_broker.dart';
 import '../data/local_analysis_repository.dart';
 import '../data/local_store.dart';
@@ -115,7 +117,13 @@ class AppController extends ChangeNotifier {
     this._repository, {
     NativeBridge bridge = const NativeBridge(),
     LocalStore? prefs,
+    EngineClient? engine,
+    IdeaChartSource? chartSource,
+    bool thinMode = AppMode.thin,
   })  : _bridge = bridge,
+        _engine = engine ?? EngineClient(),
+        _demoChartSource = chartSource,
+        _thinMode = thinMode,
         _prefs = prefs ?? LocalStore() {
     // Часовой пульс: пока приложение живо, идеи не старше часа. Проверка
     // раз в минуту, пересчёт — когда дайджест реально устарел.
@@ -136,6 +144,9 @@ class AppController extends ChangeNotifier {
 
   final SignalAiRepository _repository;
   final NativeBridge _bridge;
+  final bool _thinMode;
+
+  bool get thinMode => _thinMode;
 
   /// Данные — из макета, а не с рынка.
   ///
@@ -179,7 +190,7 @@ class AppController extends ChangeNotifier {
   DailyDigest? _digest;
 
   /// Движок §18. Считает он, приложение показывает.
-  final EngineClient _engine = EngineClient();
+  final EngineClient _engine;
   /// До первого запроса лента не «пустая», а **неопрошенная**. Разница
   /// видна на экране: пустой список читается как «сетапов нет».
   EngineIdeas _engineIdeas =
@@ -415,67 +426,52 @@ class AppController extends ChangeNotifier {
   /// этой ветки демо-сборка показывала «движок не ответил» на всех экранах —
   /// то есть ровно ничего, хотя её единственная задача показать интерфейс.
   Future<void> refreshIdeas() async {
+    if (_ideasLoading) return;
+    _ideasLoading = true;
     if (demoData) {
       _engineIdeas = EngineIdeas(ideas: DemoIdeas.all(DateTime.now()));
+      _ideasFetchedAt = DateTime.now();
+      _ideasLoading = false;
       notifyListeners();
       return;
     }
-    // Сохранённый адрес обязан быть применён до первого запроса: иначе
-    // холодный старт уходит к движку с пустым адресом и показывает «адрес
-    // не задан» при полностью настроенном приложении.
-    await _engineReady;
-    final fetched = await _engine.today();
-    // Одна карточка на инструмент. Три стратегии, посмотревшие на BTCUSDT,
-    // это не три сделки — это три мнения об одной, и показывать их рядом
-    // значит предлагать войти трижды. Остаётся лучшее мнение; ТЗ §16 того же
-    // требует от сервера («до трёх карточек»), но пока он присылает всё,
-    // отбор делается здесь.
-    final previous = _engineIdeas.ideas;
-    _engineIdeas = EngineIdeas(
-      ideas: bestPerInstrument(fetched.ideas),
-      unavailableReason: fetched.unavailableReason,
-      noSetupsReason: fetched.noSetupsReason,
-    );
-    _engineDataStatus = await _engine.dataStatus();
-    // Сделки спрашиваются здесь же: сопровождение живёт на сервере, и
-    // карточка позиции обязана обновляться тем же тактом, что и лента. При
-    // недоступности движка остаётся `null` — прошлый ответ не затираем,
-    // иначе обрыв связи выглядит как «позиции закрылись».
-    final trades = await _engine.paperTrades();
-    if (trades != null) _serverPaperTrades = trades;
-    notifyListeners();
-    await _recordTriggeredOnPaper();
-    await _notifyNewIdeas(previous, _engineIdeas.ideas);
-  }
-
-  /// Записать в бумажный журнал идеи, у которых сигнал сработал.
-  ///
-  /// До этого журнал наполнялся только из местного дайджеста — того, что
-  /// считает само устройство. Идеи с движка в него не попадали вовсе, и это
-  /// была дыра в самом важном месте: бумажная статистика открывает допуск к
-  /// живым деньгам, а набиралась она по сделкам, которых владелец не видел,
-  /// вместо тех, которые ему показывают.
-  ///
-  /// Записываются только сработавшие. Наблюдение — это ещё не сделка: завести
-  /// его на бумаге значило бы мерить не стратегию, а список кандидатов.
-  ///
-  /// Повторов не будет: журнал не заводит вторую запись по инструменту, у
-  /// которого уже есть живая. Поэтому вызывать это можно на каждом
-  /// обновлении, не сверяясь с тем, что уже записано.
-  Future<void> _recordTriggeredOnPaper() async {
-    final paper = _paper;
-    if (paper == null) return;
-    for (final idea in _engineIdeas.ideas) {
-      if (idea.state != IdeaState.triggered) continue;
-      final signal = EngineContract.signalFrom(idea);
-      if (paper.paperNoteFor(signal.symbol) != null) continue;
-      try {
-        await paper.trackSignalOnPaper(signal);
-      } on Exception {
-        // Одна незаписанная идея не должна ломать обновление ленты.
-      }
+    try {
+      // Сохранённый адрес обязан быть применён до первого запроса: иначе
+      // холодный старт уходит к движку с пустым адресом и показывает «адрес
+      // не задан» при полностью настроенном приложении.
+      await _engineReady;
+      final fetched = await _engine.today();
+      // Одна карточка на инструмент. Три стратегии, посмотревшие на BTCUSDT,
+      // это не три сделки — это три мнения об одной, и показывать их рядом
+      // значит предлагать войти трижды. Остаётся лучшее мнение; ТЗ §16 того же
+      // требует от сервера («до трёх карточек»), но пока он присылает всё,
+      // отбор делается здесь.
+      final previous = _engineIdeas.ideas;
+      _engineIdeas = EngineIdeas(
+        ideas: bestPerInstrument(fetched.ideas),
+        unavailableReason: fetched.unavailableReason,
+        noSetupsReason: fetched.noSetupsReason,
+      );
+      _engineDataStatus = await _engine.dataStatus();
+      // Сделки спрашиваются здесь же: сопровождение живёт на сервере, и
+      // карточка позиции обязана обновляться тем же тактом, что и лента. При
+      // недоступности движка остаётся `null` — прошлый ответ не затираем,
+      // иначе обрыв связи выглядит как «позиции закрылись».
+      final trades = await _engine.paperTrades();
+      if (trades != null) _serverPaperTrades = trades;
+      _ideasFetchedAt = DateTime.now();
+      notifyListeners();
+      // В production-thin уведомляет один фоновый server snapshot poll. Второй
+      // foreground-канал создавал дубли с другими id и снова привязывал
+      // доставку к открытому приложению.
+      if (!_thinMode) await _notifyNewIdeas(previous, _engineIdeas.ideas);
+    } finally {
+      _ideasLoading = false;
     }
   }
+
+  bool _ideasLoading = false;
+  DateTime? _ideasFetchedAt;
 
   /// Пуш о новых идеях движка.
   ///
@@ -495,8 +491,9 @@ class AppController extends ChangeNotifier {
     for (final idea in current) {
       final was = before[idea.id];
       final appeared = was == null && idea.score.value >= _pushScoreFloor;
-      final armed = idea.state.needsAttention &&
-          (was == null || !was.state.needsAttention);
+      final armed = idea.readiness.canAct &&
+          idea.actionable &&
+          (was == null || !was.readiness.canAct || !was.actionable);
       if (!appeared && !armed) continue;
       final notice = ideaNotice(idea, armed: armed);
       // Без адреса пуш приводит на вчерашний экран: карточку пришлось бы
@@ -553,9 +550,11 @@ class AppController extends ChangeNotifier {
 
   /// Итог последней проверки связи с движком. null — не проверяли.
   String? _engineProbe;
+  String? _engineAuthIssue;
   bool _engineProbing = false;
 
   String? get engineProbe => _engineProbe;
+  String? get engineAuthIssue => _engineAuthIssue;
   bool get engineProbing => _engineProbing;
 
   /// Адрес движка, по которому приложение ходит за идеями.
@@ -578,14 +577,11 @@ class AppController extends ChangeNotifier {
   /// собирается к движку. Это одно чтение с диска за запуск, а не задержка
   /// на каждом запросе.
   Future<void> _loadEngineAddress() async {
-    final saved = await _prefs.read('engine');
-    final url = saved?['base_url'] as String? ?? '';
-    final token = saved?['device_token'] as String? ?? '';
-    if (token.isNotEmpty) ApiConfig.setDeviceToken(token);
-    if (url.isNotEmpty && url != ApiConfig.baseUrl) ApiConfig.setBaseUrl(url);
+    final credentials = await restoreEngineRuntime(_prefs, _bridge);
+    _engineAuthIssue = credentials.ready ? null : credentials.issue;
   }
 
-  /// Задан ли токен устройства (сборкой или здесь).
+  /// Задан ли runtime-токен устройства из Android Keystore.
   bool get engineTokenSet => ApiConfig.deviceToken.isNotEmpty;
 
   /// Задать адрес движка из «Подключений».
@@ -596,11 +592,33 @@ class AppController extends ChangeNotifier {
   Future<void> setEngineBaseUrl(String url, {String? token}) async {
     final value = url.trim();
     ApiConfig.setBaseUrl(value);
-    if (token != null) ApiConfig.setDeviceToken(token);
-    await _prefs.write('engine', {
-      'base_url': value,
-      'device_token': token?.trim() ?? ApiConfig.deviceToken,
-    });
+    // В JSON остаётся только несекретный адрес. Токен кладётся в Keystore;
+    // пустое значение — явное удаление привязки.
+    await _prefs.write('engine', {'base_url': value});
+    if (token != null) {
+      final available = await _bridge.vaultAvailable();
+      final entered = token.trim();
+      if (!available) {
+        ApiConfig.setDeviceToken('');
+        _engineAuthIssue =
+            'Устройство не привязано: Android Keystore недоступен.';
+        showToast(_engineAuthIssue!, tone: ToastTone.failure);
+      } else if (entered.isEmpty) {
+        await _bridge.deleteEngineDeviceToken();
+        ApiConfig.setDeviceToken('');
+        _engineAuthIssue = value.isEmpty
+            ? null
+            : 'Устройство не привязано: задайте токен в «Подключениях».';
+      } else if (await _bridge.putEngineDeviceToken(entered)) {
+        ApiConfig.setDeviceToken(entered);
+        _engineAuthIssue = null;
+      } else {
+        ApiConfig.setDeviceToken('');
+        _engineAuthIssue =
+            'Устройство не привязано: токен не сохранён в Keystore.';
+        showToast(_engineAuthIssue!, tone: ToastTone.failure);
+      }
+    }
     _engineProbe = null;
     // Ответ прежнего адреса выбрасывается целиком, включая «адреса нет».
     // Оставить его значило бы показывать на «Портфеле» отказ старого
@@ -634,12 +652,14 @@ class AppController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Свечи графика по идеям: движок, а если он молчит — биржа напрямую.
+  /// Свечи production-идеи приходят только от движка.
   ///
   /// Ключ кэша — идея **и таймфрейм**. Раньше кэш был по идее, и переключать
   /// картинку было нечем: кнопки 1d/4h/1h стояли на экране, но нажимались
   /// впустую, потому что за ними лежал ровно один загруженный ряд.
-  final IdeaChartSource _chartSource = IdeaChartSource();
+  /// Прямой market source допустим только как явно подставленная demo/test
+  /// fixture. Production server idea никогда не обращается к бирже с телефона.
+  final IdeaChartSource? _demoChartSource;
   final Map<String, SignalChart> _ideaCharts = {};
   final Set<String> _ideaChartsAsked = {};
   final Set<String> _ideaChartsFailed = {};
@@ -731,30 +751,31 @@ class AppController extends ChangeNotifier {
     // during build». Микрозадача, а не таймер: таймер переживает тест и
     // роняет его на «A Timer is still pending».
     await Future<void>.microtask(() {});
-    // Движок первый: он считал идею и знает, под какими барами лежит её
-    // разметка. Биржа вторая — но она есть всегда, ключа не требует и
-    // работает, когда сервер молчит. Решение владельца: подключённые
-    // источники данных годятся не только для расчёта, но и для картинки.
-    //
-    // В демо-режиме за свечами на биржу не ходим: настоящие цены под
-    // выдуманным планом уводят зону входа и стоп за пределы графика, и
-    // картинка выглядит сломанной, хотя сломаны данные.
-    // Причины собираются от обоих источников: движок мог не знать
-    // инструмента, а биржа — быть закрытой для страны владельца, и на экране
-    // это должно читаться по-разному.
+    // В production direct market fallback запрещён: он возвращал на телефон
+    // дублирующие клиенты, геоблоки и сетевые вылеты. Демо использует только
+    // детерминированную fixture (либо явно подставленный тестовый источник).
     final reasons = <String>[];
-    final chart = demoData
-        ? DemoIdeas.chartFor(idea)
-        : await _engine.bars(
-              idea.instrumentId,
-              timeframe: timeframe,
-              onFailure: reasons.add,
-            ) ??
-            await _chartSource.load(
-              idea,
-              timeframe: timeframe,
-              onFailure: reasons.add,
-            );
+    SignalChart? chart;
+    if (demoData) {
+      chart = DemoIdeas.chartFor(idea);
+      if (chart == null && _demoChartSource != null) {
+        chart = await _demoChartSource.load(
+          idea,
+          timeframe: timeframe,
+          onFailure: reasons.add,
+        );
+      }
+    } else {
+      // Detail может назвать сетап `H4`, а bars принимает `4h`. Сначала
+      // нормализуем алиас и исчерпываем серверную цепочку setup → 4H → 1H →
+      // D1. Промежуточный отказ не становится заглушкой; итоговая причина
+      // появляется только после исчерпания серверной цепочки.
+      chart = await _engine.barsWithFallback(
+        idea.instrumentId,
+        setupTimeframe: timeframe,
+        onFailure: reasons.add,
+      );
+    }
     if (chart == null) {
       _ideaChartsFailed.add(key);
       if (reasons.isNotEmpty) {
@@ -765,9 +786,8 @@ class AppController extends ChangeNotifier {
     }
     _chartFailureReason.remove(key);
     // Ряд кладётся под тем таймфреймом, который реально нарисован, а не под
-    // запрошенным: у ISS нет четырёхчасовых свечей, и вместо них приезжают
-    // часовые. Подписать их «4H» значило бы соврать на картинке, по которой
-    // принимают решение.
+    // запрошенным: server fallback может вернуть H1 вместо H4. Подписать его
+    // «H4» значило бы соврать на картинке, по которой принимают решение.
     _ideaCharts[_chartKey(idea.id, chart.timeframeLabel)] = chart;
     if (chart.timeframeLabel != timeframe) _ideaCharts[key] = chart;
     notifyListeners();
@@ -789,6 +809,7 @@ class AppController extends ChangeNotifier {
   /// писал «открытых позиций нет», пока в журнале висела открытая позиция по
   /// тому же инструменту. Три экрана, три разных ответа на один вопрос.
   List<PaperTrade> get openPaperTrades {
+    if (_thinMode) return const [];
     final repository = _repository;
     return repository is LocalAnalysisRepository
         ? repository.ledger.openOrPending
@@ -834,6 +855,7 @@ class AppController extends ChangeNotifier {
   /// дважды, на экране должна быть одна, и показывается серверная.
   List<PaperPosition> get paperPositions {
     final server = _serverPaperTrades;
+    if (_thinMode) return server;
     final seen = {for (final p in server) p.symbol};
     return [
       ...server,
@@ -861,12 +883,41 @@ class AppController extends ChangeNotifier {
   /// «пропустить с причиной» показывать нечестно.
   bool get skipJournalAvailable => _repository is LocalAnalysisRepository;
 
+  bool canRejectIdea(Idea idea) =>
+      (!demoData && _engineIdeas.ideas.any((item) => item.id == idea.id)) ||
+      skipJournalAvailable;
+
   /// Записать пропуск идеи с причиной из справочника (ТЗ §12).
   Future<void> skipIdea(
     Idea idea, {
     required SkipReason reason,
     String comment = '',
   }) async {
+    // Идея движка отклоняется там же, где живёт её lifecycle. Локальная
+    // запись рядом создавала второй журнал и оставляла серверную карточку
+    // actionable после того, как владелец уже нажал «Пропустить».
+    if (!demoData && _engineIdeas.ideas.any((item) => item.id == idea.id)) {
+      try {
+        await _engine.rejectIdea(
+          idea.id,
+          reason: reason.code,
+          comment: comment,
+        );
+        _engineIdeas = EngineIdeas(
+          ideas: [for (final item in _engineIdeas.ideas) if (item.id != idea.id) item],
+          unavailableReason: _engineIdeas.unavailableReason,
+          noSetupsReason: _engineIdeas.noSetupsReason,
+        );
+        _selectedSignalId = null;
+        _sheetOpen = false;
+        showToast('Идея отклонена: ${reason.label}');
+      } catch (e) {
+        showError(e);
+      }
+      notifyListeners();
+      return;
+    }
+
     final repository = _repository;
     if (repository is! LocalAnalysisRepository) return;
     await repository.recordSkip(
@@ -881,7 +932,11 @@ class AppController extends ChangeNotifier {
   Idea? get currentIdea {
     final list = ideas;
     if (list.isEmpty) return null;
-    return list.where((i) => i.id == _selectedSignalId).firstOrNull ?? list.first;
+    final selected = _selectedSignalId;
+    if (selected == null) return list.first;
+    // Выбранный локальный сигнал не должен получать план первой серверной
+    // идеи. Это разные множества и разные контуры исполнения.
+    return list.where((i) => i.id == selected).firstOrNull;
   }
 
   /// Запуск: сначала быстрые данные (настройки, стратегии, сделки) — оболочка
@@ -914,7 +969,7 @@ class AppController extends ChangeNotifier {
     // осталась бы в состоянии «ещё не спрашивали» до первого ручного
     // обновления, и владелец увидел бы пустой экран без объяснения.
     await refreshIdeas();
-    await refreshDigest();
+    if (!_thinMode) await refreshDigest();
     // Уведомление, по которому приложение и запустили. Забирается после
     // первой загрузки: открывать разбор идеи, которой ещё нет в памяти,
     // значит показать пустой экран вместо той самой идеи.
@@ -946,6 +1001,10 @@ class AppController extends ChangeNotifier {
   /// Пересчёт идей. [force] — игнорировать свежий кэш (кнопка «Пересчитать»);
   /// без него репозиторий вправе вернуть недавний результат мгновенно.
   Future<void> refreshDigest({bool force = false}) async {
+    if (_thinMode) {
+      await refreshIdeas();
+      return;
+    }
     // Кнопка не должна быть немой: если расчёт уже идёт, честно об этом
     // сказать, а не проглотить нажатие.
     if (_digestLoading) {
@@ -1007,6 +1066,16 @@ class AppController extends ChangeNotifier {
   /// (оценка каждого закрытого бара): живой контур и прогон делают одно и
   /// то же, иначе статистика прогона мерила бы другую стратегию.
   void _autoRefreshIfStale() {
+    if (_thinMode) {
+      final fetchedAt = _ideasFetchedAt;
+      if (!_ideasLoading &&
+          (fetchedAt == null ||
+              DateTime.now().difference(fetchedAt) >=
+                  const Duration(minutes: 15))) {
+        unawaited(refreshIdeas());
+      }
+      return;
+    }
     if (_digestLoading || _backtestRunning || _optimizing) return;
     final now = DateTime.now();
 
@@ -1064,6 +1133,7 @@ class AppController extends ChangeNotifier {
   /// Автозапуск walk-forward оптимизации, когда пришёл срок (раз в неделю).
   /// Идёт в фоне после дайджеста и не мешает пользоваться приложением.
   void _maybeScheduleOptimization() {
+    if (_thinMode) return;
     final repository = _repository;
     if (repository is! ParameterOptimizing) return;
     if (_optimizationTriggered || !(repository as ParameterOptimizing).optimizationDue) {
@@ -1076,6 +1146,15 @@ class AppController extends ChangeNotifier {
 
   /// Подбор параметров стратегий walk-forward прогоном.
   Future<void> runOptimization({bool auto = false}) async {
+    if (_thinMode) {
+      if (!auto) {
+        showToast(
+          'В thin-режиме локальная оптимизация отключена',
+          tone: ToastTone.warning,
+        );
+      }
+      return;
+    }
     final repository = _repository;
     if (repository is! ParameterOptimizing || _optimizing || _backtestRunning) return;
     _optimizing = true;
@@ -1163,11 +1242,13 @@ class AppController extends ChangeNotifier {
         _route.section == AppSection.portfolio) {
       refreshCapital();
     }
-    if (_route.section == AppSection.portfolio &&
+    if (!_thinMode &&
+        _route.section == AppSection.portfolio &&
         _route.pill == PortfolioPill.accounts.index) {
       refreshVenues();
     }
-    if (_route.section == AppSection.settings &&
+    if (!_thinMode &&
+        _route.section == AppSection.settings &&
         _route.pill == SettingsPill.connections.index) {
       refreshVenues();
     }
@@ -1394,6 +1475,14 @@ class AppController extends ChangeNotifier {
   /// штук такого-то на M рублей». Цены берутся с MOEX и Bybit; инструмент,
   /// по которому цены нет, не подменяется похожим.
   Future<void> loadAllocation(PackagePlan plan) async {
+    if (_thinMode) {
+      showToast(
+        'Количество инструментов должен рассчитать сервер; прямые котировки '
+        'с телефона в thin отключены',
+        tone: ToastTone.warning,
+      );
+      return;
+    }
     final repository = _repository;
     final state = _capital;
     if (repository is! LocalAnalysisRepository || state == null) return;
@@ -1474,6 +1563,11 @@ class AppController extends ChangeNotifier {
 
   /// Читает цепочку опционов и собирает конструкции с ограниченным риском.
   Future<void> loadOptionChain({String? asset}) async {
+    if (_thinMode) {
+      _optionsError = 'Опционные конструкции пока не выдаются сервером';
+      notifyListeners();
+      return;
+    }
     final repository = _repository;
     if (repository is! LocalAnalysisRepository) {
       _optionsError = 'Цепочка опционов доступна только в автономном расчёте';
@@ -1536,6 +1630,7 @@ class AppController extends ChangeNotifier {
 
   /// Спрашивает у брокера список счетов.
   Future<void> refreshTinvestAccounts() async {
+    if (_thinMode) return;
     final repository = _repository;
     if (repository is! LocalAnalysisRepository) return;
     _tinvestAccounts = await repository.tinvestAccounts();
@@ -1565,7 +1660,7 @@ class AppController extends ChangeNotifier {
       showError(e);
     }
     await refreshTinvestTokens();
-    await refreshTinvestAccounts();
+    if (!_thinMode) await refreshTinvestAccounts();
   }
 
   /// Разрешить или запретить приложению читать счёт.
@@ -1632,6 +1727,7 @@ class AppController extends ChangeNotifier {
   List<VenueStatus> get venues => _venues;
 
   Future<void> refreshVenues() async {
+    if (_thinMode) return;
     final desk = tradingDesk;
     if (desk == null) return;
     final result = <VenueStatus>[];
@@ -1662,6 +1758,18 @@ class AppController extends ChangeNotifier {
   /// Через `RiskMode.caution` это выражать нельзя: он означает «допуск к
   /// живым деньгам урезан» — про риск, а не про источники.
   DataHealth get dataHealth {
+    if (_thinMode) {
+      if (!_engineIdeas.isAvailable) return DataHealth.blind;
+      final status = _engineDataStatus;
+      if (status == null) return DataHealth.partial;
+      final tradable = (status['tradable'] as num?)?.toInt() ?? 0;
+      final withData = (status['with_data'] as num?)?.toInt() ?? 0;
+      final quality =
+          status['recent_quality_events'] as List<dynamic>? ?? const [];
+      return withData < tradable || quality.isNotEmpty
+          ? DataHealth.partial
+          : DataHealth.full;
+    }
     final repository = _repository;
     if (repository is! LocalAnalysisRepository) return DataHealth.full;
     if (_digest == null || repository.lastRefreshError != null) {
@@ -1676,6 +1784,18 @@ class AppController extends ChangeNotifier {
   /// прогонов. Без неё чип сообщает диагноз, но не причину, а «неполные»
   /// без «чего именно не хватило» — та же отписка, что и молчание.
   String get dataHealthDetail {
+    if (_thinMode) {
+      final unavailable = _engineIdeas.unavailableReason;
+      if (unavailable != null) return unavailable;
+      final status = _engineDataStatus;
+      if (status == null) {
+        return 'Идеи получены, но сервер не отдал состояние рыночных данных.';
+      }
+      final tradable = (status['tradable'] as num?)?.toInt() ?? 0;
+      final withData = (status['with_data'] as num?)?.toInt() ?? 0;
+      return 'Сервер: данные есть у $withData из $tradable торгуемых '
+          'инструментов.';
+    }
     final repository = _repository;
     final parts = <String>[];
     if (repository is LocalAnalysisRepository) {
@@ -1701,7 +1821,7 @@ class AppController extends ChangeNotifier {
   /// могли встать полчаса назад, и владелец должен видеть это без перехода в
   /// диагностику.
   String? get dataFreshness {
-    final at = _digestFetchedAt;
+    final at = _thinMode ? _ideasFetchedAt : _digestFetchedAt;
     if (at == null) return null;
     final local = at.toLocal();
     final minutes = DateTime.now().difference(at).inMinutes;
@@ -1831,6 +1951,7 @@ class AppController extends ChangeNotifier {
   // ── Раздел «Инвест» ────────────────────────────────────────────────────
 
   Future<void> refreshInvest({bool force = false}) async {
+    if (_thinMode) return;
     final desk = investDesk;
     if (desk == null || _investLoading) return;
     _investLoading = true;
@@ -1858,6 +1979,13 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> runInvestBacktest() async {
+    if (_thinMode) {
+      showToast(
+        'В thin-режиме локальный бэктест отключён',
+        tone: ToastTone.warning,
+      );
+      return;
+    }
     final desk = investDesk;
     if (desk == null || _investBacktestRunning) return;
     _investBacktestRunning = true;
@@ -1885,6 +2013,13 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> optimizeInvest() async {
+    if (_thinMode) {
+      showToast(
+        'В thin-режиме локальная оптимизация отключена',
+        tone: ToastTone.warning,
+      );
+      return;
+    }
     final desk = investDesk;
     if (desk == null || _investBacktestRunning) return;
     _investBacktestRunning = true;
@@ -1917,6 +2052,16 @@ class AppController extends ChangeNotifier {
     if (current != null && current.evidence.isNotEmpty) return;
     final full = await _engine.detail(id);
     if (full == null) return;
+    // Корзина `/ideas/today` — явный ответ сервера на вопрос «можно ли
+    // действовать сейчас». Detail старых версий этого поля не несёт и может
+    // содержать тот же lifecycle/quality status для обеих корзин. Поэтому
+    // догрузка плана не вправе превратить `wait_for_trigger` в actionable.
+    final hydrated = current == null
+        ? full
+        : full.copyWith(
+            readiness: current.readiness,
+            actionable: current.actionable,
+          );
     // Идеи может не быть в ленте вовсе: терминальная ушла из выдачи, а
     // бумажная сделка по ней жива и ссылается сюда из журнала. Раньше
     // здесь стоял выход — и разбор такой идеи оставался пустым навсегда:
@@ -1924,8 +2069,9 @@ class AppController extends ChangeNotifier {
     // хранит и отдаёт; добавляем её в ленту, а не только заменяем.
     _engineIdeas = EngineIdeas(
       ideas: [
-        if (current == null) full,
-        for (final idea in _engineIdeas.ideas) idea.id == id ? full : idea,
+        if (current == null) hydrated,
+        for (final idea in _engineIdeas.ideas)
+          idea.id == id ? hydrated : idea,
       ],
       unavailableReason: _engineIdeas.unavailableReason,
       noSetupsReason: _engineIdeas.noSetupsReason,
@@ -1958,14 +2104,69 @@ class AppController extends ChangeNotifier {
     final signal = currentSignal;
     if (signal == null || !signal.status.canConfirm || _confirming) return;
 
+    final idea = ideas.where((i) => i.id == signal.id).firstOrNull;
+    final serverIdea = !demoData && idea != null;
+    // Для серверной идеи одного программного вызова недостаточно: владелец
+    // обязан сначала открыть sheet с полным paper-планом. Биометрия ниже —
+    // дополнительный рубеж, а не замена явному подтверждению на экране.
+    if (serverIdea && (!_sheetOpen || !idea!.canApprovePaper)) return;
+
     _confirming = true;
     notifyListeners();
+
+    // Серверная идея создаёт только серверную paper-сделку. Раньше тот же
+    // тап шёл в LocalAnalysisRepository, открывал параллельную позицию на
+    // телефоне и мог даже отправить брокерскую заявку — при том что экран
+    // показывал план другого, серверного контура.
+    if (serverIdea) {
+      final server = idea!;
+      try {
+        if (!await _confirmOnDeviceIfAvailable(server)) {
+          _sheetOpen = false;
+          showToast('Подтверждение отменено', tone: ToastTone.warning);
+          return;
+        }
+        final decision = await _engine.approvePaper(server.id);
+        final trade = decision.trade;
+        if (trade != null) _upsertServerPaperTrade(trade);
+        // Ответ approve уже достаточен для мгновенного экрана, а перечитка
+        // синхронизирует состояние после идемпотентного replay и серверного
+        // сопровождения.
+        final trades = await _engine.paperTrades();
+        if (trades != null) _serverPaperTrades = trades;
+        _engineIdeas = EngineIdeas(
+          ideas: [
+            for (final item in _engineIdeas.ideas)
+              item.id == server.id
+                  ? item.copyWith(
+                      state: IdeaState.active,
+                      actionable: false,
+                    )
+                  : item,
+          ],
+          unavailableReason: _engineIdeas.unavailableReason,
+          noSetupsReason: _engineIdeas.noSetupsReason,
+        );
+        _sheetOpen = false;
+        showToast(
+          decision.idempotentReplay
+              ? 'Paper-сделка уже принята · сопровождение на сервере'
+              : 'Paper-сделка принята · сопровождение на сервере',
+        );
+      } catch (e) {
+        _sheetOpen = false;
+        showError(e);
+      } finally {
+        _confirming = false;
+        notifyListeners();
+      }
+      return;
+    }
 
     // Исполнение ведётся машиной состояний ТЗ §11.3, а не одним вызовом
     // брокера. Между показом плана и нажатием кнопки проходит время: цена
     // уходит, срок истекает, лимит выбирается соседней сделкой. Поэтому
     // предпроверка считается заново, а не берётся с экрана.
-    final idea = ideas.where((i) => i.id == signal.id).firstOrNull;
     var execution = Execution(
       ideaId: signal.id,
       planHash: idea?.plan?.hash ?? '',
@@ -2018,6 +2219,29 @@ class AppController extends ChangeNotifier {
     }
   }
 
+  /// Системное подтверждение — дополнительный рубеж после явного sheet.
+  ///
+  /// Если на устройстве настроен отпечаток/лицо/PIN, используем его. На
+  /// устройстве без системной защиты основной paper-flow не блокируется:
+  /// обязательное явное подтверждение уже произошло в экранном sheet.
+  Future<bool> _confirmOnDeviceIfAvailable(Idea idea) async {
+    final method = await _bridge.confirmMethod();
+    if (method == null || method == 'none') return true;
+    return _bridge.biometricConfirm(
+      title: '${idea.direction.isLong ? 'Paper-покупка' : 'Paper-продажа'} '
+          '${idea.symbolOrId}',
+      subtitle: 'После подтверждения сделку сопровождает сервер',
+    );
+  }
+
+  void _upsertServerPaperTrade(PaperPosition trade) {
+    _serverPaperTrades = [
+      trade,
+      for (final item in _serverPaperTrades)
+        if (item.id != trade.id && item.ideaId != trade.ideaId) item,
+    ];
+  }
+
   /// Финальная проверка идеи в текущих условиях (ТЗ §11.1).
   List<CheckResult> _finalCheck(Idea idea) {
     final center = riskCenter;
@@ -2045,6 +2269,7 @@ class AppController extends ChangeNotifier {
 
   /// Исполнение по идее. null — подтверждения ещё не было.
   Execution? execution(String ideaId) {
+    if (_thinMode) return _memoryExecutions[ideaId];
     final repository = _repository;
     return repository is LocalAnalysisRepository
         ? repository.executions[ideaId]
@@ -2053,6 +2278,12 @@ class AppController extends ChangeNotifier {
 
   /// Исполнения, которые ещё не завершены.
   List<Execution> get liveExecutions {
+    if (_thinMode) {
+      return [
+        for (final execution in _memoryExecutions.values)
+          if (!execution.state.isTerminal) execution,
+      ];
+    }
     final repository = _repository;
     final all = repository is LocalAnalysisRepository
         ? repository.executions.values
@@ -2097,6 +2328,16 @@ class AppController extends ChangeNotifier {
     final signal = currentSignal;
     final paper = _paper;
     if (signal == null || paper == null) return;
+    if (!demoData &&
+        _engineIdeas.ideas.any((idea) => idea.id == signal.id)) {
+      // Серверная идея может жить только в server paper ledger. Две позиции
+      // по одному плану расходятся по стопам и тейкам уже на первом баре.
+      showToast(
+        'Серверная идея ведётся только после подтверждения paper-сделки',
+        tone: ToastTone.warning,
+      );
+      return;
+    }
     try {
       // Сигнал передаётся целиком, а не идентификатором: идея с движка в
       // выдаче дайджеста не лежит, и поиск по идентификатору отвечал бы
@@ -2135,6 +2376,13 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> runBacktest(String strategyId) async {
+    if (_thinMode) {
+      showToast(
+        'В thin-режиме локальный бэктест отключён',
+        tone: ToastTone.warning,
+      );
+      return;
+    }
     if (_backtestRunning) return;
     _backtestRunning = true;
     final repository = _repository;
@@ -2190,11 +2438,12 @@ class AppController extends ChangeNotifier {
 
   /// Торговый контур для экранов, которым нужен он сам, а не срез состояния:
   /// диагностика гоняет живые запросы к биржам.
-  TradingDesk? get tradingDesk => _desk;
+  TradingDesk? get tradingDesk => _thinMode ? null : _desk;
 
   /// Сохраняет ключи биржи и сразу проверяет их: молча принять нерабочий ключ
   /// значит узнать об этом в момент отправки ордера.
   Future<void> saveBrokerKeys(BrokerId broker, String apiKey, String apiSecret) async {
+    if (_thinMode) return;
     final desk = _desk;
     if (desk == null) return;
     try {
@@ -2212,6 +2461,7 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> setTradingEnabled(bool enabled) async {
+    if (_thinMode) return;
     final desk = _desk;
     if (desk == null) return;
     await desk.setTradingEnabled(enabled);
@@ -2222,6 +2472,7 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> setTradingMode(BrokerId broker, TradingMode mode) async {
+    if (_thinMode) return;
     final desk = _desk;
     if (desk == null) return;
     try {
@@ -2234,6 +2485,7 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> setKillSwitch(bool on) async {
+    if (_thinMode) return;
     final desk = _desk;
     if (desk == null) return;
     showToast(await desk.setKillSwitch(on));
@@ -2287,14 +2539,22 @@ class AppController extends ChangeNotifier {
 
   /// Возврат на передний план: считает снова интерфейс.
   Future<void> onAppResumed() async {
-    await _bridge.monitorStop();
+    // Thin poll пишет отдельный server snapshot и может безопасно закончить
+    // параллельно UI. Не вызываем monitorStop: он не только снимает текущий
+    // service, но и удаляет будильник/boot-флаг, поэтому после обычного
+    // открытия приложения фон забывался до следующего pause.
+    if (!_thinMode) await _bridge.monitorStop();
     await _lock?.heartbeat(StateLock.ui);
     // Нажатие по уведомлению у работающего приложения приходит сюда: система
     // не перезапускает его, а возвращает на передний план.
     await openFromNotification();
-    // Фон мог пересчитать дайджест — перечитываем, чтобы не показывать старое
-    // и не гонять расчёт второй раз.
-    await refreshDigest();
+    // Thin-фон меняет только серверный snapshot. Foreground перечитывает тот
+    // же источник истины; legacy/dev по-прежнему обновляет свой дайджест.
+    if (_thinMode) {
+      await refreshIdeas();
+    } else {
+      await refreshDigest();
+    }
     // Книга могла измениться извне (импорт, фоновая сверка) — и капитал
     // показывался бы устаревшим до первого перехода между разделами.
     await refreshCapital();
@@ -2435,7 +2695,7 @@ class AppController extends ChangeNotifier {
   /// же новый отказ, добавленный не глядя, снова выйдет зелёной галочкой.
   /// Здесь тон задан происхождением текста — он приходит из исключения.
   void showError(Object e) =>
-      showError(e);
+      showToast(_errorText(e), tone: ToastTone.failure);
 
   String _errorText(Object e) => switch (e) {
         ApiException(:final message) => message,

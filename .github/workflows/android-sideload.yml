@@ -1,90 +1,139 @@
 name: Android sideload APK
+run-name: Sideload · ${{ inputs.source_ref || github.ref_name }}
 
-# Быстрая сборка APK «поставить себе на телефон» — без keystore и без секретов.
-#
-# Зачем отдельно от android-release.yml: тот намеренно падает без ключа подписи,
-# потому что релизный артефакт обязан быть подписан своим ключом. Здесь задача
-# другая — получить рабочий APK сразу, ничего предварительно не настраивая.
-#
-# Подпись отладочная (см. fallback в android/app/build.gradle.kts). Отсюда два
-# последствия, о которых надо знать заранее:
-#   * при установке Android покажет предупреждение Play Protect — его можно
-#     пропустить («Всё равно установить»);
-#   * applicationId тот же (ru.signalai.app), поэтому поставить сверху нормально
-#     подписанный релиз не выйдет — сначала удалить эту сборку.
-#
-# Для Play Console и для раздачи кому-то ещё — только android-release.yml.
-
-# Сборка по требованию, а не на каждый коммит.
-#
-# Раньше стоял push на любую ветку. Получалось так: APK нужен изредка, а
-# прогон запускался на каждый промежуточный коммит — и когда раннеры
-# недоступны, каждый такой коммит рисует красный крест, за которым нет ни
-# одной строки логов. Красное без содержания хуже отсутствия статуса: оно
-# приучает не смотреть на статусы вообще.
-#
-# Теперь APK собирается тогда, когда за ним пришли: кнопкой «Run workflow»
-# в Actions либо тегом. Промежуточные коммиты проверяются локально —
-# flutter analyze, flutter test и tool/build_apk.sh.
+# Personal delivery channel.  It is intentionally not triggered by ordinary
+# pushes: the stable download URL must never start pointing at an arbitrary
+# intermediate commit.
 on:
   workflow_dispatch:
     inputs:
+      source_ref:
+        description: 'Exact branch, tag or commit to build (required; shown in release metadata)'
+        required: true
+        type: string
       api_base_url:
-        description: 'Адрес движка (пусто — рабочий сервер проекта)'
+        description: 'Engine URL (empty = repository secret or production default)'
         required: false
         default: ''
+        type: string
       mode:
-        # Идеи считает движок (§18); на устройстве они не собираются. Значит
-        # без адреса движка лента пуста по построению — и посмотреть на ней
-        # нечего, даже когда сам интерфейс готов. Демо-режим существует ровно
-        # для этого случая: данные макета, без сети и без сервера. Сборка
-        # называет себя полосой «ДЕМО» на каждом экране — выдуманные уровни
-        # обязаны быть отличимы от рыночных.
-        # Режима «server» здесь больше нет, и это не упрощение выбора.
-        # Он включал RestRepository — клиент **старого** контракта
-        # (`/v1/settings`, `/v1/trades`, `/v1/strategies`). Движок реализует
-        # §18 (`/api/v1/ideas`, `/api/v1/market`), этих адресов у него нет, и
-        # первый же запрос при запуске падал: приложение показывало «Не
-        # удалось запуститься» при полностью исправном сервере. Ровно это и
-        # произошло 30.07 со сборкой 167a420.
-        #
-        # Адрес движка на выбор режима не влияет и не должен: идеи и пакеты
-        # берёт EngineClient по §18 в любом режиме, а журнал, настройки и
-        # книга операций живут на устройстве, пока не переедут на сервер
-        # вместе со своими эндпоинтами.
-        description: 'Данные: local — считает устройство, demo — макет (для просмотра интерфейса)'
-        required: false
-        default: local
+        description: 'thin = server ideas, paper lifecycle and background work; demo = UI fixtures'
+        required: true
+        default: thin
         type: choice
-        options: [local, demo]
+        options:
+          - thin
+          - demo
   push:
     tags:
       - 'sideload-*'
 
-# Пуш поверх незавершённого прогона отменяет предыдущий: артефакт нужен от
-# последнего коммита, а не от всех подряд.
-#
-# ВНИМАНИЕ ТОМУ, КТО ПУШИТ. Сборка занимает 7–8 минут. Пуш раньше — и
-# предыдущий прогон умирает, не доехав до APK. 29 июля так подряд погибли
-# шесть прогонов: пушили каждые 4–8 минут, артефакта не получилось ни разу,
-# а минуты аккаунта сгорели все. Правило простое: накопить изменения и
-# запушить один раз, потом ждать. Хотите промежуточную проверку — она
-# делается локально: flutter analyze, flutter test и сборка под веб.
+# There is one mutable sideload channel.  Two builds must not race to replace
+# the same release asset, even when they originate from different refs.
 concurrency:
-  group: sideload-${{ github.ref }}
+  group: signalai-sideload-publish
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
+env:
+  FLUTTER_VERSION: '3.44.8'
+
 jobs:
-  build:
+  resolve:
+    name: Resolve source ref once
     runs-on: ubuntu-latest
-    # contents: write — для публикации APK в pre-release «sideload»:
-    # квота хранилища артефактов Actions на аккаунте исчерпана, а ассеты
-    # релизов в неё не входят.
+    outputs:
+      source_sha: ${{ steps.source.outputs.source_sha }}
+      short_sha: ${{ steps.source.outputs.short_sha }}
+      safe_ref: ${{ steps.source.outputs.safe_ref }}
+      display_ref: ${{ steps.source.outputs.display_ref }}
+      requested_ref: ${{ steps.source.outputs.requested_ref }}
+    steps:
+      - name: Reject an empty source ref
+        env:
+          REQUESTED_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.source_ref || github.ref }}
+        run: |
+          test -n "$REQUESTED_REF" || {
+            echo '::error::source_ref must not be empty'
+            exit 1
+          }
+      - name: Check out the explicitly selected source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_ref || github.ref }}
+          fetch-depth: 1
+
+      - name: Resolve immutable source identity
+        id: source
+        env:
+          REQUESTED_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.source_ref || github.ref }}
+          DISPLAY_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.source_ref || github.ref_name }}
+        run: |
+          set -euo pipefail
+          source_sha="$(git rev-parse --verify HEAD^{commit})"
+          short_sha="$(git rev-parse --short=12 HEAD)"
+          safe_ref="$(printf '%s' "$DISPLAY_REF" \
+            | tr -cs 'A-Za-z0-9._-' '-' \
+            | sed 's/^-*//; s/-*$//' \
+            | cut -c1-48)"
+          test -n "$safe_ref" || safe_ref=detached
+
+          if [ "$GITHUB_EVENT_NAME" = push ] && [ "$source_sha" != "$GITHUB_SHA" ]; then
+            echo "::error::Tag resolved to $source_sha, but the event points to $GITHUB_SHA"
+            exit 1
+          fi
+
+          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+          echo "short_sha=$short_sha" >> "$GITHUB_OUTPUT"
+          echo "safe_ref=$safe_ref" >> "$GITHUB_OUTPUT"
+          echo "display_ref=$DISPLAY_REF" >> "$GITHUB_OUTPUT"
+          echo "requested_ref=$REQUESTED_REF" >> "$GITHUB_OUTPUT"
+
+          {
+            echo '### Sideload source'
+            echo
+            echo "- requested ref: \`$REQUESTED_REF\`"
+            echo "- resolved commit: \`$source_sha\`"
+            echo "- workflow definition: \`$GITHUB_WORKFLOW_REF\`"
+            echo '- QA and APK receive this exact commit SHA.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  quality:
+    name: Quality gate for selected ref
+    needs: resolve
+    uses: ./.github/workflows/quality.yml
+    with:
+      source_ref: ${{ needs.resolve.outputs.source_sha }}
+
+  build:
+    name: Signed APK and provenance
+    needs:
+      - resolve
+      - quality
+    runs-on: ubuntu-latest
     permissions:
       contents: write
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out the immutable source verified by QA
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.source_sha }}
+          fetch-depth: 1
+
+      - name: Verify checked-out provenance
+        env:
+          EXPECTED_SHA: ${{ needs.resolve.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          actual_sha="$(git rev-parse --verify HEAD^{commit})"
+          if [ "$actual_sha" != "$EXPECTED_SHA" ]; then
+            echo "::error::QA verified $EXPECTED_SHA, but build checked out $actual_sha"
+            exit 1
+          fi
+          echo "Building QA-verified commit $actual_sha"
 
       - uses: actions/setup-java@v4
         with:
@@ -93,189 +142,248 @@ jobs:
 
       - uses: subosito/flutter-action@v2
         with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
           cache: true
 
       - run: flutter --version
 
-      - run: flutter pub get
+      - name: Resolve locked dependencies
+        run: flutter pub get --enforce-lockfile
 
-      - run: flutter analyze
-
-      - run: flutter test
-
-      # key.properties в .gitignore — в репозитории его быть не должно никогда.
-      # Проверка на случай, если файл окажется там по ошибке: это утечка ключа.
-      - name: Проверка, что ключа подписи в репозитории нет
+      # A cache is not a signing-key backup.  Use the dedicated SIDELOAD_*
+      # secrets when sideload and Play should have different identities; the
+      # existing ANDROID_* secrets remain a compatible fallback for installs
+      # already signed by the release key.  Missing or partial secrets fail.
+      - name: Restore permanent signing identity
+        env:
+          SIDELOAD_KEYSTORE_BASE64: ${{ secrets.SIDELOAD_KEYSTORE_BASE64 }}
+          SIDELOAD_KEYSTORE_PASSWORD: ${{ secrets.SIDELOAD_KEYSTORE_PASSWORD }}
+          SIDELOAD_KEY_PASSWORD: ${{ secrets.SIDELOAD_KEY_PASSWORD }}
+          SIDELOAD_KEY_ALIAS: ${{ secrets.SIDELOAD_KEY_ALIAS }}
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          RELEASE_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
         run: |
-          if [ -f android/key.properties ]; then
-            echo "::error::android/key.properties в репозитории — приватный ключ подписи утёк в git"
+          set -euo pipefail
+          umask 077
+
+          if [ -n "$SIDELOAD_KEYSTORE_BASE64$SIDELOAD_KEYSTORE_PASSWORD$SIDELOAD_KEY_PASSWORD$SIDELOAD_KEY_ALIAS" ]; then
+            KEYSTORE_BASE64="$SIDELOAD_KEYSTORE_BASE64"
+            STORE_PASSWORD="$SIDELOAD_KEYSTORE_PASSWORD"
+            KEY_PASSWORD="$SIDELOAD_KEY_PASSWORD"
+            KEY_ALIAS="$SIDELOAD_KEY_ALIAS"
+            secret_family=SIDELOAD
+          else
+            KEYSTORE_BASE64="$RELEASE_KEYSTORE_BASE64"
+            STORE_PASSWORD="$RELEASE_KEYSTORE_PASSWORD"
+            KEY_PASSWORD="$RELEASE_KEY_PASSWORD"
+            KEY_ALIAS="$RELEASE_KEY_ALIAS"
+            secret_family=ANDROID
+          fi
+
+          missing=''
+          [ -n "$KEYSTORE_BASE64" ] || missing="$missing keystore"
+          [ -n "$STORE_PASSWORD" ] || missing="$missing store-password"
+          [ -n "$KEY_PASSWORD" ] || missing="$missing key-password"
+          [ -n "$KEY_ALIAS" ] || missing="$missing alias"
+          if [ -n "$missing" ]; then
+            echo "::error::Permanent $secret_family signing secrets are incomplete:$missing"
+            echo "Configure the complete SIDELOAD_KEYSTORE_* set (preferred) or the complete ANDROID_KEYSTORE_* set."
+            echo "An Actions cache or a generated debug key is never used as signing identity."
             exit 1
           fi
 
-      # Ключ подписи обязан быть одним и тем же от сборки к сборке.
-      #
-      # Раньше его не было вовсе, и Gradle уходил на отладочный ключ. Отладочный
-      # keystore создаётся заново на каждом раннере, то есть каждая сборка была
-      # подписана ДРУГИМ ключом — Android отказывается ставить такую поверх
-      # предыдущей, и приложение приходилось удалять вместе со всеми данными:
-      # журналом сделок, настройками и скачанной историей свечей.
-      #
-      # Кэш Actions привязан к ветке и вытесняется после недели простоя. Если
-      # он потеряется, ключ сгенерируется заново и обновление снова упрётся —
-      # поэтому постоянное решение это секреты (см. docs/ANDROID_SIGNING.md):
-      # заданы ANDROID_KEYSTORE_* — берём их и кэш не трогаем.
-      # Проверка секрета вынесена в шаг: контекст secrets в step-level `if`
-      # доступен не на всех версиях раннера, а выход шага — всегда.
-      - name: Есть ли постоянный ключ в секретах
-        id: signing
+          keystore="${RUNNER_TEMP}/signalai-sideload.jks"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$keystore"
+          test -s "$keystore"
+          keytool -list \
+            -keystore "$keystore" \
+            -storepass "$STORE_PASSWORD" \
+            -alias "$KEY_ALIAS" >/dev/null
+
+          cat > android/key.properties <<PROPERTIES
+          storeFile=$keystore
+          storePassword=$STORE_PASSWORD
+          keyAlias=$KEY_ALIAS
+          keyPassword=$KEY_PASSWORD
+          PROPERTIES
+
+      - name: Build APK without a compiled bearer token
         env:
-          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-        run: |
-          if [ -n "${KEYSTORE_BASE64}" ]; then
-            echo "from_secrets=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "from_secrets=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Кэш ключа подписи sideload
-        if: steps.signing.outputs.from_secrets == 'false'
-        uses: actions/cache@v4
-        with:
-          path: ~/.signalai-sideload
-          key: sideload-keystore-v1
-
-      - name: Ключ подписи
-        env:
-          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-          STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-        run: |
-          set -eu
-          KEY_DIR="${HOME}/.signalai-sideload"
-          KEYSTORE="${KEY_DIR}/sideload.jks"
-
-          if [ -n "${KEYSTORE_BASE64}" ]; then
-            echo "Подпись из секретов репозитория."
-            mkdir -p "${KEY_DIR}"
-            echo "${KEYSTORE_BASE64}" | base64 -d > "${KEYSTORE}"
-            STORE_PASS="${STORE_PASSWORD}"
-            KEY_PASS="${KEY_PASSWORD}"
-            ALIAS="${KEY_ALIAS}"
-          else
-            # Пароль постоянный и несекретный намеренно: он защищает не ключ, а
-            # файл, и лежит ровно там же, где файл. Смысл этого ключа один —
-            # непрерывность обновлений; для Play Console нужен настоящий,
-            # заведённый через секреты.
-            STORE_PASS="sideload"
-            KEY_PASS="sideload"
-            ALIAS="sideload"
-            if [ -f "${KEYSTORE}" ]; then
-              echo "Ключ восстановлен из кэша — обновление встанет поверх."
-            else
-              echo "::warning::Ключа sideload не было, создаю новый. Эту сборку придётся ставить с удалением предыдущей — один раз. Чтобы ключ не терялся, задайте секреты ANDROID_KEYSTORE_* (docs/ANDROID_SIGNING.md)."
-              mkdir -p "${KEY_DIR}"
-              keytool -genkeypair -v \
-                -keystore "${KEYSTORE}" \
-                -storepass "${STORE_PASS}" -keypass "${KEY_PASS}" \
-                -alias "${ALIAS}" \
-                -keyalg RSA -keysize 4096 -validity 10000 \
-                -dname "CN=SignalAI Sideload, OU=Personal, O=SignalAI, C=RU"
-            fi
-          fi
-
-          cat > android/key.properties <<PROPS
-          storeFile=${KEYSTORE}
-          storePassword=${STORE_PASS}
-          keyAlias=${ALIAS}
-          keyPassword=${KEY_PASS}
-          PROPS
-
-      - name: Сборка APK
-        # Номер версии растёт с каждой сборкой: установка поверх всегда
-        # выглядит обновлением, а не переустановкой той же версии — у части
-        # прошивок «та же версия» вызывает лишние вопросы установщика.
-        #
-        # Адрес движка передаётся в сборку. Без него приложение показывает
-        # «движок не ответил» и не может показать ни одной идеи: считает их
-        # сервер (§18), а адрес зашивается на этапе сборки, чтобы ни его, ни
-        # токен устройства не лежало в репозитории.
-        env:
-          # Адрес рабочего сервера — не тайна и не переменная: он один и
-          # тот же с самого начала. Требовать его секретом означало ронять
-          # каждую сборку до тех пор, пока владелец не заведёт секрет со
-          # значением, которое и так записано в документации проекта.
-          # Секрет и параметр по-прежнему перекрывают значение — на случай
-          # второго стенда.
           API_BASE_URL: ${{ inputs.api_base_url || secrets.SIGNALAI_API_BASE_URL || 'https://api.ilyamartynov.ru' }}
-          DEVICE_TOKEN: ${{ secrets.SIGNALAI_DEVICE_TOKEN }}
-          SSH_KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
-          MODE: ${{ inputs.mode || 'local' }}
+          MODE: ${{ inputs.mode || 'thin' }}
         run: |
-          echo "Режим данных: ${MODE}"
-          # Решение владельца от 30.07: авторизация по токену временно снята
-          # и на сервере. Если секрет появится — он подхватится сам; выводить
-          # токен из SSH-ключа больше не пытаемся.
-          if [ "$MODE" = "demo" ]; then
-            echo "::warning::Демо-сборка: данные из макета, не с рынка. Для просмотра интерфейса, не для торговли."
-          elif [ -z "$API_BASE_URL" ]; then
-            # Отказ, а не предупреждение. Идеи и пакеты считает сервер (§18);
-            # APK без его адреса не показывает ничего, кроме «движок не
-            # ответил» — то есть собирается впустую.
-            #
-            # Раньше здесь стоял ::warning::, прогон завершался зелёным, APK
-            # публиковался и уезжал на телефон. 30.07 так и вышло: сборка
-            # «успешна», а на всех экранах «Адрес движка не задан в сборке».
-            # Зелёный прогон, который отдаёт заведомо нерабочий артефакт,
-            # хуже красного: он снимает вопрос, который надо было задать.
-            echo "::error::Адрес движка не задан — такой APK не покажет ни идей, ни пакетов."
-            echo "Задайте секрет SIGNALAI_API_BASE_URL либо параметр api_base_url при запуске."
-            echo "Собрать без адреса намеренно можно только в режиме demo."
-            exit 1
-          else
-            # Значение не печатается: адрес не тайна, но и в логах публичного
-            # репозитория ему делать нечего.
-            echo "Адрес движка задан (${#API_BASE_URL} символов)."
-          fi
+          set -euo pipefail
+          case "$MODE" in
+            thin)
+              [ -n "$API_BASE_URL" ] || {
+                echo "::error::Engine URL is required for a thin APK."
+                exit 1
+              }
+              ;;
+            demo)
+              echo "::warning::Demo APK uses fixtures and must not be used for trading."
+              ;;
+            *)
+              echo "::error::Unsupported delivery mode '$MODE'. Personal builds allow only thin or demo."
+              exit 1
+              ;;
+          esac
+
+          # Never add SIGNALAI_DEVICE_TOKEN here.  Dart defines are plaintext
+          # inside the APK; device authorization is provisioned at runtime.
           flutter build apk --release \
-            --build-number=${{ github.run_number }} \
+            --build-number="$GITHUB_RUN_NUMBER" \
             --dart-define=SIGNALAI_MODE="$MODE" \
-            --dart-define=SIGNALAI_API_BASE_URL="$API_BASE_URL" \
-            --dart-define=SIGNALAI_DEVICE_TOKEN="$DEVICE_TOKEN"
+            --dart-define=SIGNALAI_API_BASE_URL="$API_BASE_URL"
 
-      # Отпечаток ключа печатается в лог намеренно: если он вдруг изменился,
-      # обновление поверх не встанет — и это видно здесь, а не на телефоне.
-      - name: Кто подписал APK
+      - name: Verify signer and prepare traceable artifacts
+        id: artifact
+        env:
+          SOURCE_REF: ${{ needs.resolve.outputs.display_ref }}
+          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          SHORT_SHA: ${{ needs.resolve.outputs.short_sha }}
+          SAFE_REF: ${{ needs.resolve.outputs.safe_ref }}
+          MODE: ${{ inputs.mode || 'thin' }}
         run: |
-          APKSIGNER=$(find "${ANDROID_HOME}/build-tools" -name apksigner | sort -r | head -1)
-          "$APKSIGNER" verify --print-certs build/app/outputs/flutter-apk/app-release.apk
-          rm -f android/key.properties
+          set -euo pipefail
+          source_apk=build/app/outputs/flutter-apk/app-release.apk
+          test -s "$source_apk"
 
-      # Основной канал доставки — pre-release «sideload»: квота хранилища
-      # артефактов Actions на аккаунте исчерпана (пересчёт у GitHub раз в
-      # 6–12 часов), а ассеты релизов в неё не входят. Тег один и тот же,
-      # APK перезаписывается — свежая сборка всегда по стабильной ссылке
-      # releases/tag/sideload.
-      - name: Публикация APK в pre-release «sideload»
+          apksigner="$(find "${ANDROID_HOME}/build-tools" -name apksigner -type f | sort -r | head -1)"
+          test -n "$apksigner"
+          signer="$($apksigner verify --verbose --print-certs "$source_apk")"
+          printf '%s\n' "$signer"
+          if printf '%s\n' "$signer" | grep -q 'CN=Android Debug'; then
+            echo "::error::APK was signed with the debug key"
+            exit 1
+          fi
+          signer_sha256="$(printf '%s\n' "$signer" \
+            | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' \
+            | head -1)"
+          test -n "$signer_sha256"
+
+          stable_apk=signalai-sideload.apk
+          exact_apk="signalai-sideload-${SAFE_REF}-${SHORT_SHA}.apk"
+          cp "$source_apk" "$stable_apk"
+          cp "$source_apk" "$exact_apk"
+          apk_sha256="$(sha256sum "$stable_apk" | awk '{print $1}')"
+
+          export SOURCE_REF SOURCE_SHA SHORT_SHA MODE signer_sha256 apk_sha256 exact_apk
+          python3 - <<'PY'
+          import json
+          import os
+          from datetime import UTC, datetime
+
+          metadata = {
+              "schema_version": 1,
+              "channel": "sideload",
+              "source_ref": os.environ["SOURCE_REF"],
+              "source_sha": os.environ["SOURCE_SHA"],
+              "source_sha_is_authoritative": True,
+              "source_ref_is_advisory": True,
+              "source_short_sha": os.environ["SHORT_SHA"],
+              "mode": os.environ["MODE"],
+              "server_runtime_required": os.environ["MODE"] == "thin",
+              "local_scanner_enabled": False,
+              "paper_lifecycle_owner": "server" if os.environ["MODE"] == "thin" else "fixture",
+              "bearer_token_compiled": False,
+              "build_number": int(os.environ["GITHUB_RUN_NUMBER"]),
+              "built_at": datetime.now(UTC).isoformat(),
+              "workflow_ref": os.environ["GITHUB_WORKFLOW_REF"],
+              "run_url": (
+                  f'{os.environ["GITHUB_SERVER_URL"]}/'
+                  f'{os.environ["GITHUB_REPOSITORY"]}/actions/runs/'
+                  f'{os.environ["GITHUB_RUN_ID"]}'
+              ),
+              "stable_apk": "signalai-sideload.apk",
+              "traceable_apk": os.environ["exact_apk"],
+              "apk_sha256": os.environ["apk_sha256"],
+              "signer_certificate_sha256": os.environ["signer_sha256"],
+          }
+          with open("signalai-sideload.json", "w", encoding="utf-8") as output:
+              json.dump(metadata, output, ensure_ascii=False, indent=2)
+              output.write("\n")
+          PY
+
+          echo "exact_apk=$exact_apk" >> "$GITHUB_OUTPUT"
+          echo "apk_sha256=$apk_sha256" >> "$GITHUB_OUTPUT"
+          echo "signer_sha256=$signer_sha256" >> "$GITHUB_OUTPUT"
+
+          {
+            echo
+            echo "- APK SHA-256: \`$apk_sha256\`"
+            echo "- signer SHA-256: \`$signer_sha256\`"
+            echo "- traceable asset: \`$exact_apk\`"
+            echo "- mode: \`$MODE\` (local scanner disabled)"
+            echo '- bearer token compiled: `false`'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish stable sideload channel
         env:
           GH_TOKEN: ${{ github.token }}
+          SOURCE_REF: ${{ needs.resolve.outputs.display_ref }}
+          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          EXACT_APK: ${{ steps.artifact.outputs.exact_apk }}
+          APK_SHA256: ${{ steps.artifact.outputs.apk_sha256 }}
+          SIGNER_SHA256: ${{ steps.artifact.outputs.signer_sha256 }}
+          MODE: ${{ inputs.mode || 'thin' }}
         run: |
-          mv build/app/outputs/flutter-apk/app-release.apk signalai-sideload.apk
-          gh release view sideload >/dev/null 2>&1 || \
-            gh release create sideload \
-              --prerelease \
-              --title "SignalAI sideload" \
-              --notes "Автосборка с последнего пуша. Подпись постоянная: свежая сборка ставится поверх предыдущей, данные приложения сохраняются. Play Protect может предупредить при установке — сборка не из Google Play, это ожидаемо."
-          gh release upload sideload signalai-sideload.apk --clobber
+          set -euo pipefail
+          cat > release-notes.md <<NOTES
+          Personal sideload channel. The stable APK link is preserved and points to this exact build.
 
-      # Артефакт Actions оставлен как запасной канал: пока квота не
-      # пересчитана, шаг падает — на итог прогона не влияет.
-      - uses: actions/upload-artifact@v4
+          - authoritative source commit: \`$SOURCE_SHA\`
+          - requested ref (advisory label only): \`$SOURCE_REF\`
+          - mode: \`$MODE\`
+          - APK SHA-256: \`$APK_SHA256\`
+          - signer SHA-256: \`$SIGNER_SHA256\`
+          - bearer token compiled into APK: \`false\`
+          - workflow run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
+
+          Delivery modes are restricted to `thin` and UI-only `demo`; legacy `local`
+          cannot be selected. In `thin`, ideas, paper lifecycle and background work run
+          on the server, and the local scanner is disabled.
+
+          Install the stable asset \`signalai-sideload.apk\`, or use \`$EXACT_APK\`
+          when the source identity must also be visible in the filename.
+          The mutable \`sideload\` release tag is only a channel pointer; the source SHA above is the source of truth.
+          NOTES
+
+          if gh release view sideload >/dev/null 2>&1; then
+            gh release edit sideload \
+              --prerelease \
+              --title 'SignalAI sideload' \
+              --notes-file release-notes.md
+          else
+            gh release create sideload \
+              --target "$SOURCE_SHA" \
+              --prerelease \
+              --title 'SignalAI sideload' \
+              --notes-file release-notes.md
+          fi
+          gh release upload sideload \
+            signalai-sideload.apk \
+            "$EXACT_APK" \
+            signalai-sideload.json \
+            --clobber
+
+      - name: Upload short-lived Actions artifact
+        uses: actions/upload-artifact@v4
         continue-on-error: true
         with:
-          name: signalai-sideload-apk
-          path: signalai-sideload.apk
-          # Короткий срок: это сборка «поставить и посмотреть», а место под
-          # артефакты на аккаунте общее и кончается быстро.
+          name: signalai-sideload-${{ needs.resolve.outputs.safe_ref }}-${{ needs.resolve.outputs.short_sha }}
+          path: |
+            signalai-sideload.apk
+            ${{ steps.artifact.outputs.exact_apk }}
+            signalai-sideload.json
           retention-days: 3
+
+      - name: Remove signing material
+        if: always()
+        run: |
+          rm -f android/key.properties
+          shred -u "${RUNNER_TEMP}/signalai-sideload.jks" 2>/dev/null \
+            || rm -f "${RUNNER_TEMP}/signalai-sideload.jks"

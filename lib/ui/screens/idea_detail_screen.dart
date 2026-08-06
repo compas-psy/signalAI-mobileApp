@@ -84,8 +84,19 @@ class _IdeaDetailScreenState extends State<IdeaDetailScreen> {
     final signal = widget.signal;
     final now = DateTime.now();
     final idea = controller.ideas.where((i) => i.id == signal.id).firstOrNull;
-    final checks = idea == null ? const <CheckResult>[] : _checks(controller, idea);
-    final blocked = checks.isNotEmpty && !FinalCheck.passes(checks);
+    // В production окончательный допуск атомарно проверяет сервер в
+    // approve-paper. Повторять его по неполному мобильному снимку означало
+    // получать второй, расходящийся вердикт. Локальная проверка остаётся
+    // только в демо-контуре.
+    final checks = idea == null || !controller.demoData
+        ? const <CheckResult>[]
+        : _checks(controller, idea);
+    final blocked =
+        (checks.isNotEmpty && !FinalCheck.passes(checks)) ||
+            (!controller.demoData &&
+                idea != null &&
+                idea.readiness.canAct &&
+                !idea.canApprovePaper);
     // Показываем пересечение: слой должен и стоять за доказательством
     // (§9.1), и уметь быть нарисованным.
     final available = {
@@ -193,7 +204,7 @@ class _IdeaDetailScreenState extends State<IdeaDetailScreen> {
               const SizedBox(height: 12),
               FinalCheckCard(results: checks),
             ],
-            if (controller.paperAvailable) ...[
+            if (controller.paperAvailable && idea == null) ...[
               const SizedBox(height: 12),
               _PaperCard(signal: signal),
             ],
@@ -206,9 +217,11 @@ class _IdeaDetailScreenState extends State<IdeaDetailScreen> {
           child: _ConfirmBar(
             signal: signal,
             state: idea?.state,
+            readiness: idea?.readiness,
+            paperOnly: idea != null && !controller.demoData,
             blocked: blocked,
             onConfirm: controller.openSheet,
-            onSkip: idea != null && controller.skipJournalAvailable
+            onSkip: idea != null && controller.canRejectIdea(idea)
                 ? () => setState(() => _skipping = true)
                 : controller.back,
           ),
@@ -321,6 +334,8 @@ class _ConfirmBar extends StatelessWidget {
   const _ConfirmBar({
     required this.signal,
     required this.state,
+    required this.readiness,
+    required this.paperOnly,
     required this.blocked,
     required this.onConfirm,
     required this.onSkip,
@@ -330,6 +345,11 @@ class _ConfirmBar extends StatelessWidget {
 
   /// Состояние идеи движка. null — разбор не приехал, идём по статусу сигнала.
   final IdeaState? state;
+
+  final IdeaReadiness? readiness;
+
+  /// Серверная идея в этой поставке допускает только paper-решение.
+  final bool paperOnly;
 
   /// Финальная проверка не пускает к деньгам (ТЗ §11.1).
   final bool blocked;
@@ -341,7 +361,11 @@ class _ConfirmBar extends StatelessWidget {
 
   bool get _canConfirm => state == null
       ? signal.status.canConfirm
-      : state!.canConfirm && signal.status.canConfirm;
+      : readiness?.canAct == true &&
+          state!.canConfirm &&
+          signal.status.canConfirm;
+
+  bool get _canSkip => state != null && !state!.isTerminal && !_working;
 
   @override
   Widget build(BuildContext context) => Container(
@@ -357,30 +381,39 @@ class _ConfirmBar extends StatelessWidget {
             Text(_headline(), style: T.body(12.5, weight: 800, color: _headlineColor())),
             const SizedBox(height: 3),
             Text(_sub(), style: T.body(10.5, color: C.faint, height: 1.4)),
-            if (!_working) ...[
+            if (!_working && (_canConfirm || _canSkip)) ...[
               const SizedBox(height: 10),
-              Row(
-                children: [
-                  Expanded(
-                    child: ActionButton(
-                      label: blocked ? 'Вход заблокирован проверкой' : 'Подтвердить план',
-                      primary: true,
-                      // ТЗ §11.1: проваленная или непроверенная проверка не
-                      // пускает к деньгам. Кнопка гаснет вместе с причиной
-                      // выше, а не молча ничего не делает.
-                      onTap: _canConfirm && !blocked ? onConfirm : null,
+              if (_canConfirm)
+                Row(
+                  children: [
+                    Expanded(
+                      child: ActionButton(
+                        label: blocked
+                            ? (paperOnly
+                                ? 'Вход заблокирован сервером'
+                                : 'Вход заблокирован проверкой')
+                            : (paperOnly
+                                ? 'Подтвердить paper-сделку'
+                                : 'Подтвердить план'),
+                        primary: true,
+                        onTap: !blocked ? onConfirm : null,
+                      ),
                     ),
+                    const SizedBox(width: 9),
+                    SizedBox(
+                      width: 118,
+                      child: ActionButton(label: 'Пропустить', onTap: onSkip),
+                    ),
+                  ],
+                )
+              else
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: SizedBox(
+                    width: 150,
+                    child: ActionButton(label: 'Убрать идею', onTap: onSkip),
                   ),
-                  const SizedBox(width: 9),
-                  // Пропуск без причины журналу бесполезен: ТЗ §12 требует код
-                  // из справочника. Кнопка ведёт в лист выбора, а не просто
-                  // закрывает карточку.
-                  SizedBox(
-                    width: 118,
-                    child: ActionButton(label: 'Пропустить', onTap: onSkip),
-                  ),
-                ],
-              ),
+                ),
             ],
           ],
         ),
@@ -389,6 +422,10 @@ class _ConfirmBar extends StatelessWidget {
   String _headline() {
     if (_working) return 'Позиция сопровождается автоматически';
     if (blocked) return 'Проверка перед входом не пройдена';
+    if (readiness == IdeaReadiness.waiting) {
+      return 'Наблюдать · ждём триггер';
+    }
+    if (readiness == IdeaReadiness.active) return 'Можно действовать';
     return switch (state) {
       IdeaState.watch => 'Ждём подтверждения структуры',
       IdeaState.ready => 'Зона известна, триггер ещё не сработал',
@@ -408,15 +445,23 @@ class _ConfirmBar extends StatelessWidget {
 
   String _sub() {
     if (_working) {
-      return 'Лимитный ордер и OCO (стоп + ${signal.takeProfits.length} TP) '
-          'выставлены на бирже.';
+      if (!paperOnly) {
+        return 'Лимитный ордер и OCO (стоп + '
+            '${signal.takeProfits.length} TP) выставлены на бирже.';
+      }
+      return 'Paper-сделку ведёт сервер: вход, стоп и '
+          '${signal.takeProfits.length} цели проверяются без телефона.';
     }
     if (!_canConfirm) {
-      return 'Подтверждение доступно только у сработавшего сигнала — '
-          'на остальных состояниях кнопка не работает по построению.';
+      return 'Это контекст, а не подтверждённый вход. Кнопка сделки появится '
+          'только после серверного триггера.';
     }
-    return 'Перед отправкой сверяются цена, R:R, отпечаток показанного плана '
-        'и лимиты риска. Дальше — отпечаток или ПИН устройства.';
+    if (!paperOnly) {
+      return 'Перед отправкой сверяются цена, R:R, отпечаток показанного '
+          'плана и лимиты риска. Дальше — отпечаток или ПИН устройства.';
+    }
+    return 'После явного подтверждения сервер создаст paper-позицию и будет '
+        'вести её, даже когда приложение закрыто.';
   }
 }
 

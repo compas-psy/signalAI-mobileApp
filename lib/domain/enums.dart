@@ -41,6 +41,8 @@ enum Market {
 /// PROPOSED → PUSHED → CONFIRMED → WORKING → OPEN → CLOSED,
 /// либо ветки INVALIDATED / EXPIRED / REJECTED.
 enum SignalStatus {
+  /// Контекст есть, но сервер ещё не подтвердил триггер. Никакого действия.
+  watch,
   proposed,
   pushed,
   confirmed,
@@ -60,7 +62,8 @@ enum SignalStatus {
       this == SignalStatus.confirmed || this == SignalStatus.working || this == SignalStatus.open;
 
   /// Подпись статуса на карточке идеи.
-  String get label => isWorking ? 'В работе' : 'Новая';
+  String get label =>
+      this == SignalStatus.watch ? 'Наблюдать' : (isWorking ? 'В работе' : 'Новая');
 
   static SignalStatus parse(String v) => SignalStatus.values.firstWhere(
         (s) => s.name == v.toLowerCase(),

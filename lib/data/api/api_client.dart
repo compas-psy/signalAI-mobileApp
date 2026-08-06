@@ -132,6 +132,10 @@ class ApiClient {
           return error['message'] as String;
         }
         if (decoded['message'] is String) return decoded['message'] as String;
+        // FastAPI отдаёт HTTPException как `{detail: ...}`. Терять этот текст
+        // особенно опасно на approve/reject: 409 объясняет, почему идея уже
+        // не actionable, а без detail клиент показывал безликое «ошибка 409».
+        if (decoded['detail'] is String) return decoded['detail'] as String;
       }
     } on FormatException {
       // тело не JSON — покажем статус

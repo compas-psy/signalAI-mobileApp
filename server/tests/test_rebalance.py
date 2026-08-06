@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from app.models import Account, Holding, PortfolioModel, PortfolioWeight, RebalanceDraft
 from app.models.enums import AssetClass, PackageSize, RiskProfile
 from app.portfolio.rebalance import URGENT_DRIFT, latest_holdings, plan, record
+from tests.conftest import DEVICE_HEADERS
 
 NOW = datetime(2026, 7, 31, 10, 0, tzinfo=UTC)
 
@@ -221,7 +222,7 @@ def test_апи_отдаёт_предложение_а_не_заявку(session
 
     app.dependency_overrides[get_db] = lambda: session
     try:
-        with TestClient(app) as client:
+        with TestClient(app, headers=DEVICE_HEADERS) as client:
             body = client.get("/api/v1/portfolio/rebalance").json()
     finally:
         app.dependency_overrides.clear()
@@ -274,7 +275,7 @@ def _put(session: Session, payload: dict) -> dict:
 
     app.dependency_overrides[get_db] = lambda: session
     try:
-        with TestClient(app) as client:
+        with TestClient(app, headers=DEVICE_HEADERS) as client:
             return client.post("/api/v1/portfolio/holdings", json=payload).json()
     finally:
         app.dependency_overrides.clear()
@@ -404,7 +405,7 @@ def test_снимок_замыкает_контур_до_предложения(
 
     app.dependency_overrides[get_db] = lambda: session
     try:
-        with TestClient(app) as client:
+        with TestClient(app, headers=DEVICE_HEADERS) as client:
             body = client.get("/api/v1/portfolio/rebalance").json()
     finally:
         app.dependency_overrides.clear()

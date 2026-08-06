@@ -82,7 +82,11 @@ abstract final class EngineContract {
       changeUp: true,
       status: idea.state == IdeaState.active
           ? SignalStatus.working
-          : (idea.state.canConfirm ? SignalStatus.proposed : SignalStatus.expired),
+          : (idea.state.isTerminal
+              ? SignalStatus.expired
+              : (idea.canApprovePaper
+                  ? SignalStatus.proposed
+                  : SignalStatus.watch)),
       validUntil: idea.validUntil,
       strategyId: idea.strategy.name,
       entryIsStop: plan?.orderType == PlanOrderType.stopLimit,
@@ -193,7 +197,12 @@ abstract final class EngineContract {
   ///
   /// [summaryOnly] — ответ ленты, где нет ни плана, ни разбора: карточка
   /// показывается, но открыть её без подробностей нельзя.
-  static Idea idea(Map<String, dynamic> j, {String? instrumentName}) {
+  static Idea idea(
+    Map<String, dynamic> j, {
+    String? instrumentName,
+    IdeaReadiness? readiness,
+    bool? actionable,
+  }) {
     final id = j['id'] as String;
     final direction = _direction(j['direction'] as String?);
     final signalTime = _time(j['signal_time']) ?? DateTime.now();
@@ -208,6 +217,13 @@ abstract final class EngineContract {
           );
 
     final explanation = j['explanation'] as Map<String, dynamic>? ?? const {};
+
+    final parsedReadiness = readiness ??
+        IdeaReadiness.tryParse(j['readiness'] as String?) ??
+        IdeaReadiness.tryParse(j['quality_status'] as String?);
+    final parsedActionable = actionable ??
+        (j['actionable'] is bool ? j['actionable'] as bool : null) ??
+        parsedReadiness?.canAct;
 
     return Idea(
       id: id,
@@ -242,6 +258,8 @@ abstract final class EngineContract {
       // а экран всё равно предлагал подтвердить.
       sizingBlocker: _sizingBlocker(j['sizing'] as Map<String, dynamic>?),
       closingReason: j['closing_reason'] as String? ?? '',
+      readiness: parsedReadiness,
+      actionable: parsedActionable,
     );
   }
 
@@ -581,13 +599,14 @@ abstract final class EngineContract {
       final entry = _numOrNull(item['entry']);
       final initial = _numOrNull(item['initial_stop']);
       if (entry == null || initial == null) continue;
-      final status = '${item['status']}';
+      final status = PaperPositionStatus.parse('${item['status']}');
       out.add(PaperPosition(
         id: '${item['id']}',
         ideaId: '${item['idea_id'] ?? ''}',
         symbol: '${item['symbol'] ?? item['instrument_id'] ?? ''}',
         long: '${item['direction']}'.toUpperCase() == 'LONG',
-        pending: status == 'PENDING',
+        pending: status == PaperPositionStatus.pending,
+        status: status,
         entry: entry,
         initialStop: initial,
         // Текущий стоп отсутствовать не должен, но если сервер старой версии
@@ -599,16 +618,33 @@ abstract final class EngineContract {
         ],
         tpsTaken: (item['tps_taken'] as num?)?.toInt() ?? 0,
         breakevenAt: _time(item['breakeven_at']),
+        atBreakeven: item['at_breakeven'] == true,
         // Зафиксированное, а не плавающее: сервер суммирует взятые цели и
         // открытый остаток в это число не входит.
         resultR: _numOrNull(item['realized_r']),
         resultRealized: true,
         lastReconciledAt: _time(item['last_reconciled_at']),
         staleHours: (item['stale_hours'] as num?)?.toInt(),
+        closedAt: _time(item['closed_at']),
+        outcome: '${item['outcome'] ?? ''}',
+        closeReason: '${item['close_reason'] ?? ''}',
         fromServer: true,
       ));
     }
     return out;
+  }
+
+  /// Одна paper-сделка из ответа решения.
+  ///
+  /// Решение обязано оборачивать сделку в `{trade: ...}` и отдельно явно
+  /// подтверждать `paper_only: true`. Bare-объект не разбирается: его режим
+  /// исполнения неизвестен, а считать неизвестное paper было бы fail-open.
+  static PaperPosition? paperTrade(Object? raw) {
+    if (raw is! Map<String, dynamic>) return null;
+    final nested = raw['trade'];
+    if (nested is! Map<String, dynamic>) return null;
+    final parsed = paperTrades([nested]);
+    return parsed.isEmpty ? null : parsed.single;
   }
 
   static DateTime? _time(Object? raw) =>

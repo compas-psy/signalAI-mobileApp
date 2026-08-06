@@ -43,7 +43,9 @@ SHA-1/SHA-256.
 ## Шаг 2. Локальная сборка
 
 ```bash
-flutter build apk --release --dart-define=SIGNALAI_API_BASE_URL=https://ваш-гейтвей
+flutter build apk --release \
+  --dart-define=SIGNALAI_MODE=thin \
+  --dart-define=SIGNALAI_API_BASE_URL=https://ваш-гейтвей
 ```
 
 Проверить, что подпись не отладочная:
@@ -69,6 +71,25 @@ $ANDROID_HOME/build-tools/35.0.0/apksigner verify --print-certs \
 | `ANDROID_KEY_ALIAS` | `signalai-upload` |
 | `SIGNALAI_API_BASE_URL` | `https://…` — адрес мобильного гейтвея |
 
+Для личного sideload предпочтительно завести отдельную постоянную идентичность:
+
+| Секрет | Значение |
+|---|---|
+| `SIDELOAD_KEYSTORE_BASE64` | тот же формат base64, но для sideload-key |
+| `SIDELOAD_KEYSTORE_PASSWORD` | пароль sideload-keystore |
+| `SIDELOAD_KEY_PASSWORD` | пароль ключа |
+| `SIDELOAD_KEY_ALIAS` | alias ключа |
+
+`Android sideload APK` сначала ищет полный комплект `SIDELOAD_*`, затем для
+совместимости — полный комплект `ANDROID_*`. Если нет ни одного полного
+комплекта, сборка завершается ошибкой. GitHub Actions cache не используется как
+источник ключа: cache может быть удалён, после чего Android уже не установит
+обновление поверх предыдущей версии.
+
+Какой ключ выбрать, зависит от уже установленной сборки. Чтобы обновление
+встало без удаления данных, новый APK должен иметь тот же SHA-256 сертификата,
+который показан в metadata предыдущей поставки.
+
 После добавления удалите локальный файл с base64:
 
 ```bash
@@ -88,6 +109,12 @@ git tag v1.0.0 && git push origin v1.0.0
 отладочная. Артефакты — во вкладке Actions → нужный run → Artifacts.
 
 Запустить вручную: Actions → «Android release» → Run workflow.
+
+Текущий персональный канал — отдельный workflow **Android sideload APK**. Он
+принимает обязательный `source_ref`, сначала прогоняет общий Quality gate и
+публикует как стабильный файл, так и traceable-файл с ref/SHA. Ни release, ни
+sideload не должны получать `SIGNALAI_DEVICE_TOKEN` через `--dart-define`:
+скомпилированная строка извлекается из APK и не является секретом.
 
 ## Шаг 5. Чтобы Play Protect молчал
 

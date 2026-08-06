@@ -1,27 +1,28 @@
 """Идеи (engine-ТЗ §23, блок Ideas).
 
 Сканирование работает: конвейер §7 связывает данные, детекторы, три стратегии
-§10–§12, оценку §15.1 и риск §17.
-
-Эндпоинты, за которыми движка ещё нет, по-прежнему отвечают 503 с внятной
-причиной, а не пустым списком: пустой список читается как «сегодня нет
-сетапов», и это ложь, если считать было нечем.
+§10–§12, оценку §15.1 и риск §17. Явное решение владельца либо создаёт
+paper-сделку для круглосуточного серверного сопровождения, либо остаётся в
+неизменяемой истории как отказ. Боевых заявок этот модуль не отправляет.
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
+from typing import Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select
 from pydantic import Field
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ...db import get_db
-from ...models import IdeaEvent, Instrument, TradeIdea
-from ...models.enums import IdeaStatus, QualityStatus, Strategy
+from ...journal.lifecycle import TransitionRequest, can_transition, transition
+from ...models import IdeaEvent, IdeaSkip, Instrument, PaperTrade, TradeIdea
+from ...models.enums import IdeaStatus, QualityStatus, SkipReason, Strategy
+from ...paper.tracker import PaperTradeConflict, approve_for
 from ...schemas.common import ApiModel
 from ...schemas.ideas import (
     AnnotationOut,
@@ -38,14 +39,10 @@ from ...schemas.ideas import (
     SizingBlock,
     SkipRequest,
 )
+from .paper import PaperTradeOut
+from .paper import _out as _paper_out
 
 router = APIRouter(tags=["ideas"])
-
-ENGINE_NOT_READY = (
-    "движок исполнения ещё не подключён: бумажное сопровождение сделки "
-    "(engine-ТЗ §21) реализуется отдельным этапом."
-)
-
 
 def _summary(idea: TradeIdea, symbol: str = "") -> IdeaSummary:
     return IdeaSummary(
@@ -225,13 +222,24 @@ def today(db: Session = Depends(get_db)) -> DailyCards:
         # входить уже некуда. Журнал её хранит, лента дня — нет.
         if not IdeaStatus(r.status).is_terminal
     ]
-    trade_now = [_summary(r) for r in rows if r.quality_status == QualityStatus.ACTIVE]
-    waiting = [_summary(r) for r in rows if r.quality_status == QualityStatus.WATCH]
+    trade_now = [_summary(row) for row in rows if _is_actionable(row)]
+    waiting = [
+        _summary(row)
+        for row in rows
+        if QualityStatus(row.quality_status)
+        in (QualityStatus.ACTIVE, QualityStatus.WATCH)
+        and not _is_actionable(row)
+    ]
     reason = ""
     if not trade_now and not waiting:
         reason = (
             "готовых сделок нет. Это валидный результат: приложение не создаёт "
             "сделки ради нормы (engine-ТЗ §0.7, §32)."
+        )
+    elif not trade_now:
+        reason = (
+            "готовых к исполнению сделок нет — показаны кандидаты, "
+            "ожидающие триггера"
         )
     return DailyCards(
         generated_at=now,
@@ -379,16 +387,216 @@ def run_scan(db: Session = Depends(get_db)) -> ScanReport:
     )
 
 
-@router.post("/ideas/{idea_id}/approve-paper", status_code=503)
-def approve_paper(idea_id: UUID):
-    raise HTTPException(
-        503,
-        "бумажное исполнение подключается вместе с движком исполнения "
-        "(engine-ТЗ §21). Боевые заявки в этом режиме запрещены: "
-        "paper_only=true.",
+class IdeaDecisionOut(ApiModel):
+    """Единый результат явного решения владельца по торговой идее."""
+
+    idea_id: UUID
+    decision: Literal["APPROVED_PAPER", "REJECTED"]
+    idea_status: IdeaStatus
+    # Этот контракт намеренно не допускает LIVE-варианта. Когда-нибудь для
+    # него понадобится другой endpoint и отдельное решение владельца.
+    paper_only: Literal[True] = True
+    idempotent_replay: bool = False
+    decided_at: datetime
+    reason: SkipReason | None = None
+    comment: str = ""
+    trade: PaperTradeOut | None = None
+
+
+def _locked_idea(db: Session, idea_id: UUID) -> TradeIdea:
+    """Прочитать идею с блокировкой решений approve/reject между собой."""
+    idea = db.execute(
+        select(TradeIdea).where(TradeIdea.id == idea_id).with_for_update()
+    ).scalar_one_or_none()
+    if idea is None:
+        raise HTTPException(404, "идея не найдена")
+    return idea
+
+
+def _utc(value: datetime) -> datetime:
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
+def _existing_trade(db: Session, idea_id: UUID) -> PaperTrade | None:
+    # В старой схеме уникальность была только для живых строк. ``first``
+    # делает повтор безопасным и на базе, где исторически мог остаться дубль:
+    # владелец всегда получает самую первую, а не случайную запись.
+    return db.execute(
+        select(PaperTrade)
+        .where(PaperTrade.idea_id == idea_id)
+        .order_by(PaperTrade.created_at, PaperTrade.id)
+    ).scalars().first()
+
+
+def _approval_response(
+    idea: TradeIdea,
+    trade: PaperTrade,
+    *,
+    replay: bool,
+    now: datetime,
+) -> IdeaDecisionOut:
+    return IdeaDecisionOut(
+        idea_id=idea.id,
+        decision="APPROVED_PAPER",
+        idea_status=idea.status,
+        paper_only=True,
+        idempotent_replay=replay,
+        decided_at=trade.created_at,
+        trade=_paper_out(trade, now=now),
     )
 
 
-@router.post("/ideas/{idea_id}/reject", status_code=503)
-def reject(idea_id: UUID, body: SkipRequest):
-    raise HTTPException(503, ENGINE_NOT_READY)
+def _is_actionable(idea: TradeIdea) -> bool:
+    """Единый статусный допуск для карточки и approve-paper."""
+    return (
+        QualityStatus(idea.quality_status) is QualityStatus.ACTIVE
+        and IdeaStatus(idea.status) in (IdeaStatus.TRIGGERED, IdeaStatus.ACTIVE)
+    )
+
+
+def _validate_approval(idea: TradeIdea, *, now: datetime) -> None:
+    """Fail-closed допуск: только подтверждённая активная свежая идея."""
+    quality = QualityStatus(idea.quality_status)
+    status = IdeaStatus(idea.status)
+    if quality is not QualityStatus.ACTIVE:
+        raise HTTPException(
+            409,
+            f"идея не actionable: quality_status={quality.value}; "
+            "approve-paper разрешён только для ACTIVE",
+        )
+    if not _is_actionable(idea):
+        raise HTTPException(
+            409,
+            f"идея не подтверждена рынком: status={status.value}; "
+            "ожидается TRIGGERED или ACTIVE",
+        )
+    if _utc(idea.expires_at) <= now:
+        raise HTTPException(409, "идея устарела: expires_at уже наступил")
+    if idea.quantity <= 0:
+        raise HTTPException(409, "идея не исполнима: размер позиции равен нулю")
+
+
+@router.post(
+    "/ideas/{idea_id}/approve-paper",
+    response_model=IdeaDecisionOut,
+)
+def approve_paper(
+    idea_id: UUID, db: Session = Depends(get_db)
+) -> IdeaDecisionOut:
+    """Явно подтвердить идею и передать её серверному paper-сопровождению.
+
+    Здесь нет ветки, способной отправить live-заявку: результатом всегда
+    является только строка ``paper_trades``. Повтор возвращает ту же строку,
+    поэтому повторный тап, retry клиента и сетевой timeout не умножают риск.
+    """
+    now = datetime.now(UTC)
+    idea = _locked_idea(db, idea_id)
+
+    existing = _existing_trade(db, idea.id)
+    if existing is not None:
+        return _approval_response(idea, existing, replay=True, now=now)
+
+    skipped = db.get(IdeaSkip, idea.id)
+    if skipped is not None:
+        raise HTTPException(409, "идея уже отклонена владельцем")
+    _validate_approval(idea, now=now)
+
+    try:
+        trade, created = approve_for(db, idea, now=now)
+    except PaperTradeConflict as exc:
+        raise HTTPException(
+            409,
+            f"по инструменту уже ведётся другая paper-сделка {exc.trade.id}",
+        ) from None
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from None
+
+    # TRIGGERED означает «рыночный триггер подтверждён». ACTIVE начинается
+    # только после решения владельца; это отделяет сигнал от исполнения.
+    if created and IdeaStatus(idea.status) is IdeaStatus.TRIGGERED:
+        transition(
+            db,
+            idea,
+            TransitionRequest(
+                new_status=IdeaStatus.ACTIVE,
+                reason_code="user_approved_paper",
+                reason_detail="владелец подтвердил автономное paper-сопровождение",
+                market_snapshot={"paper_trade_id": str(trade.id)},
+                user_action=True,
+            ),
+        )
+    db.flush()
+    return _approval_response(idea, trade, replay=not created, now=now)
+
+
+def _rejection_response(
+    idea: TradeIdea, skipped: IdeaSkip, *, replay: bool
+) -> IdeaDecisionOut:
+    return IdeaDecisionOut(
+        idea_id=idea.id,
+        decision="REJECTED",
+        idea_status=idea.status,
+        paper_only=True,
+        idempotent_replay=replay,
+        decided_at=skipped.skipped_at,
+        reason=skipped.reason,
+        comment=skipped.comment,
+    )
+
+
+@router.post(
+    "/ideas/{idea_id}/reject",
+    response_model=IdeaDecisionOut,
+)
+def reject(
+    idea_id: UUID, body: SkipRequest, db: Session = Depends(get_db)
+) -> IdeaDecisionOut:
+    """Неизменно записать отказ владельца, не удаляя идею и её историю."""
+    idea = _locked_idea(db, idea_id)
+    existing = db.get(IdeaSkip, idea.id)
+    if existing is not None:
+        return _rejection_response(idea, existing, replay=True)
+
+    if _existing_trade(db, idea.id) is not None:
+        raise HTTPException(
+            409,
+            "по идее уже создана paper-сделка; используйте закрытие сделки",
+        )
+
+    status = IdeaStatus(idea.status)
+    if not can_transition(status, IdeaStatus.CANCELLED):
+        raise HTTPException(
+            409,
+            f"идею в состоянии {status.value} уже нельзя отклонить",
+        )
+
+    skipped = IdeaSkip(
+        idea_id=idea.id,
+        reason=body.reason,
+        comment=body.comment,
+        snapshot_json={
+            "status": status.value,
+            "quality_status": str(idea.quality_status),
+            "score": str(idea.score),
+            "p_tp1_before_sl": str(idea.p_tp1_before_sl),
+            "expected_r": str(idea.expected_r),
+            "expires_at": _utc(idea.expires_at).isoformat(),
+        },
+    )
+    db.add(skipped)
+    transition(
+        db,
+        idea,
+        TransitionRequest(
+            new_status=IdeaStatus.CANCELLED,
+            reason_code="user_rejected",
+            reason_detail=(
+                f"{body.reason.value}: {body.comment}"
+                if body.comment
+                else body.reason.value
+            )[:512],
+            user_action=True,
+        ),
+    )
+    db.flush()
+    return _rejection_response(idea, skipped, replay=False)

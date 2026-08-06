@@ -31,11 +31,12 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..journal.lifecycle import TransitionRequest, transition
 from ..market.blindness import annotate as annotate_blind
-from ..models import Bar, Instrument, PaperTrade, TradeIdea
+from ..models import Bar, PaperTrade, TradeIdea
 from ..models.enums import Direction, IdeaStatus, PaperStatus, Timeframe
 
 #: На каком таймфрейме ведётся сделка. Часовой: зона входа шириной в
@@ -49,6 +50,16 @@ DEFAULT_HORIZON_DAYS = 5
 #: Сколько сделка живёт после входа. Календарно: инструмент, по которому
 #: бары перестали приходить, обязан протухнуть, а не жить вечно.
 MAX_HOLD_DAYS = 30
+
+
+class PaperTradeConflict(RuntimeError):
+    """По инструменту уже ведётся другая бумажная сделка."""
+
+    def __init__(self, trade: PaperTrade):
+        self.trade = trade
+        super().__init__(
+            f"по инструменту {trade.instrument_id} уже ведётся сделка {trade.id}"
+        )
 
 
 @dataclass
@@ -113,49 +124,25 @@ def _targets(idea: TradeIdea) -> tuple[list[Decimal], list[Decimal]]:
     return prices, [share] * len(prices)
 
 
-def open_for(
-    session: Session, idea: TradeIdea, *, now: datetime | None = None
-) -> PaperTrade | None:
-    """Завести бумажную сделку по сработавшей идее.
-
-    Владелец разрешил стартовать без подтверждения. Но не по любой идее: у
-    плана должны быть цели, иначе вести нечего.
-    """
+def _new_trade(idea: TradeIdea, *, now: datetime | None = None) -> PaperTrade | None:
+    """Собрать неизменяемый paper-план из снимка идеи, не записывая его."""
     moment = now or datetime.now(UTC)
     prices, shares = _targets(idea)
     if not prices:
         return None
 
-    # Дедуп по инструменту, а не по идее. Разница денежная: скан находит
-    # тот же сетап каждые пятнадцать минут, и дедуп по идее пропускал
-    # каждую находку в отдельную сделку — у владельца в «В работе»
-    # оказалось десять позиций по HYPEUSDT с почти одинаковыми входами.
-    # Быть одновременно в десяти позициях по одному активу — не
-    # диверсификация, а десятикратный риск на нём.
-    #
-    # Прежний довод против дедупа по символу (зависшая сделка заблокирует
-    # новые идеи по инструменту) остался в силе, но лечится он не
-    # отсутствием дедупа: зависание закрывает календарное протухание, а
-    # сверка больше не переигрывает уже прожитый бар.
-    existing = session.execute(
-        select(PaperTrade).where(
-            PaperTrade.instrument_id == idea.instrument_id,
-            PaperTrade.status.in_([PaperStatus.PENDING, PaperStatus.OPEN]),
-        )
-    ).scalars().first()
-    if existing is not None:
-        return None
-
     horizon = idea.horizon_days or DEFAULT_HORIZON_DAYS
-    # Сделка начинается там, где родился план, а не там, где мы завели
-    # запись. Иначе вся история между появлением идеи и первым прогоном
-    # теряется: заявка, исполнившаяся вчера, выглядит невыкупленной, а
-    # взятые цели — не взятыми. Для досчёта уже висящих сделок это и есть
-    # главное: переиграть по настоящим барам, а не с сегодняшнего дня.
-    born = idea.signal_time or moment
-    if born.tzinfo is None:
-        born = born.replace(tzinfo=UTC)
-    trade = PaperTrade(
+    # Paper-заявка существует только после решения владельца. Начать её от
+    # signal_time означало бы задним числом «исполнить» вход по барам,
+    # которые прошли до согласия. Текущий неполный час тоже намеренно не
+    # переигрывается: без тиков нельзя отделить движение до подтверждения от
+    # движения после него.
+    activated = moment if moment.tzinfo is not None else moment.replace(tzinfo=UTC)
+    idea_expires = idea.expires_at
+    if idea_expires.tzinfo is None:
+        idea_expires = idea_expires.replace(tzinfo=UTC)
+    expires = min(idea_expires, activated + timedelta(days=horizon))
+    return PaperTrade(
         idea_id=idea.id,
         instrument_id=idea.instrument_id,
         direction=idea.direction,
@@ -167,11 +154,87 @@ def open_for(
         tp_shares=[str(s) for s in shares],
         tps_taken=0,
         realized_r=Decimal(0),
-        opened_at=born,
-        expires_at=born + timedelta(days=horizon),
+        opened_at=activated,
+        expires_at=expires,
     )
-    session.add(trade)
-    return trade
+
+
+def approve_for(
+    session: Session, idea: TradeIdea, *, now: datetime | None = None
+) -> tuple[PaperTrade, bool]:
+    """Идемпотентно создать paper-сделку после явного решения владельца.
+
+    Возвращает ``(trade, created)``. Любая уже существующая сделка этой идеи
+    возвращается как результат повтора, включая завершённую: повторное
+    нажатие никогда не начинает план заново.
+
+    Предварительная проверка делает обычный повтор дешёвым, а частичный
+    уникальный индекс по живому инструменту остаётся окончательной защитой
+    от двух одновременных запросов. Ошибка индекса откатывается только до
+    savepoint; затем победившая запись перечитывается и возвращается для той
+    же идеи либо превращается в явный конфликт для другой.
+    """
+    existing = session.execute(
+        select(PaperTrade)
+        .where(PaperTrade.idea_id == idea.id)
+        .order_by(PaperTrade.created_at, PaperTrade.id)
+    ).scalars().first()
+    if existing is not None:
+        return existing, False
+
+    live = session.execute(
+        select(PaperTrade).where(
+            PaperTrade.instrument_id == idea.instrument_id,
+            PaperTrade.status.in_([PaperStatus.PENDING, PaperStatus.OPEN]),
+        )
+    ).scalars().first()
+    if live is not None:
+        raise PaperTradeConflict(live)
+
+    trade = _new_trade(idea, now=now)
+    if trade is None:
+        raise ValueError("у идеи нет целей для paper-сопровождения")
+
+    try:
+        # Ошибка уникального индекса не должна отравить всю транзакцию API:
+        # savepoint позволяет после гонки перечитать победившую запись.
+        with session.begin_nested():
+            session.add(trade)
+            session.flush()
+    except IntegrityError:
+        existing = session.execute(
+            select(PaperTrade)
+            .where(PaperTrade.idea_id == idea.id)
+            .order_by(PaperTrade.created_at, PaperTrade.id)
+        ).scalars().first()
+        if existing is not None:
+            return existing, False
+        live = session.execute(
+            select(PaperTrade).where(
+                PaperTrade.instrument_id == idea.instrument_id,
+                PaperTrade.status.in_([PaperStatus.PENDING, PaperStatus.OPEN]),
+            )
+        ).scalars().first()
+        if live is not None:
+            raise PaperTradeConflict(live) from None
+        raise
+    return trade, True
+
+
+def open_for(
+    session: Session, idea: TradeIdea, *, now: datetime | None = None
+) -> PaperTrade | None:
+    """Совместимый низкоуровневый вызов открытия paper-сделки.
+
+    Продуктовый путь вызывает :func:`approve_for` только из endpoint явного
+    подтверждения. ``None`` сохранён для старых внутренних вызовов: сделка
+    уже существует либо инструмент занят другой живой paper-позицией.
+    """
+    try:
+        trade, created = approve_for(session, idea, now=now)
+    except PaperTradeConflict:
+        return None
+    return trade if created else None
 
 
 def _bars_since(session: Session, trade: PaperTrade) -> list[Bar]:
@@ -284,7 +347,11 @@ def advance(trade: PaperTrade, bars: list[Bar], *, now: datetime) -> list[str]:
         if trade.status is not PaperStatus.OPEN:
             break
 
-        stop_hit = bar.low <= trade.current_stop if long else bar.high >= trade.current_stop
+        stop_hit = (
+            bar.low <= trade.current_stop
+            if long
+            else bar.high >= trade.current_stop
+        )
         if stop_hit:
             remaining = Decimal(1) - sum(shares[: trade.tps_taken], Decimal(0))
             trade.realized_r += _r_of(trade, trade.current_stop) * remaining
@@ -426,21 +493,14 @@ def _sync_idea(session: Session, trade: PaperTrade, idea: TradeIdea) -> None:
 
 
 def track(session: Session, *, now: datetime | None = None) -> PaperReport:
-    """Один прогон: открыть новые сделки и продвинуть живые."""
+    """Один прогон: продвинуть только явно подтверждённые paper-сделки.
+
+    Само наличие ``TRIGGERED``-идеи больше не является согласием владельца.
+    Новая сделка появляется только через ``approve-paper``; после этого
+    сопровождение полностью серверное и не зависит от открытого клиента.
+    """
     moment = now or datetime.now(UTC)
     report = PaperReport()
-
-    triggered = list(
-        session.execute(
-            select(TradeIdea).where(TradeIdea.status == IdeaStatus.TRIGGERED)
-        ).scalars()
-    )
-    for idea in triggered:
-        if open_for(session, idea, now=moment) is not None:
-            report.opened += 1
-        else:
-            report.same_instrument += 1
-        session.flush()
 
     live = list(
         session.execute(
@@ -495,8 +555,10 @@ def track(session: Session, *, now: datetime | None = None) -> PaperReport:
 __all__ = [
     "MAX_HOLD_DAYS",
     "PaperReport",
+    "PaperTradeConflict",
     "TRACK_TF",
     "advance",
+    "approve_for",
     "open_for",
     "track",
 ]

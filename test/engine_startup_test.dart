@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:signalai/data/api/api_config.dart';
 import 'package:signalai/data/local_store.dart';
 import 'package:signalai/data/mock/demo_repository.dart';
+import 'package:signalai/data/native_bridge.dart';
 import 'package:signalai/state/app_controller.dart';
 
 /// Порядок на холодном старте: сначала адрес движка, потом запросы к нему.
@@ -23,6 +24,7 @@ void main() {
   test('пакеты спрашиваются уже с сохранённым адресом', () async {
     final controller = AppController(
       DemoRepository(),
+      bridge: _VaultBridge(),
       prefs: slow({
         'base_url': 'https://engine.example.ru',
         'device_token': 'abc',
@@ -36,6 +38,11 @@ void main() {
     // в пустоту.
     expect(ApiConfig.baseUrl, 'https://engine.example.ru');
     expect(ApiConfig.deviceToken, 'abc');
+    expect(
+      (controller.engineAuthIssue),
+      isNull,
+      reason: 'legacy token должен мигрировать в Keystore',
+    );
     final state = controller.portfolio!;
     expect(state.isAvailable, isFalse, reason: 'сети в тесте нет');
     // Ключевое: причина — обрыв связи, а не «адреса нет». Второе означало
@@ -73,12 +80,33 @@ void main() {
       isNot(contains('Адрес движка не задан')),
     );
   });
+
+  test('без Keystore legacy token удаляется из JSON и auth закрывается',
+      () async {
+    final store = _SlowStore({
+      'base_url': 'https://engine.example.ru',
+      'device_token': 'plaintext-legacy',
+    });
+    final controller = AppController(
+      DemoRepository(),
+      prefs: store,
+      bridge: const _NoVaultBridge(),
+    );
+    addTearDown(controller.dispose);
+
+    await controller.loadPortfolio();
+
+    expect(ApiConfig.deviceToken, isEmpty);
+    expect(controller.engineAuthIssue, contains('не привязано'));
+    expect(store.lastWritten, {'base_url': 'https://engine.example.ru'});
+  });
 }
 
 class _SlowStore extends LocalStore {
   _SlowStore(this._saved);
 
   final Map<String, dynamic>? _saved;
+  Map<String, dynamic>? lastWritten;
 
   @override
   Future<Map<String, dynamic>?> read(String name) async {
@@ -87,5 +115,30 @@ class _SlowStore extends LocalStore {
   }
 
   @override
-  Future<void> write(String name, Map<String, dynamic> value) async {}
+  Future<void> write(String name, Map<String, dynamic> value) async {
+    if (name == 'engine') lastWritten = Map<String, dynamic>.from(value);
+  }
+}
+
+class _VaultBridge extends NativeBridge {
+  String? token;
+
+  @override
+  Future<bool> vaultAvailable() async => true;
+
+  @override
+  Future<bool> putEngineDeviceToken(String value) async {
+    token = value;
+    return true;
+  }
+
+  @override
+  Future<String?> engineDeviceToken() async => token;
+}
+
+class _NoVaultBridge extends NativeBridge {
+  const _NoVaultBridge();
+
+  @override
+  Future<bool> vaultAvailable() async => false;
 }

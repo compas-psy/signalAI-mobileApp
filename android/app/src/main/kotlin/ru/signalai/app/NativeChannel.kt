@@ -28,8 +28,8 @@ class NativeChannel(private val context: Context) {
      * Заряд, питание и режим энергосбережения.
      *
      * Читается через sticky-broadcast: подписка на изменения здесь не нужна
-     * и вредна — контур спрашивает раз в час, а живой приёмник будил бы
-     * процесс на каждый процент заряда.
+     * и вредна — bounded poll запускается примерно раз в 15 минут, а живой
+     * приёмник будил бы процесс на каждый процент заряда.
      */
     private fun powerState(): Map<String, Any> {
         val status = context.registerReceiver(

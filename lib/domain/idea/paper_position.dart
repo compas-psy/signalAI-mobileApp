@@ -1,5 +1,26 @@
 import '../ledger/signal_ledger.dart' show PaperStatus, PaperTrade;
 
+/// Полное состояние сделки в серверном paper-ledger.
+///
+/// Одного булевого `pending` недостаточно фоновому thin-клиенту: исчезновение
+/// сделки из live-only выдачи не доказывает закрытие. CLOSED/CANCELLED должны
+/// приехать явным серверным состоянием.
+enum PaperPositionStatus {
+  pending,
+  open,
+  closed,
+  cancelled;
+
+  bool get live => this == pending || this == open;
+
+  static PaperPositionStatus parse(String? raw) => switch (raw?.toUpperCase()) {
+        'OPEN' => PaperPositionStatus.open,
+        'CLOSED' => PaperPositionStatus.closed,
+        'CANCELLED' => PaperPositionStatus.cancelled,
+        _ => PaperPositionStatus.pending,
+      };
+}
+
 /// Открытая бумажная позиция так, как её показывает экран.
 ///
 /// Один вид на два источника. Сопровождение сделки переехало на сервер:
@@ -31,7 +52,14 @@ class PaperPosition {
     this.lastReconciledAt,
     this.staleHours,
     this.fromServer = false,
-  });
+    PaperPositionStatus? status,
+    bool? atBreakeven,
+    this.closedAt,
+    this.outcome = '',
+    this.closeReason = '',
+  })  : status = status ??
+            (pending ? PaperPositionStatus.pending : PaperPositionStatus.open),
+        atBreakeven = atBreakeven ?? (breakevenAt != null);
 
   final String id;
 
@@ -44,6 +72,8 @@ class PaperPosition {
 
   /// Заявка выставлена, но цена до неё не дошла.
   final bool pending;
+
+  final PaperPositionStatus status;
 
   final double entry;
 
@@ -64,7 +94,12 @@ class PaperPosition {
   /// Когда стоп встал в безубыток. null — ещё не вставал.
   final DateTime? breakevenAt;
 
-  bool get atBreakeven => breakevenAt != null;
+  final bool atBreakeven;
+
+  /// Чем завершилась серверная paper-сделка.
+  final DateTime? closedAt;
+  final String outcome;
+  final String closeReason;
 
   /// Результат в R.
   ///
@@ -116,8 +151,16 @@ class PaperPosition {
         currentStop: trade.stopLoss,
         tpPrices: trade.tpPrices,
         tpsTaken: trade.tpsTaken,
+        status: switch (trade.status) {
+          PaperStatus.pending => PaperPositionStatus.pending,
+          PaperStatus.open => PaperPositionStatus.open,
+          PaperStatus.closed => PaperPositionStatus.closed,
+          PaperStatus.cancelled => PaperPositionStatus.cancelled,
+        },
         // Плавающий: локальная сверка переигрывает сделку целиком и знает,
         // сколько она стоит сейчас.
         resultR: trade.unrealizedR ?? trade.resultR,
+        closedAt: trade.closedAt,
+        outcome: trade.outcome ?? '',
       );
 }

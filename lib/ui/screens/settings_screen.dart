@@ -8,7 +8,6 @@ import '../../theme/tokens.dart';
 import '../../theme/typography.dart';
 import '../../domain/broker/broker.dart';
 import '../../domain/broker/tinvest_role.dart';
-import '../../monitor/background_mode.dart';
 import '../../state/navigation.dart';
 import '../layout.dart';
 import '../../data/native_bridge.dart';
@@ -48,10 +47,17 @@ class SettingsScreen extends StatelessWidget {
               CardGrid(children: [
               // Режим: paper / shadow / live и допуск к живым деньгам.
               if (_show(SettingsPill.mode))
-                if (snapshot.trading != null) ...[
-                  _TradingStatusCard(trading: snapshot.trading!),
-                  _TradingControlsCard(trading: snapshot.trading!),
-                ] else
+                if (controller.thinMode)
+                  const _NothingHere(
+                    title: 'Тонкий клиент · paper only',
+                    note: 'Идеи, риск и сопровождение paper-сделок ведёт '
+                        'сервер. Телефон показывает план и отправляет только '
+                        'ваше явное решение; локального execution здесь нет.',
+                  )
+                else if (snapshot.trading != null) ...[
+                    _TradingStatusCard(trading: snapshot.trading!),
+                    _TradingControlsCard(trading: snapshot.trading!),
+                  ] else
                   // Пустой экран без объяснения — худшее, что может показать
                   // раздел настроек: непонятно, сломалось или так задумано.
                   const _NothingHere(
@@ -62,7 +68,23 @@ class SettingsScreen extends StatelessWidget {
                   ),
 
               // Риск: лимиты ТЗ §20 и правила размера позиции.
-              if (_show(SettingsPill.risk)) _RiskCard(risk: snapshot.risk),
+              if (_show(SettingsPill.risk))
+                controller.thinMode
+                    ? const _NothingHere(
+                        title: 'Лимиты задаёт сервер',
+                        note: 'Клиент не пересчитывает размер позиции и не '
+                            'может обойти серверный risk gate. Действующие '
+                            'лимиты показаны в методике движка.',
+                      )
+                    : _RiskCard(risk: snapshot.risk),
+
+              if (_show(SettingsPill.data) && controller.thinMode)
+                const _NothingHere(
+                  title: 'Диагностика выполняется на сервере',
+                  note: 'Thin-клиент не опрашивает MOEX и Bybit напрямую. '
+                      'Свежесть и полнота серверных данных показаны в шапке '
+                      'раздела; локальные market probes отключены.',
+                ),
 
               // Интеграции: источники данных и площадки исполнения.
               if (_show(SettingsPill.connections)) ...[
@@ -70,7 +92,8 @@ class SettingsScreen extends StatelessWidget {
                 // смысл приложения. Пока его здесь не было, «все ключи
                 // приняты, а лента пуста» не имело на экране объяснения.
                 const _EngineCard(),
-                if (snapshot.exchanges.any((e) => e.isDataSource))
+                if (!controller.thinMode &&
+                    snapshot.exchanges.any((e) => e.isDataSource))
                   _ExchangesCard(
                     title: 'Источники данных',
                     exchanges: [
@@ -80,39 +103,47 @@ class SettingsScreen extends StatelessWidget {
                     connectedLabel: 'Данные идут',
                     onConnect: controller.connectExchange,
                   )
-                else
+                else if (!controller.thinMode)
                   _ExchangesCard(
                     title: 'Биржи · API',
                     exchanges: snapshot.exchanges,
                     connectedLabel: 'Подключено',
                     onConnect: controller.connectExchange,
                   ),
-                if (snapshot.trading != null) _BrokersCard(trading: snapshot.trading!),
+                if (!controller.thinMode && snapshot.trading != null)
+                  _BrokersCard(trading: snapshot.trading!),
                 // Токены — выше счетов: без токена счетов не будет вовсе.
                 const TInvestTokensCard(),
-                const SizedBox(height: S.gap),
-                const _TinvestAccountsCard(),
+                if (!controller.thinMode) ...[
+                  const SizedBox(height: S.gap),
+                  const _TinvestAccountsCard(),
+                ],
                 if (snapshot.background != null)
                   _BackgroundCard(background: snapshot.background!),
               ],
 
               // Уведомления: расписание и доставка.
               if (_show(SettingsPill.notifications) &&
-                  snapshot.channels.isEmpty &&
-                  snapshot.notifications.isEmpty)
+                  (controller.thinMode
+                      ? snapshot.notifications.isEmpty
+                      : snapshot.channels.isEmpty &&
+                          snapshot.notifications.isEmpty))
                 const _NothingHere(
                   title: 'Каналы доставки не заданы',
                   note: 'Список появится, когда приложение узнает, куда '
                       'отправлять сигналы.',
                 ),
               if (_show(SettingsPill.notifications) &&
-                  (snapshot.channels.isNotEmpty ||
-                      snapshot.notifications.isNotEmpty)) ...[
-                _TogglesCard(
-                  title: 'Доставка сигналов',
-                  items: snapshot.channels,
-                  onChanged: controller.toggleChannel,
-                ),
+                  (controller.thinMode
+                      ? snapshot.notifications.isNotEmpty
+                      : snapshot.channels.isNotEmpty ||
+                          snapshot.notifications.isNotEmpty)) ...[
+                if (!controller.thinMode)
+                  _TogglesCard(
+                    title: 'Доставка сигналов',
+                    items: snapshot.channels,
+                    onChanged: controller.toggleChannel,
+                  ),
                 _TogglesCard(
                   title: 'Уведомления',
                   items: snapshot.notifications,
@@ -127,45 +158,50 @@ class SettingsScreen extends StatelessWidget {
               if (_show(SettingsPill.security)) ...[
                 // Доверие проверяется, а не декларируется: живой прогон
                 // источников данных с вердиктами по каждому полю.
-                SectionCard(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const SectionLabel('Прозрачность'),
-                      const SizedBox(height: 6),
-                      Text(
-                        'Диагностика гоняет MOEX ISS и Bybit вживую и сверяет '
-                        'разбор данных с реальностью биржи.',
-                        style: T.body(11, color: C.muted, height: 1.5),
-                      ),
-                      const SizedBox(height: 10),
-                      Pressable(
-                        onTap: () => Navigator.of(context).push(
-                          PageRouteBuilder<void>(
-                            pageBuilder: (context, animation, secondary) =>
-                                const DiagnosticsScreen(),
-                            transitionsBuilder:
-                                (context, animation, secondary, child) =>
-                                    FadeTransition(opacity: animation, child: child),
-                          ),
+                if (!controller.thinMode)
+                  SectionCard(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const SectionLabel('Прозрачность'),
+                        const SizedBox(height: 6),
+                        Text(
+                          'Диагностика гоняет MOEX ISS и Bybit вживую и '
+                          'сверяет разбор данных с реальностью биржи.',
+                          style: T.body(11, color: C.muted, height: 1.5),
                         ),
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(vertical: 10),
-                          decoration: BoxDecoration(
-                            border: Border.all(color: C.borderHover),
-                            borderRadius: BorderRadius.circular(R.inner),
+                        const SizedBox(height: 10),
+                        Pressable(
+                          onTap: () => Navigator.of(context).push(
+                            PageRouteBuilder<void>(
+                              pageBuilder: (context, animation, secondary) =>
+                                  const DiagnosticsScreen(),
+                              transitionsBuilder:
+                                  (context, animation, secondary, child) =>
+                                      FadeTransition(
+                                opacity: animation,
+                                child: child,
+                              ),
+                            ),
                           ),
-                          child: Center(
-                            child: Text(
-                              'Диагностика данных',
-                              style: T.body(12, weight: 800, color: C.accent),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(vertical: 10),
+                            decoration: BoxDecoration(
+                              border: Border.all(color: C.borderHover),
+                              borderRadius: BorderRadius.circular(R.inner),
+                            ),
+                            child: Center(
+                              child: Text(
+                                'Диагностика данных',
+                                style:
+                                    T.body(12, weight: 800, color: C.accent),
+                              ),
                             ),
                           ),
                         ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
-                ),
                 const _AboutCard(),
               ],
               ]),
@@ -591,20 +627,12 @@ class _BackgroundCard extends StatelessWidget {
           const SizedBox(height: 6),
           _TradingSwitch(
             title: 'Следить, пока приложение закрыто',
-            subtitle: 'Сопровождение открытых сделок и поиск новых идей раз в '
-                'час. Ордера в фоне не отправляются: подтвердить сделку там нечем',
+            subtitle: 'Короткий опрос сервера примерно раз в 15 минут: новые '
+                'идеи «Можно действовать» и важные переходы paper-сделок',
             value: background.enabled,
             onChanged: controller.setBackgroundEnabled,
           ),
           const SizedBox(height: 10),
-          KeyValueRow(
-            name: 'Режим',
-            value: '${background.modeLabel} · сменить',
-            valueStyle: T.mono(12, color: C.accent),
-            onTap: () => controller.setBackgroundMode(
-              background.persistent ? BackgroundMode.burst : BackgroundMode.persistent,
-            ),
-          ),
           KeyValueRow(
             name: 'Состояние',
             value: background.stateNote,
@@ -616,20 +644,16 @@ class _BackgroundCard extends StatelessWidget {
           ),
           const SizedBox(height: 8),
           Text(
-            background.persistent
-                ? 'Постоянный режим держит в шторке служебную строку. На '
-                    'Android 15+ система останавливает такой сервис после шести '
-                    'часов в сутки — дальше контур продолжает часовыми '
-                    'пробуждениями сам.'
-                : 'Раз в час приложение просыпается на полминуты и снова '
-                    'засыпает. Служебная строка видна только на это время.',
+            'Сервер ведёт принятую paper-сделку независимо от телефона. '
+            'Обнаружение новой идеи и уведомления через Android polling — '
+            'best-effort: Doze может отложить запуск дольше 15 минут.',
             style: T.body(10.5, color: C.muted, height: 1.4),
           ),
           const SizedBox(height: 6),
           Text(
-            'Если Android усыпил приложение (на Samsung — «Спящие приложения» '
-            'в настройках батареи), фон не поднимется ни в одном режиме. '
-            'Исключите SignalAI из оптимизации.',
+            'После принудительной остановки приложения Android не запускает '
+            'опрос до следующего открытия. Разрешите уведомления и при '
+            'необходимости исключите SignalAI из глубокого сна батареи.',
             style: T.body(10.5, color: C.muted, height: 1.4),
           ),
         ],
@@ -914,20 +938,31 @@ class _TInvestTokensCardState extends State<TInvestTokensCard> {
   Widget build(BuildContext context) {
     final controller = AppScope.of(context);
     final present = controller.tinvestTokens;
+    final roles = controller.thinMode
+        ? const [TInvestRole.invest]
+        : TInvestRole.values;
     return SectionCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const SectionLabel('Токены Т-Инвестиций'),
+          SectionLabel(
+            controller.thinMode
+                ? 'Т-Инвестиции · метаданные'
+                : 'Токены Т-Инвестиций',
+          ),
           const SizedBox(height: 6),
           Text(
-            'Токен Invest API привязан к вам, а не к счёту: один торговый '
-            'токен видит все ваши счета и может отправить заявку с любого. '
-            'Поэтому их три, с разными правами.',
+            controller.thinMode
+                ? 'Только read-only токен: приложение обновляет снимок '
+                    'инструментов и секторов. Он остаётся на устройстве; '
+                    'торговые токены и отправка заявок в thin отключены.'
+                : 'Токен Invest API привязан к вам, а не к счёту: один '
+                    'торговый токен видит все ваши счета и может отправить '
+                    'заявку с любого. Поэтому их три, с разными правами.',
             style: T.body(11.5, color: C.muted, height: 1.5),
           ),
           const SizedBox(height: 10),
-          for (final role in TInvestRole.values) ...[
+          for (final role in roles) ...[
             KeyValueRow(
               name: role.title,
               value: present.contains(role) ? 'задан · изменить' : 'нет · ввести',
@@ -1039,6 +1074,13 @@ class _EngineCard extends StatelessWidget {
             Text(
               controller.engineProbe!,
               style: T.body(11, color: C.textSecondary, height: 1.45),
+            ),
+          ],
+          if (controller.engineAuthIssue != null) ...[
+            const SizedBox(height: 8),
+            Text(
+              controller.engineAuthIssue!,
+              style: T.body(11, color: C.warning, height: 1.45),
             ),
           ],
           if (controller.engineProbing) ...[

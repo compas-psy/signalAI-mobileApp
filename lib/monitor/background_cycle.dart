@@ -470,7 +470,9 @@ MonitorNotice ideaNotice(Idea idea, {bool armed = false}) {
   final plan = idea.plan;
   final head = armed
       ? '${idea.symbolOrId} · ${idea.direction.label} · можно решать'
-      : '${idea.symbolOrId} · ${idea.direction.label} · ${idea.score.value}/100';
+      : idea.readiness == IdeaReadiness.waiting
+          ? '${idea.symbolOrId} · ${idea.direction.label} · наблюдать'
+          : '${idea.symbolOrId} · ${idea.direction.label} · ${idea.score.value}/100';
   if (plan == null) {
     return (
       title: head,
@@ -482,7 +484,8 @@ MonitorNotice ideaNotice(Idea idea, {bool armed = false}) {
   final decimals = _planDecimals(plan);
   return (
     title: head,
-    body: 'Вход ${plan.entryLow.toStringAsFixed(decimals)}–'
+    body: '${idea.readiness == IdeaReadiness.waiting ? 'Ждём триггер. ' : ''}'
+        'Вход ${plan.entryLow.toStringAsFixed(decimals)}–'
         '${plan.entryHigh.toStringAsFixed(decimals)} · '
         'SL ${plan.stop.toStringAsFixed(decimals)} · '
         'R:R ${plan.rrToSecondTarget.toStringAsFixed(1).replaceAll('.', ',')}. '

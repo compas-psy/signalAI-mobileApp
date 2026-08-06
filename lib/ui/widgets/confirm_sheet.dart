@@ -26,6 +26,7 @@ class ConfirmSheet extends StatelessWidget {
     this.impact,
     required this.onClose,
     required this.busy,
+    this.paperOnly = false,
   });
 
   final TradingSignal signal;
@@ -43,6 +44,10 @@ class ConfirmSheet extends StatelessWidget {
   final PortfolioImpact? impact;
   final VoidCallback onClose;
   final bool busy;
+
+  /// Серверная идея первой поставки исполняется только на бумаге. Подписи
+  /// обязаны сказать это до последнего тапа, а не после создания позиции.
+  final bool paperOnly;
 
   @override
   Widget build(BuildContext context) {
@@ -121,7 +126,10 @@ class ConfirmSheet extends StatelessWidget {
                           background: directionBackground(signal.direction),
                         ),
                         const Spacer(),
-                        Text('лимитный ордер', style: T.body(11, color: C.muted)),
+                        Text(
+                          paperOnly ? 'paper · сервер' : 'лимитный ордер',
+                          style: T.body(11, color: C.muted),
+                        ),
                       ],
                     ),
                     const SizedBox(height: 13),
@@ -177,7 +185,7 @@ class ConfirmSheet extends StatelessWidget {
                               // План целиком до входа — подтверждать сделку
                               // можно только понимая, как она будет вестись
                               // и что её сломает.
-                              'На биржу уйдут лимитка ${fmtPrice(signal.entry, decimals)}, '
+                              '${paperOnly ? 'В paper-сделку' : 'На биржу'} уйдут лимитка ${fmtPrice(signal.entry, decimals)}, '
                               'стоп ${fmtPrice(signal.stopLoss, decimals)} и цели '
                               '($shares%). Ведение: после TP1 стоп остатка — в '
                               'безубыток; выход по времени через 5 торговых дней, '
@@ -204,7 +212,11 @@ class ConfirmSheet extends StatelessWidget {
                               ),
                               child: Center(
                                 child: Text(
-                                  busy ? 'Отправляем…' : 'Исполнить на бирже',
+                                  busy
+                                      ? 'Подтверждаем…'
+                                      : (paperOnly
+                                          ? 'Подтвердить paper-сделку'
+                                          : 'Исполнить на бирже'),
                                   style: T.body(
                                     14,
                                     weight: 800,

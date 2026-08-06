@@ -123,6 +123,9 @@ class Fused:
     economic: Decimal
     priority: Decimal
     market_context_missing: bool
+    market_context_score: Decimal | None
+    market_context_state: str
+    market_context_detail: dict
     gate: GateResult
     contradictions: Decimal
     investability: Investability | None = None
@@ -255,6 +258,8 @@ def fuse(
     exposure_confidence: float,
     falsifiers: list[Falsifier],
     market_context: Decimal | None = None,
+    market_context_state: str | None = None,
+    market_context_detail: dict | None = None,
     investability: Investability | None = None,
     critical_dq: bool = False,
     now: datetime | None = None,
@@ -316,7 +321,7 @@ def fuse(
     if investability is not None:
         missing.extend(investability.missing_required_data)
     if priority.market_context_missing:
-        missing.append("нет данных о том, учтено ли изменение в цене")
+        missing.append("нет технического D1-контекста цены и объёма")
     missing.extend(gate.failures)
 
     lag = _lag_bucket(max(s.window_to_days for s in signals))
@@ -336,6 +341,12 @@ def fuse(
         economic=k_score.value,
         priority=priority.value,
         market_context_missing=priority.market_context_missing,
+        market_context_score=market_context,
+        market_context_state=(
+            market_context_state
+            or ("unknown" if priority.market_context_missing else "measured")
+        ),
+        market_context_detail=dict(market_context_detail or {}),
         gate=gate,
         contradictions=contradictions,
         investability=investability,
@@ -392,11 +403,12 @@ def _state(
     if market_missing:
         # §12.5: без рыночного контекста гипотеза не может стать готовой к
         # разбору автоматически. Подтверждённой — может: экономика доказана,
-        # неизвестно лишь, знает ли о ней рынок.
+        # отсутствует лишь timing-overlay. Он ничего не утверждает о том,
+        # полностью ли фундаментальная история уже учтена рынком.
         return (
             HypothesisState.CONFIRMED,
             "правило 3–2–1 выполнено; готовность к разбору не присваивается "
-            "автоматически: неизвестно, учтено ли изменение в цене",
+            "автоматически: нет технического D1-контекста цены и объёма",
         )
     if contradictions >= CONTRADICTION_REVIEW:
         return (

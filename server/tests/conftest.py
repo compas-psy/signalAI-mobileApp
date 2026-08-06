@@ -28,6 +28,14 @@ ADMIN_DSN = os.environ.get(
 )
 TEST_DB = os.environ.get("SIGNALAI_TEST_DB", "signalai_test")
 TEST_DSN = ADMIN_DSN.rsplit("/", 1)[0] + f"/{TEST_DB}"
+DEVICE_TOKEN = "ci-device-token"
+DEVICE_HEADERS = {"Authorization": f"Bearer {DEVICE_TOKEN}"}
+
+
+@pytest.fixture(autouse=True)
+def configured_device_token(monkeypatch):
+    """Real app tests cross the same device-auth boundary as production."""
+    monkeypatch.setenv("SIGNALAI_DEVICE_TOKEN", DEVICE_TOKEN)
 
 
 def _recreate_database() -> None:

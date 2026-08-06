@@ -1,12 +1,11 @@
 /// Конфигурация подключения к мобильному гейтвею (Server B).
 ///
-/// Задаётся на этапе сборки, чтобы в коде и в git не было ни адресов боевых
-/// серверов, ни токенов:
+/// Адрес можно задать на этапе сборки, но токен устройства — только после
+/// установки через защищённое хранилище Android:
 ///
 /// ```
 /// flutter run \
-///   --dart-define=SIGNALAI_API_BASE_URL=https://api.signalai.ru \
-///   --dart-define=SIGNALAI_DEVICE_TOKEN=…
+///   --dart-define=SIGNALAI_API_BASE_URL=https://api.signalai.ru
 /// ```
 ///
 /// Если базовый адрес не задан, приложение работает на демо-данных макета
@@ -36,22 +35,20 @@ abstract final class ApiConfig {
   /// Задан ли адрес руками, а не сборкой.
   static bool get isOverridden => _override.isNotEmpty;
 
-  /// Токен устройства из сборки.
-  static const compiledDeviceToken =
-      String.fromEnvironment('SIGNALAI_DEVICE_TOKEN');
-
-  /// Токен, заданный владельцем в «Подключениях».
+  /// Токен, восстановленный из Android Keystore для текущего изолята.
   ///
   /// Развёрнутый движок начал отвечать 401 «устройство не авторизовано», а
   /// токен существовал только как параметр сборки: чтобы вставить его,
   /// требовалась пересборка APK. Токен — такая же оперативная настройка, как
   /// адрес, и меняется он чаще.
-  static String _tokenOverride = '';
+  /// Сборочного fallback нет намеренно: любой `String.fromEnvironment` попал
+  /// бы в APK и превратил секрет устройства в общий секрет всех установок.
+  static String _runtimeDeviceToken = '';
 
-  static String get deviceToken =>
-      _tokenOverride.isNotEmpty ? _tokenOverride : compiledDeviceToken;
+  static String get deviceToken => _runtimeDeviceToken;
 
-  static void setDeviceToken(String value) => _tokenOverride = value.trim();
+  static void setDeviceToken(String value) =>
+      _runtimeDeviceToken = value.trim();
 
   /// Есть ли настроенный бэкенд.
   static bool get isConfigured => baseUrl.isNotEmpty;

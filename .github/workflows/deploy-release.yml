@@ -1,8 +1,14 @@
 name: Deploy release to VPS
 
-# Копия с ветки по умолчанию. Здесь: только вручную и деплоит эту ветку.
+# Каноническое обновление VPS. Только вручную и только из явно выбранного ref,
+# который один раз разрешается в commit SHA до QA и деплоя.
 on:
   workflow_dispatch:
+    inputs:
+      source_ref:
+        description: 'Exact branch, tag or commit to deploy'
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -10,21 +16,88 @@ permissions:
 
 concurrency:
   group: signalai-production-deploy
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
+  resolve:
+    name: Resolve deployment source
+    runs-on: ubuntu-latest
+    outputs:
+      source_sha: ${{ steps.source.outputs.source_sha }}
+      source_ref: ${{ steps.source.outputs.source_ref }}
+    steps:
+      - name: Reject an empty source ref
+        env:
+          SOURCE_REF: ${{ inputs.source_ref }}
+        run: |
+          test -n "$SOURCE_REF" || {
+            echo '::error::source_ref must not be empty'
+            exit 1
+          }
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+          fetch-depth: 1
+      - name: Pin source to an immutable commit
+        id: source
+        env:
+          SOURCE_REF: ${{ inputs.source_ref }}
+        run: |
+          set -euo pipefail
+          source_sha="$(git rev-parse --verify HEAD^{commit})"
+          test "${#source_sha}" -eq 40
+          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+          echo "source_ref=$SOURCE_REF" >> "$GITHUB_OUTPUT"
+          {
+            echo '### Production deployment source'
+            echo
+            echo "- requested ref: \`$SOURCE_REF\`"
+            echo "- resolved commit: \`$source_sha\`"
+            echo '- Quality gate and VPS deploy receive this exact SHA.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  quality:
+    name: Quality gate for deployment SHA
+    needs: resolve
+    uses: ./.github/workflows/quality.yml
+    with:
+      source_ref: ${{ needs.resolve.outputs.source_sha }}
+
   deploy:
+    needs:
+      - resolve
+      - quality
     runs-on: ubuntu-latest
     steps:
+      - name: Check out the QA-verified commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.source_sha }}
+          fetch-depth: 1
+
+      - name: Verify local deployment provenance
+        env:
+          EXPECTED_SHA: ${{ needs.resolve.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          actual_sha="$(git rev-parse --verify HEAD^{commit})"
+          [ "$actual_sha" = "$EXPECTED_SHA" ] || {
+            echo "::error::QA verified $EXPECTED_SHA, deploy checked out $actual_sha"
+            exit 1
+          }
+          echo "Deploying QA-verified commit $actual_sha"
+
       - name: Проверить секреты
         env:
           HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
           KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
+          DEVICE_TOKEN: ${{ secrets.SIGNALAI_DEVICE_TOKEN }}
         run: |
           set -eu
           missing=''
           [ -n "$HOST" ] || missing="$missing VPS_HOST|SERVER_HOST"
           [ -n "$KEY" ] || missing="$missing VPS_SSH_KEY|SSH_SECRET"
+          [ -n "$DEVICE_TOKEN" ] || missing="$missing SIGNALAI_DEVICE_TOKEN"
           if [ -n "$missing" ]; then
             echo "::error::не заданы секреты:$missing"
             exit 1
@@ -46,29 +119,40 @@ jobs:
 
       - name: Подготовить закрытые файлы деплоя
         env:
-          EXPLICIT_TOKEN: ${{ secrets.SIGNALAI_DEVICE_TOKEN }}
-          KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
+          DEVICE_TOKEN: ${{ secrets.SIGNALAI_DEVICE_TOKEN }}
         run: |
           set -eu
           umask 077
-          if [ -n "$EXPLICIT_TOKEN" ]; then
-            token="$EXPLICIT_TOKEN"
-          else
-            # Отдельного секрета пока нет. Формируем стабильный bearer-token из
-            # уже существующего приватного SSH-ключа. В APK и на VPS попадёт
-            # только необратимый HMAC-отпечаток, сам SSH-ключ не раскрывается.
-            token="$(printf '%s' "$KEY" | openssl dgst -sha256 \
-              -hmac 'signalai-device-token-v1' | awk '{print $2}')"
-          fi
-          printf '%s' "$token" | base64 -w0 > /tmp/signalai-device-token.b64
-          unset token
+          test -n "$DEVICE_TOKEN"
+          case "$DEVICE_TOKEN" in
+            *[!A-Za-z0-9._~-]*)
+              echo '::error::SIGNALAI_DEVICE_TOKEN must be one line of URL-safe characters'
+              exit 1
+              ;;
+          esac
+          [ "${#DEVICE_TOKEN}" -ge 32 ] || {
+            echo '::error::SIGNALAI_DEVICE_TOKEN must contain at least 32 characters'
+            exit 1
+          }
+          # Значение не печатается и не передаётся через argv. Владелец вводит
+          # тот же сохранённый у себя token один раз в приложении.
+          printf '%s' "$DEVICE_TOKEN" | base64 -w0 > /tmp/signalai-device-token.b64
 
           cat > /tmp/signalai-update.sh <<'REMOTE'
           set -euo pipefail
-          BRANCH='claude/ux-prototype-dark-theme-sv0euq'
+          SOURCE_SHA="${SIGNALAI_SOURCE_SHA:?deployment source SHA is required}"
+          case "$SOURCE_SHA" in
+            *[!0-9a-f]*|'') echo 'invalid deployment source SHA' >&2; exit 1 ;;
+          esac
+          [ "${#SOURCE_SHA}" -eq 40 ] || { echo 'source SHA must have 40 hex characters' >&2; exit 1; }
           DIR="$HOME/signalai"
           ENV_FILE='/etc/signalai/.env'
           TOKEN_FILE='/tmp/signalai-device-token.b64'
+          cleanup_token() {
+            rm -f "$TOKEN_FILE"
+            unset token 2>/dev/null || true
+          }
+          trap cleanup_token EXIT
           SUDO=''
           [ "$(id -u)" -eq 0 ] || SUDO='sudo'
 
@@ -77,8 +161,14 @@ jobs:
           rm -f "$TOKEN_FILE"
 
           cd "$DIR"
-          git fetch --depth 1 origin "$BRANCH" </dev/null
+          git fetch --depth 1 origin "$SOURCE_SHA" </dev/null
           git reset --hard FETCH_HEAD </dev/null
+          deployed_sha="$(git rev-parse --verify HEAD^{commit})"
+          [ "$deployed_sha" = "$SOURCE_SHA" ] || {
+            echo "fetched $deployed_sha instead of requested $SOURCE_SHA" >&2
+            exit 1
+          }
+          echo "── исходный commit ── $deployed_sha"
 
           test -f "$ENV_FILE"
           $SUDO sed -i '/^SIGNALAI_DEVICE_TOKEN=/d' "$ENV_FILE"
@@ -257,6 +347,7 @@ jobs:
         env:
           HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
           USER_NAME: ${{ secrets.VPS_USER || 'root' }}
+          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
         run: |
           set -eu
           scp -i ~/.ssh/id_deploy -o BatchMode=yes \
@@ -264,16 +355,26 @@ jobs:
             /tmp/signalai-device-token.b64 \
             "$USER_NAME@$HOST:/tmp/"
           ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$USER_NAME@$HOST" \
-            'bash /tmp/signalai-update.sh'
+            "SIGNALAI_SOURCE_SHA='$SOURCE_SHA' bash /tmp/signalai-update.sh"
 
       - name: Записать итог деплоя
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
           RESULT: ${{ job.status }}
+          SOURCE_REF: ${{ needs.resolve.outputs.source_ref }}
+          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
         run: |
           if [ "$RESULT" = success ]; then icon='✅'; else icon='❌'; fi
           gh issue comment 1 --repo "$GITHUB_REPOSITORY" --body "$icon **VPS deploy: $RESULT**
 
-          Commit: \`$GITHUB_SHA\`
+          Source: \`$SOURCE_REF\`
+          Commit: \`$SOURCE_SHA\`
           Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+
+      - name: Убрать локальные секреты
+        if: always()
+        run: |
+          shred -u ~/.ssh/id_deploy 2>/dev/null || rm -f ~/.ssh/id_deploy
+          shred -u /tmp/signalai-device-token.b64 2>/dev/null \
+            || rm -f /tmp/signalai-device-token.b64

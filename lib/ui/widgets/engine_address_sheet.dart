@@ -164,7 +164,8 @@ class _EngineAddressSheetState extends State<_EngineAddressSheet> {
               problem ??
                   (empty
                       ? 'Пусто — вернёмся к адресу из сборки.'
-                      : 'После сохранения лента идей перечитается.'),
+                      : 'Токен сохранится в Android Keystore; пустое поле '
+                          'удалит привязку. Затем лента перечитается.'),
               style: T.body(11, color: problem == null ? C.faint : C.red, height: 1.4),
             ),
             const SizedBox(height: 14),

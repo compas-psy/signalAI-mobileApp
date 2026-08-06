@@ -62,8 +62,10 @@ class Vault(context: Context) {
     fun clear() = prefs.edit().clear().apply()
 
     /**
-     * Читает секрет. Применяется только к некритичным значениям вроде
-     * идентификатора ключа API — сам секрет наружу не отдаётся, см. [signHmac].
+     * Расшифровывает значение для узких runtime-контрактов приложения.
+     * Биржевые секреты наружу не выдаются и используются через [signHmac];
+     * device bearer читается клиентом, потому что должен попасть в HTTPS-
+     * заголовок, но никогда не хранится в открытом виде на диске.
      */
     fun get(name: String): String? {
         val stored = prefs.getString(name, null) ?: return null

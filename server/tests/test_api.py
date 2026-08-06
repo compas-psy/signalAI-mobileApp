@@ -15,19 +15,26 @@ from decimal import Decimal
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import func, select
 
 from app.db import get_db
 from app.main import app
-from app.models import Bar, IdeaEvent, Instrument, TradeIdea
-from app.models.enums import AssetClass, IdeaStatus, Venue
-from tests.conftest import idea_kwargs
+from app.models import Bar, IdeaEvent, IdeaSkip, Instrument, PaperTrade, TradeIdea
+from app.models.enums import (
+    AssetClass,
+    IdeaStatus,
+    QualityStatus,
+    SkipReason,
+    Venue,
+)
+from tests.conftest import DEVICE_HEADERS, idea_kwargs
 
 
 @pytest.fixture
 def client(session):
     """Клиент, работающий в той же откатываемой транзакции, что и тест."""
     app.dependency_overrides[get_db] = lambda: session
-    with TestClient(app) as c:
+    with TestClient(app, headers=DEVICE_HEADERS) as c:
         yield c
     app.dependency_overrides.clear()
 
@@ -53,6 +60,8 @@ def test_openapi_is_valid_and_covers_contract(client):
         "/api/v1/ideas",
         "/api/v1/ideas/{idea_id}",
         "/api/v1/ideas/{idea_id}/events",
+        "/api/v1/ideas/{idea_id}/approve-paper",
+        "/api/v1/ideas/{idea_id}/reject",
         "/api/v1/ideas/scan",
         "/api/v1/risk/dashboard",
         "/api/v1/risk/halt",
@@ -295,13 +304,257 @@ def test_scan_with_no_setups_says_why(client):
     assert "не создаёт сделки ради нормы" in body["no_trade_reason"]
 
 
-def test_paper_approval_is_closed_until_execution_engine(client, session, instrument, now):
-    idea = TradeIdea(**idea_kwargs(instrument.instrument_id, now))
+def _actionable_idea(session, instrument, **overrides) -> TradeIdea:
+    moment = datetime.now(UTC)
+    values = idea_kwargs(
+        instrument.instrument_id,
+        moment,
+        status=IdeaStatus.TRIGGERED,
+        quality_status=QualityStatus.ACTIVE,
+        was_presented=True,
+    )
+    values.update(overrides)
+    idea = TradeIdea(**values)
     session.add(idea)
     session.flush()
-    r = client.post(f"/api/v1/ideas/{idea.id}/approve-paper")
-    assert r.status_code == 503
-    assert "paper_only=true" in r.json()["detail"]
+    return idea
+
+
+@pytest.mark.parametrize(
+    ("quality", "status", "bucket"),
+    [
+        (QualityStatus.ACTIVE, IdeaStatus.WATCH, "wait_for_trigger"),
+        (QualityStatus.WATCH, IdeaStatus.TRIGGERED, "wait_for_trigger"),
+        (QualityStatus.ACTIVE, IdeaStatus.TRIGGERED, "trade_now"),
+    ],
+)
+def test_today_uses_the_same_actionable_status_pair_as_approval(
+    client, session, instrument, quality, status, bucket
+):
+    idea = _actionable_idea(
+        session,
+        instrument,
+        quality_status=quality,
+        status=status,
+    )
+
+    body = client.get("/api/v1/ideas/today").json()
+    other = "trade_now" if bucket == "wait_for_trigger" else "wait_for_trigger"
+
+    assert [row["id"] for row in body[bucket]] == [str(idea.id)]
+    assert body[other] == []
+    if bucket == "wait_for_trigger":
+        assert "ожидающие триггера" in body["no_trade_reason"]
+    else:
+        assert body["no_trade_reason"] == ""
+
+
+def test_today_does_not_show_quality_rejected_as_waiting(
+    client, session, instrument
+):
+    _actionable_idea(
+        session,
+        instrument,
+        quality_status=QualityStatus.REJECTED,
+        status=IdeaStatus.TRIGGERED,
+    )
+
+    body = client.get("/api/v1/ideas/today").json()
+
+    assert body["trade_now"] == []
+    assert body["wait_for_trigger"] == []
+    assert "не создаёт сделки ради нормы" in body["no_trade_reason"]
+
+
+def test_paper_approval_requires_device_bearer_then_reaches_endpoint(
+    client, session, instrument
+):
+    idea = _actionable_idea(session, instrument)
+
+    with TestClient(app) as anonymous:
+        assert anonymous.get("/health").status_code == 200
+        denied = anonymous.post(f"/api/v1/ideas/{idea.id}/approve-paper")
+
+    assert denied.status_code == 401
+    assert denied.headers["www-authenticate"] == "Bearer"
+    assert session.scalar(select(func.count()).select_from(PaperTrade)) == 0
+
+    allowed = client.post(f"/api/v1/ideas/{idea.id}/approve-paper")
+    assert allowed.status_code == 200
+    assert allowed.json()["decision"] == "APPROVED_PAPER"
+    assert allowed.json()["paper_only"] is True
+
+
+def test_paper_approval_creates_normalized_trade_from_idea_plan(
+    client, session, instrument
+):
+    idea = _actionable_idea(session, instrument)
+
+    response = client.post(f"/api/v1/ideas/{idea.id}/approve-paper")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["decision"] == "APPROVED_PAPER"
+    assert body["paper_only"] is True
+    assert body["idempotent_replay"] is False
+    assert body["idea_status"] == "ACTIVE"
+    trade = body["trade"]
+    assert trade["idea_id"] == str(idea.id)
+    assert trade["instrument_id"] == instrument.instrument_id
+    assert trade["status"] == "PENDING"
+    assert Decimal(trade["entry"]) == idea.entry_reference
+    assert Decimal(trade["initial_stop"]) == idea.stop
+    assert [Decimal(value) for value in trade["tp_prices"]] == [
+        idea.tp1,
+        idea.tp2,
+        idea.tp3,
+    ]
+    assert session.scalar(select(func.count()).select_from(PaperTrade)) == 1
+    event = session.execute(
+        select(IdeaEvent).where(IdeaEvent.idea_id == idea.id)
+    ).scalar_one()
+    assert event.reason_code == "user_approved_paper"
+    assert event.user_action is True
+
+
+def test_paper_approval_is_idempotent(client, session, instrument):
+    idea = _actionable_idea(session, instrument)
+
+    first = client.post(f"/api/v1/ideas/{idea.id}/approve-paper").json()
+    second = client.post(f"/api/v1/ideas/{idea.id}/approve-paper").json()
+
+    assert second["idempotent_replay"] is True
+    assert second["trade"]["id"] == first["trade"]["id"]
+    assert session.scalar(select(func.count()).select_from(PaperTrade)) == 1
+    assert session.scalar(
+        select(func.count()).select_from(IdeaEvent).where(
+            IdeaEvent.idea_id == idea.id,
+            IdeaEvent.reason_code == "user_approved_paper",
+        )
+    ) == 1
+
+
+def test_paper_approval_conflicts_with_other_live_trade_on_instrument(
+    client, session, instrument
+):
+    first = _actionable_idea(session, instrument)
+    second = _actionable_idea(session, instrument)
+    assert client.post(f"/api/v1/ideas/{first.id}/approve-paper").status_code == 200
+
+    response = client.post(f"/api/v1/ideas/{second.id}/approve-paper")
+
+    assert response.status_code == 409
+    assert "другая paper-сделка" in response.json()["detail"]
+    assert session.scalar(select(func.count()).select_from(PaperTrade)) == 1
+
+
+@pytest.mark.parametrize(
+    ("status", "quality", "detail"),
+    [
+        (IdeaStatus.WATCH, QualityStatus.WATCH, "quality_status=WATCH"),
+        (IdeaStatus.TRIGGERED, QualityStatus.REJECTED, "quality_status=REJECTED"),
+        (IdeaStatus.WATCH, QualityStatus.ACTIVE, "не подтверждена рынком"),
+    ],
+)
+def test_paper_approval_rejects_non_actionable_idea(
+    client, session, instrument, status, quality, detail
+):
+    idea = _actionable_idea(
+        session,
+        instrument,
+        status=status,
+        quality_status=quality,
+    )
+
+    response = client.post(f"/api/v1/ideas/{idea.id}/approve-paper")
+
+    assert response.status_code == 409
+    assert detail in response.json()["detail"]
+    assert session.scalar(select(func.count()).select_from(PaperTrade)) == 0
+
+
+def test_paper_approval_rejects_stale_idea(client, session, instrument):
+    moment = datetime.now(UTC)
+    idea = _actionable_idea(
+        session,
+        instrument,
+        signal_time=moment - timedelta(days=6),
+        expires_at=moment - timedelta(minutes=1),
+    )
+
+    response = client.post(f"/api/v1/ideas/{idea.id}/approve-paper")
+
+    assert response.status_code == 409
+    assert "устарела" in response.json()["detail"]
+    assert session.scalar(select(func.count()).select_from(PaperTrade)) == 0
+
+
+def test_reject_is_append_only_idempotent_and_hides_idea_from_today(
+    client, session, instrument
+):
+    idea = _actionable_idea(session, instrument)
+    payload = {"reason": SkipReason.NO_TRUST.value, "comment": "не верю объёму"}
+
+    first = client.post(f"/api/v1/ideas/{idea.id}/reject", json=payload)
+    replay = client.post(
+        f"/api/v1/ideas/{idea.id}/reject",
+        json={"reason": SkipReason.OTHER.value, "comment": "не перезаписывать"},
+    )
+
+    assert first.status_code == 200
+    assert replay.status_code == 200
+    assert first.json()["decision"] == "REJECTED"
+    assert first.json()["idea_status"] == "CANCELLED"
+    assert replay.json()["idempotent_replay"] is True
+    assert replay.json()["reason"] == SkipReason.NO_TRUST.value
+    assert replay.json()["comment"] == "не верю объёму"
+    assert session.scalar(select(func.count()).select_from(IdeaSkip)) == 1
+    event = session.execute(
+        select(IdeaEvent).where(IdeaEvent.idea_id == idea.id)
+    ).scalar_one()
+    assert event.reason_code == "user_rejected"
+    assert event.user_action is True
+    assert client.get("/api/v1/ideas/today").json()["trade_now"] == []
+    assert any(
+        row["id"] == str(idea.id) for row in client.get("/api/v1/ideas").json()
+    )
+
+
+def test_approved_and_rejected_decisions_cannot_cross(
+    client, session, instrument
+):
+    approved = _actionable_idea(session, instrument)
+    assert client.post(f"/api/v1/ideas/{approved.id}/approve-paper").status_code == 200
+    rejected_after = client.post(
+        f"/api/v1/ideas/{approved.id}/reject",
+        json={"reason": SkipReason.OTHER.value},
+    )
+    assert rejected_after.status_code == 409
+
+    other = Instrument(
+        instrument_id="MOEX:FUT:BRU6",
+        venue=Venue.MOEX,
+        asset_class=AssetClass.FUTURES,
+        symbol="BRU6",
+        title="Brent, сентябрь 2026",
+        currency="RUB",
+        tick_size=Decimal("0.01"),
+        tick_value=Decimal("7.5"),
+        quantity_step=Decimal("1"),
+        min_quantity=Decimal("1"),
+        contract_multiplier=Decimal("10"),
+        in_universe=True,
+    )
+    session.add(other)
+    session.flush()
+    rejected = _actionable_idea(session, other)
+    assert client.post(
+        f"/api/v1/ideas/{rejected.id}/reject",
+        json={"reason": SkipReason.OTHER.value},
+    ).status_code == 200
+    approved_after = client.post(f"/api/v1/ideas/{rejected.id}/approve-paper")
+    assert approved_after.status_code == 409
+    assert "отклонена" in approved_after.json()["detail"]
 
 
 # ─── Риск ─────────────────────────────────────────────────────────────────

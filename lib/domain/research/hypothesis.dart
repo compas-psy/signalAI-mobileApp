@@ -158,11 +158,20 @@ class Hypothesis {
   final double evidenceScore;
   final double economicScore;
 
-  /// null означает «не измерено» и никогда не подменяется средним: у нас
-  /// нет лицензированных данных о консенсусе, и делать вид, что есть,
-  /// хуже, чем сказать «неизвестно».
+  /// D1 technical timing overlay. Это не консенсус и не оценка того,
+  /// «учтена ли» гипотеза рынком: число описывает только пригодность
+  /// текущего технического момента для дальнейшего наблюдения.
   final double? marketContextScore;
   final String marketContextState;
+
+  String get marketContextLabel => switch (marketContextState) {
+        'aligned_entry' => 'технически согласовано',
+        'aligned_watch' => 'тренд совпадает, ждём',
+        'extended' => 'цена растянута',
+        'conflicting' => 'техника противоречит',
+        'insufficient_history' => 'истории мало',
+        _ => 'не измерено',
+      };
 
   /// Приоритет проверки, а не ожидаемая доходность.
   final double researchPriority;

@@ -160,6 +160,28 @@ def test_один_сильный_сигнал_не_становится_подт
     assert "независимых источников" in result.state_reason
 
 
+def test_market_overlay_меняет_приоритет_но_не_ослабляет_3_2_1():
+    """Даже идеальный timing не заменяет независимые доказательства."""
+    one = [sig("BUDGET", evidence=(ev("eis", "state"),))]
+    conflicting = strong(
+        signals=one,
+        market_context=D("0.20"),
+        market_context_state="conflicting",
+    )
+    aligned = strong(
+        signals=one,
+        market_context=D("0.95"),
+        market_context_state="aligned_entry",
+    )
+
+    assert conflicting.priority < aligned.priority
+    assert conflicting.state is HypothesisState.EARLY_CANDIDATE
+    assert aligned.state is HypothesisState.EARLY_CANDIDATE
+    assert conflicting.gate.passed is False
+    assert aligned.gate.passed is False
+    assert conflicting.gate.failures == aligned.gate.failures
+
+
 def test_без_причинной_цепочки_это_наблюдение():
     """Утверждение без проверяемого следствия не является гипотезой."""
     result = strong(
@@ -207,11 +229,11 @@ def test_полный_набор_доводит_до_готовности_к_р�
 
 
 def test_без_рыночного_контекста_готовность_не_присваивается():
-    """§12.5: экономика доказана, но неизвестно, знает ли о ней рынок."""
+    """§12.5: экономика доказана, но timing-overlay ещё не рассчитан."""
     result = strong(market_context=None)
     assert result.state is HypothesisState.CONFIRMED
     assert result.market_context_missing
-    assert "учтено ли изменение в цене" in result.state_reason
+    assert "D1-контекста цены и объёма" in result.state_reason
 
 
 def test_половина_опровержений_блокирует_подтверждение():

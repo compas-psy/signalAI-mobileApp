@@ -33,7 +33,10 @@ class IdeasScreen extends StatelessWidget {
     final now = DateTime.now();
     final filter = IdeasPill.values[pill.clamp(0, IdeasPill.values.length - 1)];
 
-    if (controller.digest == null) {
+    // Production thin-client не строит локальный digest вовсе. Его лента
+    // готова после `EngineClient.today()` и не должна ждать выключенный
+    // анализатор устройства.
+    if (!controller.thinMode && controller.digest == null) {
       return _Pending(
         loading: controller.digestLoading,
         stage: controller.analysisStage,
@@ -116,9 +119,9 @@ class IdeasScreen extends StatelessWidget {
     final ranked = IdeaPriority.rank(ideas, now);
     return switch (filter) {
       IdeasPill.decisions =>
-        ranked.where((i) => i.state.needsAttention).toList(),
+        ranked.where((i) => i.readiness.canAct && i.actionable).toList(),
       IdeasPill.watch =>
-        ranked.where((i) => i.state == IdeaState.watch).toList(),
+        ranked.where((i) => i.readiness == IdeaReadiness.waiting).toList(),
       IdeasPill.active =>
         ranked.where((i) => i.state == IdeaState.active).toList(),
       IdeasPill.all => ranked,
@@ -182,7 +185,9 @@ class IdeaCard extends StatelessWidget {
                             background: directionBackground(idea.direction),
                           ),
                           const SizedBox(width: 6),
-                          StateBadge(state: idea.state),
+                          idea.state.isTerminal || idea.state == IdeaState.active
+                              ? StateBadge(state: idea.state)
+                              : ReadinessBadge(readiness: idea.readiness),
                         ],
                       ),
                       const SizedBox(height: 5),
@@ -211,6 +216,18 @@ class IdeaCard extends StatelessWidget {
                         overflow: TextOverflow.ellipsis,
                         style: T.body(11.5, color: C.muted),
                       ),
+                      if (!idea.state.isTerminal &&
+                          idea.state != IdeaState.active) ...[
+                        const SizedBox(height: 3),
+                        Text(
+                          idea.readiness.detail,
+                          style: T.body(
+                            10.5,
+                            color: idea.readiness.canAct ? C.accent : C.info,
+                            weight: 700,
+                          ),
+                        ),
+                      ],
                     ],
                   ),
                 ),

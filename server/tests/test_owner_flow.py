@@ -29,8 +29,8 @@ from app.db import get_db
 from app.main import app
 from app.models import Bar, PaperTrade, TradeIdea
 from app.models.enums import IdeaStatus, PaperStatus, Timeframe
-from app.paper.tracker import MAX_HOLD_DAYS, track
-from tests.conftest import idea_kwargs
+from app.paper.tracker import MAX_HOLD_DAYS, open_for, track
+from tests.conftest import DEVICE_HEADERS, idea_kwargs
 
 NOW = datetime(2026, 8, 3, 10, 0, tzinfo=UTC)
 
@@ -38,7 +38,7 @@ NOW = datetime(2026, 8, 3, 10, 0, tzinfo=UTC)
 @pytest.fixture
 def client(session):
     app.dependency_overrides[get_db] = lambda: session
-    with TestClient(app) as c:
+    with TestClient(app, headers=DEVICE_HEADERS) as c:
         yield c
     app.dependency_overrides.clear()
 
@@ -59,11 +59,13 @@ def бар(instrument_id: str, index: int, low, high) -> Bar:
 
 
 def сработавшая_идея(session, instrument) -> TradeIdea:
-    """LONG: вход 90100, стоп 89400, цели 91000 / 92000 / 93000."""
+    """Явно одобренная LONG paper-идея с тремя целями."""
     base = idea_kwargs(instrument.instrument_id, NOW)
     base.update(status=IdeaStatus.TRIGGERED, quality_status="ACTIVE")
     idea = TradeIdea(**base)
     session.add(idea)
+    session.flush()
+    assert open_for(session, idea, now=NOW) is not None
     session.flush()
     return idea
 

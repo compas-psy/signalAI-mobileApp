@@ -27,10 +27,11 @@ from sqlalchemy.orm import Session
 
 from ..models import ResearchObservation
 from ..models.enums import ResearchDirection
+from .confirmations import Reading, count as count_confirmations, history_verdict
 from .engines import demand
 from .fusion import Falsifier, SignalInput
-from .confirmations import Reading, count as count_confirmations, history_verdict
 from .issuers import Issuer, automatic, in_section, of
+from .market_context import MarketContext, for_hypothesis
 from .pipeline import run as run_pipeline
 
 #: Периодичность мониторинга предприятий. Общий порог в пять периодов был
@@ -242,9 +243,26 @@ def run_demand(session: Session, *, now: datetime | None = None) -> EngineReport
 
     # Показания по периодам собираются один раз и раздаются по разделам:
     # подтверждение — это тот же сигнал в другом экономическом периоде.
+    market_snapshots: dict[tuple[str, ResearchDirection], MarketContext] = {}
+
     def resolve(bucket: list[SignalInput]) -> dict:
         issuer_section = getattr(of(bucket[0].entity_id), "section", "")
-        return _resolve(bucket, readings_by_section.get(issuer_section, []))
+        head = bucket[0]
+        key = (head.instrument_id, head.direction)
+        snapshot = market_snapshots.get(key)
+        if snapshot is None:
+            snapshot = for_hypothesis(
+                session,
+                instrument_id=head.instrument_id,
+                direction=head.direction,
+            )
+            market_snapshots[key] = snapshot
+        return {
+            **_resolve(bucket, readings_by_section.get(issuer_section, [])),
+            "market_context": snapshot.score,
+            "market_context_state": snapshot.state,
+            "market_context_detail": snapshot.detail,
+        }
 
     outcome = run_pipeline(
         session, signals, resolve=resolve, critic=_critic, now=moment
@@ -253,4 +271,10 @@ def run_demand(session: Session, *, now: datetime | None = None) -> EngineReport
     return report
 
 
-__all__ = ["DEMAND_FREQUENCY", "DEMAND_PREFIX", "EngineReport", "demand_periods", "run_demand"]
+__all__ = [
+    "DEMAND_FREQUENCY",
+    "DEMAND_PREFIX",
+    "EngineReport",
+    "demand_periods",
+    "run_demand",
+]

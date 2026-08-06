@@ -76,6 +76,7 @@ class HypothesisOut(ApiModel):
     economic_score: Money = Decimal(0)
     market_context_score: Money | None = None
     market_context_state: str = "unknown"
+    market_context_detail: dict = Field(default_factory=dict)
     research_priority: Money = Decimal(0)
 
     three_two_one: dict = Field(default_factory=dict)
@@ -285,6 +286,15 @@ def _facts(session: Session, key: str) -> dict:
 
 
 def _out(session: Session, row: ResearchHypothesis) -> HypothesisOut:
+    facts = row.fact_summary_json or []
+    market_detail = next(
+        (
+            item
+            for item in facts
+            if isinstance(item, dict) and item.get("kind") == "market_context"
+        ),
+        {},
+    )
     return HypothesisOut(
         id=str(row.id),
         version=row.version,
@@ -302,6 +312,7 @@ def _out(session: Session, row: ResearchHypothesis) -> HypothesisOut:
         economic_score=row.economic_score,
         market_context_score=row.market_context_score,
         market_context_state=row.market_context_state,
+        market_context_detail=market_detail,
         research_priority=row.research_priority,
         three_two_one=row.three_two_one_json or {},
         promotion_blockers=list(
@@ -309,7 +320,7 @@ def _out(session: Session, row: ResearchHypothesis) -> HypothesisOut:
         ),
         target_kpis=row.target_kpis_json or [],
         causal_path=row.causal_path_json or {},
-        fact_summary=row.fact_summary_json or [],
+        fact_summary=facts,
         alternative_explanations=row.alternative_explanations_json or [],
         risk_flags=[str(f) for f in (row.risk_flags or [])],
         falsifiers=row.falsifiers_json or [],

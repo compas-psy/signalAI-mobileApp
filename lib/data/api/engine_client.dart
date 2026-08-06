@@ -39,6 +39,57 @@ class EngineIdeas {
   bool get isAvailable => unavailableReason == null;
 }
 
+/// Результат решения владельца по серверной идее.
+///
+/// Сервер возвращает envelope и может приложить созданную paper-сделку.
+/// Поля envelope сохраняются, чтобы повторный идемпотентный ответ не
+/// выглядел как новая сделка.
+class IdeaDecision {
+  const IdeaDecision({
+    required this.ideaId,
+    required this.decision,
+    required this.ideaStatus,
+    required this.paperOnly,
+    required this.idempotentReplay,
+    this.trade,
+  });
+
+  final String ideaId;
+  final String decision;
+  final String ideaStatus;
+  final bool paperOnly;
+  final bool idempotentReplay;
+  final PaperPosition? trade;
+
+  factory IdeaDecision.fromJson(Map<String, dynamic> json) {
+    // Отсутствующий признак нельзя трактовать как paper-only. Иначе ответ
+    // неизвестного/старого live-контракта выглядел бы безопасным и controller
+    // обновил бы локальное состояние до проверки режима исполнения.
+    if (json['paper_only'] != true) {
+      throw ApiException(
+        'Сервер не подтвердил безопасный режим paper-only. Решение не принято.',
+      );
+    }
+    final decision = json['decision'];
+    if (decision is! String || decision.isEmpty) {
+      throw ApiException('Сервер вернул решение без типа. Решение не принято.');
+    }
+    return IdeaDecision(
+      ideaId: '${json['idea_id'] ?? _nestedIdeaId(json) ?? ''}',
+      decision: decision,
+      ideaStatus: '${json['idea_status'] ?? ''}',
+      paperOnly: true,
+      idempotentReplay: json['idempotent_replay'] == true,
+      trade: EngineContract.paperTrade(json),
+    );
+  }
+
+  static Object? _nestedIdeaId(Map<String, dynamic> json) {
+    final trade = json['trade'];
+    return trade is Map<String, dynamic> ? trade['idea_id'] : null;
+  }
+}
+
 class EngineClient {
   EngineClient({ApiClient? client}) : _api = client ?? ApiClient();
 
@@ -67,8 +118,15 @@ class EngineClient {
       // Два списка, а не один: §16 разделяет «торговать сейчас» и «ждать
       // триггера». Слить их значило бы выдать наблюдение за готовую сделку.
       final ideas = <Idea>[
-        ..._parse(json['trade_now']),
-        ..._parse(json['wait_for_trigger']),
+        ..._parse(
+          json['trade_now'],
+          readiness: IdeaReadiness.active,
+        ),
+        ..._parse(
+          json['wait_for_trigger'],
+          readiness: IdeaReadiness.waiting,
+          actionable: false,
+        ),
       ];
       return EngineIdeas(
         ideas: ideas,
@@ -82,11 +140,20 @@ class EngineClient {
     }
   }
 
-  static List<Idea> _parse(Object? raw) {
+  static List<Idea> _parse(
+    Object? raw, {
+    IdeaReadiness? readiness,
+    bool? actionable,
+  }) {
     if (raw is! List) return const [];
     return [
       for (final item in raw)
-        if (item is Map<String, dynamic>) EngineContract.idea(item),
+        if (item is Map<String, dynamic>)
+          EngineContract.idea(
+            item,
+            readiness: readiness,
+            actionable: actionable,
+          ),
     ];
   }
 
@@ -180,6 +247,93 @@ class EngineClient {
       onFailure?.call('движок: ${_reason(error)}');
       return null;
     }
+  }
+
+  /// Каноническая последовательность таймфреймов для графика.
+  ///
+  /// Detail может назвать один и тот же период как `H4` или `4H`, а bars
+  /// принимает канонические `4h`, `1h`, `1d`. Алиасы нормализуются до
+  /// запроса, затем пробуются сетапный, 4H, 1H и D1 без дублей.
+  static List<String> chartTimeframes(String setup) {
+    String canonical(String raw) => switch (raw.trim().toLowerCase()) {
+          'h4' || '4h' => '4h',
+          'h1' || '1h' => '1h',
+          'd1' || '1d' => '1d',
+          final value when value.isNotEmpty => value,
+          _ => '4h',
+        };
+
+    final result = <String>[];
+    for (final value in [canonical(setup), '4h', '1h', '1d']) {
+      if (!result.contains(value)) result.add(value);
+    }
+    return result;
+  }
+
+  /// Свечи с детерминированной деградацией таймфрейма.
+  ///
+  /// Промежуточные 404/пустые ряды не показываются пользователю как итоговая
+  /// ошибка. Причина сообщается только после исчерпания всей цепочки.
+  Future<SignalChart?> barsWithFallback(
+    String instrumentId, {
+    required String setupTimeframe,
+    int limit = 200,
+    void Function(String reason)? onFailure,
+  }) async {
+    final attempts = chartTimeframes(setupTimeframe);
+    final reasons = <String>[];
+    for (final timeframe in attempts) {
+      final chart = await bars(
+        instrumentId,
+        timeframe: timeframe,
+        limit: limit,
+        onFailure: (reason) => reasons.add('$timeframe: $reason'),
+      );
+      if (chart != null) return chart;
+    }
+    final details = reasons.isEmpty ? '' : ' ${reasons.join(' · ')}';
+    onFailure?.call(
+      'Свечи недоступны: проверены ${attempts.join(', ')}.$details',
+    );
+    return null;
+  }
+
+  /// Явно принять только paper-сделку. Повтор безопасен по idea id.
+  Future<IdeaDecision> approvePaper(String ideaId) async {
+    if (!isConfigured) throw ApiException(_noAddress);
+    final json = await _api.post(
+      '$_base/ideas/$ideaId/approve-paper',
+      idempotencyKey: 'approve-paper:$ideaId',
+    );
+    final result = IdeaDecision.fromJson(json);
+    if (result.decision != 'APPROVED_PAPER' ||
+        result.ideaId != ideaId ||
+        result.trade == null ||
+        result.trade!.ideaId != ideaId) {
+      throw ApiException(
+        'Сервер не подтвердил создание paper-сделки для этой идеи.',
+      );
+    }
+    return result;
+  }
+
+  /// Отклонить серверную идею с причиной из общего справочника.
+  Future<IdeaDecision> rejectIdea(
+    String ideaId, {
+    required String reason,
+    String comment = '',
+  }) async {
+    if (!isConfigured) throw ApiException(_noAddress);
+    final json = await _api.post(
+      '$_base/ideas/$ideaId/reject',
+      body: {'reason': reason, 'comment': comment},
+      idempotencyKey: 'reject:$ideaId',
+    );
+    final result = IdeaDecision.fromJson(json);
+    if (result.decision != 'REJECTED' || result.ideaId != ideaId) {
+      throw ApiException('Сервер не подтвердил отказ от этой идеи.');
+    }
+    return result;
   }
 
   /// Пакеты капитала (§6, `GET /api/v1/portfolio/packages`).

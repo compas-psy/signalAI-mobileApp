@@ -46,6 +46,28 @@ class StateBadge extends StatelessWidget {
   }
 }
 
+/// Бейдж готовности из серверной выдачи.
+///
+/// Он намеренно не выводится из lifecycle state: `wait_for_trigger` должен
+/// оставаться наблюдением, даже если сводка принесла статус TRIGGERED.
+class ReadinessBadge extends StatelessWidget {
+  const ReadinessBadge({super.key, required this.readiness});
+
+  final IdeaReadiness readiness;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = readiness.canAct ? C.accent : C.info;
+    return OutlineBadge(
+      label: readiness.label,
+      color: color,
+      borderColor: color.withValues(alpha: 0.35),
+      background: color.withValues(alpha: 0.12),
+      fontWeight: 800,
+    );
+  }
+}
+
 /// Чип состояния с точкой — первый элемент шапки разбора (прототип: чип
 /// статуса в `idea-topline`).
 class IdeaStateChip extends StatelessWidget {
@@ -126,7 +148,13 @@ class IdeaDetailHead extends StatelessWidget {
   Widget build(BuildContext context) {
     final state = idea?.state;
     final chips = <Widget>[
-      if (state != null) IdeaStateChip(state: state),
+      if (idea != null &&
+          state != null &&
+          !state.isTerminal &&
+          state != IdeaState.active)
+        ReadinessBadge(readiness: idea!.readiness)
+      else if (state != null)
+        IdeaStateChip(state: state),
       ContextChip(signal.market.label),
       if (idea != null) ContextChip(idea!.strategy.label),
     ];

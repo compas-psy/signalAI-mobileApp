@@ -4,6 +4,7 @@ import 'package:signalai/domain/enums.dart';
 import 'package:signalai/domain/idea/evidence.dart';
 import 'package:signalai/domain/idea/idea.dart';
 import 'package:signalai/domain/idea/idea_state.dart';
+import 'package:signalai/domain/idea/paper_position.dart';
 import 'package:signalai/domain/idea/quality_score.dart';
 
 /// Разбор контракта §18.
@@ -351,6 +352,21 @@ void main() {
       final pending = tradeJson()..['status'] = 'PENDING';
       expect(EngineContract.paperTrades([pending]).single.pending, isTrue);
       expect(EngineContract.paperTrades([tradeJson()]).single.pending, isFalse);
+    });
+
+    test('закрытие и причина доезжают для фонового transition diff', () {
+      final closed = tradeJson()
+        ..['status'] = 'CLOSED'
+        ..['closed_at'] = '2026-08-03T14:00:00Z'
+        ..['outcome'] = 'TP2'
+        ..['close_reason'] = 'цель достигнута';
+
+      final trade = EngineContract.paperTrades([closed]).single;
+
+      expect(trade.status, PaperPositionStatus.closed);
+      expect(trade.closedAt, isNotNull);
+      expect(trade.outcome, 'TP2');
+      expect(trade.closeReason, 'цель достигнута');
     });
   });
 }

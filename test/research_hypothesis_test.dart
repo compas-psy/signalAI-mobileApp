@@ -14,6 +14,7 @@ Map<String, dynamic> hypothesisJson({
   String state = 'early_candidate',
   Map<String, dynamic>? gate,
   Object? marketContext,
+  String marketContextState = 'unknown',
 }) =>
     {
       'id': 'h-1',
@@ -29,7 +30,7 @@ Map<String, dynamic> hypothesisJson({
       'evidence_score': '0.71',
       'economic_score': '0.66',
       'market_context_score': marketContext,
-      'market_context_state': 'unknown',
+      'market_context_state': marketContextState,
       'research_priority': '61.4',
       'three_two_one': gate ??
           {
@@ -80,14 +81,30 @@ void main() {
       expect(h.economicScore, closeTo(0.66, 1e-12));
     });
 
-    test('неизмеренный рыночный контекст остаётся неизмеренным', () {
-      // Подставить сюда среднее значило бы выдумать знание о том, учтено ли
-      // изменение в цене.
+    test('неизмеренный технический момент остаётся неизмеренным', () {
       final absent = Hypothesis.fromJson(hypothesisJson());
       expect(absent.marketContextScore, isNull);
 
       final measured = Hypothesis.fromJson(hypothesisJson(marketContext: '0.4'));
       expect(measured.marketContextScore, closeTo(0.4, 1e-12));
+    });
+
+    test('D1 overlay называется техническим моментом, а не консенсусом', () {
+      const labels = {
+        'aligned_entry': 'технически согласовано',
+        'aligned_watch': 'тренд совпадает, ждём',
+        'extended': 'цена растянута',
+        'conflicting': 'техника противоречит',
+        'insufficient_history': 'истории мало',
+      };
+
+      for (final entry in labels.entries) {
+        final hypothesis = Hypothesis.fromJson(hypothesisJson(
+          marketContext: '0.4',
+          marketContextState: entry.key,
+        ));
+        expect(hypothesis.marketContextLabel, entry.value, reason: entry.key);
+      }
     });
 
     test('противоречащее доказательство не теряется', () {

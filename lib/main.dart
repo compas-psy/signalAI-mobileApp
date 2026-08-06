@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'core/app_mode.dart';
 import 'data/local_analysis_repository.dart';
 import 'data/mock/demo_repository.dart';
 import 'data/repository.dart';
@@ -29,13 +30,14 @@ void main() {
     DeviceOrientation.landscapeRight,
   ]);
 
-  // Режим сборки — это выбор источника **журнала, настроек и книги
-  // операций**, и только его:
-  //   local — считает устройство по публичным данным бирж;
-  //   demo  — данные макета, без сети.
+  // Режим production — `thin`: LocalAnalysisRepository временно остаётся
+  // хранилищем настроек, снимка T-Invest и старого журнала, но controller не
+  // запускает его scanner/optimizer и не смешивает ledger с server paper.
+  // `local` оставлен только для legacy/dev, `demo` — fixture без сети.
   //
-  // Идеи и пакеты капитала берёт `EngineClient` по адресу движка §18 в любом
-  // режиме, и `SIGNALAI_API_BASE_URL` на этот выбор не влияет.
+  // В `thin` идеи и пакеты капитала берёт `EngineClient` по адресу движка
+  // §18. `demo` использует только fixture, а `local` не является production-
+  // режимом и сохранён временно для разработки старого контура.
   //
   // Режима «server» здесь больше нет. Он поднимал `RestRepository` — клиент
   // старого контракта (`/v1/settings`, `/v1/trades`, `/v1/strategies`),
@@ -45,7 +47,7 @@ void main() {
   // хватило, 30.07 сборка с этим режимом уехала на устройство. Комментарий
   // не защищает от выбора, которого не должно существовать; выбор убран и из
   // сборки (`.github/workflows/android-sideload.yml`), и отсюда.
-  const mode = String.fromEnvironment('SIGNALAI_MODE', defaultValue: 'local');
+  const mode = AppMode.name;
   if (mode == 'server') {
     // Отказ, а не тихая подмена на local: сборка, которая называет себя
     // серверной, а считает на устройстве, вводит в заблуждение сильнее, чем
@@ -53,33 +55,44 @@ void main() {
     throw StateError(
       'SIGNALAI_MODE=server больше не поддерживается: RestRepository ходит по '
       'адресам старого контракта /v1/*, которых у движка §18 нет. '
-      'Собирайте local (идеи и пакеты всё равно берутся с движка) или demo.',
+      'Для production собирайте thin; demo предназначен только для fixture, '
+      'а local — для legacy-разработки.',
     );
   }
   final SignalAiRepository repository = switch (mode) {
     'demo' => DemoRepository(),
-    _ => LocalAnalysisRepository(),
+    'thin' || 'local' => LocalAnalysisRepository(),
+    _ => throw StateError(
+        'Неизвестный SIGNALAI_MODE=$mode. Разрешены thin, local и demo; '
+        'опечатка не должна включать legacy-анализатор.',
+      ),
   };
 
-  runApp(SignalAiApp(repository: repository));
+  runApp(SignalAiApp(repository: repository, thinMode: mode == 'thin'));
 }
 
 class SignalAiApp extends StatefulWidget {
-  const SignalAiApp({super.key, required this.repository});
+  const SignalAiApp({
+    super.key,
+    required this.repository,
+    this.thinMode = AppMode.thin,
+  });
 
   final SignalAiRepository repository;
+  final bool thinMode;
 
   @override
   State<SignalAiApp> createState() => _SignalAiAppState();
 }
 
 class _SignalAiAppState extends State<SignalAiApp> with WidgetsBindingObserver {
-  late final AppController _controller = AppController(widget.repository);
+  late final AppController _controller = AppController(
+    widget.repository,
+    thinMode: widget.thinMode,
+  );
 
-  /// Фоновый контур поднимается на уходе в фон и снимается на возврате.
-  ///
-  /// Так передний план и фон никогда не считают одновременно: пока экран
-  /// открыт, состояние пишет интерфейс, и это единственный писатель.
+  /// Legacy-контур поднимается только вне UI. Thin polling пишет отдельный
+  /// server snapshot и сохраняет Android-расписание при возврате на экран.
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     switch (state) {

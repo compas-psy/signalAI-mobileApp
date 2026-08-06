@@ -23,6 +23,7 @@ import pytest
 from app.research.adapters import cbr, fns
 from app.research.collect import Fetched
 from app.research.policy import Permit
+from tests.conftest import DEVICE_HEADERS
 
 D = Decimal
 NOW = datetime(2026, 8, 3, 9, 0, tzinfo=UTC)
@@ -256,7 +257,7 @@ def test_проба_доступности_не_ходит_в_сеть_у_зап
     sync_registry(session, now=NOW)
     app.dependency_overrides[get_db] = lambda: session
     try:
-        with TestClient(app) as client:
+        with TestClient(app, headers=DEVICE_HEADERS) as client:
             body = client.get("/api/v1/research/sources/reachability").json()
     finally:
         app.dependency_overrides.clear()

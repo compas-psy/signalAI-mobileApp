@@ -11,6 +11,10 @@ name: Развернуть сервер на VPS
 on:
   workflow_dispatch:
     inputs:
+      source_ref:
+        description: 'Exact branch, tag or commit used for bootstrap/update and provenance'
+        required: true
+        type: string
       domain:
         description: 'Домен сервера (пусто — без TLS, телефон не подключится)'
         required: false
@@ -45,11 +49,62 @@ on:
 
 # Два развёртывания одновременно — это гонка за один и тот же docker-compose.
 concurrency:
-  group: deploy-server
+  group: signalai-production-deploy
   cancel-in-progress: false
 
 jobs:
+  resolve:
+    name: Resolve requested source
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      source_sha: ${{ steps.source.outputs.source_sha }}
+      source_ref: ${{ steps.source.outputs.source_ref }}
+    steps:
+      - name: Reject an empty source ref
+        env:
+          SOURCE_REF: ${{ inputs.source_ref }}
+        run: |
+          test -n "$SOURCE_REF" || {
+            echo '::error::source_ref must not be empty'
+            exit 1
+          }
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+          fetch-depth: 1
+      - name: Pin source to an immutable commit
+        id: source
+        env:
+          SOURCE_REF: ${{ inputs.source_ref }}
+        run: |
+          set -euo pipefail
+          source_sha="$(git rev-parse --verify HEAD^{commit})"
+          test "${#source_sha}" -eq 40
+          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+          echo "source_ref=$SOURCE_REF" >> "$GITHUB_OUTPUT"
+          {
+            echo '### Server workflow provenance'
+            echo
+            echo "- action: \`${{ inputs.action }}\`"
+            echo "- requested ref: \`$SOURCE_REF\`"
+            echo "- resolved commit: \`$source_sha\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  quality:
+    name: Quality gate before code mutation
+    needs: resolve
+    if: ${{ inputs.action == 'bootstrap' || inputs.action == 'update' }}
+    uses: ./.github/workflows/quality.yml
+    with:
+      source_ref: ${{ needs.resolve.outputs.source_sha }}
+
   deploy:
+    needs:
+      - resolve
+      - quality
+    if: ${{ always() && needs.resolve.result == 'success' && (needs.quality.result == 'success' || needs.quality.result == 'skipped') }}
     runs-on: ubuntu-latest
     # Права минимальны: workflow ничего не пишет в репозиторий.
     permissions:
@@ -57,23 +112,64 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.source_sha }}
+          fetch-depth: 1
+
+      - name: Проверить provenance checkout
+        env:
+          EXPECTED_SHA: ${{ needs.resolve.outputs.source_sha }}
+          SOURCE_REF: ${{ needs.resolve.outputs.source_ref }}
+        run: |
+          set -euo pipefail
+          actual_sha="$(git rev-parse --verify HEAD^{commit})"
+          [ "$actual_sha" = "$EXPECTED_SHA" ] || {
+            echo "::error::Resolved $EXPECTED_SHA, checked out $actual_sha"
+            exit 1
+          }
+          echo "Действие ${{ inputs.action }}: $SOURCE_REF -> $actual_sha"
 
       - name: Проверить, что секреты заданы
         env:
+          ACTION: ${{ inputs.action }}
           HOST: ${{ inputs.host_override || secrets.VPS_HOST || secrets.SERVER_HOST }}
           USER_NAME: ${{ secrets.VPS_USER || inputs.ssh_user }}
           KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
+          DEVICE_TOKEN: ${{ secrets.SIGNALAI_DEVICE_TOKEN }}
         run: |
           missing=""
           [ -n "$HOST" ] || missing="$missing VPS_HOST|SERVER_HOST"
           [ -n "$USER_NAME" ] || missing="$missing VPS_USER (или задайте ssh_user при запуске)"
           [ -n "$KEY" ] || missing="$missing VPS_SSH_KEY|SSH_SECRET"
+          if [ "$ACTION" = bootstrap ] || [ "$ACTION" = update ]; then
+            [ -n "$DEVICE_TOKEN" ] || missing="$missing SIGNALAI_DEVICE_TOKEN"
+          fi
           if [ -n "$missing" ]; then
             echo "::error::не заданы секреты:$missing"
             echo "Задать: Settings → Secrets and variables → Actions → New repository secret"
             exit 1
           fi
           echo "Секреты на месте. Значения не печатаются намеренно."
+
+      - name: Подготовить device token без вывода значения
+        if: ${{ inputs.action == 'bootstrap' || inputs.action == 'update' }}
+        env:
+          DEVICE_TOKEN: ${{ secrets.SIGNALAI_DEVICE_TOKEN }}
+        run: |
+          set -eu
+          umask 077
+          test -n "$DEVICE_TOKEN"
+          case "$DEVICE_TOKEN" in
+            *[!A-Za-z0-9._~-]*)
+              echo '::error::SIGNALAI_DEVICE_TOKEN must be one line of URL-safe characters'
+              exit 1
+              ;;
+          esac
+          [ "${#DEVICE_TOKEN}" -ge 32 ] || {
+            echo '::error::SIGNALAI_DEVICE_TOKEN must contain at least 32 characters'
+            exit 1
+          }
+          printf '%s' "$DEVICE_TOKEN" | base64 -w0 > /tmp/signalai-device-token.b64
 
       - name: Подготовить ключ
         env:
@@ -103,6 +199,7 @@ jobs:
           DOMAIN: ${{ inputs.domain }}
           ADMIN_IP: ${{ inputs.admin_ip }}
           ACME_EMAIL: ${{ inputs.acme_email }}
+          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
         run: |
           # Скрипт передаётся ФАЙЛОМ, а не потоком в `bash -s`.
           #
@@ -113,10 +210,25 @@ jobs:
           # строки объяснения. Отладить такое почти невозможно, поэтому
           # чинится не симптом, а способ передачи.
           cat > /tmp/remote.sh <<'REMOTE'
-          set -euxo pipefail
+          # Never enable xtrace here: this script reads SIGNALAI_DEVICE_TOKEN.
+          set -euo pipefail
           REPO=https://github.com/compas-psy/signalAI-mobileApp.git
-          BRANCH=claude/release-y40hk5
+          SOURCE_SHA="${SIGNALAI_SOURCE_SHA:?deployment source SHA is required}"
+          case "$SOURCE_SHA" in
+            *[!0-9a-f]*|'') echo 'invalid deployment source SHA' >&2; exit 1 ;;
+          esac
+          [ "${#SOURCE_SHA}" -eq 40 ] || { echo 'source SHA must have 40 hex characters' >&2; exit 1; }
           DIR="$HOME/signalai"
+          TOKEN_FILE='/tmp/signalai-device-token.b64'
+          TOKEN_RAW_FILE='/tmp/signalai-device-token'
+          umask 077
+          cleanup_token() { rm -f "$TOKEN_FILE" "$TOKEN_RAW_FILE"; }
+          trap cleanup_token EXIT
+
+          test -s "$TOKEN_FILE"
+          base64 -d < "$TOKEN_FILE" > "$TOKEN_RAW_FILE"
+          rm -f "$TOKEN_FILE"
+          test -s "$TOKEN_RAW_FILE"
 
           SUDO=""
           if [ "$(id -u)" -ne 0 ]; then
@@ -129,13 +241,20 @@ jobs:
             $SUDO apt-get install -y -qq --no-install-recommends git </dev/null
           fi
 
-          if [ -d "$DIR/.git" ]; then
-            git -C "$DIR" fetch --depth 1 origin "$BRANCH" </dev/null
-            git -C "$DIR" reset --hard FETCH_HEAD </dev/null
-          else
+          if [ ! -d "$DIR/.git" ]; then
             rm -rf "$DIR"
-            git clone --depth 1 -b "$BRANCH" "$REPO" "$DIR" </dev/null
+            mkdir -p "$DIR"
+            git -C "$DIR" init </dev/null
+            git -C "$DIR" remote add origin "$REPO"
           fi
+          git -C "$DIR" fetch --depth 1 origin "$SOURCE_SHA" </dev/null
+          git -C "$DIR" reset --hard FETCH_HEAD </dev/null
+          deployed_sha="$(git -C "$DIR" rev-parse --verify HEAD^{commit})"
+          [ "$deployed_sha" = "$SOURCE_SHA" ] || {
+            echo "fetched $deployed_sha instead of requested $SOURCE_SHA" >&2
+            exit 1
+          }
+          echo "── исходный commit ── $deployed_sha"
 
           test -f "$DIR/server/deploy/bootstrap.sh" || {
             echo "в клоне нет server/deploy/bootstrap.sh — ветка или репозиторий не те"
@@ -144,29 +263,66 @@ jobs:
           }
 
           cd "$DIR/server"
-          $SUDO env SIGNALAI_DOMAIN="${SIGNALAI_DOMAIN:-}" \
+          $SUDO env SIGNALAI_DEVICE_TOKEN_FILE="$TOKEN_RAW_FILE" \
+                    SIGNALAI_DOMAIN="${SIGNALAI_DOMAIN:-}" \
                     SIGNALAI_ADMIN_IP="${SIGNALAI_ADMIN_IP:-}" \
                     SIGNALAI_ACME_EMAIL="${SIGNALAI_ACME_EMAIL:-}" \
                     bash deploy/bootstrap.sh </dev/null
           REMOTE
 
-          scp -i ~/.ssh/id_deploy -o BatchMode=yes /tmp/remote.sh "$USER_NAME@$HOST:/tmp/signalai-deploy.sh"
+          scp -i ~/.ssh/id_deploy -o BatchMode=yes \
+            /tmp/remote.sh \
+            "$USER_NAME@$HOST:/tmp/signalai-deploy.sh"
+          scp -i ~/.ssh/id_deploy -o BatchMode=yes \
+            /tmp/signalai-device-token.b64 \
+            "$USER_NAME@$HOST:/tmp/signalai-device-token.b64"
           ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$USER_NAME@$HOST" \
-            "SIGNALAI_DOMAIN='$DOMAIN' SIGNALAI_ADMIN_IP='$ADMIN_IP' SIGNALAI_ACME_EMAIL='$ACME_EMAIL' bash /tmp/signalai-deploy.sh"
+            "SIGNALAI_SOURCE_SHA='$SOURCE_SHA' SIGNALAI_DOMAIN='$DOMAIN' SIGNALAI_ADMIN_IP='$ADMIN_IP' SIGNALAI_ACME_EMAIL='$ACME_EMAIL' bash /tmp/signalai-deploy.sh"
 
       - name: Обновить код и перезапустить
         if: ${{ inputs.action == 'update' }}
         env:
           HOST: ${{ inputs.host_override || secrets.VPS_HOST || secrets.SERVER_HOST }}
           USER_NAME: ${{ secrets.VPS_USER || inputs.ssh_user }}
+          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
         run: |
-          ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$USER_NAME@$HOST" 'bash -s' <<'REMOTE'
+          scp -i ~/.ssh/id_deploy -o BatchMode=yes \
+            /tmp/signalai-device-token.b64 \
+            "$USER_NAME@$HOST:/tmp/signalai-device-token.b64"
+          ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$USER_NAME@$HOST" \
+            "SIGNALAI_SOURCE_SHA='$SOURCE_SHA' bash -s" <<'REMOTE'
           set -euo pipefail
+          SOURCE_SHA="${SIGNALAI_SOURCE_SHA:?deployment source SHA is required}"
+          ENV_FILE='/etc/signalai/.env'
+          TOKEN_FILE='/tmp/signalai-device-token.b64'
+          cleanup_token() {
+            rm -f "$TOKEN_FILE"
+            unset token 2>/dev/null || true
+          }
+          trap cleanup_token EXIT
+          case "$SOURCE_SHA" in
+            *[!0-9a-f]*|'') echo 'invalid deployment source SHA' >&2; exit 1 ;;
+          esac
+          [ "${#SOURCE_SHA}" -eq 40 ] || { echo 'source SHA must have 40 hex characters' >&2; exit 1; }
           SUDO=""; [ "$(id -u)" -eq 0 ] || SUDO="sudo"
           cd "$HOME/signalai"
-          git fetch --depth 1 origin claude/release-y40hk5 </dev/null
+          git fetch --depth 1 origin "$SOURCE_SHA" </dev/null
           git reset --hard FETCH_HEAD </dev/null
+          deployed_sha="$(git rev-parse --verify HEAD^{commit})"
+          [ "$deployed_sha" = "$SOURCE_SHA" ] || {
+            echo "fetched $deployed_sha instead of requested $SOURCE_SHA" >&2
+            exit 1
+          }
+          echo "── исходный commit ── $deployed_sha"
           cd server
+
+          test -s "$TOKEN_FILE"
+          token="$(base64 -d < "$TOKEN_FILE")"
+          rm -f "$TOKEN_FILE"
+          $SUDO sed -i '/^SIGNALAI_DEVICE_TOKEN=/d' "$ENV_FILE"
+          printf 'SIGNALAI_DEVICE_TOKEN=%s\n' "$token" | $SUDO tee -a "$ENV_FILE" >/dev/null
+          unset token
+          $SUDO chmod 600 "$ENV_FILE"
 
           # `-T` и `</dev/null` здесь не украшение. Скрипт приезжает к bash
           # через stdin, а `docker compose run` без `-T` этот же stdin
@@ -174,12 +330,12 @@ jobs:
           # прошлый прогон применил миграции, не выполнил `up` и завершился
           # успехом: сервер остался на старом коде, планировщик не создался,
           # а в логах не было ни строчки об ошибке.
-          $SUDO docker compose --env-file /etc/signalai/.env \
+          $SUDO docker compose --env-file "$ENV_FILE" \
             run --rm -T api alembic upgrade head </dev/null
-          $SUDO docker compose --env-file /etc/signalai/.env up -d --build </dev/null
+          $SUDO docker compose --env-file "$ENV_FILE" up -d --build </dev/null
 
           echo "── что поднято ──"
-          $SUDO docker compose --env-file /etc/signalai/.env ps </dev/null
+          $SUDO docker compose --env-file "$ENV_FILE" ps </dev/null
           REMOTE
 
       - name: Сертификат
@@ -483,4 +639,7 @@ jobs:
 
       - name: Убрать ключ
         if: always()
-        run: shred -u ~/.ssh/id_deploy 2>/dev/null || rm -f ~/.ssh/id_deploy
+        run: |
+          shred -u ~/.ssh/id_deploy 2>/dev/null || rm -f ~/.ssh/id_deploy
+          shred -u /tmp/signalai-device-token.b64 2>/dev/null \
+            || rm -f /tmp/signalai-device-token.b64

@@ -10,9 +10,8 @@
 #   bash tool/build_apk.sh
 #
 # Подпись берётся автоматически: если рядом лежит android/key.properties —
-# ваш постоянный ключ (tool/make_keystore.sh), если нет — отладочный, как в
-# сайдлоаде. Отладочная сборка ставится на телефон, но Play Protect
-# предупредит, и в Google Play её не отдать.
+# ваш постоянный ключ (tool/make_keystore.sh), если нет — отладочный только для
+# локальной разработки. GitHub sideload временную подпись не допускает.
 
 set -euo pipefail
 
@@ -45,7 +44,7 @@ echo "Android SDK: $SDK"
 # повод узнать об этом на телефоне.
 
 say "Зависимости"
-flutter pub get
+flutter pub get --enforce-lockfile
 
 say "Анализатор"
 flutter analyze || fail "анализатор нашёл проблемы — они попадут в сборку"
@@ -54,6 +53,16 @@ say "Тесты"
 flutter test || fail "тесты красные — собирать нечего"
 
 # ── Сборка ───────────────────────────────────────────────────────────────
+
+# Персональная поставка имеет только два режима. `thin` получает идеи,
+# paper-сделки и фоновое сопровождение от сервера; старый локальный скринер
+# не должен запускаться ни случайно, ни как неявный default.
+BUILD_MODE="${SIGNALAI_MODE:-thin}"
+API_BASE_URL="${SIGNALAI_API_BASE_URL:-https://api.ilyamartynov.ru}"
+case "$BUILD_MODE" in
+  thin|demo) ;;
+  *) fail "режим '$BUILD_MODE' не поддерживается: допустимы только thin и demo" ;;
+esac
 
 if [ -f android/key.properties ]; then
   say "Сборка с постоянным ключом подписи"
@@ -64,7 +73,9 @@ else
   echo "Постоянный ключ: bash tool/make_keystore.sh"
 fi
 
-flutter build apk --release
+flutter build apk --release \
+  --dart-define=SIGNALAI_MODE="$BUILD_MODE" \
+  --dart-define=SIGNALAI_API_BASE_URL="$API_BASE_URL"
 
 APK=build/app/outputs/flutter-apk/app-release.apk
 [ -f "$APK" ] || fail "gradle отработал, но файла нет: $APK"

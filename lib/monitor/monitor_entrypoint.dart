@@ -1,142 +1,105 @@
-import 'dart:async';
-
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 
-import '../data/local_analysis_repository.dart';
+import '../data/api/api_client.dart';
+import '../data/api/engine_client.dart';
+import '../data/api/engine_runtime.dart';
 import '../data/local_store.dart';
 import '../data/native_bridge.dart';
-import '../data/state_lock.dart';
-import 'background_cycle.dart';
-import 'monitor_pace.dart';
+import 'server_background_cycle.dart';
 
-/// Канал сервиса. Тот же, что у интерфейса: общие методы обслуживает
-/// `NativeChannel`, специфичные для контура — сам `MonitorService`.
+/// Канал foreground-service. Общие методы обслуживает `NativeChannel`, а
+/// завершение короткого прогона — `MonitorService`.
 const _channel = MethodChannel('ru.signalai.app/native');
 
-/// Точка входа фонового изолята.
+/// Один короткий server poll при каждом Android-пробуждении.
 ///
-/// Помечена `vm:entry-point`, иначе компилятор её выбросит: из Dart её никто
-/// не вызывает, вход происходит со стороны Android.
-///
-/// Здесь намеренно нет ни одного пути, ведущего к отправке ордера. Фон считает
-/// и уведомляет; торговое решение подтверждает человек, а в фоне его нет.
+/// В этом entrypoint намеренно нет `LocalAnalysisRepository`, анализаторов,
+/// market/broker клиентов и локального paper-ledger. Сервер уже считает идеи
+/// и сопровождает сделки; телефон только сравнивает два bounded snapshot и
+/// показывает значимые переходы.
 @pragma('vm:entry-point')
 Future<void> signalaiMonitorMain() async {
-  // Изолят свой, привязки в нём ещё нет — без этого не работает канал.
   WidgetsFlutterBinding.ensureInitialized();
 
   final store = LocalStore();
-  // Пометка нужна журналу пересчётов: владелец должен видеть, какие прогоны
-  // сделал фон, пока приложение было закрыто, а какие — экран у него в руках.
-  final repository = LocalAnalysisRepository(store: store)..inBackground = true;
-  final cycle = BackgroundCycle(target: repository, lock: StateLock(store));
   const bridge = NativeBridge();
+  await _wake();
+  try {
+    final state = await loadServerMonitorState(store);
+    final credentials = await restoreEngineRuntime(store, bridge);
+    ServerCycleReport report;
 
-  final mode = await _mode();
-
-  while (true) {
-    final state = await _loadState(store);
-
-    // Шаг наблюдения выбирается до прогона: на разряженном телефоне без
-    // единой открытой сделки часовой пересчёт круглосуточно — это не
-    // «постоянное наблюдение», а разряженный к вечеру телефон, который не
-    // следит уже ни за чем.
-    final pace = paceFor(
-      watching: _watching(repository),
-      power: await _power(),
-    );
-
-    if (!pace.skipRun) {
-      await _wake();
-      final report = await cycle.run(state: state, now: DateTime.now());
-      await _saveState(store, state);
-
-      for (final notice in report.notices) {
-        // Идентификатор выводится из ключа, а не из счётчика. Счётчик
-        // означал две беды сразу: повторное уведомление об одной идее
-        // ложилось рядом вместо замены, и снять его потом было нечем —
-        // связи между идеей и её пушем не существовало.
-        await bridge.notify(
-          id: NativeBridge.noticeId(notice.key),
-          title: notice.title,
-          body: notice.body,
-          payload: notice.payload,
-        );
-      }
-      // Отработавшие идеи уходят из шторки сами. Иначе пуш врёт не
-      // текстом, а фактом присутствия: он утверждает, что есть повод
-      // действовать, когда действовать уже не по чему.
-      for (final key in report.withdrawn) {
-        await bridge.cancelNotice(key);
-      }
-      await _report('${report.summary} · ${pace.reason}');
+    if (!credentials.ready) {
+      state
+        ..lastAttemptAt = DateTime.now()
+        ..lastError = credentials.issue;
+      report = ServerCycleReport(
+        notices: const [],
+        withdrawn: const [],
+        summary: credentials.issue ?? 'Устройство не привязано.',
+        complete: false,
+        error: credentials.issue,
+      );
     } else {
-      // Пропуск обязан быть виден. «Контур ничего не делал три часа» без
-      // причины неотличимо от «контур сломался», и владелец узнаёт об этом
-      // в худший момент.
-      await _report(pace.reason);
+      // Явные runtime-значения не позволяют background-изоляту случайно
+      // откатиться к build-time конфигурации.
+      final engine = EngineClient(
+        client: ApiClient(
+          baseUrl: credentials.baseUrl,
+          deviceToken: credentials.deviceToken,
+        ),
+      );
+      report = await ServerBackgroundCycle.engine(engine).run(
+        state: state,
+        now: DateTime.now(),
+      );
     }
 
-    if (mode != 'persistent') break;
-    // Блокировка процессора снимается на время сна, а будильник
-    // переставляется под тот же интервал: страховка обязана будить тогда
-    // же, когда собирался проснуться сам контур.
-    await _sleep(pace.sleep);
-    await Future<void>.delayed(pace.sleep);
-  }
+    // Сначала фиксируем snapshot/дедуп. Если Android убьёт процесс сразу после
+    // показа, повтор придёт с тем же стабильным notification id и не создаст
+    // второй ряд в шторке.
+    await saveServerMonitorState(store, state);
+    for (final notice in report.notices) {
+      await bridge.notify(
+        id: NativeBridge.noticeId(notice.key),
+        title: notice.title,
+        body: notice.body,
+        payload: notice.payload,
+      );
+    }
+    for (final key in report.withdrawn) {
+      await bridge.cancelNotice(key);
+    }
 
-  await _finished();
-}
-
-/// Сколько объектов на сопровождении: открытые и выставленные сделки.
-///
-/// Ноль значит, что сторожить нечего — новую идею контур всё равно найдёт
-/// следующим прогоном, а будить телефон каждый час незачем.
-int _watching(LocalAnalysisRepository repository) {
-  try {
-    return repository.ledger.openOrPending.length;
-  } on Object {
-    // Журнал ещё не прочитан — считаем, что следить есть за чем: ошибиться
-    // в сторону лишнего прогона дешевле, чем проспать открытую позицию.
-    return 1;
-  }
-}
-
-Future<PowerState> _power() async {
-  try {
-    final raw = await _channel.invokeMethod<Map<Object?, Object?>>('powerState');
-    return raw == null ? const PowerState() : PowerState.fromMap(raw);
-  } on Object {
-    // Состояние питания неизвестно — работаем в обычном темпе, а не
-    // экономим на догадке.
-    return const PowerState();
+    await _report(report.summary);
+  } on Object catch (error) {
+    // Даже повреждённый локальный snapshot или отказ Keystore не оставляет
+    // foreground-service висеть до системного таймаута.
+    await _report('Фоновая синхронизация не удалась: $error');
+  } finally {
+    await _finished();
   }
 }
+
+Future<ServerMonitorState> loadServerMonitorState(LocalStore store) async {
+  final json = await store.read('server_monitor');
+  return json == null
+      ? ServerMonitorState()
+      : ServerMonitorState.fromJson(json);
+}
+
+Future<void> saveServerMonitorState(
+  LocalStore store,
+  ServerMonitorState state,
+) =>
+    store.write('server_monitor', state.toJson());
 
 Future<void> _wake() async {
   try {
     await _channel.invokeMethod<bool>('monitorWake');
   } on Object {
-    // Не дали блокировку — прогон всё равно попробуем.
-  }
-}
-
-Future<void> _sleep(Duration until) async {
-  try {
-    await _channel.invokeMethod<bool>('monitorSleep', {
-      'minutes': until.inMinutes,
-    });
-  } on Object {
-    // Сервис уже мог быть снят системой.
-  }
-}
-
-Future<String> _mode() async {
-  try {
-    return await _channel.invokeMethod<String>('monitorMode') ?? 'persistent';
-  } on Object {
-    return 'persistent';
+    // Сервис уже держит короткий wake lock; канал — дополнительная страховка.
   }
 }
 
@@ -144,7 +107,7 @@ Future<void> _report(String summary) async {
   try {
     await _channel.invokeMethod<bool>('monitorReport', {'summary': summary});
   } on Object {
-    // Служебная строка — не повод ронять прогон.
+    // Служебная строка не должна превращать успешный poll в отказ.
   }
 }
 
@@ -152,14 +115,6 @@ Future<void> _finished() async {
   try {
     await _channel.invokeMethod<bool>('monitorFinished');
   } on Object {
-    // Сервис уже мог быть снят системой.
+    // Сервис мог быть снят системой сразу после сохранения результата.
   }
 }
-
-Future<MonitorState> _loadState(LocalStore store) async {
-  final json = await store.read('monitor');
-  return json == null ? MonitorState() : MonitorState.fromJson(json);
-}
-
-Future<void> _saveState(LocalStore store, MonitorState state) =>
-    store.write('monitor', state.toJson());

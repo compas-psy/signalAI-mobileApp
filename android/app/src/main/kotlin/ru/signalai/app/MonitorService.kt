@@ -5,7 +5,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.os.PowerManager
 import io.flutter.FlutterInjector
 import io.flutter.embedding.engine.FlutterEngine
@@ -13,18 +15,16 @@ import io.flutter.embedding.engine.dart.DartExecutor
 import io.flutter.plugin.common.MethodChannel
 
 /**
- * Фоновый контур: сопровождение сделок и поиск идей, пока приложение закрыто.
+ * Короткий server poll идей и paper-сделок, пока приложение закрыто.
  *
- * Внутри поднимается отдельный движок Flutter со своей точкой входа — весь
- * расчёт живёт в Dart, и дублировать его на Kotlin было бы вторым источником
- * правды. Ордера отсюда не отправляются: подтверждать сделку биометрией в фоне
- * некому, поэтому канал сервиса биометрию не предоставляет вовсе.
+ * Внутри поднимается отдельный движок Flutter со своей точкой входа. Dart не
+ * считает рынок и не ведёт сделку: он запрашивает только server API, сравнивает
+ * сохранённый snapshot и публикует переходы. Ордера отсюда не отправляются.
  *
- * Режима два. `persistent` — сервис живёт и спит между прогонами. `burst` —
- * один прогон и остановка. В обоих случаях будильник переставляется на час
- * вперёд: на Android 15+ система останавливает foreground-сервис типа dataSync
- * после шести часов в сутки, и без будильника «постоянный» режим молча
- * переставал бы следить.
+ * Каждый запуск — один bounded poll и остановка. Следующий запуск ставит
+ * AlarmManager примерно через 15 минут. В лимит dataSync foreground services
+ * Android 15 попадает только короткая длительность poll, а не часы ожидания;
+ * Doze всё равно вправе сдвинуть неточный будильник.
  */
 class MonitorService : Service() {
 
@@ -34,6 +34,7 @@ class MonitorService : Service() {
         const val MODE_BURST = "burst"
 
         private const val NOTIFICATION_ID = 42
+        private const val MAX_RUN_MILLIS = 2 * 60 * 1000L
         private const val CHANNEL = "ru.signalai.app/native"
         private const val ENTRYPOINT_LIBRARY = "package:signalai/monitor/monitor_entrypoint.dart"
         private const val ENTRYPOINT = "signalaiMonitorMain"
@@ -58,6 +59,11 @@ class MonitorService : Service() {
     }
 
     private val shared by lazy { NativeChannel(applicationContext) }
+    private val watchdogHandler = Handler(Looper.getMainLooper())
+    private val watchdog = Runnable {
+        updateNotification("Сервер не ответил вовремя · повторю позже")
+        stopSelf()
+    }
     private var engine: FlutterEngine? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var mode: String = MODE_PERSISTENT
@@ -71,12 +77,15 @@ class MonitorService : Service() {
         // Будильник ставится всегда и заранее: если система снимет сервис
         // раньше следующего прогона, поднять контур будет уже нечем.
         MonitorAlarm.schedule(this, mode)
+        // Ошибка Dart/канала не должна оставить foreground-service навсегда
+        // живым и одновременно заблокировать все следующие будильники.
+        watchdogHandler.removeCallbacks(watchdog)
+        watchdogHandler.postDelayed(watchdog, MAX_RUN_MILLIS)
 
         if (engine == null) startEngine() else awake()
-        // START_STICKY: система, снявшая сервис из-за нехватки памяти, вернёт
-        // его сама. Для burst-режима это безвредно — прогон завершится и
-        // сервис остановится снова.
-        return START_STICKY
+        // Alarm уже поставлен. Немедленный START_STICKY-restart создавал бы
+        // параллельный retry; следующий bounded poll безопасно придёт по нему.
+        return START_NOT_STICKY
     }
 
     private fun startInForeground(text: String) {
@@ -128,8 +137,7 @@ class MonitorService : Service() {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
-                    // Режим сообщается Dart'у: он решает, спать до следующего
-                    // прогона или завершиться.
+                    // Оставлено для совместимости со старой сборкой Dart.
                     "monitorMode" -> result.success(mode)
 
                     // Прогон начался — держим процессор до его конца.
@@ -156,10 +164,12 @@ class MonitorService : Service() {
                         result.success(true)
                     }
 
-                    // Прогон закончен: в burst-режиме больше делать нечего.
+                    // Любой режим теперь короткий: следующий poll уже стоит в
+                    // AlarmManager примерно через 15 минут.
                     "monitorFinished" -> {
+                        watchdogHandler.removeCallbacks(watchdog)
                         result.success(true)
-                        if (mode == MODE_BURST) stopSelf()
+                        stopSelf()
                     }
 
                     else -> shared.handle(call, result)
@@ -183,6 +193,7 @@ class MonitorService : Service() {
     }
 
     override fun onDestroy() {
+        watchdogHandler.removeCallbacks(watchdog)
         running = false
         engine?.destroy()
         engine = null

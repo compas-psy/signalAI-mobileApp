@@ -17,6 +17,7 @@ from app.models import CollectionPermit, ResearchSource
 from app.models.enums import LicenseStatus
 from app.research.policy import CollectionDenied, authorize, blocked_sources
 from app.research.sources import ALL_SOURCES, CONNECT_ORDER, readiness, sync_registry
+from tests.conftest import DEVICE_HEADERS
 
 NOW = datetime(2026, 8, 1, 10, 0, tzinfo=UTC)
 
@@ -239,7 +240,7 @@ def test_апи_отдаёт_гипотезы_и_состояние_источн
     sync_registry(session, now=NOW)
     app.dependency_overrides[get_db] = lambda: session
     try:
-        with TestClient(app) as client:
+        with TestClient(app, headers=DEVICE_HEADERS) as client:
             body = client.get("/api/v1/research/hypotheses").json()
     finally:
         app.dependency_overrides.clear()

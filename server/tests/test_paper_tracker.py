@@ -15,12 +15,23 @@
 
 from __future__ import annotations
 
+import threading
+import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from app.models import Bar, PaperTrade, TradeIdea
-from app.models.enums import IdeaStatus, PaperStatus, Timeframe
-from app.paper.tracker import MAX_HOLD_DAYS, advance, open_for, track
+from sqlalchemy import event, func, select
+from sqlalchemy.orm import sessionmaker
+
+from app.models import Bar, Instrument, PaperTrade, TradeIdea
+from app.models.enums import (
+    AssetClass,
+    IdeaStatus,
+    PaperStatus,
+    Timeframe,
+    Venue,
+)
+from app.paper.tracker import MAX_HOLD_DAYS, advance, approve_for, open_for, track
 from tests.conftest import idea_kwargs
 
 NOW = datetime(2026, 8, 3, 10, 0, tzinfo=UTC)
@@ -72,12 +83,7 @@ def test_сделка_заводится_по_сработавшей_идее(se
 
 
 def test_повторный_прогон_не_плодит_сделок(session, instrument):
-    """Дедуп по идее, а не по инструменту.
-
-    Дедуп по символу означал, что зависшая сделка блокирует запись всех
-    последующих идей по тому же инструменту — владелец увидел это как
-    «в журнале не все идеи».
-    """
+    """Повтор явного подтверждения не создаёт вторую сделку."""
     idea = триггерная_идея(instrument.instrument_id)
     session.add(idea)
     session.flush()
@@ -85,6 +91,150 @@ def test_повторный_прогон_не_плодит_сделок(session,
     assert open_for(session, idea, now=NOW) is not None
     session.flush()
     assert open_for(session, idea, now=NOW) is None
+
+
+def test_concurrent_approval_recovers_from_unique_constraint_race(engine):
+    """Два одновременных approve возвращают одну и ту же paper-сделку.
+
+    Второй поток проходит предварительный SELECT до фиксации первого и
+    упирается именно в уникальный индекс. Savepoint обязан сохранить сессию
+    рабочей, чтобы перечитать запись победителя вместо 500 и дубля.
+    """
+    suffix = uuid.uuid4().hex[:10].upper()
+    instrument_id = f"TEST:FUT:RACE{suffix}"
+    factory = sessionmaker(bind=engine, expire_on_commit=False, future=True)
+    seed = factory()
+    first = factory()
+    ready = threading.Event()
+    proceed = threading.Event()
+    result: dict[str, object] = {}
+    idea_id = None
+    worker: threading.Thread | None = None
+    try:
+        instrument = Instrument(
+            instrument_id=instrument_id,
+            venue=Venue.MOEX,
+            asset_class=AssetClass.FUTURES,
+            symbol=f"RACE{suffix}",
+            title="Concurrent approval fixture",
+            currency="RUB",
+            tick_size=Decimal("1"),
+            tick_value=Decimal("1"),
+            lot_size=1,
+            quantity_step=Decimal("1"),
+            min_quantity=Decimal("1"),
+            contract_multiplier=Decimal("1"),
+            in_universe=True,
+        )
+        idea = триггерная_идея(instrument_id)
+        seed.add_all([instrument, idea])
+        seed.commit()
+        idea_id = idea.id
+
+        first_idea = first.get(TradeIdea, idea_id)
+        first_trade, created = approve_for(first, first_idea, now=NOW)
+        assert created is True
+
+        def competing_approval() -> None:
+            second = factory()
+            paused = False
+
+            @event.listens_for(second, "before_flush")
+            def pause_before_insert(session, flush_context, instances):
+                nonlocal paused
+                if not paused and any(isinstance(row, PaperTrade) for row in session.new):
+                    paused = True
+                    ready.set()
+                    proceed.wait(timeout=5)
+
+            try:
+                same_idea = second.get(TradeIdea, idea_id)
+                trade, was_created = approve_for(second, same_idea, now=NOW)
+                second.commit()
+                result.update(id=str(trade.id), created=was_created)
+            except Exception as exc:  # передать сбой в основной поток
+                second.rollback()
+                result["error"] = exc
+            finally:
+                second.close()
+
+        worker = threading.Thread(target=competing_approval)
+        worker.start()
+        assert ready.wait(timeout=5), "второй approve не дошёл до INSERT"
+        first.commit()
+        proceed.set()
+        worker.join(timeout=5)
+
+        assert not worker.is_alive()
+        assert "error" not in result, repr(result.get("error"))
+        assert result == {"id": str(first_trade.id), "created": False}
+
+        check = factory()
+        try:
+            count = check.scalar(
+                select(func.count()).select_from(PaperTrade).where(
+                    PaperTrade.idea_id == idea_id
+                )
+            )
+            assert count == 1
+        finally:
+            check.close()
+    finally:
+        proceed.set()
+        if worker is not None and worker.is_alive():
+            worker.join(timeout=5)
+        first.rollback()
+        first.close()
+        seed.close()
+        if idea_id is not None:
+            cleanup = factory()
+            try:
+                cleanup.query(PaperTrade).filter(PaperTrade.idea_id == idea_id).delete(
+                    synchronize_session=False
+                )
+                cleanup.query(TradeIdea).filter(TradeIdea.id == idea_id).delete(
+                    synchronize_session=False
+                )
+                cleanup.query(Instrument).filter(
+                    Instrument.instrument_id == instrument_id
+                ).delete(synchronize_session=False)
+                cleanup.commit()
+            finally:
+                cleanup.close()
+
+
+def test_approval_never_replays_bars_from_before_owner_decision(session, instrument):
+    """Paper-вход не может исполниться задним числом до согласия владельца."""
+    idea = триггерная_идея(
+        instrument.instrument_id,
+        signal_time=NOW - timedelta(days=1),
+        expires_at=NOW + timedelta(days=4),
+    )
+    session.add(idea)
+    # Бар до approve касался входа и всех целей. Старое opened_at=signal_time
+    # немедленно превращало подтверждение в уже закрытую выигрышную сделку.
+    session.add(
+        Bar(
+            instrument_id=instrument.instrument_id,
+            timeframe=Timeframe.H1,
+            open_time=NOW - timedelta(hours=1),
+            open=Decimal("90000"),
+            high=Decimal("94000"),
+            low=Decimal("89000"),
+            close=Decimal("93000"),
+            volume_units=Decimal("1000"),
+            is_closed=True,
+            source="test",
+        )
+    )
+    session.flush()
+
+    trade, created = approve_for(session, idea, now=NOW)
+    track(session, now=NOW + timedelta(minutes=5))
+
+    assert created is True
+    assert trade.opened_at == NOW
+    assert trade.status is PaperStatus.PENDING
 
 
 # ── Ведение ─────────────────────────────────────────────────────────────────
@@ -334,17 +484,16 @@ def test_вторая_идея_по_инструменту_сделки_не_о�
     assert open_for(session, вторая, now=NOW) is None
 
 
-def test_защита_от_дублей_видна_в_отчёте(session, instrument):
-    """Молча отброшенная идея неотличима от идеи, которой не было."""
+def test_triggered_ideas_do_not_open_without_owner_approval(session, instrument):
+    """Серверный такт не подменяет явное решение владельца."""
     for _ in range(3):
         session.add(триггерная_идея(instrument.instrument_id))
     session.flush()
 
     report = track(session, now=NOW + timedelta(hours=1))
 
-    assert report.opened == 1
-    assert report.same_instrument == 2
-    assert "уже есть сделка" in report.summary()
+    assert report.opened == 0
+    assert session.scalar(select(func.count()).select_from(PaperTrade)) == 0
 
 
 # ── Связь с идеей ───────────────────────────────────────────────────────────
@@ -358,6 +507,8 @@ def test_идея_получает_живые_статусы_исполнени�
     """
     idea = триггерная_идея(instrument.instrument_id)
     session.add(idea)
+    session.flush()
+    assert open_for(session, idea, now=NOW) is not None
     session.flush()
     for i, (low, high) in enumerate(
         [(90000, 90200), (90500, 91050)], start=1

@@ -19,6 +19,7 @@ import pytest
 
 from app.research import reach
 from app.research.sources import ALL_SOURCES
+from tests.conftest import DEVICE_HEADERS
 
 NOW = datetime(2026, 8, 1, tzinfo=UTC)
 
@@ -234,7 +235,7 @@ def test_план_проверяется_только_по_ссылкам_ада
     sync_registry(session, now=NOW)
     app.dependency_overrides[get_db] = lambda: session
     try:
-        with TestClient(app) as client:
+        with TestClient(app, headers=DEVICE_HEADERS) as client:
             body = client.get(
                 "/api/v1/research/sources/plan-check?url=https://зло.test/"
             ).json()
@@ -265,7 +266,7 @@ def test_закрытый_по_праву_источник_в_плане_не_п
     # Пропуск для ЦБ не выдаётся, если реестр не синхронизирован.
     app.dependency_overrides[get_db] = lambda: session
     try:
-        with TestClient(app) as client:
+        with TestClient(app, headers=DEVICE_HEADERS) as client:
             body = client.get("/api/v1/research/sources/plan-check").json()
     finally:
         app.dependency_overrides.clear()

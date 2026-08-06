@@ -26,6 +26,31 @@ enum SetupStrategy {
       );
 }
 
+/// Готовность идеи именно к решению владельца.
+///
+/// Это не дубликат [IdeaState]. Состояние описывает жизненный цикл идеи, а
+/// готовность — ответ выдачи `/ideas/today`: можно ли действовать сейчас или
+/// идея только ждёт триггера. Сервер может вернуть одинаковый lifecycle
+/// status в разных корзинах, поэтому восстанавливать готовность из одного
+/// [IdeaState] небезопасно.
+enum IdeaReadiness {
+  waiting('Наблюдать', 'Ждём триггер'),
+  active('Можно действовать', 'Триггер подтверждён');
+
+  const IdeaReadiness(this.label, this.detail);
+
+  final String label;
+  final String detail;
+
+  bool get canAct => this == IdeaReadiness.active;
+
+  static IdeaReadiness? tryParse(String? raw) => switch (raw?.toUpperCase()) {
+        'WAITING' || 'WATCH' || 'WAIT_FOR_TRIGGER' => IdeaReadiness.waiting,
+        'ACTIVE' || 'TRADE_NOW' || 'ACTIONABLE' => IdeaReadiness.active,
+        _ => null,
+      };
+}
+
 /// Событийный риск идеи (ТЗ §9, §11.1).
 class EventRisk {
   const EventRisk({
@@ -80,7 +105,10 @@ class Idea {
     this.stateChangedAt,
     this.sizingBlocker = '',
     this.closingReason = '',
-  });
+    IdeaReadiness? readiness,
+    bool? actionable,
+  })  : _readiness = readiness,
+        _actionable = actionable;
 
   final String id;
   final String instrumentId;
@@ -132,6 +160,28 @@ class Idea {
   /// пояснения не отличить от «срок истёк», а действия за ними разные:
   /// первое значит, что сетап отработал и входить уже некуда.
   final String closingReason;
+
+  /// Серверная корзина готовности. У старых/локальных объектов поля нет —
+  /// тогда сохраняем прежнее безопасное поведение и выводим готовность из
+  /// lifecycle state. Для ответа сервера значение всегда задаётся явно.
+  final IdeaReadiness? _readiness;
+  final bool? _actionable;
+
+  IdeaReadiness get readiness =>
+      _readiness ?? (state.canConfirm ? IdeaReadiness.active : IdeaReadiness.waiting);
+
+  /// Явное право показать действие. `WAITING` не становится исполнимой даже
+  /// если её lifecycle status по ошибке выглядит как TRIGGERED.
+  bool get actionable => _actionable ?? (readiness.canAct && state.canConfirm);
+
+  /// Клиент может предложить серверную paper-сделку только при полном плане.
+  /// Окончательная проверка всё равно выполняется сервером атомарно.
+  bool get canApprovePaper =>
+      readiness.canAct &&
+      actionable &&
+      state.canConfirm &&
+      plan != null &&
+      sizingBlocker.isEmpty;
 
   /// Тикер для подписи: «CRYPTO:PERP:BTCUSDT» → «BTCUSDT».
   ///
@@ -306,6 +356,8 @@ class Idea {
     SkipReason? skipReason,
     String? skipComment,
     bool? riskChanged,
+    IdeaReadiness? readiness,
+    bool? actionable,
   }) =>
       Idea(
         id: id,
@@ -330,6 +382,10 @@ class Idea {
         skipComment: skipComment ?? this.skipComment,
         riskChanged: riskChanged ?? this.riskChanged,
         stateChangedAt: stateChangedAt ?? this.stateChangedAt,
+        sizingBlocker: sizingBlocker,
+        closingReason: closingReason,
+        readiness: readiness ?? _readiness,
+        actionable: actionable ?? _actionable,
       );
 }
 
@@ -358,7 +414,8 @@ abstract final class IdeaPriority {
 
   /// Очередь состояния (ТЗ §6.2). Больше — выше.
   static int tier(Idea idea) => switch (idea.state) {
-        IdeaState.triggered => 4,
+        IdeaState.triggered =>
+          idea.readiness.canAct && idea.actionable ? 4 : 1,
         IdeaState.ready => 3,
         IdeaState.active => idea.riskChanged ? 2 : 1,
         IdeaState.watch => 1,

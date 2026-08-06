@@ -252,13 +252,10 @@ class _Scores extends StatelessWidget {
           ),
           const SizedBox(width: 8),
           _Score(
-            label: 'в цене',
+            label: 'тех. момент',
             value: hypothesis.marketContextScore,
-            // null остаётся null: подставить среднее значило бы выдумать
-            // знание о том, учтено ли изменение рынком.
-            hint: hypothesis.marketContextScore == null
-                ? 'не измерено'
-                : 'учтено рынком',
+            // Это D1 timing overlay, не консенсус и не торговая команда.
+            hint: hypothesis.marketContextLabel,
           ),
         ],
       );

@@ -9,6 +9,9 @@ class NativeBridge {
 
   static const _channel = MethodChannel('ru.signalai.app/native');
 
+  /// Токен привязки движка хранится только в Android Keystore.
+  static const engineDeviceTokenKey = 'signalai.engine.device_token';
+
   /// Каталог файлов приложения для JSON-хранилища. null — канала нет.
   Future<String?> filesDir() async {
     try {
@@ -60,13 +63,21 @@ class NativeBridge {
 
   Future<bool> vaultHas(String name) => _bool('vaultHas', {'name': name});
 
-  /// Читает значение. Применяется только к некритичному — идентификатору
-  /// ключа API; сам секрет биржи наружу не отдаётся, см. [vaultSign].
+  /// Читает значение, необходимое клиентскому API. Биржевые секреты этим
+  /// путём не читаются; для их подписи используется [vaultSign].
   Future<String?> vaultGet(String name) => _string('vaultGet', {'name': name});
 
   Future<bool> vaultDelete(String name) => _bool('vaultDelete', {'name': name});
 
   Future<bool> vaultClear() => _bool('vaultClear');
+
+  Future<String?> engineDeviceToken() => vaultGet(engineDeviceTokenKey);
+
+  Future<bool> putEngineDeviceToken(String token) =>
+      vaultPut(engineDeviceTokenKey, token);
+
+  Future<bool> deleteEngineDeviceToken() =>
+      vaultDelete(engineDeviceTokenKey);
 
   /// HMAC-SHA256 сообщения секретом [name], hex. null — секрета нет.
   ///

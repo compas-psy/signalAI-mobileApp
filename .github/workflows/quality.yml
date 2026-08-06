@@ -1,0 +1,131 @@
+name: Quality gate
+
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: 'Optional branch, tag or commit to verify (empty = selected workflow ref)'
+        required: false
+        default: ''
+  workflow_call:
+    inputs:
+      source_ref:
+        description: 'Branch, tag or commit to verify'
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-${{ github.event.pull_request.number || inputs.source_ref || github.ref }}
+  cancel-in-progress: true
+
+env:
+  FLUTTER_VERSION: '3.44.8'
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  secrets:
+    name: Tracked secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
+          fetch-depth: 1
+      - name: Scan tracked files without external services
+        run: |
+          python3 tool/ci_secret_scan.py
+          python3 tool/validate_delivery_workflows.py
+
+  server:
+    name: Server imports, migrations and pytest
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: signalai
+          POSTGRES_PASSWORD: signalai_local_dev
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U signalai -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.11.33'
+          enable-cache: true
+          cache-dependency-glob: server/uv.lock
+      - name: Install exactly the locked server and test dependencies
+        run: |
+          set -euo pipefail
+          lock_before="$(sha256sum uv.lock | awk '{print $1}')"
+          uv lock --check
+          uv sync --frozen --extra test
+          lock_after="$(sha256sum uv.lock | awk '{print $1}')"
+          test "$lock_before" = "$lock_after"
+          git diff --exit-code -- uv.lock
+      - name: Compile and import application
+        env:
+          SIGNALAI_DATABASE_URL: postgresql+psycopg://signalai:signalai_local_dev@127.0.0.1:5432/postgres
+          SIGNALAI_DEVICE_TOKEN: ci-device-token
+        run: |
+          .venv/bin/python -m compileall -q app alembic
+          .venv/bin/python -c 'from app.main import app; assert app is not None'
+      - name: Validate migration graph and model parity
+        env:
+          SIGNALAI_DATABASE_URL: postgresql+psycopg://signalai:signalai_local_dev@127.0.0.1:5432/postgres
+        run: |
+          set -euo pipefail
+          heads="$(.venv/bin/alembic heads)"
+          printf '%s\n' "$heads"
+          test "$(printf '%s\n' "$heads" | grep -c '(head)')" -eq 1
+          .venv/bin/alembic upgrade head
+          .venv/bin/alembic current
+          .venv/bin/alembic check
+      - name: Run server tests against PostgreSQL
+        env:
+          SIGNALAI_ADMIN_DSN: postgresql+psycopg://signalai:signalai_local_dev@127.0.0.1:5432/postgres
+          SIGNALAI_DEVICE_TOKEN: ci-device-token
+        run: .venv/bin/python -m pytest
+
+  mobile:
+    name: Flutter analyze and tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
+          fetch-depth: 1
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - run: flutter --version
+      - name: Resolve locked dependencies
+        run: flutter pub get --enforce-lockfile
+      - run: flutter analyze
+      - run: flutter test

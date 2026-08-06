@@ -25,8 +25,8 @@ from fastapi import APIRouter, FastAPI
 from sqlalchemy import text
 
 from .api.v1 import ideas as ideas_routes
-from .api.v1 import paper as paper_routes
 from .api.v1 import market as market_routes
+from .api.v1 import paper as paper_routes
 from .api.v1 import portfolio as portfolio_routes
 from .api.v1 import research as research_routes
 from .api.v1 import risk as risk_routes
@@ -34,6 +34,7 @@ from .config import get_config
 from .db import get_engine
 from .models.enums import ExecutionMode
 from .schemas.common import HealthResponse
+from .security import DeviceTokenMiddleware
 from .version import API_VERSION, ENGINE_VERSION, FEATURE_VERSION
 
 app = FastAPI(
@@ -46,11 +47,10 @@ app = FastAPI(
         "определение: P(TP1 раньше SL в пределах горизонта)."
     ),
 )
-# Решение владельца от 30.07: проверка токена устройства временно снята —
-# секрет ещё не заведён, и требование ломало приложение. Middleware
-# (security.py) сохранён; вернуть — одной строкой, когда SIGNALAI_DEVICE_TOKEN
-# появится в GitHub Secrets и на VPS.
-# app.add_middleware(DeviceTokenMiddleware)
+# Весь бизнес-API fail-closed: при отсутствии серверного секрета он отвечает
+# 503, при неверном Bearer — 401. /health остаётся публичным, потому что не
+# входит в /api/* и нужен внешнему мониторингу.
+app.add_middleware(DeviceTokenMiddleware)
 
 v1 = APIRouter(prefix="/api/v1")
 v1.include_router(market_routes.router)
