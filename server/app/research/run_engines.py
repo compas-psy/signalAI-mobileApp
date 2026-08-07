@@ -228,9 +228,15 @@ def _run_demand_only(session: Session, *, now: datetime | None = None) -> Engine
 
 
 def _running_as_scheduler() -> bool:
-    """Scheduler process is the only implicit place where live fetch is okay."""
-    command = " ".join(sys.argv).lower()
-    return "app.scheduler" in command
+    """Scheduler process is the only implicit place where live fetch is okay.
+
+    При ``python -m app.scheduler`` CPython передаёт в ``sys.argv[0]`` путь
+    к ``app/scheduler/__main__.py``, а не строку ``app.scheduler``. Поэтому
+    проверяем и модульное имя, и реальный путь entry point; unit-тесты с
+    pytest под это условие не попадают и сеть не открывают.
+    """
+    command = " ".join(sys.argv).lower().replace("\\", "/")
+    return "app.scheduler" in command or "/app/scheduler/__main__.py" in command
 
 
 def run_demand(
