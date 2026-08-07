@@ -6,10 +6,6 @@ import '../../theme/typography.dart';
 import '../widgets/common.dart';
 
 /// Риск thin-клиента читает и меняет именно серверный risk-state.
-///
-/// Лимиты пока versioned и не редактируются с телефона: тихо менять числа,
-/// по которым уже выпущены идеи, нельзя. Зато здесь есть фактический расход
-/// лимитов и настоящий kill switch, а не справочный текст.
 class ServerRiskScreen extends StatefulWidget {
   const ServerRiskScreen({super.key});
 
@@ -32,12 +28,16 @@ class _ServerRiskScreenState extends State<ServerRiskScreen> {
   Future<void> _load() async {
     try {
       final data = await _api.get('/api/v1/risk/dashboard');
-      if (mounted) setState(() {
-        _data = data;
-        _error = null;
-      });
+      if (mounted) {
+        setState(() {
+          _data = data;
+          _error = null;
+        });
+      }
     } catch (error) {
-      if (mounted) setState(() => _error = '$error');
+      if (mounted) {
+        setState(() => _error = '$error');
+      }
     }
   }
 
@@ -48,14 +48,22 @@ class _ServerRiskScreenState extends State<ServerRiskScreen> {
       final halted = _data!['kill_switch'] == true;
       final data = await _api.post(
         halted ? '/api/v1/risk/resume' : '/api/v1/risk/halt',
-        body: {'reason': halted ? 'возобновлено владельцем из приложения' : 'остановлено владельцем из приложения'},
+        body: {
+          'reason': halted
+              ? 'возобновлено владельцем из приложения'
+              : 'остановлено владельцем из приложения',
+        },
       );
-      if (mounted) setState(() {
-        _data = data;
-        _error = null;
-      });
+      if (mounted) {
+        setState(() {
+          _data = data;
+          _error = null;
+        });
+      }
     } catch (error) {
-      if (mounted) setState(() => _error = '$error');
+      if (mounted) {
+        setState(() => _error = '$error');
+      }
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -114,7 +122,9 @@ class _ServerRiskScreenState extends State<ServerRiskScreen> {
                 const BusyLine(label: 'Меняем server risk-state…')
               else
                 ActionButton(
-                  label: kill ? 'Возобновить новые входы' : 'Аварийно запретить новые входы',
+                  label: kill
+                      ? 'Возобновить новые входы'
+                      : 'Аварийно запретить новые входы',
                   primary: !kill,
                   color: kill ? C.accent : C.red,
                   onTap: _toggle,
@@ -154,7 +164,13 @@ class _ServerRiskScreenState extends State<ServerRiskScreen> {
 }
 
 class _Limit extends StatelessWidget {
-  const _Limit({required this.label, required this.limit, required this.used, required this.breached});
+  const _Limit({
+    required this.label,
+    required this.limit,
+    required this.used,
+    required this.breached,
+  });
+
   final String label;
   final String limit;
   final String used;
@@ -166,8 +182,10 @@ class _Limit extends StatelessWidget {
         child: Row(
           children: [
             Expanded(child: Text(label, style: T.body(11.5, color: C.muted))),
-            Text('$used / $limit',
-                style: T.mono(11.5, color: breached ? C.red : C.text)),
+            Text(
+              '$used / $limit',
+              style: T.mono(11.5, color: breached ? C.red : C.text),
+            ),
           ],
         ),
       );
