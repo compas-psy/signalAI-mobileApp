@@ -1,8 +1,7 @@
 """Personal broker integrations.
 
-All routes are already protected by DeviceTokenMiddleware because they live
-under /api/. The API is deliberately write-only for secret values: GET returns
-only configured/not-configured metadata, never credentials.
+All routes are protected by DeviceTokenMiddleware. Secret values are write-only:
+GET returns only configured/not-configured metadata, never credentials.
 """
 
 from __future__ import annotations
@@ -37,6 +36,7 @@ class IntegrationStatus(BaseModel):
     purpose: str
     environment: str
     fields: list[str]
+    required: bool
     configured: bool
     updated_at: datetime | None = None
 
@@ -49,6 +49,7 @@ def _view(spec: IntegrationSpec, present: dict[str, datetime]) -> IntegrationSta
         purpose=spec.purpose,
         environment=spec.environment,
         fields=list(spec.fields),
+        required=spec.required,
         configured=spec.slot in present,
         updated_at=present.get(spec.slot),
     )
@@ -80,6 +81,7 @@ def put_integration(
         purpose=spec.purpose,
         environment=spec.environment,
         fields=list(spec.fields),
+        required=spec.required,
         configured=True,
         updated_at=updated,
     )
