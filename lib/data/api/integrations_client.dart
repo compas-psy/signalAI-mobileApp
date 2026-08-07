@@ -1,9 +1,7 @@
 import 'api_client.dart';
 
 /// Состояние одного серверного секрета интеграции.
-///
-/// Значения секретов сервер никогда не возвращает. Телефон знает только,
-/// настроен ли слот, какие поля надо ввести и для чего он используется.
+/// Значения секретов сервер никогда не возвращает.
 class ServerIntegration {
   const ServerIntegration({
     required this.slot,
@@ -13,6 +11,7 @@ class ServerIntegration {
     required this.environment,
     required this.fields,
     required this.configured,
+    this.required = true,
     this.updatedAt,
   });
 
@@ -22,20 +21,20 @@ class ServerIntegration {
   final String purpose;
   final String environment;
   final List<String> fields;
+  final bool required;
   final bool configured;
   final DateTime? updatedAt;
 
-  factory ServerIntegration.fromJson(Map<String, dynamic> json) =>
-      ServerIntegration(
+  factory ServerIntegration.fromJson(Map<String, dynamic> json) => ServerIntegration(
         slot: '${json['slot'] ?? ''}',
         venue: '${json['venue'] ?? ''}',
         title: '${json['title'] ?? ''}',
         purpose: '${json['purpose'] ?? ''}',
         environment: '${json['environment'] ?? ''}',
         fields: [
-          for (final item in json['fields'] as List<dynamic>? ?? const [])
-            '$item',
+          for (final item in json['fields'] as List<dynamic>? ?? const []) '$item',
         ],
+        required: json['required'] != false,
         configured: json['configured'] == true,
         updatedAt: DateTime.tryParse('${json['updated_at'] ?? ''}')?.toLocal(),
       );
@@ -55,16 +54,8 @@ class IntegrationsClient {
     ];
   }
 
-  /// Записывает секрет в серверный vault. Ответ не содержит введённых
-  /// значений — только обновлённый статус слота.
-  Future<ServerIntegration> save(
-    String slot,
-    Map<String, String> values,
-  ) async {
-    final json = await _api.put(
-      '$_base/$slot',
-      body: {'values': values},
-    );
+  Future<ServerIntegration> save(String slot, Map<String, String> values) async {
+    final json = await _api.put('$_base/$slot', body: {'values': values});
     return ServerIntegration.fromJson(json);
   }
 
