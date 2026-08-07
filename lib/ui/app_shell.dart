@@ -179,25 +179,44 @@ class AppShell extends StatelessWidget {
       if (signal != null && risk != null) return IdeaDetailScreen(signal: signal, risk: risk);
     }
 
-    if (controller.section == AppSection.settings && controller.thinMode) {
+    if (controller.section == AppSection.settings) {
+      // На экране настроек всегда один и тот же видимый порядок из пяти
+      // разделов. SettingsPill.values хранит legacy mode/security ради
+      // совместимости, поэтому видимый индекс нельзя трактовать как enum.index.
       final selected = SettingsPill.thinAt(controller.pill);
+      if (controller.thinMode) {
+        return switch (selected) {
+          SettingsPill.risk => const ServerRiskScreen(),
+          SettingsPill.connections => const ServerIntegrationsScreen(),
+          SettingsPill.strategies => StrategiesScreen(
+              snapshot: controller.strategies!,
+              backtestRunning: controller.backtestRunning,
+              optimizing: controller.optimizing,
+              backtestStage: controller.analysisStage,
+            ),
+          // Старый экран уже содержит реальные тумблеры уведомлений; передаём
+          // исторический enum-index, а не видимый индекс.
+          SettingsPill.notifications => SettingsScreen(
+              snapshot: controller.settings!,
+              pill: SettingsPill.notifications.index,
+            ),
+          SettingsPill.data => const ServerDataScreen(),
+          _ => const ServerRiskScreen(),
+        };
+      }
+
       return switch (selected) {
-        SettingsPill.risk => const ServerRiskScreen(),
-        SettingsPill.connections => const ServerIntegrationsScreen(),
         SettingsPill.strategies => StrategiesScreen(
             snapshot: controller.strategies!,
             backtestRunning: controller.backtestRunning,
             optimizing: controller.optimizing,
             backtestStage: controller.analysisStage,
           ),
-        // Старый экран уже содержит реальные тумблеры уведомлений; передаём
-        // исторический enum-index, а не видимый thin-index.
-        SettingsPill.notifications => SettingsScreen(
+        SettingsPill.data => const DiagnosticsScreen(),
+        _ => SettingsScreen(
             snapshot: controller.settings!,
-            pill: SettingsPill.notifications.index,
+            pill: selected.index,
           ),
-        SettingsPill.data => const ServerDataScreen(),
-        _ => const ServerRiskScreen(),
       };
     }
 
@@ -210,17 +229,7 @@ class AppShell extends StatelessWidget {
       AppSection.journal => controller.thinMode
           ? ServerJournalScreen(pill: controller.pill)
           : JournalScreen(pill: controller.pill, summary: controller.trades!),
-      AppSection.settings => switch (
-          SettingsPill.values[controller.pill.clamp(0, SettingsPill.values.length - 1)]) {
-        SettingsPill.strategies => StrategiesScreen(
-            snapshot: controller.strategies!,
-            backtestRunning: controller.backtestRunning,
-            optimizing: controller.optimizing,
-            backtestStage: controller.analysisStage,
-          ),
-        SettingsPill.data => const DiagnosticsScreen(),
-        _ => SettingsScreen(snapshot: controller.settings!, pill: controller.pill),
-      },
+      AppSection.settings => throw StateError('settings handled above'),
     };
   }
 
