@@ -1,18 +1,14 @@
 name: Cumulative production release
 run-name: Release · ${{ github.sha }}
 
-# Единственный автоматический production-контур. Он появляется в default
-# branch только после merge уже проверенного PR. Обычные рабочие ветки ничего
-# не деплоят и APK не публикуют.
 on:
   push:
     branches:
       - 'claude/release-y40hk5'
 
 permissions:
-  contents: read
+  contents: write
   actions: write
-  statuses: write
   issues: write
 
 concurrency:
@@ -31,13 +27,13 @@ jobs:
     needs: quality
     runs-on: ubuntu-latest
     steps:
-      - name: Pin and attest the exact green SHA
+      - name: Pin the exact green SHA
         uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
           fetch-depth: 1
 
-      - name: Record reusable QA attestation
+      - name: Record immutable reusable QA attestation
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_SHA: ${{ github.sha }}
@@ -45,11 +41,19 @@ jobs:
           set -euo pipefail
           actual_sha="$(git rev-parse HEAD)"
           [ "$actual_sha" = "$SOURCE_SHA" ]
-          gh api --method POST \
-            "repos/$GITHUB_REPOSITORY/statuses/$SOURCE_SHA" \
-            -f state='success' \
-            -f context='signalai/release-qa' \
-            -f description='Cumulative release QA passed for exact SHA'
+          tag="signalai-qa-$SOURCE_SHA"
+          tagged_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" --jq .object.sha 2>/dev/null || true)"
+          if [ -n "$tagged_sha" ]; then
+            [ "$tagged_sha" = "$SOURCE_SHA" ] || {
+              echo "::error::QA tag $tag points to unexpected SHA $tagged_sha"
+              exit 1
+            }
+          else
+            gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+              -f ref="refs/tags/$tag" \
+              -f sha="$SOURCE_SHA" >/dev/null
+          fi
+          echo "QA attested by immutable tag $tag"
 
       - name: Start exactly one VPS deploy
         id: deploy
@@ -154,4 +158,5 @@ jobs:
           if [ -n "$APK_RUN" ]; then
             apk="$(gh run view "$APK_RUN" --repo "$GITHUB_REPOSITORY" --json conclusion --jq '.conclusion // "running"')"
           fi
-          gh issue comment 6 --repo "$GITHUB_REPOSITORY" --body "Cumulative release \`$SOURCE_SHA\` finished. VPS: **$deploy**. Signed APK: **$apk**."
+          gh issue comment 6 --repo "$GITHUB_REPOSITORY" \
+            --body "Cumulative release \`$SOURCE_SHA\` finished. VPS: **$deploy**. Signed APK: **$apk**."
