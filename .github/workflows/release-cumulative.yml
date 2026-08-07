@@ -1,0 +1,157 @@
+name: Cumulative production release
+run-name: Release · ${{ github.sha }}
+
+# Единственный автоматический production-контур. Он появляется в default
+# branch только после merge уже проверенного PR. Обычные рабочие ветки ничего
+# не деплоят и APK не публикуют.
+on:
+  push:
+    branches:
+      - 'claude/release-y40hk5'
+
+permissions:
+  contents: read
+  actions: write
+  statuses: write
+  issues: write
+
+concurrency:
+  group: signalai-cumulative-production-release
+  cancel-in-progress: false
+
+jobs:
+  quality:
+    name: One full quality gate
+    uses: ./.github/workflows/quality.yml
+    with:
+      source_ref: ${{ github.sha }}
+
+  deliver:
+    name: Deploy once, then build APK once
+    needs: quality
+    runs-on: ubuntu-latest
+    steps:
+      - name: Pin and attest the exact green SHA
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: Record reusable QA attestation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          actual_sha="$(git rev-parse HEAD)"
+          [ "$actual_sha" = "$SOURCE_SHA" ]
+          gh api --method POST \
+            "repos/$GITHUB_REPOSITORY/statuses/$SOURCE_SHA" \
+            -f state='success' \
+            -f context='signalai/release-qa' \
+            -f description='Cumulative release QA passed for exact SHA'
+
+      - name: Start exactly one VPS deploy
+        id: deploy
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ github.sha }}
+          WORKFLOW_REF: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          before="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          jq -n --arg ref "$WORKFLOW_REF" --arg sha "$SOURCE_SHA" \
+            '{ref:$ref, inputs:{source_ref:$sha}}' > /tmp/deploy.json
+          gh api --method POST \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/deploy-release.yml/dispatches" \
+            --input /tmp/deploy.json
+
+          run_id=''
+          run_url=''
+          for _ in $(seq 1 30); do
+            row="$(gh run list --repo "$GITHUB_REPOSITORY" \
+              --workflow deploy-release.yml --event workflow_dispatch \
+              --branch "$WORKFLOW_REF" --limit 20 \
+              --json databaseId,headSha,createdAt,url \
+              --jq ".[] | select(.headSha == \"$SOURCE_SHA\" and .createdAt >= \"$before\") | @json" \
+              | head -1)"
+            if [ -n "$row" ]; then
+              run_id="$(printf '%s' "$row" | jq -r .databaseId)"
+              run_url="$(printf '%s' "$row" | jq -r .url)"
+              break
+            fi
+            sleep 2
+          done
+          [ -n "$run_id" ] || { echo '::error::VPS deploy run was not observed'; exit 1; }
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          echo "run_url=$run_url" >> "$GITHUB_OUTPUT"
+          gh issue comment 6 --repo "$GITHUB_REPOSITORY" \
+            --body "Cumulative release \`$SOURCE_SHA\`: VPS deploy started — $run_id — $run_url"
+
+      - name: Wait for VPS deploy success
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ steps.deploy.outputs.run_id }}
+        run: gh run watch "$RUN_ID" --repo "$GITHUB_REPOSITORY" --exit-status
+
+      - name: Start exactly one permanent-signed APK build
+        id: apk
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ github.sha }}
+          WORKFLOW_REF: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          before="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          jq -n --arg ref "$WORKFLOW_REF" --arg sha "$SOURCE_SHA" \
+            '{ref:$ref, inputs:{source_ref:$sha, mode:"thin", api_base_url:"", backup_api_base_url:""}}' \
+            > /tmp/apk.json
+          gh api --method POST \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/android-sideload.yml/dispatches" \
+            --input /tmp/apk.json
+
+          run_id=''
+          run_url=''
+          for _ in $(seq 1 30); do
+            row="$(gh run list --repo "$GITHUB_REPOSITORY" \
+              --workflow android-sideload.yml --event workflow_dispatch \
+              --branch "$WORKFLOW_REF" --limit 20 \
+              --json databaseId,headSha,createdAt,url \
+              --jq ".[] | select(.headSha == \"$SOURCE_SHA\" and .createdAt >= \"$before\") | @json" \
+              | head -1)"
+            if [ -n "$row" ]; then
+              run_id="$(printf '%s' "$row" | jq -r .databaseId)"
+              run_url="$(printf '%s' "$row" | jq -r .url)"
+              break
+            fi
+            sleep 2
+          done
+          [ -n "$run_id" ] || { echo '::error::signed APK run was not observed'; exit 1; }
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          echo "run_url=$run_url" >> "$GITHUB_OUTPUT"
+          gh issue comment 6 --repo "$GITHUB_REPOSITORY" \
+            --body "Cumulative release \`$SOURCE_SHA\`: signed APK started — $run_id — $run_url"
+
+      - name: Wait for signed APK publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ steps.apk.outputs.run_id }}
+        run: gh run watch "$RUN_ID" --repo "$GITHUB_REPOSITORY" --exit-status
+
+      - name: Record final delivery
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ github.sha }}
+          DEPLOY_RUN: ${{ steps.deploy.outputs.run_id }}
+          APK_RUN: ${{ steps.apk.outputs.run_id }}
+        run: |
+          deploy='not-started'
+          apk='not-started'
+          if [ -n "$DEPLOY_RUN" ]; then
+            deploy="$(gh run view "$DEPLOY_RUN" --repo "$GITHUB_REPOSITORY" --json conclusion --jq '.conclusion // "running"')"
+          fi
+          if [ -n "$APK_RUN" ]; then
+            apk="$(gh run view "$APK_RUN" --repo "$GITHUB_REPOSITORY" --json conclusion --jq '.conclusion // "running"')"
+          fi
+          gh issue comment 6 --repo "$GITHUB_REPOSITORY" --body "Cumulative release \`$SOURCE_SHA\` finished. VPS: **$deploy**. Signed APK: **$apk**."
