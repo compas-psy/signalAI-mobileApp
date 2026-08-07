@@ -68,13 +68,6 @@ def _summary(idea: TradeIdea, symbol: str = "") -> IdeaSummary:
 
 
 def _closing_reason(db: Session, idea: TradeIdea) -> str:
-    """Почему идея закончилась — дословно из журнала переходов.
-
-    Состояние отвечает «что», а не «почему». «Рынок обогнал» на экране — это
-    отметка; владельцу нужно прочитать, что цена дошла до дальней цели, ни
-    разу не зайдя в зону входа. Пересказывать это в интерфейсе нельзя:
-    журнал неизменяем, а пересказ разошёлся бы с ним на первой же правке.
-    """
     if not IdeaStatus(idea.status).is_terminal:
         return ""
     row = db.execute(
@@ -90,7 +83,6 @@ def _closing_reason(db: Session, idea: TradeIdea) -> str:
 
 
 def _decimal_or_none(raw) -> Decimal | None:
-    """Число из объяснения. Курс хранится строкой — он и есть Decimal."""
     if raw is None or raw == "":
         return None
     try:
@@ -100,12 +92,6 @@ def _decimal_or_none(raw) -> Decimal | None:
 
 
 def _quantity_unit(instrument: Instrument | None) -> str:
-    """Чем меряется объём: монетой, контрактом или бумагой.
-
-    Подпись обязана быть настоящей. «28 шт.» под бессрочным контрактом на
-    эфир и «0,348 ETH» — это не разное оформление одного числа, а разные
-    утверждения о том, что владелец собирается купить.
-    """
     if instrument is None:
         return ""
     venue = getattr(instrument.venue, "value", str(instrument.venue))
@@ -121,21 +107,10 @@ def _quantity_unit(instrument: Instrument | None) -> str:
 def _sizing_block(
     idea: TradeIdea, instrument: Instrument | None, explanation: dict
 ) -> SizingBlock:
-    """Размер позиции вместе с тем, в чём он измерен.
-
-    Отдельная функция, а не выражение внутри карточки: здесь же ловится
-    идея, посчитанная до появления курса (§17.1). У такой объём получен
-    делением рублёвого бюджета на риск в USDT — число правдоподобное и
-    неверное в десятки раз. Пересчитывать её нельзя: идея неизменяема, по
-    ней уже могли принять решение. Значит, она перестаёт быть исполнимой и
-    прямо говорит почему.
-    """
     currency = explanation.get("quote_currency") or (
         instrument.currency if instrument else "RUB"
     )
-    stale_fx = (
-        str(currency).upper() != "RUB" and "quote_currency" not in explanation
-    )
+    stale_fx = str(currency).upper() != "RUB" and "quote_currency" not in explanation
     tradable = idea.quantity > 0 and not stale_fx
     if stale_fx:
         reason = (
@@ -184,7 +159,6 @@ def list_ideas(
     limit: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_db),
 ) -> list[IdeaSummary]:
-    """Полная лента, включая историю — для аудита и журнала."""
     stmt = select(TradeIdea).order_by(TradeIdea.signal_time.desc()).limit(limit)
     if status is not None:
         stmt = stmt.where(TradeIdea.status == status)
@@ -201,6 +175,7 @@ _WAITING_IDEA_STATUSES = frozenset(
     {
         IdeaStatus.DISCOVERED,
         IdeaStatus.WATCH,
+        IdeaStatus.TRIGGERED,
         IdeaStatus.RISK_BLOCKED,
         IdeaStatus.DATA_BLOCKED,
     }
@@ -211,9 +186,9 @@ _WAITING_IDEA_STATUSES = frozenset(
 def today(db: Session = Depends(get_db)) -> DailyCards:
     """Операционная выдача: только идеи ДО решения владельца.
 
-    ACTIVE и последующие состояния принадлежат execution lifecycle и должны
-    жить в paper-trades/журнале. Возвращать ACTIVE в trade_now было причиной,
-    по которой подтверждённая HYPE одновременно висела в «Решениях» и «В работе».
+    ACTIVE и последующие состояния принадлежат execution lifecycle. TRIGGERED
+    с quality ACTIVE идёт в Решения; TRIGGERED с quality WATCH остаётся в
+    Наблюдении. После approve статус ACTIVE исчезает из обеих корзин.
     """
     now = datetime.now(UTC)
     rows = [
@@ -230,6 +205,7 @@ def today(db: Session = Depends(get_db)) -> DailyCards:
         _summary(row)
         for row in rows
         if IdeaStatus(row.status) in _WAITING_IDEA_STATUSES
+        and not _is_actionable(row)
         and QualityStatus(row.quality_status)
         in (QualityStatus.ACTIVE, QualityStatus.WATCH)
     ]
@@ -260,7 +236,6 @@ def get_idea(idea_id: UUID, db: Session = Depends(get_db)) -> IdeaDetail:
     instrument = db.execute(
         select(Instrument).where(Instrument.instrument_id == idea.instrument_id)
     ).scalar_one_or_none()
-
     explanation = idea.explanation_json or {}
     breakdown = explanation.get("score_breakdown") or []
     base = _summary(idea, symbol=instrument.symbol if instrument else "")
@@ -382,8 +357,6 @@ def run_scan(db: Session = Depends(get_db)) -> ScanReport:
 
 
 class IdeaDecisionOut(ApiModel):
-    """Единый результат явного решения владельца по торговой идее."""
-
     idea_id: UUID
     decision: Literal["APPROVED_PAPER", "REJECTED"]
     idea_status: IdeaStatus
@@ -435,11 +408,6 @@ def _approval_response(
 
 
 def _is_actionable(idea: TradeIdea) -> bool:
-    """Actionable — только ещё НЕ подтверждённый владельцем TRIGGERED.
-
-    ACTIVE означает, что paper trade уже создан. Считать ACTIVE actionable
-    смешивало сигнал и исполнение и порождало одну карточку сразу в двух вкладках.
-    """
     return (
         QualityStatus(idea.quality_status) is QualityStatus.ACTIVE
         and IdeaStatus(idea.status) is IdeaStatus.TRIGGERED
@@ -466,34 +434,18 @@ def _validate_approval(idea: TradeIdea, *, now: datetime) -> None:
         raise HTTPException(409, "идея не исполнима: размер позиции равен нулю")
 
 
-@router.post(
-    "/ideas/{idea_id}/approve-paper",
-    response_model=IdeaDecisionOut,
-)
-def approve_paper(
-    idea_id: UUID, db: Session = Depends(get_db)
-) -> IdeaDecisionOut:
-    """Подтвердить идею после обязательной свежей серверной сверки.
-
-    Supervisor запускается в той же транзакции непосредственно перед approve.
-    Если рынок уже дошёл до дальней цели без входа, сломал стоп или истёк TTL,
-    он переводит TRIGGERED в MISSED/CANCELLED/TIMED_OUT; stale-план не может
-    превратиться в новую paper-сделку даже при запоздалом тапе пользователя.
-    """
+@router.post("/ideas/{idea_id}/approve-paper", response_model=IdeaDecisionOut)
+def approve_paper(idea_id: UUID, db: Session = Depends(get_db)) -> IdeaDecisionOut:
     now = datetime.now(UTC)
     idea = _locked_idea(db, idea_id)
-
     existing = _existing_trade(db, idea.id)
     if existing is not None:
         return _approval_response(idea, existing, replay=True, now=now)
-
     skipped = db.get(IdeaSkip, idea.id)
     if skipped is not None:
         raise HTTPException(409, "идея уже отклонена владельцем")
 
-    # Не доверяем состоянию, которое было рассчитано до открытия карточки.
-    # Тот же supervisor работает по расписанию; здесь он закрывает race между
-    # последним scheduler tick и нажатием «Подтвердить».
+    # Закрываем race между scheduler tick и нажатием «Подтвердить».
     supervise_ideas(db, now=now)
     db.flush()
     db.refresh(idea)
@@ -540,31 +492,22 @@ def _rejection_response(
     )
 
 
-@router.post(
-    "/ideas/{idea_id}/reject",
-    response_model=IdeaDecisionOut,
-)
+@router.post("/ideas/{idea_id}/reject", response_model=IdeaDecisionOut)
 def reject(
     idea_id: UUID, body: SkipRequest, db: Session = Depends(get_db)
 ) -> IdeaDecisionOut:
-    """Неизменно записать отказ владельца, не удаляя идею и её историю."""
     idea = _locked_idea(db, idea_id)
     existing = db.get(IdeaSkip, idea.id)
     if existing is not None:
         return _rejection_response(idea, existing, replay=True)
-
     if _existing_trade(db, idea.id) is not None:
         raise HTTPException(
             409,
             "по идее уже создана paper-сделка; используйте закрытие сделки",
         )
-
     status = IdeaStatus(idea.status)
     if not can_transition(status, IdeaStatus.CANCELLED):
-        raise HTTPException(
-            409,
-            f"идею в состоянии {status.value} уже нельзя отклонить",
-        )
+        raise HTTPException(409, f"идею в состоянии {status.value} уже нельзя отклонить")
 
     skipped = IdeaSkip(
         idea_id=idea.id,
