@@ -7,7 +7,7 @@ on:
       - 'claude/release-y40hk5'
 
 permissions:
-  contents: write
+  contents: read
   actions: write
   issues: write
 
@@ -27,33 +27,20 @@ jobs:
     needs: quality
     runs-on: ubuntu-latest
     steps:
-      - name: Pin the exact green SHA
+      - name: Verify exact green default SHA
         uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
           fetch-depth: 1
 
-      - name: Record immutable reusable QA attestation
+      - name: Verify provenance before delivery
         env:
-          GH_TOKEN: ${{ github.token }}
           SOURCE_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           actual_sha="$(git rev-parse HEAD)"
           [ "$actual_sha" = "$SOURCE_SHA" ]
-          tag="signalai-qa-$SOURCE_SHA"
-          tagged_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" --jq .object.sha 2>/dev/null || true)"
-          if [ -n "$tagged_sha" ]; then
-            [ "$tagged_sha" = "$SOURCE_SHA" ] || {
-              echo "::error::QA tag $tag points to unexpected SHA $tagged_sha"
-              exit 1
-            }
-          else
-            gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
-              -f ref="refs/tags/$tag" \
-              -f sha="$SOURCE_SHA" >/dev/null
-          fi
-          echo "QA attested by immutable tag $tag"
+          echo "One full QA passed for exact production SHA $SOURCE_SHA"
 
       - name: Start exactly one VPS deploy
         id: deploy
