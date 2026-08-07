@@ -423,6 +423,11 @@ def _validate_approval(idea: TradeIdea, *, now: datetime) -> None:
             f"идея не actionable: quality_status={quality.value}; "
             "approve-paper разрешён только для ACTIVE",
         )
+    if status is IdeaStatus.WATCH:
+        raise HTTPException(
+            409,
+            "идея не подтверждена рынком: status=WATCH; ожидается TRIGGERED",
+        )
     if not _is_actionable(idea):
         raise HTTPException(
             409,
