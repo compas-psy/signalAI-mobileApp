@@ -33,7 +33,7 @@ class TodayScreen extends StatelessWidget {
         ? [
             for (final idea in controller.ideas)
               if (idea.state != IdeaState.active &&
-                  !lockedSymbols.contains(idea.symbol.toUpperCase()))
+                  !lockedSymbols.contains(idea.symbolOrId.toUpperCase()))
                 idea,
           ]
         : controller.ideas;
