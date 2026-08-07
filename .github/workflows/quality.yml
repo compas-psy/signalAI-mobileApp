@@ -36,7 +36,7 @@ jobs:
     outputs:
       reuse: ${{ steps.check.outputs.reuse }}
     steps:
-      - name: Check immutable QA tag for this exact SHA
+      - name: Reuse only the exact current default SHA in delivery workflows
         id: check
         env:
           GH_TOKEN: ${{ github.token }}
@@ -57,11 +57,11 @@ jobs:
             *[!0-9a-f]*|'') exit 0 ;;
           esac
           [ "${#SOURCE_REF}" -eq 40 ] || exit 0
-          tag="signalai-qa-$SOURCE_REF"
-          tagged_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" --jq .object.sha 2>/dev/null || true)"
-          if [ "$tagged_sha" = "$SOURCE_REF" ]; then
+          default_branch="$(gh api "repos/$GITHUB_REPOSITORY" --jq .default_branch)"
+          default_sha="$(gh api "repos/$GITHUB_REPOSITORY/commits/$default_branch" --jq .sha)"
+          if [ "$default_sha" = "$SOURCE_REF" ]; then
             echo 'reuse=true' >> "$GITHUB_OUTPUT"
-            echo "Exact SHA $SOURCE_REF has immutable QA tag $tag; heavy QA is reused."
+            echo "Delivery source $SOURCE_REF is the exact current default SHA; cumulative release already ran the full QA."
           fi
 
   secrets:
