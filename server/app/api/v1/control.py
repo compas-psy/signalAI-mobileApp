@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends
+from pydantic import Field
 from sqlalchemy.orm import Session
 
 from ...db import get_db
@@ -27,7 +28,7 @@ class ActionOut(ApiModel):
     ok: bool = True
     action: str
     detail: str
-    data: dict = {}
+    data: dict = Field(default_factory=dict)
 
 
 @router.post("/ideas/reconcile", response_model=ActionOut)
