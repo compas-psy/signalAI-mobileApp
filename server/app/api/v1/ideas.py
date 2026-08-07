@@ -23,6 +23,7 @@ from ...journal.lifecycle import TransitionRequest, can_transition, transition
 from ...models import IdeaEvent, IdeaSkip, Instrument, PaperTrade, TradeIdea
 from ...models.enums import IdeaStatus, QualityStatus, SkipReason, Strategy
 from ...paper.tracker import PaperTradeConflict, approve_for
+from ...pipeline.supervise import supervise as supervise_ideas
 from ...schemas.common import ApiModel
 from ...schemas.ideas import (
     AnnotationOut,
@@ -43,6 +44,7 @@ from .paper import PaperTradeOut
 from .paper import _out as _paper_out
 
 router = APIRouter(tags=["ideas"])
+
 
 def _summary(idea: TradeIdea, symbol: str = "") -> IdeaSummary:
     return IdeaSummary(
@@ -131,8 +133,6 @@ def _sizing_block(
     currency = explanation.get("quote_currency") or (
         instrument.currency if instrument else "RUB"
     )
-    # Признак старого расчёта: валюта котировки не рублёвая, а в объяснении
-    # нет курса — значит его тогда и не спрашивали.
     stale_fx = (
         str(currency).upper() != "RUB" and "quote_currency" not in explanation
     )
@@ -146,9 +146,6 @@ def _sizing_block(
     elif idea.quantity > 0:
         reason = ""
     else:
-        # Причина берётся с расчёта, а не выводится из нуля: «объём меньше
-        # лота» и «курс USDT к рублю неизвестен» требуют разных действий,
-        # а выглядят одинаково — пустым размером.
         reason = explanation.get("sizing_note") or (
             "объём меньше минимального лота: идея информационная "
             "и не подтверждается (§20.1)"
@@ -187,12 +184,7 @@ def list_ideas(
     limit: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_db),
 ) -> list[IdeaSummary]:
-    """Лента идей.
-
-    По умолчанию отдаёт **все** идеи, включая непоказанные: UX-ТЗ §12 требует
-    хранить и отдавать их, иначе журнал не отвечает на вопрос, что система
-    нашла, но не показала.
-    """
+    """Полная лента, включая историю — для аудита и журнала."""
     stmt = select(TradeIdea).order_by(TradeIdea.signal_time.desc()).limit(limit)
     if status is not None:
         stmt = stmt.where(TradeIdea.status == status)
@@ -205,9 +197,24 @@ def list_ideas(
     return [_summary(row) for row in db.execute(stmt).scalars()]
 
 
+_WAITING_IDEA_STATUSES = frozenset(
+    {
+        IdeaStatus.DISCOVERED,
+        IdeaStatus.WATCH,
+        IdeaStatus.RISK_BLOCKED,
+        IdeaStatus.DATA_BLOCKED,
+    }
+)
+
+
 @router.get("/ideas/today", response_model=DailyCards)
 def today(db: Session = Depends(get_db)) -> DailyCards:
-    """Карточки дня (§16): до трёх, с явной причиной, если торговать нечего."""
+    """Операционная выдача: только идеи ДО решения владельца.
+
+    ACTIVE и последующие состояния принадлежат execution lifecycle и должны
+    жить в paper-trades/журнале. Возвращать ACTIVE в trade_now было причиной,
+    по которой подтверждённая HYPE одновременно висела в «Решениях» и «В работе».
+    """
     now = datetime.now(UTC)
     rows = [
         r
@@ -216,19 +223,15 @@ def today(db: Session = Depends(get_db)) -> DailyCards:
             .where(TradeIdea.expires_at > now, TradeIdea.was_presented.is_(True))
             .order_by(TradeIdea.presentation_rank)
         ).scalars()
-        # Терминальная идея — не предложение. Здесь проверялся только срок,
-        # и убитая kill-условием идея с непросроченным expires_at
-        # оставалась в карточках дня: владелец видел «сделку», по которой
-        # входить уже некуда. Журнал её хранит, лента дня — нет.
         if not IdeaStatus(r.status).is_terminal
     ]
     trade_now = [_summary(row) for row in rows if _is_actionable(row)]
     waiting = [
         _summary(row)
         for row in rows
-        if QualityStatus(row.quality_status)
+        if IdeaStatus(row.status) in _WAITING_IDEA_STATUSES
+        and QualityStatus(row.quality_status)
         in (QualityStatus.ACTIVE, QualityStatus.WATCH)
-        and not _is_actionable(row)
     ]
     reason = ""
     if not trade_now and not waiting:
@@ -325,7 +328,6 @@ def get_idea(idea_id: UUID, db: Session = Depends(get_db)) -> IdeaDetail:
 
 @router.get("/ideas/{idea_id}/events", response_model=list[IdeaEventOut])
 def get_events(idea_id: UUID, db: Session = Depends(get_db)) -> list[IdeaEventOut]:
-    """Полная история переходов (§18). Только чтение: журнал неизменяем."""
     idea = db.get(TradeIdea, idea_id)
     if idea is None:
         raise HTTPException(404, "идея не найдена")
@@ -333,13 +335,6 @@ def get_events(idea_id: UUID, db: Session = Depends(get_db)) -> list[IdeaEventOu
 
 
 class ScanReport(ApiModel):
-    """Отчёт о сканировании (§16).
-
-    Отказы возвращаются вместе с идеями намеренно. «Сегодня ничего нет» без
-    списка причин неотличимо от сломанного движка, а это разные решения —
-    ждать или чинить.
-    """
-
     started_at: datetime
     finished_at: datetime
     scanned: int
@@ -353,7 +348,6 @@ class ScanReport(ApiModel):
 
 @router.post("/ideas/scan", response_model=ScanReport)
 def run_scan(db: Session = Depends(get_db)) -> ScanReport:
-    """Прогнать вселенную по конвейеру §7 и записать найденное."""
     from ...pipeline.scan import scan as run_pipeline
 
     result = run_pipeline(db)
@@ -393,8 +387,6 @@ class IdeaDecisionOut(ApiModel):
     idea_id: UUID
     decision: Literal["APPROVED_PAPER", "REJECTED"]
     idea_status: IdeaStatus
-    # Этот контракт намеренно не допускает LIVE-варианта. Когда-нибудь для
-    # него понадобится другой endpoint и отдельное решение владельца.
     paper_only: Literal[True] = True
     idempotent_replay: bool = False
     decided_at: datetime
@@ -404,7 +396,6 @@ class IdeaDecisionOut(ApiModel):
 
 
 def _locked_idea(db: Session, idea_id: UUID) -> TradeIdea:
-    """Прочитать идею с блокировкой решений approve/reject между собой."""
     idea = db.execute(
         select(TradeIdea).where(TradeIdea.id == idea_id).with_for_update()
     ).scalar_one_or_none()
@@ -418,9 +409,6 @@ def _utc(value: datetime) -> datetime:
 
 
 def _existing_trade(db: Session, idea_id: UUID) -> PaperTrade | None:
-    # В старой схеме уникальность была только для живых строк. ``first``
-    # делает повтор безопасным и на базе, где исторически мог остаться дубль:
-    # владелец всегда получает самую первую, а не случайную запись.
     return db.execute(
         select(PaperTrade)
         .where(PaperTrade.idea_id == idea_id)
@@ -447,15 +435,18 @@ def _approval_response(
 
 
 def _is_actionable(idea: TradeIdea) -> bool:
-    """Единый статусный допуск для карточки и approve-paper."""
+    """Actionable — только ещё НЕ подтверждённый владельцем TRIGGERED.
+
+    ACTIVE означает, что paper trade уже создан. Считать ACTIVE actionable
+    смешивало сигнал и исполнение и порождало одну карточку сразу в двух вкладках.
+    """
     return (
         QualityStatus(idea.quality_status) is QualityStatus.ACTIVE
-        and IdeaStatus(idea.status) in (IdeaStatus.TRIGGERED, IdeaStatus.ACTIVE)
+        and IdeaStatus(idea.status) is IdeaStatus.TRIGGERED
     )
 
 
 def _validate_approval(idea: TradeIdea, *, now: datetime) -> None:
-    """Fail-closed допуск: только подтверждённая активная свежая идея."""
     quality = QualityStatus(idea.quality_status)
     status = IdeaStatus(idea.status)
     if quality is not QualityStatus.ACTIVE:
@@ -467,8 +458,7 @@ def _validate_approval(idea: TradeIdea, *, now: datetime) -> None:
     if not _is_actionable(idea):
         raise HTTPException(
             409,
-            f"идея не подтверждена рынком: status={status.value}; "
-            "ожидается TRIGGERED или ACTIVE",
+            f"идея уже не ждёт решения: status={status.value}; ожидается TRIGGERED",
         )
     if _utc(idea.expires_at) <= now:
         raise HTTPException(409, "идея устарела: expires_at уже наступил")
@@ -483,11 +473,12 @@ def _validate_approval(idea: TradeIdea, *, now: datetime) -> None:
 def approve_paper(
     idea_id: UUID, db: Session = Depends(get_db)
 ) -> IdeaDecisionOut:
-    """Явно подтвердить идею и передать её серверному paper-сопровождению.
+    """Подтвердить идею после обязательной свежей серверной сверки.
 
-    Здесь нет ветки, способной отправить live-заявку: результатом всегда
-    является только строка ``paper_trades``. Повтор возвращает ту же строку,
-    поэтому повторный тап, retry клиента и сетевой timeout не умножают риск.
+    Supervisor запускается в той же транзакции непосредственно перед approve.
+    Если рынок уже дошёл до дальней цели без входа, сломал стоп или истёк TTL,
+    он переводит TRIGGERED в MISSED/CANCELLED/TIMED_OUT; stale-план не может
+    превратиться в новую paper-сделку даже при запоздалом тапе пользователя.
     """
     now = datetime.now(UTC)
     idea = _locked_idea(db, idea_id)
@@ -499,6 +490,13 @@ def approve_paper(
     skipped = db.get(IdeaSkip, idea.id)
     if skipped is not None:
         raise HTTPException(409, "идея уже отклонена владельцем")
+
+    # Не доверяем состоянию, которое было рассчитано до открытия карточки.
+    # Тот же supervisor работает по расписанию; здесь он закрывает race между
+    # последним scheduler tick и нажатием «Подтвердить».
+    supervise_ideas(db, now=now)
+    db.flush()
+    db.refresh(idea)
     _validate_approval(idea, now=now)
 
     try:
@@ -511,8 +509,6 @@ def approve_paper(
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from None
 
-    # TRIGGERED означает «рыночный триггер подтверждён». ACTIVE начинается
-    # только после решения владельца; это отделяет сигнал от исполнения.
     if created and IdeaStatus(idea.status) is IdeaStatus.TRIGGERED:
         transition(
             db,
