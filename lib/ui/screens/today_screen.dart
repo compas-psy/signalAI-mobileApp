@@ -23,17 +23,17 @@ class TodayScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final controller = AppScope.of(context);
     final now = DateTime.now();
-    final lockedInstruments = controller.thinMode
+    final lockedSymbols = controller.thinMode
         ? {
             for (final trade in controller.paperPositions)
-              if (trade.status.live) trade.instrumentId,
+              if (trade.status.live) trade.symbol.toUpperCase(),
           }
         : const <String>{};
     final ideas = controller.thinMode
         ? [
             for (final idea in controller.ideas)
               if (idea.state != IdeaState.active &&
-                  !lockedInstruments.contains(idea.instrumentId))
+                  !lockedSymbols.contains(idea.symbol.toUpperCase()))
                 idea,
           ]
         : controller.ideas;
@@ -115,8 +115,6 @@ class _Metrics extends StatelessWidget {
     void toPortfolio() => controller.goSection(AppSection.portfolio);
     void toRisk() {
       controller.goSection(AppSection.settings);
-      // В thin-порядке Risk — первая пилюля. Старый экран сохраняет
-      // исторический enum-index и туда попадает только вне thin-mode.
       controller.goPill(controller.thinMode ? 0 : SettingsPill.risk.index);
     }
 
