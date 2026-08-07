@@ -1,8 +1,8 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
 import '../net/resilient_http.dart';
-
 import 'api_config.dart';
 
 /// Ошибка обращения к мобильному гейтвею.
@@ -16,53 +16,53 @@ class ApiException implements Exception {
   String toString() => 'ApiException($statusCode): $message';
 }
 
+class _TransportFailure implements Exception {
+  const _TransportFailure(this.cause);
+  final Object cause;
+}
+
 /// Минимальный HTTP-клиент поверх dart:io.
 ///
-/// Внешних зависимостей нет намеренно: чем меньше стороннего кода в приложении,
-/// которое подтверждает сделки, тем лучше (ТЗ §11).
+/// Важное свойство для телефона: IP и маршрут могут поменяться прямо во
+/// время работы (Wi‑Fi → LTE, VPN on/off, смена VPN-гео). Поэтому безопасные
+/// запросы при сетевом обрыве повторяются с новым HttpClient/сокетом, а при
+/// наличии резервного HTTPS-маршрута пробуют и его. TLS не ослабляется.
 class ApiClient {
   ApiClient({String? baseUrl, String? deviceToken, HttpClient? httpClient})
       : _explicitBaseUrl = baseUrl,
         _explicitToken = deviceToken,
-        _client = httpClient ?? resilientHttpClient() {
-    _client.connectionTimeout = ApiConfig.requestTimeout;
-  }
+        _ownsClient = httpClient == null,
+        _client = httpClient ?? _newClient();
 
-  /// Адрес, заданный этому клиенту явно (тесты, особые случаи).
-  ///
-  /// null — берём общий адрес приложения. Читается **на каждом запросе**, а
-  /// не запоминается в конструкторе: адрес движка теперь меняется из
-  /// «Подключений», а клиент живёт всё время работы приложения. Запомни его
-  /// один раз — и после смены адреса запросы продолжили бы уходить на
-  /// старый сервер до перезапуска.
   final String? _explicitBaseUrl;
-
-  /// Токен, заданный явно (тесты). null — общий токен приложения, читается
-  /// на каждом запросе: он меняется из «Подключений» без перезапуска.
   final String? _explicitToken;
-  final HttpClient _client;
+  final bool _ownsClient;
+  HttpClient _client;
+
+  static HttpClient _newClient() {
+    final client = resilientHttpClient();
+    client
+      ..connectionTimeout = ApiConfig.requestTimeout
+      // Долго живущий keep-alive чаще всего и ломается при переключении VPN.
+      // Короткий idle timeout сохраняет reuse внутри серии запросов, но не
+      // держит старый маршрут минутами.
+      ..idleTimeout = const Duration(seconds: 12);
+    return client;
+  }
 
   String get _deviceToken => _explicitToken ?? ApiConfig.deviceToken;
 
-  /// Адрес, по которому клиент реально ходит.
-  ///
-  /// Нужен снаружи, потому что «настроен ли движок» — свойство **этого**
-  /// клиента, а не глобальной константы сборки. Пока проверка смотрела в
-  /// `ApiConfig`, подставить клиент в тесте было нельзя: с пустой константой
-  /// любой запрос обрывался до подстановки.
+  /// Основной адрес, по которому клиент ходит первым.
   String get baseUrl => _explicitBaseUrl ?? ApiConfig.baseUrl;
 
-  // `await` здесь обязателен, и это не стиль. Без него приведение типа
-  // применяется к самому `Future`, а не к его результату, и любой запрос
-  // падает с «type 'Future<Object?>' is not a subtype of type
-  // 'Map<String, dynamic>'». Дефект пролежал незамеченным всё время, пока
-  // REST-клиент ни разу не вызывался, и вылез первым же обращением к движку.
+  List<String> get _routes {
+    if (_explicitBaseUrl != null) return [_explicitBaseUrl!];
+    return ApiConfig.endpoints;
+  }
+
   Future<Map<String, dynamic>> get(String path) async =>
       await _send('GET', path) as Map<String, dynamic>;
 
-  /// Ответ-массив. Контракт §18 отдаёт ленту идей списком верхнего уровня,
-  /// и приводить её к объекту на стороне сервера значит менять контракт под
-  /// удобство одного клиента.
   Future<List<dynamic>> getList(String path) async =>
       await _send('GET', path) as List<dynamic>;
 
@@ -74,8 +74,18 @@ class ApiClient {
       await _send('POST', path, body: body, idempotencyKey: idempotencyKey)
           as Map<String, dynamic>;
 
-  Future<Map<String, dynamic>> patch(String path, {Map<String, dynamic>? body}) async =>
-      await _send('PATCH', path, body: body) as Map<String, dynamic>;
+  Future<Map<String, dynamic>> put(
+    String path, {
+    Map<String, dynamic>? body,
+  }) async => await _send('PUT', path, body: body) as Map<String, dynamic>;
+
+  Future<Map<String, dynamic>> patch(
+    String path, {
+    Map<String, dynamic>? body,
+  }) async => await _send('PATCH', path, body: body) as Map<String, dynamic>;
+
+  Future<Map<String, dynamic>> delete(String path) async =>
+      await _send('DELETE', path) as Map<String, dynamic>;
 
   Future<Object?> _send(
     String method,
@@ -83,16 +93,76 @@ class ApiClient {
     Map<String, dynamic>? body,
     String? idempotencyKey,
   }) async {
-    final uri = Uri.parse('$baseUrl$path');
-    if (!uri.isScheme('https')) {
-      throw ApiException('Гейтвей должен быть доступен только по HTTPS: $uri');
+    final routes = _routes.where((e) => e.trim().isNotEmpty).toList();
+    if (routes.isEmpty) {
+      throw ApiException('Адрес движка не задан.');
+    }
+    for (final route in routes) {
+      final uri = Uri.tryParse('$route$path');
+      if (uri == null || !uri.isScheme('https')) {
+        throw ApiException('Гейтвей должен быть доступен только по HTTPS: $route');
+      }
     }
 
+    // GET/PUT/DELETE безопасно повторять. POST повторяем только при наличии
+    // idempotency key: сетевой обрыв после принятого POST не должен создать
+    // вторую сделку. PATCH без отдельного ключа не повторяем автоматически.
+    final retryable = method == 'GET' ||
+        method == 'PUT' ||
+        method == 'DELETE' ||
+        (method == 'POST' && idempotencyKey != null);
+    final passes = retryable ? 2 : 1;
+    Object? lastFailure;
+
+    for (var pass = 0; pass < passes; pass++) {
+      for (final route in routes) {
+        try {
+          return await _sendOnce(
+            method,
+            route,
+            path,
+            body: body,
+            idempotencyKey: idempotencyKey,
+          );
+        } on _TransportFailure catch (failure) {
+          lastFailure = failure.cause;
+          if (!retryable) {
+            throw ApiException('Нет связи с сервером: ${failure.cause}');
+          }
+          _resetOwnedClient();
+          // Следующий маршрут пробуем сразу: при VPN проблема часто именно
+          // в маршрутизации до конкретного адреса, а не в отсутствии сети.
+        }
+      }
+      if (pass + 1 < passes) {
+        await Future<void>.delayed(Duration(milliseconds: 250 * (pass + 1)));
+      }
+    }
+
+    throw ApiException('Нет связи с сервером: ${lastFailure ?? 'маршрут недоступен'}');
+  }
+
+  Future<Object?> _sendOnce(
+    String method,
+    String route,
+    String path, {
+    Map<String, dynamic>? body,
+    String? idempotencyKey,
+  }) async {
+    final uri = Uri.parse('$route$path');
     final HttpClientRequest request;
     try {
-      request = await _client.openUrl(method, uri).timeout(ApiConfig.requestTimeout);
-    } on Exception catch (e) {
-      throw ApiException('Нет связи с сервером: $e');
+      request = await _client
+          .openUrl(method, uri)
+          .timeout(ApiConfig.requestTimeout);
+    } on SocketException catch (e) {
+      throw _TransportFailure(e);
+    } on HandshakeException catch (e) {
+      throw _TransportFailure(e);
+    } on HttpException catch (e) {
+      throw _TransportFailure(e);
+    } on TimeoutException catch (e) {
+      throw _TransportFailure(e);
     }
 
     request.headers.set(HttpHeaders.acceptHeader, 'application/json');
@@ -100,7 +170,6 @@ class ApiClient {
       request.headers.set(HttpHeaders.authorizationHeader, 'Bearer $_deviceToken');
     }
     if (idempotencyKey != null) {
-      // Повтор команды не должен создавать второй ордер (ТЗ §7).
       request.headers.set('X-Idempotency-Key', idempotencyKey);
     }
     if (body != null) {
@@ -108,8 +177,23 @@ class ApiClient {
       request.write(jsonEncode(body));
     }
 
-    final response = await request.close().timeout(ApiConfig.requestTimeout);
-    final text = await response.transform(utf8.decoder).join();
+    late final HttpClientResponse response;
+    late final String text;
+    try {
+      response = await request.close().timeout(ApiConfig.requestTimeout);
+      text = await response
+          .transform(utf8.decoder)
+          .join()
+          .timeout(ApiConfig.requestTimeout);
+    } on SocketException catch (e) {
+      throw _TransportFailure(e);
+    } on HandshakeException catch (e) {
+      throw _TransportFailure(e);
+    } on HttpException catch (e) {
+      throw _TransportFailure(e);
+    } on TimeoutException catch (e) {
+      throw _TransportFailure(e);
+    }
 
     if (response.statusCode >= 400) {
       throw ApiException(
@@ -121,8 +205,12 @@ class ApiClient {
     return jsonDecode(text) as Object?;
   }
 
-  /// Сервер возвращает {"error": {"message": "…"}} — показываем человеку суть,
-  /// а не голый код (ТЗ §7: понятный текст ошибки).
+  void _resetOwnedClient() {
+    if (!_ownsClient) return;
+    _client.close(force: true);
+    _client = _newClient();
+  }
+
   String _errorMessage(String text, int status) {
     try {
       final decoded = jsonDecode(text);
@@ -132,9 +220,6 @@ class ApiClient {
           return error['message'] as String;
         }
         if (decoded['message'] is String) return decoded['message'] as String;
-        // FastAPI отдаёт HTTPException как `{detail: ...}`. Терять этот текст
-        // особенно опасно на approve/reject: 409 объясняет, почему идея уже
-        // не actionable, а без detail клиент показывал безликое «ошибка 409».
         if (decoded['detail'] is String) return decoded['detail'] as String;
       }
     } on FormatException {
