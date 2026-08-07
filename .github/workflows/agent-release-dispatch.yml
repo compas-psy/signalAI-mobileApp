@@ -11,6 +11,7 @@ on:
 permissions:
   contents: read
   actions: write
+  issues: write
 
 concurrency:
   group: signalai-agent-release-dispatch
@@ -20,11 +21,12 @@ jobs:
   dispatch:
     runs-on: ubuntu-latest
     steps:
-      - name: Dispatch VPS deploy and permanent-signed sideload for exact SHA
+      - name: Dispatch and observe exact release SHA
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_SHA: ${{ github.sha }}
           TARGET_REF: codex/thin-client-v1
+          ISSUE_NUMBER: '6'
         run: |
           set -euo pipefail
           test "${#SOURCE_SHA}" -eq 40
@@ -47,25 +49,68 @@ jobs:
             "repos/$GITHUB_REPOSITORY/actions/workflows/android-sideload.yml/dispatches" \
             --input /tmp/sideload.json
 
-          # Печатаем run IDs, чтобы агент мог продолжить проверку provenance,
-          # не угадывая, какой из параллельных запусков относится к релизу.
-          sleep 3
-          echo '--- deploy-release ---'
-          gh run list \
-            --repo "$GITHUB_REPOSITORY" \
-            --workflow deploy-release.yml \
-            --event workflow_dispatch \
-            --limit 10 \
-            --json databaseId,headSha,status,conclusion,url,createdAt \
-            --jq ".[] | select(.headSha == \"$SOURCE_SHA\") | @json" \
-            | head -1
+          find_run() {
+            workflow="$1"
+            for _ in $(seq 1 20); do
+              run="$(gh run list \
+                --repo "$GITHUB_REPOSITORY" \
+                --workflow "$workflow" \
+                --event workflow_dispatch \
+                --limit 20 \
+                --json databaseId,headSha,status,conclusion,url,createdAt \
+                --jq ".[] | select(.headSha == \"$SOURCE_SHA\") | @json" \
+                | head -1)"
+              if [ -n "$run" ]; then
+                printf '%s' "$run"
+                return 0
+              fi
+              sleep 2
+            done
+            return 1
+          }
 
-          echo '--- android-sideload ---'
-          gh run list \
-            --repo "$GITHUB_REPOSITORY" \
-            --workflow android-sideload.yml \
-            --event workflow_dispatch \
-            --limit 10 \
-            --json databaseId,headSha,status,conclusion,url,createdAt \
-            --jq ".[] | select(.headSha == \"$SOURCE_SHA\") | @json" \
-            | head -1
+          deploy="$(find_run deploy-release.yml)" || {
+            gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
+              --body "Release dispatcher could not observe deploy-release for source \`$SOURCE_SHA\`."
+            exit 1
+          }
+          sideload="$(find_run android-sideload.yml)" || {
+            gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
+              --body "Release dispatcher could not observe android-sideload for source \`$SOURCE_SHA\`."
+            exit 1
+          }
+
+          deploy_id="$(printf '%s' "$deploy" | jq -r .databaseId)"
+          deploy_url="$(printf '%s' "$deploy" | jq -r .url)"
+          sideload_id="$(printf '%s' "$sideload" | jq -r .databaseId)"
+          sideload_url="$(printf '%s' "$sideload" | jq -r .url)"
+
+          gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(cat <<EOF
+Release dispatch started for exact source \`$SOURCE_SHA\`.
+
+- VPS deploy run: $deploy_id — $deploy_url
+- signed sideload run: $sideload_id — $sideload_url
+EOF
+          )"
+
+          set +e
+          gh run watch "$deploy_id" --repo "$GITHUB_REPOSITORY" --exit-status
+          deploy_rc=$?
+          gh run watch "$sideload_id" --repo "$GITHUB_REPOSITORY" --exit-status
+          sideload_rc=$?
+          set -e
+
+          deploy_final="$(gh run view "$deploy_id" --repo "$GITHUB_REPOSITORY" --json status,conclusion,url --jq '@json')"
+          sideload_final="$(gh run view "$sideload_id" --repo "$GITHUB_REPOSITORY" --json status,conclusion,url --jq '@json')"
+          deploy_conclusion="$(printf '%s' "$deploy_final" | jq -r .conclusion)"
+          sideload_conclusion="$(printf '%s' "$sideload_final" | jq -r .conclusion)"
+
+          gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(cat <<EOF
+Release dispatch finished for \`$SOURCE_SHA\`.
+
+- VPS deploy: **$deploy_conclusion** — $deploy_url
+- signed sideload: **$sideload_conclusion** — $sideload_url
+EOF
+          )"
+
+          [ "$deploy_rc" -eq 0 ] && [ "$sideload_rc" -eq 0 ]
