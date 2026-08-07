@@ -37,7 +37,7 @@ class ServerIdeasScreen extends StatelessWidget {
       for (final idea in allIdeas)
         if (idea.state != IdeaState.active &&
             !tradeIdeaIds.contains(idea.id) &&
-            !lockedSymbols.contains(idea.symbol.toUpperCase()))
+            !lockedSymbols.contains(idea.symbolOrId.toUpperCase()))
           idea,
     ];
 
