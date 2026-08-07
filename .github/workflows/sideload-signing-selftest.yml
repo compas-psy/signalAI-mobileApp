@@ -1,0 +1,37 @@
+name: Sideload signing self-test
+
+on:
+  pull_request:
+    branches:
+      - claude/ux-prototype-dark-theme-sv0euq
+    types:
+      - synchronize
+
+permissions:
+  contents: read
+
+jobs:
+  signing:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Restore and fingerprint permanent signing identity
+        env:
+          KEYSTORE_BASE64: ${{ secrets.SIDELOAD_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.SIDELOAD_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.SIDELOAD_KEY_ALIAS }}
+        run: |
+          set -euo pipefail
+          test -n "$KEYSTORE_BASE64"
+          test -n "$STORE_PASSWORD"
+          test -n "$KEY_ALIAS"
+          keystore="${RUNNER_TEMP}/signalai-sideload.jks"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$keystore"
+          keytool -list -keystore "$keystore" -storepass "$STORE_PASSWORD" -alias "$KEY_ALIAS" >/dev/null
+          fingerprint="$(LANG=C keytool -list -v -keystore "$keystore" -storepass "$STORE_PASSWORD" -alias "$KEY_ALIAS" | awk -F'SHA256: ' '/SHA256:/ {gsub(":", "", $2); print tolower($2); exit}')"
+          test "$fingerprint" = '3873f2578229b454d1359311b6d014fe6839280b741c806c46a4c43850730b60'
+          echo "Permanent sideload signer: $fingerprint"
+          shred -u "$keystore" 2>/dev/null || rm -f "$keystore"
