@@ -1,19 +1,9 @@
 """От наблюдений к гипотезам (§12–§14).
 
-Последнее недостающее звено. Наблюдения собираются, движки написаны,
-объединение работает — но между ними ничего не было, и таблица гипотез
-оставалась пустой при исправном сборе.
-
-Сегодня здесь один движок: конечный спрос. Не потому, что остальные хуже,
-а потому, что он единственный, у которого покрытие полное — мониторинг
-предприятий Банка России закрывает его целиком. Писать переходники для
-восьми движков, которым нечего есть, значит получить восемь мест, где
-ошибка не проявится до подключения источника.
-
-Про отраслевое наблюдение и эмитента. Спрос измерен по разделу ОКВЭД, а
-гипотеза адресуется бумаге. Связь берётся из реестра эмитентов, и её
-уверенность идёт в шлюз пригодности как есть: у эмитента без проверенного
-ИНН она ниже, и это должно быть видно в гипотезе, а не сглажено.
+Production-проход теперь состоит из двух независимых бесплатных каналов:
+DEMAND (мониторинг предприятий ЦБ) и HIRING (официальный API «Работа России»).
+Оба дают ранние фундаментальные сигналы; технический D1-контекст добавляется
+как timing overlay и не считается вторым фундаментальным подтверждением.
 """
 
 from __future__ import annotations
@@ -30,24 +20,17 @@ from ..models.enums import ResearchDirection
 from .confirmations import Reading, count as count_confirmations, history_verdict
 from .engines import demand
 from .fusion import Falsifier, SignalInput
+from .hiring_runtime import run_hiring_live
 from .issuers import Issuer, automatic, in_section, of
 from .market_context import MarketContext, for_hypothesis
 from .pipeline import run as run_pipeline
 
-#: Периодичность мониторинга предприятий. Общий порог в пять периодов был
-#: одинаково неверен для всех рядов: месячному мало, годовому много.
-#: Требование считается из периодичности — сезонный лаг плюс подтверждения.
 DEMAND_FREQUENCY = "monthly"
-
-#: Наблюдения мониторинга предприятий. Префикс, а не точное имя: у ЦБ в
-#: одном наборе несколько показателей, и все они про спрос.
 DEMAND_PREFIX = "cbr:enterprise_monitoring:"
 
 
 @dataclass
 class EngineReport:
-    """Что вышло из прохода по движкам."""
-
     observations: int = 0
     sections: int = 0
     signals: int = 0
@@ -57,7 +40,7 @@ class EngineReport:
     def summary(self) -> str:
         parts = [
             f"наблюдений {self.observations}",
-            f"разделов {self.sections}",
+            f"разделов/эмитентов {self.sections}",
             f"сигналов {self.signals}",
             f"гипотез {self.hypotheses}",
         ]
@@ -67,25 +50,15 @@ class EngineReport:
 
 
 def demand_periods(rows: list[ResearchObservation]) -> list[demand.DemandPeriod]:
-    """Свести наблюдения раздела в ряд периодов.
-
-    Порядок хронологический: движок сравнивает последний период с тем же
-    периодом годом ранее, и перепутанный порядок даст рост вместо падения
-    без единой ошибки в расчёте.
-    """
     by_period: dict[str, Decimal] = {}
     for row in sorted(rows, key=lambda r: (r.period_end or r.first_seen_at.date())):
         if row.value_numeric is None or row.period_end is None:
             continue
         by_period[row.period_end.isoformat()] = row.value_numeric
-    return [
-        demand.DemandPeriod(period=period, nominal_spend=value)
-        for period, value in by_period.items()
-    ]
+    return [demand.DemandPeriod(period=period, nominal_spend=value) for period, value in by_period.items()]
 
 
 def _signal(issuer: Issuer, result: demand.DemandResult) -> SignalInput:
-    """Отраслевой результат — сигнал по конкретной бумаге."""
     direction = (
         ResearchDirection.POSITIVE
         if result.direction == "positive"
@@ -101,8 +74,6 @@ def _signal(issuer: Issuer, result: demand.DemandResult) -> SignalInput:
         strength=result.strength,
         target_kpi_family="revenue",
         causal_driver="final_demand",
-        # Спрос проявляется в выручке не мгновенно: квартал на признание,
-        # год на полный эффект. Числа из §13.2, а не подобранные.
         window_from_days=90,
         window_to_days=365,
         reason_codes=tuple(result.reason_codes),
@@ -115,22 +86,12 @@ def _signal(issuer: Issuer, result: demand.DemandResult) -> SignalInput:
 
 
 def _resolve(bucket: list[SignalInput], readings: list[Reading] | None = None) -> dict:
-    """Что движки не знают: уверенность в сущности и чем это опровергнуть.
-
-    ``confirmations`` считается по различным экономическим периодам, а не
-    по числу прогонов. Раньше здесь стояла единица, и любая её замена на
-    «сколько раз мы это видели» превратила бы повторный сбор в
-    подтверждение — система подтверждала бы гипотезы своей активностью.
-    """
     issuer = of(bucket[0].entity_id)
     confidence = issuer.confidence if issuer else Decimal(0)
     return {
         "confirmations": count_confirmations(readings or []).periods,
         "entity_confidence": confidence,
         "effect_size": float(max(abs(s.strength) for s in bucket)),
-        # Отраслевое наблюдение относится к эмитенту тем хуже, чем меньше
-        # он похож на среднюю компанию раздела. Ставить сюда единицу
-        # значило бы обещать, что спрос по разделу — это спрос эмитента.
         "exposure_confidence": float(confidence) * 0.6,
         "falsifiers": [
             Falsifier(
@@ -148,17 +109,6 @@ def _resolve(bucket: list[SignalInput], readings: list[Reading] | None = None) -
 
 
 def _critic(fused, bucket: list[SignalInput]):
-    """Проверить гипотезу моделью перед подтверждением.
-
-    Документ собирается из того, что гипотеза о себе утверждает: причинная
-    цепочка, показатели, опровержения. Отправлять модели сырые наблюдения
-    незачем — проверяется рассуждение, а не данные, и числа всё равно
-    сверяются вычислительно после ответа.
-
-    Ненастроенная модель — не ошибка конфигурации, а нормальное состояние
-    до того, как владелец её включит. Отсутствие критика поднимается
-    наверх исключением: молчание не должно выглядеть как одобрение.
-    """
     from . import critic as critic_module
 
     строки = [f"Гипотеза: {fused.title}", f"Причинная цепочка: {fused.causal_path}"]
@@ -169,7 +119,6 @@ def _critic(fused, bucket: list[SignalInput]):
         for s in bucket
         if s.detail
     ]
-
     verdict, _report, _exchange = critic_module.review(
         hypothesis=fused.title,
         document="\n".join(строки),
@@ -178,11 +127,9 @@ def _critic(fused, bucket: list[SignalInput]):
     return verdict
 
 
-def run_demand(session: Session, *, now: datetime | None = None) -> EngineReport:
-    """Прогнать движок спроса по собранным наблюдениям."""
+def _run_demand_only(session: Session, *, now: datetime | None = None) -> EngineReport:
     moment = now or datetime.now(UTC)
     report = EngineReport()
-
     rows = list(
         session.execute(
             select(ResearchObservation).where(
@@ -192,7 +139,7 @@ def run_demand(session: Session, *, now: datetime | None = None) -> EngineReport
     )
     report.observations = len(rows)
     if not rows:
-        report.skipped.append("наблюдений мониторинга предприятий нет")
+        report.skipped.append("DEMAND: наблюдений мониторинга предприятий нет")
         return report
 
     by_section: dict[str, list[ResearchObservation]] = {}
@@ -206,17 +153,15 @@ def run_demand(session: Session, *, now: datetime | None = None) -> EngineReport
         periods = demand_periods(bucket)
         enough, why = history_verdict(len(periods), DEMAND_FREQUENCY)
         if not enough:
-            report.skipped.append(f"раздел {section}: {why}")
+            report.skipped.append(f"DEMAND раздел {section}: {why}")
             continue
         result = demand.evaluate(periods)
         if not result.applicable:
-            report.skipped.append(f"раздел {section}: {result.detail or 'неприменим'}")
+            report.skipped.append(f"DEMAND раздел {section}: {result.detail or 'неприменим'}")
             continue
         issuers = in_section(section)
         if not issuers:
-            # Раздел без бумаг — не ошибка: ЦБ измеряет всю экономику, а
-            # торгуется её часть. Но и гипотезы из него не выйдет.
-            report.skipped.append(f"раздел {section}: эмитентов в реестре нет")
+            report.skipped.append(f"DEMAND раздел {section}: эмитентов в реестре нет")
             continue
         readings_by_section[section] = [
             Reading(
@@ -231,9 +176,7 @@ def run_demand(session: Session, *, now: datetime | None = None) -> EngineReport
         ]
         for issuer in issuers:
             if not automatic(issuer):
-                report.skipped.append(
-                    f"{issuer.secid}: уверенность привязки ниже порога"
-                )
+                report.skipped.append(f"DEMAND {issuer.secid}: уверенность привязки ниже порога")
                 continue
             signals.append(_signal(issuer, result))
 
@@ -241,8 +184,6 @@ def run_demand(session: Session, *, now: datetime | None = None) -> EngineReport
     if not signals:
         return report
 
-    # Показания по периодам собираются один раз и раздаются по разделам:
-    # подтверждение — это тот же сигнал в другом экономическом периоде.
     market_snapshots: dict[tuple[str, ResearchDirection], MarketContext] = {}
 
     def resolve(bucket: list[SignalInput]) -> dict:
@@ -264,10 +205,25 @@ def run_demand(session: Session, *, now: datetime | None = None) -> EngineReport
             "market_context_detail": snapshot.detail,
         }
 
-    outcome = run_pipeline(
-        session, signals, resolve=resolve, critic=_critic, now=moment
-    )
+    outcome = run_pipeline(session, signals, resolve=resolve, critic=_critic, now=moment)
     report.hypotheses = outcome.created + outcome.updated
+    return report
+
+
+def run_demand(session: Session, *, now: datetime | None = None) -> EngineReport:
+    """Совместимый entry point scheduler: DEMAND + HIRING.
+
+    Имя сохранено, чтобы не менять scheduler отдельным релизным коммитом.
+    Семантика отчёта расширена: это production research engines, а не только
+    конечный спрос.
+    """
+    report = _run_demand_only(session, now=now)
+    hiring_report = run_hiring_live(session, now=now)
+    report.observations += hiring_report.vacancies
+    report.sections += hiring_report.issuers
+    report.signals += hiring_report.signals
+    report.hypotheses += hiring_report.hypotheses
+    report.skipped.extend(f"HIRING: {item}" for item in hiring_report.skipped[:20])
     return report
 
 
