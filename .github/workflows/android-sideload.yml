@@ -13,6 +13,11 @@ on:
         required: false
         default: ''
         type: string
+      backup_api_base_url:
+        description: 'Optional backup HTTPS route to the same Engine API'
+        required: false
+        default: ''
+        type: string
       mode:
         description: 'thin = server runtime; demo = fixtures only'
         required: true
@@ -163,6 +168,7 @@ jobs:
       - name: Build APK without compiled bearer token
         env:
           API_BASE_URL: ${{ inputs.api_base_url || secrets.SIGNALAI_API_BASE_URL || 'https://api.ilyamartynov.ru' }}
+          BACKUP_API_BASE_URL: ${{ inputs.backup_api_base_url || secrets.SIGNALAI_API_BACKUP_URL || '' }}
           MODE: ${{ inputs.mode || 'thin' }}
         run: |
           set -euo pipefail
@@ -171,10 +177,17 @@ jobs:
             demo) echo '::warning::Demo APK uses fixtures and must not be used for trading.' ;;
             *) echo '::error::Personal builds allow only thin or demo; legacy `local` is disabled.'; exit 1 ;;
           esac
+          if [ -n "$BACKUP_API_BASE_URL" ]; then
+            case "$BACKUP_API_BASE_URL" in
+              https://*) ;;
+              *) echo '::error::Backup API route must use HTTPS'; exit 1 ;;
+            esac
+          fi
           flutter build apk --release \
             --build-number="$GITHUB_RUN_NUMBER" \
             --dart-define=SIGNALAI_MODE="$MODE" \
-            --dart-define=SIGNALAI_API_BASE_URL="$API_BASE_URL"
+            --dart-define=SIGNALAI_API_BASE_URL="$API_BASE_URL" \
+            --dart-define=SIGNALAI_API_BACKUP_URL="$BACKUP_API_BASE_URL"
 
       - name: Verify signer and prepare traceable artifacts
         id: artifact
@@ -184,6 +197,7 @@ jobs:
           SHORT_SHA: ${{ needs.resolve.outputs.short_sha }}
           SAFE_REF: ${{ needs.resolve.outputs.safe_ref }}
           MODE: ${{ inputs.mode || 'thin' }}
+          BACKUP_ROUTE_CONFIGURED: ${{ (inputs.backup_api_base_url || secrets.SIGNALAI_API_BACKUP_URL) != '' }}
         run: |
           set -euo pipefail
           source_apk=build/app/outputs/flutter-apk/app-release.apk
@@ -209,7 +223,7 @@ jobs:
           cp "$source_apk" "$exact_apk"
           apk_sha256="$(sha256sum "$stable_apk" | awk '{print $1}')"
 
-          export SOURCE_REF SOURCE_SHA SHORT_SHA MODE signer_sha256 apk_sha256 exact_apk
+          export SOURCE_REF SOURCE_SHA SHORT_SHA MODE BACKUP_ROUTE_CONFIGURED signer_sha256 apk_sha256 exact_apk
           python3 - <<'PY'
           import json
           import os
@@ -226,6 +240,7 @@ jobs:
               "local_scanner_enabled": False,
               "paper_lifecycle_owner": "server" if os.environ["MODE"] == "thin" else "fixture",
               "bearer_token_compiled": False,
+              "backup_route_configured": os.environ["BACKUP_ROUTE_CONFIGURED"].lower() == "true",
               "build_number": int(os.environ["GITHUB_RUN_NUMBER"]),
               "built_at": datetime.now(UTC).isoformat(),
               "stable_apk": "signalai-sideload.apk",
