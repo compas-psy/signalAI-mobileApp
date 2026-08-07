@@ -10,7 +10,9 @@ import 'screens/ideas_screen.dart';
 import 'screens/journal_screen.dart';
 import 'screens/portfolio_screen.dart';
 import 'screens/diagnostics_screen.dart';
+import 'screens/server_ideas_screen.dart';
 import 'screens/server_integrations_screen.dart';
+import 'screens/server_journal_screen.dart';
 import 'screens/settings_screen.dart';
 import 'screens/strategies_screen.dart';
 import 'screens/today_screen.dart';
@@ -151,7 +153,12 @@ class AppShell extends StatelessWidget {
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                SizedBox(width: 400, child: IdeasScreen(pill: controller.pill)),
+                SizedBox(
+                  width: 400,
+                  child: controller.thinMode
+                      ? ServerIdeasScreen(controller: controller, pill: controller.pill)
+                      : IdeasScreen(pill: controller.pill),
+                ),
                 const VerticalDivider(),
                 Expanded(
                   child: signal == null || risk == null
@@ -205,11 +212,15 @@ class AppShell extends StatelessWidget {
     return switch (controller.section) {
       AppSection.today => const TodayScreen(),
       AppSection.portfolio => PortfolioScreen(pill: controller.pill),
-      AppSection.ideas => IdeasScreen(pill: controller.pill),
-      AppSection.journal => JournalScreen(
-          pill: controller.pill,
-          summary: controller.trades!,
-        ),
+      AppSection.ideas => controller.thinMode
+          ? ServerIdeasScreen(controller: controller, pill: controller.pill)
+          : IdeasScreen(pill: controller.pill),
+      AppSection.journal => controller.thinMode
+          ? ServerJournalScreen(pill: controller.pill)
+          : JournalScreen(
+              pill: controller.pill,
+              summary: controller.trades!,
+            ),
       AppSection.settings => switch (SettingsPill
             .values[controller.pill.clamp(0, SettingsPill.values.length - 1)]) {
           SettingsPill.strategies => StrategiesScreen(
