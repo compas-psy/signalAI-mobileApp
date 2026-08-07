@@ -1,12 +1,13 @@
 """От наблюдений к гипотезам (§12–§14).
 
 DEMAND остаётся детерминированным вычислительным entry point. HIRING —
-внешний официальный источник и включается явно только production scheduler
-или ручным research refresh. Unit-тесты и чистые расчёты не открывают сеть.
+внешний официальный источник и включается только production scheduler либо
+явным ручным research refresh. Unit-тесты и чистые расчёты не открывают сеть.
 """
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -226,21 +227,28 @@ def _run_demand_only(session: Session, *, now: datetime | None = None) -> Engine
     return report
 
 
+def _running_as_scheduler() -> bool:
+    """Scheduler process is the only implicit place where live fetch is okay."""
+    command = " ".join(sys.argv).lower()
+    return "app.scheduler" in command
+
+
 def run_demand(
     session: Session,
     *,
     now: datetime | None = None,
-    include_hiring: bool = False,
+    include_hiring: bool | None = None,
 ) -> EngineReport:
-    """Посчитать research engines; live HIRING включается только явно.
+    """Посчитать research engines без неожиданных внешних соединений.
 
-    Default `False` делает функцию детерминированной и не позволяет unit-test
-    или локальному чистому расчёту случайно открыть внешний сокет. Production
-    scheduler и ручной refresh передают `include_hiring=True`.
+    `include_hiring=None` означает: включить HIRING только если этот код
+    реально запущен через `python -m app.scheduler`. API-кнопка передаёт True
+    явно; pytest и чистые вычисления по умолчанию остаются офлайн.
     """
     moment = now or datetime.now(UTC)
     report = _run_demand_only(session, now=moment)
-    if not include_hiring:
+    should_hire = _running_as_scheduler() if include_hiring is None else include_hiring
+    if not should_hire:
         return report
 
     apply_verified_review(session, "trudvsem", now=moment)
