@@ -33,6 +33,11 @@ def test_integrations_list_has_tinvest_and_bybit_without_secret_values(client):
     assert all(item["configured"] is False for item in body)
     assert "token" not in response.text.lower() or "fields" in response.text
 
+    by_slot = {item["slot"]: item for item in body}
+    assert by_slot["tinvest_sandbox"]["required"] is True
+    assert by_slot["bybit_testnet_trade"]["required"] is False
+    assert by_slot["bybit_trade"]["required"] is True
+
 
 def test_tinvest_token_is_write_only_and_encrypted_at_rest(client, session):
     secret = "t.example-super-secret-token-123456789"
@@ -47,9 +52,8 @@ def test_tinvest_token_is_write_only_and_encrypted_at_rest(client, session):
     status = client.get("/api/v1/integrations").json()
     sandbox = next(item for item in status if item["slot"] == "tinvest_sandbox")
     assert sandbox["configured"] is True
+    assert sandbox["required"] is True
     assert secret not in str(sandbox)
-
-    # Decryption exists only for server workers, never as HTTP GET.
     assert load_secret(session, "tinvest_sandbox") == {"token": secret}
 
 
