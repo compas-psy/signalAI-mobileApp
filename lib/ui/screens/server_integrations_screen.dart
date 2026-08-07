@@ -7,10 +7,8 @@ import '../../theme/typography.dart';
 import '../widgets/common.dart';
 import '../widgets/engine_address_sheet.dart';
 
-/// Интеграции thin-клиента.
-///
-/// Биржевые секреты вводятся на телефоне, но сохраняются на сервере и назад
-/// никогда не возвращаются. Телефон показывает только факт настройки.
+/// Интеграции thin-клиента. Секреты вводятся на телефоне, но хранятся
+/// только в server-side vault; обратно приложение получает лишь статус.
 class ServerIntegrationsScreen extends StatefulWidget {
   const ServerIntegrationsScreen({super.key});
 
@@ -47,8 +45,7 @@ class _ServerIntegrationsScreenState extends State<ServerIntegrationsScreen> {
         _error = null;
       });
     } catch (error) {
-      if (!mounted) return;
-      setState(() => _error = '$error');
+      if (mounted) setState(() => _error = '$error');
     }
   }
 
@@ -117,9 +114,9 @@ class _ServerIntegrationsScreenState extends State<ServerIntegrationsScreen> {
         if (items != null) ...[
           _VenueGroup(
             title: 'Т-Инвестиции',
-            note: 'Три разных токена: песочница, инвестиционный read-only и '
-                'отдельный торговый. Торговый токен не включает live-режим сам '
-                'по себе — сервер остаётся paper-only до отдельного допуска.',
+            note: 'Песочница используется для проверки исполнения без денег; '
+                'read-only — для портфеля и метаданных; торговый токен — для '
+                'будущего live-контура. Само наличие trade-token live не включает.',
             items: items.where((e) => e.venue == 'TINVEST').toList(),
             busySlot: _busySlot,
             onEdit: _edit,
@@ -128,9 +125,9 @@ class _ServerIntegrationsScreenState extends State<ServerIntegrationsScreen> {
           const SizedBox(height: S.gap),
           _VenueGroup(
             title: 'Bybit',
-            note: 'Read-only, testnet trade и live trade разделены. Для всех '
-                'ключей право Withdraw должно быть выключено. Секреты хранятся '
-                'на сервере и не возвращаются в приложение.',
+            note: 'Read-only и live trade разделены. Bybit Testnet необязателен: '
+                'проверка стратегии идёт через server-side paper на реальных '
+                'котировках. У live-ключа право Withdraw должно быть выключено.',
             items: items.where((e) => e.venue == 'BYBIT').toList(),
             busySlot: _busySlot,
             onEdit: _edit,
@@ -141,10 +138,9 @@ class _ServerIntegrationsScreenState extends State<ServerIntegrationsScreen> {
         SectionCard(
           child: Text(
             controller.thinMode
-                ? 'Архитектура thin: телефон не держит брокерские ключи и не '
-                    'исполняет ордера сам. Сервер считает, хранит секреты и '
-                    'сопровождает подтверждённые сделки; live execution будет '
-                    'включаться отдельным защищённым gate.'
+                ? 'Телефон не хранит брокерские ключи и не исполняет ордера сам. '
+                    'Сервер считает, хранит секреты и сопровождает подтверждённые '
+                    'paper-сделки; live execution открывается отдельным gate.'
                 : 'Этот экран предназначен для thin-клиента.',
             style: T.body(10.5, color: C.faint, height: 1.5),
           ),
@@ -156,7 +152,6 @@ class _ServerIntegrationsScreenState extends State<ServerIntegrationsScreen> {
 
 class _EngineConnectionCard extends StatelessWidget {
   const _EngineConnectionCard({required this.onSaved});
-
   final Future<void> Function() onSaved;
 
   @override
@@ -178,12 +173,13 @@ class _EngineConnectionCard extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 8),
-          Text(controller.engineBaseUrl.isEmpty ? 'адрес не задан' : controller.engineBaseUrl,
-              style: T.mono(12, weight: 600)),
+          Text(
+            controller.engineBaseUrl.isEmpty ? 'адрес не задан' : controller.engineBaseUrl,
+            style: T.mono(12, weight: 600),
+          ),
           if (controller.engineAuthIssue != null) ...[
             const SizedBox(height: 6),
-            Text(controller.engineAuthIssue!,
-                style: T.body(11, color: C.warning, height: 1.45)),
+            Text(controller.engineAuthIssue!, style: T.body(11, color: C.warning, height: 1.45)),
           ],
           const SizedBox(height: 10),
           ActionButton(
@@ -200,14 +196,6 @@ class _EngineConnectionCard extends StatelessWidget {
               },
             ),
           ),
-          if (ready) ...[
-            const SizedBox(height: 6),
-            Text(
-              'При перепривязке токен нужно ввести заново: приложение никогда '
-              'не читает его обратно из Keystore в поле ввода.',
-              style: T.body(10, color: C.faint, height: 1.4),
-            ),
-          ],
         ],
       ),
     );
@@ -240,14 +228,14 @@ class _VenueGroup extends StatelessWidget {
             const SizedBox(height: 6),
             Text(note, style: T.body(11, color: C.muted, height: 1.5)),
             const SizedBox(height: 10),
-            for (final item in items) ...[
+            for (var index = 0; index < items.length; index++) ...[
               _IntegrationRow(
-                item: item,
-                busy: busySlot == item.slot,
-                onEdit: () => onEdit(item),
-                onRemove: item.configured ? () => onRemove(item) : null,
+                item: items[index],
+                busy: busySlot == items[index].slot,
+                onEdit: () => onEdit(items[index]),
+                onRemove: items[index].configured ? () => onRemove(items[index]) : null,
               ),
-              if (item != items.last) const SizedBox(height: 8),
+              if (index + 1 < items.length) const SizedBox(height: 8),
             ],
           ],
         ),
@@ -268,50 +256,55 @@ class _IntegrationRow extends StatelessWidget {
   final VoidCallback? onRemove;
 
   @override
-  Widget build(BuildContext context) => InsetBox(
-        padding: const EdgeInsets.all(11),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
+  Widget build(BuildContext context) {
+    final status = item.configured
+        ? 'ЗАДАН'
+        : item.required
+            ? 'НЕ ЗАДАН'
+            : 'ОПЦИОНАЛЬНО';
+    final statusColor = item.configured
+        ? C.green
+        : item.required
+            ? C.warning
+            : C.muted;
+    return InsetBox(
+      padding: const EdgeInsets.all(11),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(child: Text(item.title, style: T.body(12.5, weight: 700))),
+              Text(status, style: T.mono(10, color: statusColor)),
+            ],
+          ),
+          const SizedBox(height: 3),
+          Text(item.purpose, style: T.body(10.5, color: C.muted, height: 1.4)),
+          const SizedBox(height: 8),
+          if (busy)
+            const BusyLine(label: 'Сохраняем на сервере…')
+          else
             Row(
               children: [
-                Expanded(child: Text(item.title, style: T.body(12.5, weight: 700))),
-                Text(
-                  item.configured ? 'ЗАДАН' : 'НЕ ЗАДАН',
-                  style: T.mono(10, color: item.configured ? C.green : C.warning),
+                Expanded(
+                  child: ActionButton(
+                    label: item.configured ? 'Заменить' : item.required ? 'Ввести' : 'Настроить при желании',
+                    dense: true,
+                    onTap: onEdit,
+                  ),
                 ),
+                if (onRemove != null) ...[
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: ActionButton(label: 'Удалить', dense: true, onTap: onRemove),
+                  ),
+                ],
               ],
             ),
-            const SizedBox(height: 3),
-            Text(item.purpose, style: T.body(10.5, color: C.muted, height: 1.4)),
-            const SizedBox(height: 8),
-            if (busy)
-              const BusyLine(label: 'Сохраняем на сервере…')
-            else
-              Row(
-                children: [
-                  Expanded(
-                    child: ActionButton(
-                      label: item.configured ? 'Заменить' : 'Ввести',
-                      dense: true,
-                      onTap: onEdit,
-                    ),
-                  ),
-                  if (onRemove != null) ...[
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: ActionButton(
-                        label: 'Удалить',
-                        dense: true,
-                        onTap: onRemove,
-                      ),
-                    ),
-                  ],
-                ],
-              ),
-          ],
-        ),
-      );
+        ],
+      ),
+    );
+  }
 }
 
 Future<Map<String, String>?> _showSecretSheet(
@@ -340,8 +333,8 @@ Future<Map<String, String>?> _showSecretSheet(
             Text(item.title, style: T.jost(18)),
             const SizedBox(height: 4),
             Text(
-              'Значение уйдёт по HTTPS прямо в серверный vault. После '
-              'сохранения приложение увидит только статус «задан».',
+              'Значение уйдёт по HTTPS в server-side vault. После сохранения '
+              'приложение увидит только статус, а не сам секрет.',
               style: T.body(11, color: C.muted, height: 1.45),
             ),
             const SizedBox(height: 12),
@@ -371,12 +364,7 @@ Future<Map<String, String>?> _showSecretSheet(
             ],
             Row(
               children: [
-                Expanded(
-                  child: ActionButton(
-                    label: 'Отмена',
-                    onTap: () => Navigator.of(context).pop(),
-                  ),
-                ),
+                Expanded(child: ActionButton(label: 'Отмена', onTap: () => Navigator.of(context).pop())),
                 const SizedBox(width: 8),
                 Expanded(
                   child: ActionButton(
@@ -384,8 +372,7 @@ Future<Map<String, String>?> _showSecretSheet(
                     primary: true,
                     onTap: () {
                       final values = {
-                        for (final entry in controllers.entries)
-                          entry.key: entry.value.text.trim(),
+                        for (final entry in controllers.entries) entry.key: entry.value.text.trim(),
                       };
                       if (values.values.any((value) => value.isEmpty)) return;
                       Navigator.of(context).pop(values);
