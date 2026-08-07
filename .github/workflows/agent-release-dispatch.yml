@@ -1,0 +1,71 @@
+name: Agent release dispatcher
+
+# Единственная точка автоматического запуска релиза из GitHub API.
+# Ветка release/agent двигается только явным действием владельца/агента;
+# обычные коммиты и PR ничего не деплоят и не публикуют.
+on:
+  push:
+    branches:
+      - 'release/agent'
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: signalai-agent-release-dispatch
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch VPS deploy and permanent-signed sideload for exact SHA
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ github.sha }}
+          TARGET_REF: codex/thin-client-v1
+        run: |
+          set -euo pipefail
+          test "${#SOURCE_SHA}" -eq 40
+
+          jq -n \
+            --arg ref "$TARGET_REF" \
+            --arg sha "$SOURCE_SHA" \
+            '{ref:$ref, inputs:{source_ref:$sha}}' \
+            > /tmp/deploy.json
+          gh api --method POST \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/deploy-release.yml/dispatches" \
+            --input /tmp/deploy.json
+
+          jq -n \
+            --arg ref "$TARGET_REF" \
+            --arg sha "$SOURCE_SHA" \
+            '{ref:$ref, inputs:{source_ref:$sha, mode:"thin", api_base_url:"", backup_api_base_url:""}}' \
+            > /tmp/sideload.json
+          gh api --method POST \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/android-sideload.yml/dispatches" \
+            --input /tmp/sideload.json
+
+          # Печатаем run IDs, чтобы агент мог продолжить проверку provenance,
+          # не угадывая, какой из параллельных запусков относится к релизу.
+          sleep 3
+          echo '--- deploy-release ---'
+          gh run list \
+            --repo "$GITHUB_REPOSITORY" \
+            --workflow deploy-release.yml \
+            --event workflow_dispatch \
+            --limit 10 \
+            --json databaseId,headSha,status,conclusion,url,createdAt \
+            --jq ".[] | select(.headSha == \"$SOURCE_SHA\") | @json" \
+            | head -1
+
+          echo '--- android-sideload ---'
+          gh run list \
+            --repo "$GITHUB_REPOSITORY" \
+            --workflow android-sideload.yml \
+            --event workflow_dispatch \
+            --limit 10 \
+            --json databaseId,headSha,status,conclusion,url,createdAt \
+            --jq ".[] | select(.headSha == \"$SOURCE_SHA\") | @json" \
+            | head -1
