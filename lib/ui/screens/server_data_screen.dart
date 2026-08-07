@@ -29,10 +29,12 @@ class _ServerDataScreenState extends State<ServerDataScreen> {
   Future<void> _load() async {
     try {
       final status = await _api.get('/api/v1/market/status');
-      if (mounted) setState(() {
-        _status = status;
-        _error = null;
-      });
+      if (mounted) {
+        setState(() {
+          _status = status;
+          _error = null;
+        });
+      }
     } catch (error) {
       if (mounted) setState(() => _error = '$error');
     }
@@ -73,13 +75,7 @@ class _ServerDataScreenState extends State<ServerDataScreen> {
               else ...[
                 _Row('Торгуемых инструментов', '${status['tradable'] ?? '—'}'),
                 _Row('Инструментов с данными', '${status['with_data'] ?? '—'}'),
-                _Row('Последний бар', '${status['latest_bar'] ?? '—'}'),
-                if ('${status['note'] ?? ''}'.isNotEmpty)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 6),
-                    child: Text('${status['note']}',
-                        style: T.body(10.5, color: C.warning, height: 1.4)),
-                  ),
+                _Row('Последний бар', '${status['last_bar_time'] ?? '—'}'),
               ],
             ],
           ),
@@ -146,7 +142,14 @@ class _Row extends StatelessWidget {
         child: Row(
           children: [
             Expanded(child: Text(name, style: T.body(11.5, color: C.muted))),
-            Flexible(child: Text(value, textAlign: TextAlign.right, style: T.mono(11.5))),
+            const SizedBox(width: 12),
+            Flexible(
+              child: Text(
+                value,
+                textAlign: TextAlign.right,
+                style: T.mono(11.5),
+              ),
+            ),
           ],
         ),
       );
