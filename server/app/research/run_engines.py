@@ -1,9 +1,8 @@
 """От наблюдений к гипотезам (§12–§14).
 
-Production-проход состоит из двух независимых бесплатных каналов: DEMAND
-(мониторинг предприятий ЦБ) и HIRING (официальный API «Работа России»).
-Технический D1-контекст — timing overlay, а не второе фундаментальное
-подтверждение.
+DEMAND остаётся детерминированным вычислительным entry point. HIRING —
+внешний официальный источник и включается явно только production scheduler
+или ручным research refresh. Unit-тесты и чистые расчёты не открывают сеть.
 """
 
 from __future__ import annotations
@@ -56,7 +55,10 @@ def demand_periods(rows: list[ResearchObservation]) -> list[demand.DemandPeriod]
         if row.value_numeric is None or row.period_end is None:
             continue
         by_period[row.period_end.isoformat()] = row.value_numeric
-    return [demand.DemandPeriod(period=period, nominal_spend=value) for period, value in by_period.items()]
+    return [
+        demand.DemandPeriod(period=period, nominal_spend=value)
+        for period, value in by_period.items()
+    ]
 
 
 def _signal(issuer: Issuer, result: demand.DemandResult) -> SignalInput:
@@ -112,9 +114,12 @@ def _resolve(bucket: list[SignalInput], readings: list[Reading] | None = None) -
 def _critic(fused, bucket: list[SignalInput]):
     from . import critic as critic_module
 
-    строки = [f"Гипотеза: {fused.title}", f"Причинная цепочка: {fused.causal_path}"]
-    строки += [f"Сигнал {s.strategy_key}: {s.detail}" for s in bucket]
-    строки += [f"Опровержение: {f.get('description', '')}" for f in fused.falsifiers]
+    lines = [
+        f"Гипотеза: {fused.title}",
+        f"Причинная цепочка: {fused.causal_path}",
+    ]
+    lines += [f"Сигнал {s.strategy_key}: {s.detail}" for s in bucket]
+    lines += [f"Опровержение: {f.get('description', '')}" for f in fused.falsifiers]
     claims = [
         critic_module.Claim(claim_id=s.strategy_key, text=s.detail)
         for s in bucket
@@ -122,7 +127,7 @@ def _critic(fused, bucket: list[SignalInput]):
     ]
     verdict, _report, _exchange = critic_module.review(
         hypothesis=fused.title,
-        document="\n".join(строки),
+        document="\n".join(lines),
         claims=claims,
     )
     return verdict
@@ -158,7 +163,9 @@ def _run_demand_only(session: Session, *, now: datetime | None = None) -> Engine
             continue
         result = demand.evaluate(periods)
         if not result.applicable:
-            report.skipped.append(f"DEMAND раздел {section}: {result.detail or 'неприменим'}")
+            report.skipped.append(
+                f"DEMAND раздел {section}: {result.detail or 'неприменим'}"
+            )
             continue
         issuers = in_section(section)
         if not issuers:
@@ -177,7 +184,9 @@ def _run_demand_only(session: Session, *, now: datetime | None = None) -> Engine
         ]
         for issuer in issuers:
             if not automatic(issuer):
-                report.skipped.append(f"DEMAND {issuer.secid}: уверенность привязки ниже порога")
+                report.skipped.append(
+                    f"DEMAND {issuer.secid}: уверенность привязки ниже порога"
+                )
                 continue
             signals.append(_signal(issuer, result))
 
@@ -206,28 +215,43 @@ def _run_demand_only(session: Session, *, now: datetime | None = None) -> Engine
             "market_context_detail": snapshot.detail,
         }
 
-    outcome = run_pipeline(session, signals, resolve=resolve, critic=_critic, now=moment)
+    outcome = run_pipeline(
+        session,
+        signals,
+        resolve=resolve,
+        critic=_critic,
+        now=moment,
+    )
     report.hypotheses = outcome.created + outcome.updated
     return report
 
 
-def run_demand(session: Session, *, now: datetime | None = None) -> EngineReport:
-    """Совместимый scheduler entry point: DEMAND + HIRING."""
+def run_demand(
+    session: Session,
+    *,
+    now: datetime | None = None,
+    include_hiring: bool = False,
+) -> EngineReport:
+    """Посчитать research engines; live HIRING включается только явно.
+
+    Default `False` делает функцию детерминированной и не позволяет unit-test
+    или локальному чистому расчёту случайно открыть внешний сокет. Production
+    scheduler и ручной refresh передают `include_hiring=True`.
+    """
     moment = now or datetime.now(UTC)
     report = _run_demand_only(session, now=moment)
+    if not include_hiring:
+        return report
 
-    # `sync_registry` всё ещё хранит старое состояние `trudvsem` без review.
-    # Перед единственным HIRING fetch применяем конкретную проверку условий,
-    # зафиксированную датой и сроком пересмотра; обычный authorize внутри
-    # runtime остаётся последним fail-closed gate перед сетью.
     apply_verified_review(session, "trudvsem", now=moment)
     hiring_report = run_hiring_live(session, now=moment)
-
     report.observations += hiring_report.vacancies
     report.sections += hiring_report.issuers
     report.signals += hiring_report.signals
     report.hypotheses += hiring_report.hypotheses
-    report.skipped.extend(f"HIRING: {item}" for item in hiring_report.skipped[:20])
+    report.skipped.extend(
+        f"HIRING: {item}" for item in hiring_report.skipped[:20]
+    )
     return report
 
 
