@@ -169,7 +169,7 @@ jobs:
           case "$MODE" in
             thin) test -n "$API_BASE_URL" ;;
             demo) echo '::warning::Demo APK uses fixtures and must not be used for trading.' ;;
-            *) echo "::error::Unsupported delivery mode: $MODE"; exit 1 ;;
+            *) echo '::error::Personal builds allow only thin or demo; legacy `local` is disabled.'; exit 1 ;;
           esac
           flutter build apk --release \
             --build-number="$GITHUB_RUN_NUMBER" \
@@ -219,6 +219,7 @@ jobs:
               "channel": "sideload",
               "source_ref": os.environ["SOURCE_REF"],
               "source_sha": os.environ["SOURCE_SHA"],
+              "source_sha_is_authoritative": True,
               "source_short_sha": os.environ["SHORT_SHA"],
               "mode": os.environ["MODE"],
               "server_runtime_required": os.environ["MODE"] == "thin",
@@ -259,6 +260,8 @@ jobs:
           - signer SHA-256: \`$SIGNER_SHA256\`
           - bearer token compiled into APK: \`false\`
           - workflow run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
+
+          Personal builds allow only thin or demo; legacy `local` is disabled.
           NOTES
           if gh release view sideload >/dev/null 2>&1; then
             gh release edit sideload --prerelease --title 'SignalAI sideload' --notes-file release-notes.md
