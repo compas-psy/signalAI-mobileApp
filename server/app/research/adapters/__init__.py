@@ -9,13 +9,13 @@
 физически: без пропуска функцию нельзя вызвать.
 """
 
-from . import cbr, fns
+from . import cbr, fns, trudvsem
 
 #: Какой адаптер отвечает за какой источник реестра.
 #:
 #: Нужен затем, что источник и адаптер связаны только строкой `SOURCE_ID`
 #: внутри модуля, и проверить эту связь снаружи было нечем. Реестр знает,
 #: что источник разрешён; без карты никто не знает, есть ли чем его читать.
-BY_SOURCE = {module.SOURCE_ID: module for module in (cbr, fns)}
+BY_SOURCE = {module.SOURCE_ID: module for module in (cbr, fns, trudvsem)}
 
-__all__ = ["BY_SOURCE", "cbr", "fns"]
+__all__ = ["BY_SOURCE", "cbr", "fns", "trudvsem"]
