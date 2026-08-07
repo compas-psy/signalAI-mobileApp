@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Static invariants for SignalAI delivery workflows.
 
-This is not a replacement for GitHub's workflow parser.  It protects the
+This is not a replacement for GitHub's workflow parser. It protects the
 project-specific properties that generic YAML validation cannot express:
 immutable source provenance, manual-only VPS mutation and stable signing.
 """
@@ -124,6 +124,8 @@ def main() -> int:
         "server/deploy/bootstrap.sh",
     )
 
+    # Shared production-deploy safety properties. The release workflow and the
+    # legacy server workflow differ only in how the exact source reaches VPS.
     for name, workflow in (
         ("deploy-release.yml", deploy_release),
         ("deploy-server.yml", deploy_server),
@@ -132,7 +134,6 @@ def main() -> int:
         require(workflow, "source_ref:", name)
         require(workflow, "needs.resolve.outputs.source_sha", name)
         require(workflow, "group: signalai-production-deploy", name)
-        require(workflow, 'git fetch --depth 1 origin "$SOURCE_SHA"', name)
         require(workflow, "secrets.SIGNALAI_DEVICE_TOKEN", name)
         require(workflow, '[ -n "$DEVICE_TOKEN" ]', name)
         require(workflow, "must be one line of URL-safe characters", name)
@@ -148,6 +149,33 @@ def main() -> int:
         forbid(workflow, "signalai-device-token-v1", name)
         forbid(workflow, "EXPLICIT_TOKEN", name)
         forbid(workflow, "set -euxo", name)
+
+    # Canonical production deploy does not grant a production host access to
+    # the private GitHub repository. Actions checks out the QA-verified SHA,
+    # archives it and sends the archive over the already-authenticated SSH
+    # channel. VPS verifies the archive digest before staging it.
+    for needle in (
+        "git archive --format=tar.gz",
+        "/tmp/signalai-source.tar.gz",
+        "source_bundle_sha256",
+        "sha256sum -c signalai-source.tar.gz.sha256",
+        'STAGE="$HOME/.signalai-stage-$SOURCE_SHA"',
+        'printf \'%s\\n\' "$SOURCE_SHA" > "$STAGE/.signalai-source-sha"',
+    ):
+        require(deploy_release, needle, "deploy-release.yml")
+    forbid(
+        deploy_release,
+        'git fetch --depth 1 origin "$SOURCE_SHA"',
+        "deploy-release.yml",
+    )
+
+    # The older deploy-server path is retained for compatibility, but it must
+    # still pin the requested commit rather than deploying a floating branch.
+    require(
+        deploy_server,
+        'git fetch --depth 1 origin "$SOURCE_SHA"',
+        "deploy-server.yml",
+    )
 
     print("Delivery workflow invariants passed.")
     return 0
