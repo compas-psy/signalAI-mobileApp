@@ -57,7 +57,9 @@ def refresh_research(db: Session = Depends(get_db)) -> ActionOut:
     sync_registry(db)
     collected = collect_all(db)
     db.flush()
-    engines = run_demand(db)
+    # В отличие от чистого unit-level run, явная кнопка владельца должна
+    # опросить и внешний официальный HIRING-источник прямо сейчас.
+    engines = run_demand(db, include_hiring=True)
     expired = expire_hypotheses(db)
     state = readiness(db)
     db.flush()
