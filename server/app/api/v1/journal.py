@@ -34,6 +34,11 @@ class SkipOut(ApiModel):
     skipped_at: datetime
 
 
+def _value(raw: object) -> str:
+    """API отдаёт значение enum, а не repr Python-класса."""
+    return str(getattr(raw, "value", raw))
+
+
 @router.get("/skips", response_model=list[SkipOut])
 def skips(
     limit: int = Query(100, ge=1, le=500),
@@ -50,10 +55,10 @@ def skips(
             idea_id=idea.id,
             instrument_id=idea.instrument_id,
             symbol=idea.instrument_id.split(":")[-1],
-            direction=str(idea.direction),
-            strategy=str(idea.strategy),
+            direction=_value(idea.direction),
+            strategy=_value(idea.strategy),
             score=idea.score,
-            reason=str(skip.reason),
+            reason=_value(skip.reason),
             comment=skip.comment,
             skipped_at=skip.skipped_at,
         )
