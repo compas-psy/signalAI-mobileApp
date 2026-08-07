@@ -18,7 +18,6 @@ on:
 
 permissions:
   contents: read
-  statuses: read
 
 concurrency:
   group: quality-${{ github.event.pull_request.number || inputs.source_ref || github.ref }}-${{ github.workflow }}
@@ -34,11 +33,10 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      statuses: read
     outputs:
       reuse: ${{ steps.check.outputs.reuse }}
     steps:
-      - name: Check whether this exact SHA already passed the release QA
+      - name: Check immutable QA tag for this exact SHA
         id: check
         env:
           GH_TOKEN: ${{ github.token }}
@@ -59,10 +57,11 @@ jobs:
             *[!0-9a-f]*|'') exit 0 ;;
           esac
           [ "${#SOURCE_REF}" -eq 40 ] || exit 0
-          count="$(gh api "repos/$GITHUB_REPOSITORY/commits/$SOURCE_REF/status" --jq '[.statuses[] | select(.context == "signalai/release-qa" and .state == "success")] | length')"
-          if [ "$count" -gt 0 ]; then
+          tag="signalai-qa-$SOURCE_REF"
+          tagged_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" --jq .object.sha 2>/dev/null || true)"
+          if [ "$tagged_sha" = "$SOURCE_REF" ]; then
             echo 'reuse=true' >> "$GITHUB_OUTPUT"
-            echo "Exact SHA $SOURCE_REF already has signalai/release-qa=success; heavy QA is reused."
+            echo "Exact SHA $SOURCE_REF has immutable QA tag $tag; heavy QA is reused."
           fi
 
   secrets:
@@ -172,89 +171,3 @@ jobs:
         run: flutter pub get --enforce-lockfile
       - run: flutter analyze
       - run: flutter test
-
-  release:
-    name: Release exact green SHA
-    needs:
-      - attest
-      - secrets
-      - server
-      - mobile
-    if: >-
-      ${{ github.event_name == 'pull_request' &&
-          github.event.pull_request.head.ref == 'codex/thin-client-v1' }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      actions: write
-      issues: write
-      statuses: write
-    steps:
-      - name: Check explicit release marker
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 1
-      - name: Attest, deploy VPS and publish one permanent-signed APK
-        env:
-          GH_TOKEN: ${{ github.token }}
-          SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
-          TARGET_REF: ${{ github.event.pull_request.head.ref }}
-          ISSUE_NUMBER: '6'
-        run: |
-          set -euo pipefail
-          message="$(git log -1 --pretty=%B)"
-          if ! printf '%s' "$message" | grep -Fq '[release]'; then
-            echo 'No [release] marker in HEAD commit; QA only.'
-            exit 0
-          fi
-          actual_sha="$(git rev-parse HEAD)"
-          [ "$actual_sha" = "$SOURCE_SHA" ]
-          gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$SOURCE_SHA" -f state='success' -f context='signalai/release-qa' -f description='Full PR server, Flutter and secret QA passed'
-          jq -n --arg ref "$TARGET_REF" --arg sha "$SOURCE_SHA" '{ref:$ref, inputs:{source_ref:$sha}}' > /tmp/deploy.json
-          gh api --method POST "repos/$GITHUB_REPOSITORY/actions/workflows/deploy-release.yml/dispatches" --input /tmp/deploy.json
-          jq -n --arg ref "$TARGET_REF" --arg sha "$SOURCE_SHA" '{ref:$ref, inputs:{source_ref:$sha, mode:"thin", api_base_url:"", backup_api_base_url:""}}' > /tmp/sideload.json
-          gh api --method POST "repos/$GITHUB_REPOSITORY/actions/workflows/android-sideload.yml/dispatches" --input /tmp/sideload.json
-
-          find_run() {
-            workflow="$1"
-            for _ in $(seq 1 30); do
-              run="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow "$workflow" --event workflow_dispatch --branch "$TARGET_REF" --limit 20 --json databaseId,headSha,status,conclusion,url,createdAt --jq ".[] | select(.headSha == \"$SOURCE_SHA\") | @json" | head -1)"
-              if [ -n "$run" ]; then
-                printf '%s' "$run"
-                return 0
-              fi
-              sleep 2
-            done
-            return 1
-          }
-
-          deploy="$(find_run deploy-release.yml)" || { gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body "Release gate could not observe deploy-release for source \`$SOURCE_SHA\`."; exit 1; }
-          sideload="$(find_run android-sideload.yml)" || { gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body "Release gate could not observe android-sideload for source \`$SOURCE_SHA\`."; exit 1; }
-          deploy_id="$(printf '%s' "$deploy" | jq -r .databaseId)"
-          deploy_url="$(printf '%s' "$deploy" | jq -r .url)"
-          sideload_id="$(printf '%s' "$sideload" | jq -r .databaseId)"
-          sideload_url="$(printf '%s' "$sideload" | jq -r .url)"
-          gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(cat <<EOF
-Release dispatch started for exact green source \`$SOURCE_SHA\`.
-
-- VPS deploy run: $deploy_id — $deploy_url
-- signed sideload run: $sideload_id — $sideload_url
-EOF
-          )"
-          set +e
-          gh run watch "$deploy_id" --repo "$GITHUB_REPOSITORY" --exit-status
-          deploy_rc=$?
-          gh run watch "$sideload_id" --repo "$GITHUB_REPOSITORY" --exit-status
-          sideload_rc=$?
-          set -e
-          deploy_conclusion="$(gh run view "$deploy_id" --repo "$GITHUB_REPOSITORY" --json conclusion --jq .conclusion)"
-          sideload_conclusion="$(gh run view "$sideload_id" --repo "$GITHUB_REPOSITORY" --json conclusion --jq .conclusion)"
-          gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(cat <<EOF
-Release dispatch finished for \`$SOURCE_SHA\`.
-
-- VPS deploy: **$deploy_conclusion** — $deploy_url
-- signed sideload: **$sideload_conclusion** — $sideload_url
-EOF
-          )"
-          [ "$deploy_rc" -eq 0 ] && [ "$sideload_rc" -eq 0 ]
