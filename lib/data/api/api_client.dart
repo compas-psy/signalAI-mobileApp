@@ -56,7 +56,7 @@ class ApiClient {
   String get baseUrl => _explicitBaseUrl ?? ApiConfig.baseUrl;
 
   List<String> get _routes {
-    if (_explicitBaseUrl != null) return [_explicitBaseUrl!];
+    if (_explicitBaseUrl != null) return [_explicitBaseUrl];
     return ApiConfig.endpoints;
   }
 
@@ -130,8 +130,6 @@ class ApiClient {
             throw ApiException('Нет связи с сервером: ${failure.cause}');
           }
           _resetOwnedClient();
-          // Следующий маршрут пробуем сразу: при VPN проблема часто именно
-          // в маршрутизации до конкретного адреса, а не в отсутствии сети.
         }
       }
       if (pass + 1 < passes) {
