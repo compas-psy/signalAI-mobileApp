@@ -1,0 +1,84 @@
+from __future__ import annotations
+
+import pytest
+from fastapi.testclient import TestClient
+
+from app.db import get_db
+from app.integration_secrets import load_secret
+from app.main import app
+from tests.conftest import DEVICE_HEADERS
+
+
+@pytest.fixture
+def client(session):
+    app.dependency_overrides[get_db] = lambda: session
+    with TestClient(app, headers=DEVICE_HEADERS) as c:
+        yield c
+    app.dependency_overrides.clear()
+
+
+def test_integrations_list_has_tinvest_and_bybit_without_secret_values(client):
+    response = client.get("/api/v1/integrations")
+    assert response.status_code == 200
+    body = response.json()
+    slots = {item["slot"] for item in body}
+    assert {
+        "tinvest_sandbox",
+        "tinvest_invest_read",
+        "tinvest_trade",
+        "bybit_read",
+        "bybit_testnet_trade",
+        "bybit_trade",
+    } <= slots
+    assert all(item["configured"] is False for item in body)
+    assert "token" not in response.text.lower() or "fields" in response.text
+
+
+def test_tinvest_token_is_write_only_and_encrypted_at_rest(client, session):
+    secret = "t.example-super-secret-token-123456789"
+    response = client.put(
+        "/api/v1/integrations/tinvest_sandbox",
+        json={"values": {"token": secret}},
+    )
+    assert response.status_code == 200
+    assert response.json()["configured"] is True
+    assert secret not in response.text
+
+    status = client.get("/api/v1/integrations").json()
+    sandbox = next(item for item in status if item["slot"] == "tinvest_sandbox")
+    assert sandbox["configured"] is True
+    assert secret not in str(sandbox)
+
+    # Decryption exists only for server workers, never as HTTP GET.
+    assert load_secret(session, "tinvest_sandbox") == {"token": secret}
+
+
+def test_bybit_requires_key_and_secret_together(client):
+    response = client.put(
+        "/api/v1/integrations/bybit_trade",
+        json={"values": {"api_key": "key-only"}},
+    )
+    assert response.status_code == 422
+    assert "api_key" in response.json()["detail"]
+    assert "api_secret" in response.json()["detail"]
+
+
+def test_unknown_integration_slot_is_not_created(client):
+    response = client.put(
+        "/api/v1/integrations/unknown",
+        json={"values": {"token": "abc"}},
+    )
+    assert response.status_code == 404
+
+
+def test_integration_can_be_removed_without_returning_secret(client):
+    client.put(
+        "/api/v1/integrations/bybit_read",
+        json={"values": {"api_key": "key-123", "api_secret": "secret-456"}},
+    )
+    response = client.delete("/api/v1/integrations/bybit_read")
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+    status = client.get("/api/v1/integrations").json()
+    item = next(row for row in status if row["slot"] == "bybit_read")
+    assert item["configured"] is False
