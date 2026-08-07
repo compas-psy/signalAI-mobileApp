@@ -2,9 +2,6 @@ name: Sideload repair
 run-name: Sideload repair · ${{ github.sha }}
 
 on:
-  push:
-    branches:
-      - codex/thin-client-v1
   pull_request:
     branches:
       - claude/ux-prototype-dark-theme-sv0euq
