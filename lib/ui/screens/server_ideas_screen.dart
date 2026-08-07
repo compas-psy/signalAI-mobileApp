@@ -29,16 +29,15 @@ class ServerIdeasScreen extends StatelessWidget {
     final allIdeas = controller.ideas;
     final liveTrades = controller.paperPositions.where((t) => t.status.live).toList();
     final tradeIdeaIds = {for (final t in liveTrades) t.ideaId};
-    final lockedInstruments = {for (final t in liveTrades) t.instrumentId};
+    final lockedSymbols = {for (final t in liveTrades) t.symbol.toUpperCase()};
 
     // Пока по инструменту есть PENDING/OPEN trade, новая идея с другим UUID
-    // не конкурирует за внимание с уже принятым решением. Она остаётся в
-    // серверном аудите, но операционная лента не показывает два PEPE сразу.
+    // не конкурирует за внимание с уже принятым решением.
     final undecided = [
       for (final idea in allIdeas)
         if (idea.state != IdeaState.active &&
             !tradeIdeaIds.contains(idea.id) &&
-            !lockedInstruments.contains(idea.instrumentId))
+            !lockedSymbols.contains(idea.symbol.toUpperCase()))
           idea,
     ];
 
