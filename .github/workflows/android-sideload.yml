@@ -1,0 +1,285 @@
+name: Android sideload APK
+run-name: Sideload · ${{ inputs.source_ref || github.ref_name }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: 'Exact branch, tag or commit to build'
+        required: true
+        type: string
+      api_base_url:
+        description: 'Engine URL (empty = repository secret or production default)'
+        required: false
+        default: ''
+        type: string
+      mode:
+        description: 'thin = server runtime; demo = fixtures only'
+        required: true
+        default: thin
+        type: choice
+        options:
+          - thin
+          - demo
+  push:
+    tags:
+      - 'sideload-*'
+
+concurrency:
+  group: signalai-sideload-publish
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  FLUTTER_VERSION: '3.44.8'
+
+jobs:
+  resolve:
+    name: Resolve source ref once
+    runs-on: ubuntu-latest
+    outputs:
+      source_sha: ${{ steps.source.outputs.source_sha }}
+      short_sha: ${{ steps.source.outputs.short_sha }}
+      safe_ref: ${{ steps.source.outputs.safe_ref }}
+      display_ref: ${{ steps.source.outputs.display_ref }}
+    steps:
+      - name: Check out explicitly selected source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_ref || github.ref }}
+          fetch-depth: 1
+
+      - name: Resolve immutable source identity
+        id: source
+        env:
+          DISPLAY_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.source_ref || github.ref_name }}
+        run: |
+          set -euo pipefail
+          source_sha="$(git rev-parse --verify HEAD^{commit})"
+          short_sha="$(git rev-parse --short=12 HEAD)"
+          safe_ref="$(printf '%s' "$DISPLAY_REF" | tr -cs 'A-Za-z0-9._-' '-' | sed 's/^-*//; s/-*$//' | cut -c1-48)"
+          test -n "$safe_ref" || safe_ref=detached
+          if [ "$GITHUB_EVENT_NAME" = push ] && [ "$source_sha" != "$GITHUB_SHA" ]; then
+            echo "::error::Selected tag resolved to $source_sha, event SHA is $GITHUB_SHA"
+            exit 1
+          fi
+          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+          echo "short_sha=$short_sha" >> "$GITHUB_OUTPUT"
+          echo "safe_ref=$safe_ref" >> "$GITHUB_OUTPUT"
+          echo "display_ref=$DISPLAY_REF" >> "$GITHUB_OUTPUT"
+
+  quality:
+    name: Quality gate for selected ref
+    needs: resolve
+    uses: ./.github/workflows/quality.yml
+    with:
+      source_ref: ${{ needs.resolve.outputs.source_sha }}
+
+  build:
+    name: Signed APK and provenance
+    needs:
+      - resolve
+      - quality
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out QA-verified immutable source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.source_sha }}
+          fetch-depth: 1
+
+      - name: Verify checked-out provenance
+        env:
+          EXPECTED_SHA: ${{ needs.resolve.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          actual_sha="$(git rev-parse --verify HEAD^{commit})"
+          test "$actual_sha" = "$EXPECTED_SHA"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Resolve locked dependencies
+        run: flutter pub get --enforce-lockfile
+
+      - name: Restore permanent signing identity
+        env:
+          SIDELOAD_KEYSTORE_BASE64: ${{ secrets.SIDELOAD_KEYSTORE_BASE64 }}
+          SIDELOAD_KEYSTORE_PASSWORD: ${{ secrets.SIDELOAD_KEYSTORE_PASSWORD }}
+          SIDELOAD_KEY_PASSWORD: ${{ secrets.SIDELOAD_KEY_PASSWORD }}
+          SIDELOAD_KEY_ALIAS: ${{ secrets.SIDELOAD_KEY_ALIAS }}
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          RELEASE_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          set -euo pipefail
+          umask 077
+          if [ -n "$SIDELOAD_KEYSTORE_BASE64$SIDELOAD_KEYSTORE_PASSWORD$SIDELOAD_KEY_PASSWORD$SIDELOAD_KEY_ALIAS" ]; then
+            KEYSTORE_BASE64="$SIDELOAD_KEYSTORE_BASE64"
+            STORE_PASSWORD="$SIDELOAD_KEYSTORE_PASSWORD"
+            KEY_PASSWORD="$SIDELOAD_KEY_PASSWORD"
+            KEY_ALIAS="$SIDELOAD_KEY_ALIAS"
+          else
+            KEYSTORE_BASE64="$RELEASE_KEYSTORE_BASE64"
+            STORE_PASSWORD="$RELEASE_KEYSTORE_PASSWORD"
+            KEY_PASSWORD="$RELEASE_KEY_PASSWORD"
+            KEY_ALIAS="$RELEASE_KEY_ALIAS"
+          fi
+          test -n "$KEYSTORE_BASE64"
+          test -n "$STORE_PASSWORD"
+          test -n "$KEY_PASSWORD"
+          test -n "$KEY_ALIAS"
+
+          keystore="${RUNNER_TEMP}/signalai-sideload.jks"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$keystore"
+          test -s "$keystore"
+          keytool -list -keystore "$keystore" -storepass "$STORE_PASSWORD" -alias "$KEY_ALIAS" >/dev/null
+
+          expected_signer_sha256="$(LANG=C keytool -list -v -keystore "$keystore" -storepass "$STORE_PASSWORD" -alias "$KEY_ALIAS" \
+            | awk -F'SHA256: ' '/SHA256:/ {gsub(":", "", $2); print tolower($2); exit}')"
+          test -n "$expected_signer_sha256"
+          echo "EXPECTED_SIGNER_SHA256=$expected_signer_sha256" >> "$GITHUB_ENV"
+
+          cat > android/key.properties <<PROPERTIES
+          storeFile=$keystore
+          storePassword=$STORE_PASSWORD
+          keyAlias=$KEY_ALIAS
+          keyPassword=$KEY_PASSWORD
+          PROPERTIES
+
+      - name: Build APK without compiled bearer token
+        env:
+          API_BASE_URL: ${{ inputs.api_base_url || secrets.SIGNALAI_API_BASE_URL || 'https://api.ilyamartynov.ru' }}
+          MODE: ${{ inputs.mode || 'thin' }}
+        run: |
+          set -euo pipefail
+          case "$MODE" in
+            thin) test -n "$API_BASE_URL" ;;
+            demo) echo '::warning::Demo APK uses fixtures and must not be used for trading.' ;;
+            *) echo "::error::Unsupported delivery mode: $MODE"; exit 1 ;;
+          esac
+          flutter build apk --release \
+            --build-number="$GITHUB_RUN_NUMBER" \
+            --dart-define=SIGNALAI_MODE="$MODE" \
+            --dart-define=SIGNALAI_API_BASE_URL="$API_BASE_URL"
+
+      - name: Verify signer and prepare traceable artifacts
+        id: artifact
+        env:
+          SOURCE_REF: ${{ needs.resolve.outputs.display_ref }}
+          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          SHORT_SHA: ${{ needs.resolve.outputs.short_sha }}
+          SAFE_REF: ${{ needs.resolve.outputs.safe_ref }}
+          MODE: ${{ inputs.mode || 'thin' }}
+        run: |
+          set -euo pipefail
+          source_apk=build/app/outputs/flutter-apk/app-release.apk
+          test -s "$source_apk"
+          apksigner="$(find "${ANDROID_HOME}/build-tools" -name apksigner -type f | sort -r | head -1)"
+          test -n "$apksigner"
+          signer="$($apksigner verify --verbose --print-certs "$source_apk")"
+          printf '%s\n' "$signer"
+          if printf '%s\n' "$signer" | grep -q 'CN=Android Debug'; then
+            echo '::error::APK was signed with the debug key'
+            exit 1
+          fi
+          signer_sha256="$(printf '%s\n' "$signer" | awk -F': ' '/certificate SHA-256 digest:/ {print tolower($NF); exit}')"
+          test -n "$signer_sha256"
+          if [ "$signer_sha256" != "$EXPECTED_SIGNER_SHA256" ]; then
+            echo "::error::APK signer $signer_sha256 does not match configured keystore $EXPECTED_SIGNER_SHA256"
+            exit 1
+          fi
+
+          stable_apk=signalai-sideload.apk
+          exact_apk="signalai-sideload-${SAFE_REF}-${SHORT_SHA}.apk"
+          cp "$source_apk" "$stable_apk"
+          cp "$source_apk" "$exact_apk"
+          apk_sha256="$(sha256sum "$stable_apk" | awk '{print $1}')"
+
+          export SOURCE_REF SOURCE_SHA SHORT_SHA MODE signer_sha256 apk_sha256 exact_apk
+          python3 - <<'PY'
+          import json
+          import os
+          from datetime import UTC, datetime
+          metadata = {
+              "schema_version": 1,
+              "channel": "sideload",
+              "source_ref": os.environ["SOURCE_REF"],
+              "source_sha": os.environ["SOURCE_SHA"],
+              "source_short_sha": os.environ["SHORT_SHA"],
+              "mode": os.environ["MODE"],
+              "server_runtime_required": os.environ["MODE"] == "thin",
+              "local_scanner_enabled": False,
+              "paper_lifecycle_owner": "server" if os.environ["MODE"] == "thin" else "fixture",
+              "bearer_token_compiled": False,
+              "build_number": int(os.environ["GITHUB_RUN_NUMBER"]),
+              "built_at": datetime.now(UTC).isoformat(),
+              "stable_apk": "signalai-sideload.apk",
+              "traceable_apk": os.environ["exact_apk"],
+              "apk_sha256": os.environ["apk_sha256"],
+              "signer_certificate_sha256": os.environ["signer_sha256"],
+          }
+          with open("signalai-sideload.json", "w", encoding="utf-8") as output:
+              json.dump(metadata, output, ensure_ascii=False, indent=2)
+              output.write("\n")
+          PY
+          echo "exact_apk=$exact_apk" >> "$GITHUB_OUTPUT"
+          echo "apk_sha256=$apk_sha256" >> "$GITHUB_OUTPUT"
+          echo "signer_sha256=$signer_sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Publish stable sideload channel
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          EXACT_APK: ${{ steps.artifact.outputs.exact_apk }}
+          APK_SHA256: ${{ steps.artifact.outputs.apk_sha256 }}
+          SIGNER_SHA256: ${{ steps.artifact.outputs.signer_sha256 }}
+          MODE: ${{ inputs.mode || 'thin' }}
+        run: |
+          set -euo pipefail
+          cat > release-notes.md <<NOTES
+          SignalAI personal sideload channel.
+
+          - authoritative source commit: \`$SOURCE_SHA\`
+          - mode: \`$MODE\`
+          - APK SHA-256: \`$APK_SHA256\`
+          - signer SHA-256: \`$SIGNER_SHA256\`
+          - bearer token compiled into APK: \`false\`
+          - workflow run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
+          NOTES
+          if gh release view sideload >/dev/null 2>&1; then
+            gh release edit sideload --prerelease --title 'SignalAI sideload' --notes-file release-notes.md
+          else
+            gh release create sideload --target "$SOURCE_SHA" --prerelease --title 'SignalAI sideload' --notes-file release-notes.md
+          fi
+          gh release upload sideload signalai-sideload.apk "$EXACT_APK" signalai-sideload.json --clobber
+
+      - name: Upload short-lived Actions artifact
+        uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with:
+          name: signalai-sideload-${{ needs.resolve.outputs.safe_ref }}-${{ needs.resolve.outputs.short_sha }}
+          path: |
+            signalai-sideload.apk
+            ${{ steps.artifact.outputs.exact_apk }}
+            signalai-sideload.json
+          retention-days: 3
+
+      - name: Remove signing material
+        if: always()
+        run: |
+          rm -f android/key.properties
+          shred -u "${RUNNER_TEMP}/signalai-sideload.jks" 2>/dev/null || rm -f "${RUNNER_TEMP}/signalai-sideload.jks"
