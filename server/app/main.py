@@ -25,6 +25,7 @@ from fastapi import APIRouter, FastAPI
 from sqlalchemy import text
 
 from .api.v1 import ideas as ideas_routes
+from .api.v1 import integrations as integrations_routes
 from .api.v1 import market as market_routes
 from .api.v1 import paper as paper_routes
 from .api.v1 import portfolio as portfolio_routes
@@ -59,6 +60,7 @@ v1.include_router(risk_routes.router)
 v1.include_router(portfolio_routes.router)
 v1.include_router(research_routes.router)
 v1.include_router(paper_routes.router)
+v1.include_router(integrations_routes.router)
 app.include_router(v1)
 
 
@@ -84,8 +86,6 @@ def health() -> HealthResponse:
 
     paper_only = bool(cfg.get("risk.paper_only"))
     if paper_only and mode not in (ExecutionMode.PAPER, ExecutionMode.ANALYTICS_ONLY):
-        # Противоречие конфигурации и состояния — повод сказать вслух, а не
-        # выбрать одно из двух молча.
         notes.append(
             f"paper_only=true, но режим исполнения {mode}: боевые заявки "
             "останутся заблокированными"
