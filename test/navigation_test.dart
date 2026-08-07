@@ -30,13 +30,16 @@ void main() {
       }
     });
 
-    test('индексы пилюль совпадают с перечислениями', () {
-      // Пилюля адресуется индексом: разъезд между списком подписей и
-      // перечислением означает, что нажатие открывает не тот экран.
+    test('индексы пилюль совпадают с видимыми перечислениями', () {
+      // SettingsPill.values содержит mode/security только для legacy-миграции.
+      // В UI настроек ровно пять реально управляемых разделов, и их порядок
+      // обязан совпадать с thinValues.
       expect(AppSection.portfolio.pills.length, PortfolioPill.values.length);
       expect(AppSection.ideas.pills.length, IdeasPill.values.length);
       expect(AppSection.journal.pills.length, JournalPill.values.length);
-      expect(AppSection.settings.pills.length, SettingsPill.values.length);
+      expect(AppSection.settings.pills.length, SettingsPill.thinValues.length);
+      expect(AppSection.settings.pills,
+          ['Риск', 'Подключения', 'Стратегии', 'Уведомления', 'Данные']);
     });
   });
 
@@ -46,8 +49,9 @@ void main() {
       expect(AppRoute.fromLegacy('trades'), const AppRoute(AppSection.journal));
       expect(AppRoute.fromLegacy('invest'), const AppRoute(AppSection.portfolio));
       expect(AppRoute.fromLegacy('capital'), const AppRoute(AppSection.portfolio));
+      // В видимом пятиэлементном порядке «Стратегии» — индекс 2.
       expect(AppRoute.fromLegacy('strategies'),
-          AppRoute(AppSection.settings, SettingsPill.strategies.index));
+          const AppRoute(AppSection.settings, 2));
       expect(AppRoute.fromLegacy('settings'), const AppRoute(AppSection.settings));
     });
 
@@ -62,9 +66,9 @@ void main() {
       // только на переходах: раздел, с которого всё начинается, оставался
       // единственным неинициализированным.
       final repository = LocalAnalysisRepository(
-      iss: offlineIss(),
-      bybit: offlineBybit(),
-      store: LocalStore.inMemory(),
+        iss: offlineIss(),
+        bybit: offlineBybit(),
+        store: LocalStore.inMemory(),
         vault: const SecureVault(),
       );
       final controller = AppController(repository);
