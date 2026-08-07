@@ -7,18 +7,12 @@ import '../../state/app_scope.dart';
 import '../../state/navigation.dart';
 import '../../theme/tokens.dart';
 import '../../theme/typography.dart';
-import '../tone.dart';
 import '../widgets/common.dart';
 
-/// Журнал thin-клиента: только серверный источник истины.
-///
-/// Старый JournalScreen строился из локального ledger и поэтому не видел
-/// paper-сделки, которые уже сопровождал VPS. Здесь один и тот же PaperTrade
-/// отвечает и за «В работе», и за историю: pending/open/closed/cancelled не
-/// могут разъехаться по двум хранилищам.
+/// Журнал thin-клиента читает только VPS. Pending/Open/CLOSED/CANCELLED —
+/// состояния одной серверной сделки, а не разные локальные списки.
 class ServerJournalScreen extends StatefulWidget {
   const ServerJournalScreen({super.key, required this.pill});
-
   final int pill;
 
   @override
@@ -47,18 +41,17 @@ class _ServerJournalScreenState extends State<ServerJournalScreen> {
     });
     try {
       final trades = await _engine.paperTrades(liveOnly: false);
-      final skipRaw = await _api.getList('/api/v1/journal/skips?limit=100');
+      final raw = await _api.getList('/api/v1/journal/skips?limit=100');
       if (!mounted) return;
       setState(() {
         _trades = trades ?? const [];
         _skips = [
-          for (final raw in skipRaw)
-            if (raw is Map<String, dynamic>) _Skip.fromJson(raw),
+          for (final item in raw)
+            if (item is Map<String, dynamic>) _Skip.fromJson(item),
         ];
       });
     } catch (error) {
-      if (!mounted) return;
-      setState(() => _error = '$error');
+      if (mounted) setState(() => _error = '$error');
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -66,9 +59,6 @@ class _ServerJournalScreenState extends State<ServerJournalScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final section = JournalPill.values[
-      widget.pill.clamp(0, JournalPill.values.length - 1),
-    ];
     if (_error != null && _trades == null) {
       return _Failure(error: _error!, onRetry: _reload);
     }
@@ -80,6 +70,9 @@ class _ServerJournalScreenState extends State<ServerJournalScreen> {
         ),
       );
     }
+    final section = JournalPill.values[
+      widget.pill.clamp(0, JournalPill.values.length - 1),
+    ];
     return switch (section) {
       JournalPill.trades => _Trades(
           trades: _trades!,
@@ -101,12 +94,7 @@ class _ServerJournalScreenState extends State<ServerJournalScreen> {
 }
 
 class _Trades extends StatelessWidget {
-  const _Trades({
-    required this.trades,
-    required this.loading,
-    required this.onReload,
-  });
-
+  const _Trades({required this.trades, required this.loading, required this.onReload});
   final List<PaperPosition> trades;
   final bool loading;
   final Future<void> Function() onReload;
@@ -118,12 +106,7 @@ class _Trades extends StatelessWidget {
     return ListView(
       padding: const EdgeInsets.fromLTRB(S.screen, 12, S.screen, 90),
       children: [
-        _JournalStatus(
-          total: trades.length,
-          live: live.length,
-          loading: loading,
-          onReload: onReload,
-        ),
+        _JournalStatus(total: trades.length, live: live.length, loading: loading, onReload: onReload),
         const SizedBox(height: 12),
         SectionLabel('Сейчас ведёт сервер · ${live.length}'),
         const SizedBox(height: 8),
@@ -144,8 +127,8 @@ class _Trades extends StatelessWidget {
         if (history.isEmpty)
           const _EmptyCard(
             title: 'Закрытых сделок пока нет',
-            note: 'CLOSED и CANCELLED останутся здесь после завершения — '
-                'серверная история не зависит от того, был ли открыт телефон.',
+            note: 'CLOSED и CANCELLED останутся здесь после завершения. '
+                'История не зависит от состояния телефона.',
           )
         else
           for (final trade in history) ...[
@@ -159,13 +142,11 @@ class _Trades extends StatelessWidget {
 
 class _TradeCard extends StatelessWidget {
   const _TradeCard({required this.trade});
-
   final PaperPosition trade;
 
   @override
   Widget build(BuildContext context) {
     final controller = AppScope.of(context);
-    final live = trade.status.live;
     final statusColor = switch (trade.status) {
       PaperPositionStatus.open => C.green,
       PaperPositionStatus.pending => C.accent,
@@ -173,9 +154,7 @@ class _TradeCard extends StatelessWidget {
       PaperPositionStatus.cancelled => C.muted,
     };
     return Pressable(
-      onTap: trade.ideaId.isEmpty
-          ? null
-          : () => controller.openSignal(trade.ideaId),
+      onTap: trade.ideaId.isEmpty ? null : () => controller.openSignal(trade.ideaId),
       child: SectionCard(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -230,10 +209,9 @@ class _TradeCard extends StatelessWidget {
                 style: T.mono(9.5, color: trade.stale ? C.warning : C.faint),
               ),
             ],
-            if (!live && trade.closedAt != null) ...[
+            if (!trade.status.live && trade.closedAt != null) ...[
               const SizedBox(height: 4),
-              Text('закрыта ${_moment(trade.closedAt!)}',
-                  style: T.mono(9.5, color: C.faint)),
+              Text('закрыта ${_moment(trade.closedAt!)}', style: T.mono(9.5, color: C.faint)),
             ],
           ],
         ),
@@ -244,7 +222,6 @@ class _TradeCard extends StatelessWidget {
 
 class _Skips extends StatelessWidget {
   const _Skips({required this.rows, required this.loading, required this.onReload});
-
   final List<_Skip> rows;
   final bool loading;
   final Future<void> Function() onReload;
@@ -264,8 +241,7 @@ class _Skips extends StatelessWidget {
           if (rows.isEmpty)
             const _EmptyCard(
               title: 'Отказов пока нет',
-              note: 'Если идея отклонена, решение и причина остаются на VPS. '
-                  'Повторный запуск приложения их не стирает.',
+              note: 'Отклонённая идея и причина остаются на VPS и не исчезают после перезапуска.',
             )
           else
             for (final row in rows) ...[
@@ -280,16 +256,14 @@ class _Skips extends StatelessWidget {
                           Expanded(child: Text(row.symbol, style: T.jost(15))),
                           Text(row.direction, style: T.mono(10, color: C.muted)),
                           const SizedBox(width: 8),
-                          Text(row.score.toStringAsFixed(0),
-                              style: T.mono(11, color: C.accent)),
+                          Text(row.score.toStringAsFixed(0), style: T.mono(11, color: C.accent)),
                         ],
                       ),
                       const SizedBox(height: 6),
                       Text(row.reason, style: T.body(11.5, weight: 700)),
                       if (row.comment.isNotEmpty) ...[
                         const SizedBox(height: 4),
-                        Text(row.comment,
-                            style: T.body(11, color: C.muted, height: 1.4)),
+                        Text(row.comment, style: T.body(11, color: C.muted, height: 1.4)),
                       ],
                       const SizedBox(height: 6),
                       Text(_moment(row.at), style: T.mono(9.5, color: C.faint)),
@@ -305,7 +279,6 @@ class _Skips extends StatelessWidget {
 
 class _Metrics extends StatelessWidget {
   const _Metrics({required this.trades, required this.loading, required this.onReload});
-
   final List<PaperPosition> trades;
   final bool loading;
   final Future<void> Function() onReload;
@@ -343,10 +316,8 @@ class _Metrics extends StatelessWidget {
               const SizedBox(height: 8),
               Text(
                 closed.length < 30
-                    ? 'Выборка пока мала: эти числа нужны для контроля '
-                        'исполнения, а не для выводов о качестве стратегии.'
-                    : 'Метрики посчитаны только по закрытым серверным '
-                        'paper-сделкам. Pending и Open результат не подменяют.',
+                    ? 'Выборка пока мала: эти числа нужны для контроля исполнения, а не для выводов о стратегии.'
+                    : 'Метрики посчитаны только по закрытым серверным paper-сделкам.',
                 style: T.body(10.5, color: C.muted, height: 1.45),
               ),
             ],
@@ -361,7 +332,6 @@ class _Metric extends StatelessWidget {
   const _Metric(this.name, this.value);
   final String name;
   final String value;
-
   @override
   Widget build(BuildContext context) => Padding(
         padding: const EdgeInsets.symmetric(vertical: 5),
@@ -382,7 +352,6 @@ class _JournalStatus extends StatelessWidget {
     required this.onReload,
     this.label = 'сделок в ledger',
   });
-
   final int total;
   final int live;
   final bool loading;
@@ -397,7 +366,7 @@ class _JournalStatus extends StatelessWidget {
             Row(
               children: [
                 const Expanded(child: SectionLabel('Источник истины · VPS')),
-                OutlineBadge(
+                const OutlineBadge(
                   label: 'SERVER',
                   color: C.green,
                   borderColor: C.greenBorder,
@@ -422,7 +391,6 @@ class _EmptyCard extends StatelessWidget {
   const _EmptyCard({required this.title, required this.note});
   final String title;
   final String note;
-
   @override
   Widget build(BuildContext context) => SectionCard(
         child: Column(
@@ -440,7 +408,6 @@ class _Failure extends StatelessWidget {
   const _Failure({required this.error, required this.onRetry});
   final String error;
   final Future<void> Function() onRetry;
-
   @override
   Widget build(BuildContext context) => Center(
         child: Padding(
@@ -472,7 +439,6 @@ class _Skip {
     required this.comment,
     required this.at,
   });
-
   final String ideaId;
   final String symbol;
   final String direction;
@@ -499,7 +465,8 @@ String _status(PaperPositionStatus value) => switch (value) {
       PaperPositionStatus.cancelled => 'ОТМЕНЕНА',
     };
 
-String _price(double value) => value.toStringAsFixed(value.abs() < 0.01 ? 6 : 4)
+String _price(double value) => value
+    .toStringAsFixed(value.abs() < 0.01 ? 6 : 4)
     .replaceAll(RegExp(r'0+$'), '')
     .replaceAll(RegExp(r'\.$'), '')
     .replaceAll('.', ',');
