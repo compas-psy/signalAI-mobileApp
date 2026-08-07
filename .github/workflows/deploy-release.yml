@@ -87,7 +87,7 @@ jobs:
           }
           echo "Deploying QA-verified commit $actual_sha"
 
-      - name: Проверить секреты
+      - name: Проверить обязательные секреты
         env:
           HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
           KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
@@ -97,10 +97,14 @@ jobs:
           missing=''
           [ -n "$HOST" ] || missing="$missing VPS_HOST|SERVER_HOST"
           [ -n "$KEY" ] || missing="$missing VPS_SSH_KEY|SSH_SECRET"
-          [ -n "$DEVICE_TOKEN" ] || missing="$missing SIGNALAI_DEVICE_TOKEN"
           if [ -n "$missing" ]; then
             echo "::error::не заданы секреты:$missing"
             exit 1
+          fi
+          if [ -n "$DEVICE_TOKEN" ]; then
+            echo 'Device token: будет применён явный GitHub Secret override.'
+          else
+            echo 'Device token: GitHub Secret не задан; будет сохранён валидный token из /etc/signalai/.env на VPS.'
           fi
 
       - name: Подготовить SSH
@@ -123,20 +127,20 @@ jobs:
         run: |
           set -eu
           umask 077
-          test -n "$DEVICE_TOKEN"
-          case "$DEVICE_TOKEN" in
-            *[!A-Za-z0-9._~-]*)
-              echo '::error::SIGNALAI_DEVICE_TOKEN must be one line of URL-safe characters'
+          : > /tmp/signalai-device-token.b64
+          if [ -n "$DEVICE_TOKEN" ]; then
+            case "$DEVICE_TOKEN" in
+              *[!A-Za-z0-9._~-]*)
+                echo '::error::SIGNALAI_DEVICE_TOKEN must be one line of URL-safe characters'
+                exit 1
+                ;;
+            esac
+            [ "${#DEVICE_TOKEN}" -ge 32 ] || {
+              echo '::error::SIGNALAI_DEVICE_TOKEN must contain at least 32 characters'
               exit 1
-              ;;
-          esac
-          [ "${#DEVICE_TOKEN}" -ge 32 ] || {
-            echo '::error::SIGNALAI_DEVICE_TOKEN must contain at least 32 characters'
-            exit 1
-          }
-          # Значение не печатается и не передаётся через argv. Владелец вводит
-          # тот же сохранённый у себя token один раз в приложении.
-          printf '%s' "$DEVICE_TOKEN" | base64 -w0 > /tmp/signalai-device-token.b64
+            }
+            printf '%s' "$DEVICE_TOKEN" | base64 -w0 > /tmp/signalai-device-token.b64
+          fi
 
           cat > /tmp/signalai-update.sh <<'REMOTE'
           set -euo pipefail
@@ -156,9 +160,27 @@ jobs:
           SUDO=''
           [ "$(id -u)" -eq 0 ] || SUDO='sudo'
 
-          test -s "$TOKEN_FILE"
-          token="$(base64 -d < "$TOKEN_FILE")"
+          test -f "$ENV_FILE" || {
+            echo 'server env file is missing; use bootstrap workflow for first installation' >&2
+            exit 1
+          }
+
+          token=''
+          if [ -s "$TOKEN_FILE" ]; then
+            token="$(base64 -d < "$TOKEN_FILE")"
+            echo '── device token ── GitHub Secret override'
+          else
+            token="$(sed -n 's/^SIGNALAI_DEVICE_TOKEN=//p' "$ENV_FILE" | tail -1)"
+            echo '── device token ── preserving existing VPS token'
+          fi
           rm -f "$TOKEN_FILE"
+          case "$token" in
+            *[!A-Za-z0-9._~-]*) echo 'existing SIGNALAI_DEVICE_TOKEN must be one line of URL-safe characters' >&2; exit 1 ;;
+          esac
+          [ "${#token}" -ge 32 ] || {
+            echo 'existing SIGNALAI_DEVICE_TOKEN must contain at least 32 characters' >&2
+            exit 1
+          }
 
           cd "$DIR"
           git fetch --depth 1 origin "$SOURCE_SHA" </dev/null
@@ -170,21 +192,19 @@ jobs:
           }
           echo "── исходный commit ── $deployed_sha"
 
-          test -f "$ENV_FILE"
-          $SUDO sed -i '/^SIGNALAI_DEVICE_TOKEN=/d' "$ENV_FILE"
-          printf 'SIGNALAI_DEVICE_TOKEN=%s\n' "$token" | $SUDO tee -a "$ENV_FILE" >/dev/null
+          # Atomic rewrite: preserve all existing runtime settings and only
+          # refresh the token when an explicit override was supplied. Writing
+          # the existing value back is harmless and makes the invariant clear.
+          tmp_env="$(mktemp /tmp/signalai-env.XXXXXX)"
+          $SUDO awk '!/^SIGNALAI_DEVICE_TOKEN=/' "$ENV_FILE" > "$tmp_env"
+          printf 'SIGNALAI_DEVICE_TOKEN=%s\n' "$token" >> "$tmp_env"
+          $SUDO cp "$tmp_env" "$ENV_FILE"
+          rm -f "$tmp_env"
           unset token
           $SUDO chmod 600 "$ENV_FILE"
 
           cd server
 
-          # Локальная модель критика (ТЗ §26.2). Включается один раз и
-          # только если на диске есть запас: веса весят гигабайты, а сервер
-          # с забитым диском ломается целиком, а не частично.
-          #
-          # Строки дописываются, только если ключа ещё нет. Так позднейшая
-          # правка владельца выигрывает у выкладки — иначе каждый деплой
-          # молча возвращал бы настройки к своим.
           LLM_PROFILE=''
           FREE_GB="$(df --output=avail -BG / | tail -1 | tr -dc '0-9')"
           echo "── место на диске ── ${FREE_GB}G свободно"
@@ -204,29 +224,13 @@ jobs:
 
           $SUDO docker compose --env-file "$ENV_FILE" $LLM_PROFILE config >/dev/null
 
-          # Порядок здесь принципиален, и раньше он был неверным.
-          #
-          # `run --rm api alembic upgrade head` запускается на том образе,
-          # который уже лежит на машине, — то есть на ПРЕДЫДУЩЕЙ версии кода.
-          # Новой миграции в нём ещё нет, и alembic честно сообщает, что
-          # применять нечего. Именно так и выглядел лог деплоя 31.07: две
-          # строки INFO и ни одной «Running upgrade», хотя ревизия 0005 была
-          # в коммите. Схему спасала только собственная команда контейнера
-          # api (`alembic upgrade head && uvicorn`), выполнявшаяся уже после
-          # пересборки, — то есть правильный результат получался случайно, а
-          # в логе деплоя его не было видно вовсе.
-          #
-          # Теперь образ собирается первым, и миграция идёт на нём. В логе
-          # прогона видно, какая ревизия применилась, — а это единственное
-          # место, где вообще можно это проверить.
+          # Build the new image before running its migrations. Running Alembic
+          # on the previous image can silently miss a migration introduced by
+          # this exact source SHA.
           $SUDO docker compose --env-file "$ENV_FILE" build api scheduler </dev/null
           $SUDO docker compose --env-file "$ENV_FILE" run --rm -T api alembic upgrade head </dev/null
-          $SUDO docker compose --env-file "$ENV_FILE" $LLM_PROFILE \
-            up -d --remove-orphans </dev/null
+          $SUDO docker compose --env-file "$ENV_FILE" $LLM_PROFILE up -d --remove-orphans </dev/null
 
-          # Веса тянутся один раз и живут в томе. Загрузка идёт в фоне и не
-          # держит выкладку: несколько гигабайт по сети — не повод считать
-          # деплой неудавшимся, а первый прогон разведки всё равно позже.
           if [ -n "$LLM_PROFILE" ]; then
             model="$(grep '^SIGNALAI_LLM_MODEL=' "$ENV_FILE" | cut -d= -f2-)"
             if $SUDO docker compose --env-file "$ENV_FILE" $LLM_PROFILE \
@@ -261,16 +265,6 @@ jobs:
             exit 1
           }
 
-          # Последние строки планировщика печатаются всегда, а не только при
-          # падении. Это единственное место, откуда видно, что делает движок:
-          # сколько бумаг во вселенной, сколько баров загружено, дал ли скан
-          # идеи и чем закончилась сборка пакетов. Без этого «на экране
-          # пусто» приходится объяснять рассуждением вместо факта.
-          # Планировщик только что стартовал, и первый цикл идёт не мгновенно:
-          # тайл сразу после старта показывал одну строку приветствия и ничего
-          # больше — то есть раздел, заведённый ради «что делает движок», не
-          # показывал ничего. Ждём первую задачу, но не дольше двух минут:
-          # деплой не должен зависеть от того, дал ли рынок новые бары.
           echo '── планировщик ──'
           for _ in $(seq 1 24); do
             if $SUDO docker compose --env-file "$ENV_FILE" logs --no-color scheduler \
@@ -281,42 +275,18 @@ jobs:
           done
           $SUDO docker compose --env-file "$ENV_FILE" logs --tail=40 --no-color scheduler
 
-          # Доступность источников ранних сигналов.
-          #
-          # Разрешить сбор и суметь его сделать — разные вещи. Правовой шлюз
-          # может пропускать, а исходящий доступ с сервера быть закрыт, и
-          # снаружи это выглядит одинаково: гипотез нет. Раньше различить их
-          # можно было только войдя на сервер руками.
-          #
-          # Проверка идёт из контейнера, а не с хоста: ходить в источники
-          # будет он, и его сеть с хостовой совпадает не всегда. Проба
-          # уважает правовой шлюз — к запрещённому источнику она не уходит
-          # вовсе, и это видно в ответе.
-          #
-          # Деплой на этом не падает. Закрытый исходящий доступ — не поломка
-          # выкладки, а отдельная задача владельца, и валить из-за неё
-          # выкатку значило бы связать две независимые вещи.
           echo '── доступность источников ──'
           curl --fail --silent --show-error --max-time 90 \
             http://127.0.0.1:8000/api/v1/research/sources/reachability \
             || echo 'проба не ответила: смотрите логи api'
           echo
 
-          # Сводка разведки: коротко, числами. Полная диагностика
-          # источников (plan-check, каталоги, пофазные пробы) своё дело
-          # сделала — адреса установлены и проверены; гонять её каждый
-          # деплой значит тратить три минуты и мегабайты лога на ответ,
-          # который уже известен. Если сбор снова замолчит, причина будет
-          # в строке research планировщика — она печатается выше.
           echo '── разведка: сводка ──'
           curl --fail --silent --max-time 60 \
             http://127.0.0.1:8000/api/v1/research/hypotheses \
             | head -c 2000 || echo 'сводка не ответила'
           echo
 
-          # Модель критика. Три разных «нет» выглядят снаружи одинаково:
-          # не настроена, не отвечает, установлена другая. Последнее
-          # коварнее прочих — опечатка в теге неотличима от молчания.
           echo '── модель критика ──'
           curl --fail --silent --show-error --max-time 30 \
             http://127.0.0.1:8000/api/v1/research/model \
@@ -329,10 +299,6 @@ jobs:
             'table {{.Name}}\t{{.MemUsage}}\t{{.CPUPerc}}' 2>/dev/null | head -8 || true
           echo
 
-          # Старые образы копятся с каждой пересборкой и съедают диск
-          # молча: каждый деплой оставляет прежний слой безымянным. Чистка
-          # трогает только безымянные и неиспользуемые — работающие
-          # контейнеры и веса модели не задевает.
           echo '── чистка старых образов ──'
           $SUDO docker image prune -f 2>/dev/null | tail -1 || true
           $SUDO docker builder prune -f --keep-storage 2GB 2>/dev/null | tail -1 || true
