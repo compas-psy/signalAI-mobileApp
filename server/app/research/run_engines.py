@@ -1,9 +1,9 @@
 """От наблюдений к гипотезам (§12–§14).
 
-Production-проход теперь состоит из двух независимых бесплатных каналов:
-DEMAND (мониторинг предприятий ЦБ) и HIRING (официальный API «Работа России»).
-Оба дают ранние фундаментальные сигналы; технический D1-контекст добавляется
-как timing overlay и не считается вторым фундаментальным подтверждением.
+Production-проход состоит из двух независимых бесплатных каналов: DEMAND
+(мониторинг предприятий ЦБ) и HIRING (официальный API «Работа России»).
+Технический D1-контекст — timing overlay, а не второе фундаментальное
+подтверждение.
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ from .engines import demand
 from .fusion import Falsifier, SignalInput
 from .hiring_runtime import run_hiring_live
 from .issuers import Issuer, automatic, in_section, of
+from .legal_checks import apply_verified_review
 from .market_context import MarketContext, for_hypothesis
 from .pipeline import run as run_pipeline
 
@@ -211,14 +212,17 @@ def _run_demand_only(session: Session, *, now: datetime | None = None) -> Engine
 
 
 def run_demand(session: Session, *, now: datetime | None = None) -> EngineReport:
-    """Совместимый entry point scheduler: DEMAND + HIRING.
+    """Совместимый scheduler entry point: DEMAND + HIRING."""
+    moment = now or datetime.now(UTC)
+    report = _run_demand_only(session, now=moment)
 
-    Имя сохранено, чтобы не менять scheduler отдельным релизным коммитом.
-    Семантика отчёта расширена: это production research engines, а не только
-    конечный спрос.
-    """
-    report = _run_demand_only(session, now=now)
-    hiring_report = run_hiring_live(session, now=now)
+    # `sync_registry` всё ещё хранит старое состояние `trudvsem` без review.
+    # Перед единственным HIRING fetch применяем конкретную проверку условий,
+    # зафиксированную датой и сроком пересмотра; обычный authorize внутри
+    # runtime остаётся последним fail-closed gate перед сетью.
+    apply_verified_review(session, "trudvsem", now=moment)
+    hiring_report = run_hiring_live(session, now=moment)
+
     report.observations += hiring_report.vacancies
     report.sections += hiring_report.issuers
     report.signals += hiring_report.signals
