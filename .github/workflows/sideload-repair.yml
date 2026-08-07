@@ -161,3 +161,10 @@ jobs:
         run: |
           rm -f android/key.properties
           shred -u "${RUNNER_TEMP}/signalai-sideload.jks" 2>/dev/null || rm -f "${RUNNER_TEMP}/signalai-sideload.jks"
+
+      - name: Report repair failure on PR 3
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr comment 3 --body "Sideload repair failed for \`$GITHUB_SHA\`. Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
