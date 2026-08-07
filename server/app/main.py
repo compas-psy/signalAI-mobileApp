@@ -7,14 +7,9 @@
 Что здесь принципиально:
 
 * ``/health`` отдаёт отпечаток конфигурации и режим исполнения. По ним видно,
-  теми ли числами сейчас считает движок и закрыта ли боевая торговля — это
-  первое, что надо проверить, увидев неожиданную идею.
-* Эндпоинты, за которыми ещё нет движка, отвечают 503 с причиной. Пустой
-  список вместо этого читался бы как «сегодня нет сетапов» (§32: приложение
-  не создаёт иллюзию точности).
-* Все внешние ``/api/*`` требуют токен устройства. APK и так передаёт его в
-  заголовке Bearer; сервер обязан проверять этот заголовок, а не оставлять
-  торговый контур публичным.
+  теми ли числами сейчас считает движок и закрыта ли боевая торговля.
+* Эндпоинты, за которыми ещё нет движка, отвечают 503 с причиной.
+* Все внешние ``/api/*`` требуют токен устройства.
 """
 
 from __future__ import annotations
@@ -24,6 +19,7 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, FastAPI
 from sqlalchemy import text
 
+from .api.v1 import control as control_routes
 from .api.v1 import ideas as ideas_routes
 from .api.v1 import integrations as integrations_routes
 from .api.v1 import journal as journal_routes
@@ -49,9 +45,6 @@ app = FastAPI(
         "определение: P(TP1 раньше SL в пределах горизонта)."
     ),
 )
-# Весь бизнес-API fail-closed: при отсутствии серверного секрета он отвечает
-# 503, при неверном Bearer — 401. /health остаётся публичным, потому что не
-# входит в /api/* и нужен внешнему мониторингу.
 app.add_middleware(DeviceTokenMiddleware)
 
 v1 = APIRouter(prefix="/api/v1")
@@ -63,6 +56,7 @@ v1.include_router(research_routes.router)
 v1.include_router(paper_routes.router)
 v1.include_router(integrations_routes.router)
 v1.include_router(journal_routes.router)
+v1.include_router(control_routes.router)
 app.include_router(v1)
 
 
@@ -82,7 +76,7 @@ def health() -> HealthResponse:
             ).first()
             if row is not None:
                 mode, kill_switch = row[0], bool(row[1])
-    except Exception as exc:  # база недоступна — это состояние, а не падение
+    except Exception as exc:
         database = "unavailable"
         notes.append(f"база недоступна: {type(exc).__name__}")
 
