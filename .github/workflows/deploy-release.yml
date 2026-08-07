@@ -87,6 +87,21 @@ jobs:
           }
           echo "Deploying QA-verified commit $actual_sha"
 
+      - name: Package QA-verified source
+        env:
+          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          git archive --format=tar.gz --output=/tmp/signalai-source.tar.gz "$SOURCE_SHA"
+          test -s /tmp/signalai-source.tar.gz
+          (
+            cd /tmp
+            sha256sum signalai-source.tar.gz > signalai-source.tar.gz.sha256
+          )
+          source_bundle_sha256="$(cut -d' ' -f1 /tmp/signalai-source.tar.gz.sha256)"
+          echo "Source bundle SHA-256: $source_bundle_sha256"
+
       - name: Проверить обязательные секреты
         env:
           HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
@@ -149,11 +164,16 @@ jobs:
             *[!0-9a-f]*|'') echo 'invalid deployment source SHA' >&2; exit 1 ;;
           esac
           [ "${#SOURCE_SHA}" -eq 40 ] || { echo 'source SHA must have 40 hex characters' >&2; exit 1; }
+
           DIR="$HOME/signalai"
+          STAGE="$HOME/.signalai-stage-$SOURCE_SHA"
+          PREVIOUS="$HOME/.signalai-previous"
           ENV_FILE='/etc/signalai/.env'
           TOKEN_FILE='/tmp/signalai-device-token.b64'
+          SOURCE_ARCHIVE='/tmp/signalai-source.tar.gz'
+          SOURCE_DIGEST='/tmp/signalai-source.tar.gz.sha256'
           cleanup_token() {
-            rm -f "$TOKEN_FILE"
+            rm -f "$TOKEN_FILE" "$SOURCE_ARCHIVE" "$SOURCE_DIGEST"
             unset token 2>/dev/null || true
           }
           trap cleanup_token EXIT
@@ -164,6 +184,12 @@ jobs:
             echo 'server env file is missing; use bootstrap workflow for first installation' >&2
             exit 1
           }
+          test -s "$SOURCE_ARCHIVE" || { echo 'source archive is missing' >&2; exit 1; }
+          test -s "$SOURCE_DIGEST" || { echo 'source archive digest is missing' >&2; exit 1; }
+          (
+            cd /tmp
+            sha256sum -c signalai-source.tar.gz.sha256
+          )
 
           token=''
           if [ -s "$TOKEN_FILE" ]; then
@@ -182,19 +208,20 @@ jobs:
             exit 1
           }
 
-          cd "$DIR"
-          git fetch --depth 1 origin "$SOURCE_SHA" </dev/null
-          git reset --hard FETCH_HEAD </dev/null
-          deployed_sha="$(git rev-parse --verify HEAD^{commit})"
-          [ "$deployed_sha" = "$SOURCE_SHA" ] || {
-            echo "fetched $deployed_sha instead of requested $SOURCE_SHA" >&2
-            exit 1
-          }
-          echo "── исходный commit ── $deployed_sha"
+          echo '── source bundle ── verified, staging exact QA commit'
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE"
+          tar -xzf "$SOURCE_ARCHIVE" -C "$STAGE"
+          test -f "$STAGE/server/docker-compose.yml"
+          printf '%s\n' "$SOURCE_SHA" > "$STAGE/.signalai-source-sha"
 
-          # Atomic rewrite: preserve all existing runtime settings and only
-          # refresh the token when an explicit override was supplied. Writing
-          # the existing value back is harmless and makes the invariant clear.
+          rm -rf "$PREVIOUS"
+          if [ -e "$DIR" ]; then
+            mv "$DIR" "$PREVIOUS"
+          fi
+          mv "$STAGE" "$DIR"
+          echo "── исходный commit ── $SOURCE_SHA"
+
           tmp_env="$(mktemp /tmp/signalai-env.XXXXXX)"
           $SUDO awk '!/^SIGNALAI_DEVICE_TOKEN=/' "$ENV_FILE" > "$tmp_env"
           printf 'SIGNALAI_DEVICE_TOKEN=%s\n' "$token" >> "$tmp_env"
@@ -203,7 +230,7 @@ jobs:
           unset token
           $SUDO chmod 600 "$ENV_FILE"
 
-          cd server
+          cd "$DIR/server"
 
           LLM_PROFILE=''
           FREE_GB="$(df --output=avail -BG / | tail -1 | tr -dc '0-9')"
@@ -223,10 +250,6 @@ jobs:
           fi
 
           $SUDO docker compose --env-file "$ENV_FILE" $LLM_PROFILE config >/dev/null
-
-          # Build the new image before running its migrations. Running Alembic
-          # on the previous image can silently miss a migration introduced by
-          # this exact source SHA.
           $SUDO docker compose --env-file "$ENV_FILE" build api scheduler </dev/null
           $SUDO docker compose --env-file "$ENV_FILE" run --rm -T api alembic upgrade head </dev/null
           $SUDO docker compose --env-file "$ENV_FILE" $LLM_PROFILE up -d --remove-orphans </dev/null
@@ -302,6 +325,7 @@ jobs:
           echo '── чистка старых образов ──'
           $SUDO docker image prune -f 2>/dev/null | tail -1 || true
           $SUDO docker builder prune -f --keep-storage 2GB 2>/dev/null | tail -1 || true
+          rm -rf "$PREVIOUS"
           echo
 
           echo '── исходящие правила хоста ──'
@@ -319,6 +343,8 @@ jobs:
           scp -i ~/.ssh/id_deploy -o BatchMode=yes \
             /tmp/signalai-update.sh \
             /tmp/signalai-device-token.b64 \
+            /tmp/signalai-source.tar.gz \
+            /tmp/signalai-source.tar.gz.sha256 \
             "$USER_NAME@$HOST:/tmp/"
           ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$USER_NAME@$HOST" \
             "SIGNALAI_SOURCE_SHA='$SOURCE_SHA' bash /tmp/signalai-update.sh"
@@ -338,9 +364,10 @@ jobs:
           Commit: \`$SOURCE_SHA\`
           Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
 
-      - name: Убрать локальные секреты
+      - name: Убрать локальные секреты и пакет
         if: always()
         run: |
           shred -u ~/.ssh/id_deploy 2>/dev/null || rm -f ~/.ssh/id_deploy
           shred -u /tmp/signalai-device-token.b64 2>/dev/null \
             || rm -f /tmp/signalai-device-token.b64
+          rm -f /tmp/signalai-source.tar.gz /tmp/signalai-source.tar.gz.sha256
