@@ -10,9 +10,11 @@ import 'screens/ideas_screen.dart';
 import 'screens/journal_screen.dart';
 import 'screens/portfolio_screen.dart';
 import 'screens/diagnostics_screen.dart';
+import 'screens/server_data_screen.dart';
 import 'screens/server_ideas_screen.dart';
 import 'screens/server_integrations_screen.dart';
 import 'screens/server_journal_screen.dart';
+import 'screens/server_risk_screen.dart';
 import 'screens/settings_screen.dart';
 import 'screens/strategies_screen.dart';
 import 'screens/today_screen.dart';
@@ -26,25 +28,17 @@ import 'widgets/section_header.dart';
 import 'widgets/side_nav.dart';
 import 'layout.dart';
 
-/// Каркас приложения: активный экран, нижняя навигация, шит подтверждения
-/// и тост — ровно та же композиция, что в макете.
 class AppShell extends StatelessWidget {
   const AppShell({super.key});
 
   @override
   Widget build(BuildContext context) {
     final controller = AppScope.of(context);
-
     if (controller.error != null && controller.digest == null) {
       return _ErrorState(onRetry: controller.load);
     }
-    if (controller.isLoading) {
-      return const _LoadingState();
-    }
+    if (controller.isLoading) return const _LoadingState();
 
-    // 401 на первой установке — не «движок временно недоступен», а
-    // обязательная привязка устройства. Показываем её до основной оболочки,
-    // чтобы владелец не искал скрытое поле токена по всему приложению.
     if (controller.thinMode && controller.engineAuthIssue != null) {
       return EngineSetupGate(
         issue: controller.engineAuthIssue!,
@@ -53,8 +47,7 @@ class AppShell extends StatelessWidget {
           context,
           current: controller.engineBaseUrl,
           currentToken: '',
-          onSubmit: (url, token) =>
-              controller.setEngineBaseUrl(url, token: token),
+          onSubmit: (url, token) => controller.setEngineBaseUrl(url, token: token),
         ),
       );
     }
@@ -99,10 +92,7 @@ class AppShell extends StatelessWidget {
           if (controller.demoData) const DemoBanner(),
           Expanded(child: _content(controller, pane)),
           if (!controller.sheetOpen)
-            BottomNav(
-              current: controller.section,
-              onSelect: controller.goSection,
-            ),
+            BottomNav(current: controller.section, onSelect: controller.goSection),
         ],
       );
     }
@@ -114,20 +104,18 @@ class AppShell extends StatelessWidget {
     );
   }
 
-  Widget _sideNavBody(AppController controller, Pane pane) {
-    return Row(
-      children: [
-        SideNav(
-          current: controller.section,
-          onSelect: controller.goSection,
-          extended: pane == Pane.expanded,
-          onKillSwitch: controller.toggleKillSwitch,
-          killSwitchOn: controller.killSwitchOn,
-        ),
-        Expanded(child: _content(controller, pane)),
-      ],
-    );
-  }
+  Widget _sideNavBody(AppController controller, Pane pane) => Row(
+        children: [
+          SideNav(
+            current: controller.section,
+            onSelect: controller.goSection,
+            extended: pane == Pane.expanded,
+            onKillSwitch: controller.toggleKillSwitch,
+            killSwitchOn: controller.killSwitchOn,
+          ),
+          Expanded(child: _content(controller, pane)),
+        ],
+      );
 
   Widget _content(AppController controller, Pane pane) {
     if (pane.usesTwoPane && controller.section == AppSection.ideas) {
@@ -136,19 +124,7 @@ class AppShell extends StatelessWidget {
       return Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          SectionHeader(
-            section: controller.section,
-            pill: controller.pill,
-            onPill: controller.goPill,
-            mode: controller.riskMode,
-            dataAt: controller.dataFreshness,
-            health: controller.dataHealth,
-            healthDetail: controller.dataHealthDetail,
-            onHealth: () => controller.showToast(
-              controller.dataHealthDetail,
-              tone: ToastTone.warning,
-            ),
-          ),
+          _header(controller),
           Expanded(
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -163,11 +139,7 @@ class AppShell extends StatelessWidget {
                 Expanded(
                   child: signal == null || risk == null
                       ? const _PickIdea()
-                      : IdeaDetailScreen(
-                          signal: signal,
-                          risk: risk,
-                          showBack: false,
-                        ),
+                      : IdeaDetailScreen(signal: signal, risk: risk, showBack: false),
                 ),
               ],
             ),
@@ -179,36 +151,56 @@ class AppShell extends StatelessWidget {
     final screen = Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        if (!controller.isDetailOpen)
-          SectionHeader(
-            section: controller.section,
-            pill: controller.pill,
-            onPill: controller.goPill,
-            mode: controller.riskMode,
-            dataAt: controller.dataFreshness,
-            health: controller.dataHealth,
-            healthDetail: controller.dataHealthDetail,
-            onHealth: () => controller.showToast(
-              controller.dataHealthDetail,
-              tone: ToastTone.warning,
-            ),
-          ),
+        if (!controller.isDetailOpen) _header(controller),
         Expanded(child: _screen(controller)),
       ],
     );
-    return pane.isCompact
-        ? screen
-        : ReadableColumn(maxWidth: pane.contentWidth, child: screen);
+    return pane.isCompact ? screen : ReadableColumn(maxWidth: pane.contentWidth, child: screen);
   }
+
+  Widget _header(AppController controller) => SectionHeader(
+        section: controller.section,
+        pill: controller.pill,
+        onPill: controller.goPill,
+        mode: controller.riskMode,
+        dataAt: controller.dataFreshness,
+        health: controller.dataHealth,
+        healthDetail: controller.dataHealthDetail,
+        onHealth: () => controller.showToast(
+          controller.dataHealthDetail,
+          tone: ToastTone.warning,
+        ),
+      );
 
   Widget _screen(AppController controller) {
     if (controller.isDetailOpen) {
       final signal = controller.currentSignal;
       final risk = controller.risk;
-      if (signal != null && risk != null) {
-        return IdeaDetailScreen(signal: signal, risk: risk);
-      }
+      if (signal != null && risk != null) return IdeaDetailScreen(signal: signal, risk: risk);
     }
+
+    if (controller.section == AppSection.settings && controller.thinMode) {
+      final selected = SettingsPill.thinAt(controller.pill);
+      return switch (selected) {
+        SettingsPill.risk => const ServerRiskScreen(),
+        SettingsPill.connections => const ServerIntegrationsScreen(),
+        SettingsPill.strategies => StrategiesScreen(
+            snapshot: controller.strategies!,
+            backtestRunning: controller.backtestRunning,
+            optimizing: controller.optimizing,
+            backtestStage: controller.analysisStage,
+          ),
+        // Старый экран уже содержит реальные тумблеры уведомлений; передаём
+        // исторический enum-index, а не видимый thin-index.
+        SettingsPill.notifications => SettingsScreen(
+            snapshot: controller.settings!,
+            pill: SettingsPill.notifications.index,
+          ),
+        SettingsPill.data => const ServerDataScreen(),
+        _ => const ServerRiskScreen(),
+      };
+    }
+
     return switch (controller.section) {
       AppSection.today => const TodayScreen(),
       AppSection.portfolio => PortfolioScreen(pill: controller.pill),
@@ -217,33 +209,18 @@ class AppShell extends StatelessWidget {
           : IdeasScreen(pill: controller.pill),
       AppSection.journal => controller.thinMode
           ? ServerJournalScreen(pill: controller.pill)
-          : JournalScreen(
-              pill: controller.pill,
-              summary: controller.trades!,
-            ),
-      AppSection.settings => switch (SettingsPill
-            .values[controller.pill.clamp(0, SettingsPill.values.length - 1)]) {
-          SettingsPill.strategies => StrategiesScreen(
-              snapshot: controller.strategies!,
-              backtestRunning: controller.backtestRunning,
-              optimizing: controller.optimizing,
-              backtestStage: controller.analysisStage,
-            ),
-          // В thin это отдельный серверный экран: прежний SettingsScreen
-          // намеренно урезал роли до read-only T-Invest и вообще скрывал
-          // Bybit, sandbox и trade credentials.
-          SettingsPill.connections when controller.thinMode =>
-            const ServerIntegrationsScreen(),
-          SettingsPill.data when controller.thinMode => SettingsScreen(
-              snapshot: controller.settings!,
-              pill: controller.pill,
-            ),
-          SettingsPill.data => const DiagnosticsScreen(),
-          _ => SettingsScreen(
-              snapshot: controller.settings!,
-              pill: controller.pill,
-            ),
-        },
+          : JournalScreen(pill: controller.pill, summary: controller.trades!),
+      AppSection.settings => switch (
+          SettingsPill.values[controller.pill.clamp(0, SettingsPill.values.length - 1)]) {
+        SettingsPill.strategies => StrategiesScreen(
+            snapshot: controller.strategies!,
+            backtestRunning: controller.backtestRunning,
+            optimizing: controller.optimizing,
+            backtestStage: controller.analysisStage,
+          ),
+        SettingsPill.data => const DiagnosticsScreen(),
+        _ => SettingsScreen(snapshot: controller.settings!, pill: controller.pill),
+      },
     };
   }
 
@@ -251,6 +228,16 @@ class AppShell extends StatelessWidget {
     final signal = controller.currentSignal;
     final risk = controller.risk;
     if (signal == null || risk == null) return const SizedBox.shrink();
+    final sheet = ConfirmSheet(
+      signal: signal,
+      plan: controller.currentIdea?.plan,
+      risk: risk,
+      impact: controller.currentImpact,
+      busy: controller.confirming,
+      paperOnly: controller.currentIdea != null && !controller.demoData,
+      onExecute: controller.confirmCurrentSignal,
+      onClose: controller.closeSheet,
+    );
     return Positioned.fill(
       child: TweenAnimationBuilder<double>(
         tween: Tween(begin: 0, end: 1),
@@ -261,31 +248,11 @@ class AppShell extends StatelessWidget {
           child: Transform.translate(offset: Offset(0, 40 * (1 - t)), child: child),
         ),
         child: pane.isCompact
-            ? ConfirmSheet(
-                signal: signal,
-                plan: controller.currentIdea?.plan,
-                risk: risk,
-                impact: controller.currentImpact,
-                busy: controller.confirming,
-                paperOnly:
-                    controller.currentIdea != null && !controller.demoData,
-                onExecute: controller.confirmCurrentSignal,
-                onClose: controller.closeSheet,
-              )
+            ? sheet
             : Center(
                 child: ConstrainedBox(
                   constraints: const BoxConstraints(maxWidth: 440),
-                  child: ConfirmSheet(
-                    signal: signal,
-                    plan: controller.currentIdea?.plan,
-                    risk: risk,
-                    impact: controller.currentImpact,
-                    busy: controller.confirming,
-                    paperOnly:
-                        controller.currentIdea != null && !controller.demoData,
-                    onExecute: controller.confirmCurrentSignal,
-                    onClose: controller.closeSheet,
-                  ),
+                  child: sheet,
                 ),
               ),
       ),
@@ -295,15 +262,13 @@ class AppShell extends StatelessWidget {
 
 class DemoBanner extends StatelessWidget {
   const DemoBanner({super.key});
-
   @override
   Widget build(BuildContext context) => Container(
         width: double.infinity,
         padding: const EdgeInsets.symmetric(horizontal: S.screen, vertical: 7),
         color: C.warningFaint,
         child: Text(
-          'ДЕМО · данные макета, а не рынок. Уровни, риск и результаты '
-          'выдуманы — исполнять их нельзя.',
+          'ДЕМО · данные макета, а не рынок. Уровни, риск и результаты выдуманы — исполнять их нельзя.',
           textAlign: TextAlign.center,
           style: T.body(10.5, weight: 700, color: C.warning, height: 1.35),
         ),
@@ -312,7 +277,6 @@ class DemoBanner extends StatelessWidget {
 
 class _PickIdea extends StatelessWidget {
   const _PickIdea();
-
   @override
   Widget build(BuildContext context) => Center(
         child: Padding(
@@ -328,15 +292,12 @@ class _PickIdea extends StatelessWidget {
 
 class VerticalDivider extends StatelessWidget {
   const VerticalDivider({super.key});
-
   @override
-  Widget build(BuildContext context) =>
-      Container(width: 1, color: C.dividerSoft);
+  Widget build(BuildContext context) => Container(width: 1, color: C.dividerSoft);
 }
 
 class _LoadingState extends StatelessWidget {
   const _LoadingState();
-
   @override
   Widget build(BuildContext context) => ColoredBox(
         color: C.bg,
@@ -346,15 +307,11 @@ class _LoadingState extends StatelessWidget {
             children: [
               const BrandMark(size: 56),
               const SizedBox(height: 14),
-              Text.rich(
-                TextSpan(
-                  text: 'Signal',
-                  style: T.jost(22),
-                  children: [
-                    TextSpan(text: 'AI', style: T.jost(22, color: C.accent)),
-                  ],
-                ),
-              ),
+              Text.rich(TextSpan(
+                text: 'Signal',
+                style: T.jost(22),
+                children: [TextSpan(text: 'AI', style: T.jost(22, color: C.accent))],
+              )),
             ],
           ),
         ),
@@ -363,9 +320,7 @@ class _LoadingState extends StatelessWidget {
 
 class _ErrorState extends StatelessWidget {
   const _ErrorState({required this.onRetry});
-
   final VoidCallback onRetry;
-
   @override
   Widget build(BuildContext context) => ColoredBox(
         color: C.bg,
@@ -379,8 +334,7 @@ class _ErrorState extends StatelessWidget {
                   Text('Не удалось запуститься', style: T.jost(20)),
                   const SizedBox(height: 8),
                   Text(
-                    'Не получилось загрузить данные приложения. Проверьте '
-                    'подключение к интернету и повторите попытку.',
+                    'Не получилось загрузить данные приложения. Проверьте подключение к интернету и повторите попытку.',
                     textAlign: TextAlign.center,
                     style: T.body(12, color: C.muted, height: 1.5),
                   ),
@@ -393,10 +347,7 @@ class _ErrorState extends StatelessWidget {
                         color: C.accent,
                         borderRadius: BorderRadius.circular(R.button),
                       ),
-                      child: Text(
-                        'Повторить',
-                        style: T.body(14, weight: 800, color: C.onAccent),
-                      ),
+                      child: Text('Повторить', style: T.body(14, weight: 800, color: C.onAccent)),
                     ),
                   ),
                 ],
