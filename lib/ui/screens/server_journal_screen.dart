@@ -82,9 +82,8 @@ class _ServerJournalScreenState extends State<ServerJournalScreen> {
       );
     }
 
-    final section = JournalPill.values[
-      widget.pill.clamp(0, JournalPill.values.length - 1),
-    ];
+    final section =
+        JournalPill.values[widget.pill.clamp(0, JournalPill.values.length - 1)];
     return switch (section) {
       JournalPill.trades => _Trades(
           trades: _trades!,
@@ -223,7 +222,9 @@ class _TradeCard extends StatelessWidget {
                 TagChip('стоп ${_price(trade.currentStop)}'),
                 if (trade.atBreakeven) const TagChip('стоп в БУ'),
                 if (trade.resultR != null)
-                  TagChip('${trade.resultRealized ? 'зафикс.' : 'результат'} ${_r(trade.resultR!)}'),
+                  TagChip(
+                    '${trade.resultRealized ? 'зафикс.' : 'результат'} ${_r(trade.resultR!)}',
+                  ),
                 if (trade.stale) TagChip('сверка молчит ${trade.staleHours} ч'),
               ],
             ),
