@@ -1,12 +1,13 @@
 name: Agent release dispatcher
 
-# Единственная точка автоматического запуска релиза из GitHub API.
-# Ветка release/agent двигается только явным действием владельца/агента;
-# обычные коммиты и PR ничего не деплоят и не публикуют.
+# Обычные push/PR только проверяют код. Релиз начинается исключительно
+# явным marker-коммитом с `[release]` в сообщении: это позволяет агенту
+# запустить штатные workflow без ручного Run workflow и не превращает
+# каждый промежуточный коммит в деплой.
 on:
   push:
     branches:
-      - 'release/agent'
+      - 'codex/thin-client-v1'
 
 permissions:
   contents: read
@@ -19,6 +20,7 @@ concurrency:
 
 jobs:
   dispatch:
+    if: ${{ contains(github.event.head_commit.message, '[release]') }}
     runs-on: ubuntu-latest
     steps:
       - name: Dispatch and observe exact release SHA
