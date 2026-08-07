@@ -44,8 +44,6 @@ class BarOut(ApiModel):
     volume_units: Money | None = None
     volume_notional: Money | None = None
     open_interest: Money | None = None
-    # §4.4 запрещает использовать незакрытую свечу как закрытую, поэтому
-    # признак едет вместе с данными, а не подразумевается.
     is_closed: bool
     source: str
     quality_flags: list[str]
@@ -89,11 +87,13 @@ class InstrumentDataOut(ApiModel):
 
 
 class DataStatusOut(ApiModel):
-    """Состояние загрузки: чем живёт движок прямо сейчас.
+    """Состояние загрузки для текущего торгового множества.
 
-    Нужен, чтобы «данные грузятся» было проверяемым утверждением. Пустая
-    выдача идей без этого экрана неотличима от «сегодня нет сетапов», а это
-    разные новости.
+    ``with_data`` и ``tradable`` обязаны иметь один знаменатель. Раньше первое
+    считалось по всей исторической таблице инструментов, а второе — по текущему
+    допуску; поэтому интерфейс честно, но бессмысленно показывал «307 из 14».
+    История остаётся в ``instruments_total``, полнота — только про то, чем
+    движок может торговать сейчас.
     """
 
     server_time: datetime
@@ -109,7 +109,6 @@ class DataStatusOut(ApiModel):
 @router.get("/market/status", response_model=DataStatusOut)
 def data_status(db: Session = Depends(get_db)) -> DataStatusOut:
     now = datetime.now(UTC)
-
     counts = {
         (row[0], row[1]): row[2]
         for row in db.execute(
@@ -128,9 +127,7 @@ def data_status(db: Session = Depends(get_db)) -> DataStatusOut:
     }
 
     rows: list[InstrumentDataOut] = []
-    for item in db.execute(
-        select(Instrument).order_by(Instrument.instrument_id)
-    ).scalars():
+    for item in db.execute(select(Instrument).order_by(Instrument.instrument_id)).scalars():
         last = latest.get(item.instrument_id)
         rows.append(
             InstrumentDataOut(
@@ -149,6 +146,13 @@ def data_status(db: Session = Depends(get_db)) -> DataStatusOut:
             )
         )
 
+    current = [r for r in rows if r.is_tradable and r.in_universe]
+    # Старые записи могут иметь is_tradable=true, но уже быть вне текущего
+    # universe. Если из-за миграции current пуст, используем is_tradable как
+    # безопасный fallback, иначе шапка ошибочно скажет «0 из 0».
+    if not current:
+        current = [r for r in rows if r.is_tradable]
+
     events = [
         {
             "at": e.occurred_at.isoformat(),
@@ -164,21 +168,20 @@ def data_status(db: Session = Depends(get_db)) -> DataStatusOut:
         ).scalars()
     ]
 
+    current_latest = [r.last_bar_time for r in current if r.last_bar_time is not None]
     return DataStatusOut(
         server_time=now,
         instruments_total=len(rows),
         in_universe=sum(r.in_universe for r in rows),
-        tradable=sum(r.is_tradable for r in rows),
-        with_data=sum(1 for r in rows if r.last_bar_time is not None),
-        last_bar_time=max(latest.values()) if latest else None,
+        tradable=len(current),
+        with_data=sum(1 for r in current if r.last_bar_time is not None),
+        last_bar_time=max(current_latest) if current_latest else None,
         recent_quality_events=events,
         instruments=rows,
     )
 
 
 def _require_instrument(db: Session, instrument_id: str) -> Instrument:
-    # Ищем по канонической строке, а не по первичному ключу: наружу инструмент
-    # известен как «MOEX:FUT:SIU6», внутренний UUID клиента не касается.
     item = db.execute(
         select(Instrument).where(Instrument.instrument_id == instrument_id)
     ).scalar_one_or_none()
@@ -195,12 +198,6 @@ def get_bars(
     closed_only: bool = Query(True),
     db: Session = Depends(get_db),
 ) -> list[Bar]:
-    """Свечи в обратном хронологическом порядке, по умолчанию только закрытые.
-
-    ``closed_only`` по умолчанию истинно намеренно: расчёт, случайно
-    захвативший формирующийся бар, даёт результат, который меняется сам по
-    себе между двумя запросами.
-    """
     _require_instrument(db, instrument_id)
     stmt = (
         select(Bar)
