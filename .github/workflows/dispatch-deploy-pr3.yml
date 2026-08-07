@@ -1,0 +1,30 @@
+name: Dispatch PR3 VPS deploy
+
+on:
+  pull_request:
+    branches:
+      - claude/ux-prototype-dark-theme-sv0euq
+    types:
+      - synchronize
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  dispatch:
+    if: github.head_ref == 'codex/thin-client-v1'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch canonical deploy workflow for exact PR head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          test "${#SOURCE_SHA}" -eq 40
+          gh workflow run deploy-release.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref codex/thin-client-v1 \
+            -f source_ref="$SOURCE_SHA"
+          echo "Dispatched deploy-release.yml for $SOURCE_SHA"
