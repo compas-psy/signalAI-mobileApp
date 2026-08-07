@@ -18,9 +18,13 @@ on:
 
 permissions:
   contents: read
+  statuses: read
 
 concurrency:
-  group: quality-${{ github.event.pull_request.number || inputs.source_ref || github.ref }}
+  # Reusable QA invoked by deploy and APK must not cancel each other. The
+  # caller workflow name separates their tiny attestation checks, while PR QA
+  # still cancels an obsolete previous PR run.
+  group: quality-${{ github.event.pull_request.number || inputs.source_ref || github.ref }}-${{ github.workflow }}
   cancel-in-progress: true
 
 env:
@@ -28,8 +32,53 @@ env:
   PYTHON_VERSION: '3.11'
 
 jobs:
+  attest:
+    name: Reuse exact green release attestation
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      statuses: read
+    outputs:
+      reuse: ${{ steps.check.outputs.reuse }}
+    steps:
+      - name: Check whether this exact SHA already passed the release QA
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_REF: ${{ inputs.source_ref || '' }}
+          CALLER_WORKFLOW: ${{ github.workflow }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          echo 'reuse=false' >> "$GITHUB_OUTPUT"
+
+          # Pull-request and manual QA always run the full suite. Reuse is
+          # allowed only when one of the two delivery workflows calls this
+          # reusable gate with an immutable 40-char SHA.
+          if [ "$EVENT_NAME" = 'pull_request' ] || [ -z "$SOURCE_REF" ]; then
+            exit 0
+          fi
+          case "$CALLER_WORKFLOW" in
+            'Deploy release to VPS'|'Android sideload APK') ;;
+            *) exit 0 ;;
+          esac
+          case "$SOURCE_REF" in
+            *[!0-9a-f]*|'') exit 0 ;;
+          esac
+          [ "${#SOURCE_REF}" -eq 40 ] || exit 0
+
+          count="$(gh api \
+            "repos/$GITHUB_REPOSITORY/commits/$SOURCE_REF/status" \
+            --jq '[.statuses[] | select(.context == "signalai/release-qa" and .state == "success")] | length')"
+          if [ "$count" -gt 0 ]; then
+            echo 'reuse=true' >> "$GITHUB_OUTPUT"
+            echo "Exact SHA $SOURCE_REF already has signalai/release-qa=success; heavy QA is reused."
+          fi
+
   secrets:
     name: Tracked secret scan
+    needs: attest
+    if: ${{ needs.attest.outputs.reuse != 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -43,6 +92,8 @@ jobs:
 
   server:
     name: Server imports, migrations and pytest
+    needs: attest
+    if: ${{ needs.attest.outputs.reuse != 'true' }}
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -109,6 +160,8 @@ jobs:
 
   mobile:
     name: Flutter analyze and tests
+    needs: attest
+    if: ${{ needs.attest.outputs.reuse != 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -133,6 +186,7 @@ jobs:
   release:
     name: Release exact green SHA
     needs:
+      - attest
       - secrets
       - server
       - mobile
@@ -144,14 +198,14 @@ jobs:
       contents: read
       actions: write
       issues: write
+      statuses: write
     steps:
       - name: Check explicit release marker
-        id: marker
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 1
-      - name: Dispatch VPS and signed APK only for release commit
+      - name: Attest, deploy VPS and publish one permanent-signed APK
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
@@ -167,6 +221,15 @@ jobs:
           actual_sha="$(git rev-parse HEAD)"
           [ "$actual_sha" = "$SOURCE_SHA" ]
 
+          # This status is written only after the three heavy jobs above are
+          # green. Delivery workflows may reuse it for this exact SHA instead
+          # of burning Actions minutes on the same tests again.
+          gh api --method POST \
+            "repos/$GITHUB_REPOSITORY/statuses/$SOURCE_SHA" \
+            -f state='success' \
+            -f context='signalai/release-qa' \
+            -f description='Full PR server, Flutter and secret QA passed'
+
           jq -n \
             --arg ref "$TARGET_REF" \
             --arg sha "$SOURCE_SHA" \
@@ -176,6 +239,9 @@ jobs:
             "repos/$GITHUB_REPOSITORY/actions/workflows/deploy-release.yml/dispatches" \
             --input /tmp/deploy.json
 
+          # Deploy and APK may start together because both are pinned to the
+          # same immutable SHA. Their reusable quality gates only verify the
+          # attestation above; no second/third heavy test suite is launched.
           jq -n \
             --arg ref "$TARGET_REF" \
             --arg sha "$SOURCE_SHA" \
