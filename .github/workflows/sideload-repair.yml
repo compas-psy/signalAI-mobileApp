@@ -9,6 +9,8 @@ on:
 
 permissions:
   contents: write
+  issues: write
+  pull-requests: write
 
 concurrency:
   group: signalai-sideload-publish
@@ -135,6 +137,15 @@ jobs:
             gh release create sideload --target "$GITHUB_SHA" --prerelease --title 'SignalAI sideload' --notes-file release-notes.md
           fi
           gh release upload sideload signalai-sideload.apk "$EXACT" signalai-sideload.json --clobber
+
+      - name: Report successful publication on PR 3
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APK_SHA256: ${{ steps.artifact.outputs.apk_sha256 }}
+          SIGNER_SHA256: ${{ steps.artifact.outputs.signer_sha256 }}
+          EXACT: ${{ steps.artifact.outputs.exact }}
+        run: |
+          gh pr comment 3 --body "Sideload repair succeeded for \`$GITHUB_SHA\`. Stable asset: \`signalai-sideload.apk\`; traceable asset: \`$EXACT\`; APK SHA-256: \`$APK_SHA256\`; signer SHA-256: \`$SIGNER_SHA256\`."
 
       - uses: actions/upload-artifact@v4
         with:
