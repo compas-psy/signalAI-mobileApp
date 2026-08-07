@@ -10,10 +10,13 @@ import 'screens/ideas_screen.dart';
 import 'screens/journal_screen.dart';
 import 'screens/portfolio_screen.dart';
 import 'screens/diagnostics_screen.dart';
+import 'screens/server_integrations_screen.dart';
 import 'screens/settings_screen.dart';
 import 'screens/strategies_screen.dart';
 import 'screens/today_screen.dart';
 import 'widgets/confirm_sheet.dart';
+import 'widgets/engine_address_sheet.dart';
+import 'widgets/engine_setup_gate.dart';
 import 'widgets/toast.dart';
 import 'widgets/vector_icon.dart';
 import 'widgets/bottom_nav.dart';
@@ -35,6 +38,23 @@ class AppShell extends StatelessWidget {
     }
     if (controller.isLoading) {
       return const _LoadingState();
+    }
+
+    // 401 на первой установке — не «движок временно недоступен», а
+    // обязательная привязка устройства. Показываем её до основной оболочки,
+    // чтобы владелец не искал скрытое поле токена по всему приложению.
+    if (controller.thinMode && controller.engineAuthIssue != null) {
+      return EngineSetupGate(
+        issue: controller.engineAuthIssue!,
+        baseUrl: controller.engineBaseUrl,
+        onConfigure: () => showEngineAddressSheet(
+          context,
+          current: controller.engineBaseUrl,
+          currentToken: '',
+          onSubmit: (url, token) =>
+              controller.setEngineBaseUrl(url, token: token),
+        ),
+      );
     }
 
     return ColoredBox(
@@ -70,8 +90,6 @@ class AppShell extends StatelessWidget {
     );
   }
 
-  /// Каркас под ширину экрана: телефон — нижняя панель, планшет — боковая
-  /// колонка, широкий планшет — ещё и две колонки содержимого.
   Widget _body(AppController controller, Pane pane) {
     if (!pane.usesSideNav) {
       return Column(
@@ -109,8 +127,6 @@ class AppShell extends StatelessWidget {
     );
   }
 
-  /// Содержимое: на широком экране «Идеи» и разбор стоят рядом, остальные
-  /// разделы — колонкой ограниченной ширины, чтобы строки оставались читаемыми.
   Widget _content(AppController controller, Pane pane) {
     if (pane.usesTwoPane && controller.section == AppSection.ideas) {
       final signal = controller.currentSignal;
@@ -133,29 +149,26 @@ class AppShell extends StatelessWidget {
           ),
           Expanded(
             child: Row(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          SizedBox(width: 400, child: IdeasScreen(pill: controller.pill)),
-          const VerticalDivider(),
-          Expanded(
-            child: signal == null || risk == null
-                ? const _PickIdea()
-                : IdeaDetailScreen(
-                    signal: signal,
-                    risk: risk,
-                    showBack: false,
-                  ),
-          ),
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                SizedBox(width: 400, child: IdeasScreen(pill: controller.pill)),
+                const VerticalDivider(),
+                Expanded(
+                  child: signal == null || risk == null
+                      ? const _PickIdea()
+                      : IdeaDetailScreen(
+                          signal: signal,
+                          risk: risk,
+                          showBack: false,
+                        ),
+                ),
               ],
             ),
           ),
         ],
       );
     }
-    // Разбор идеи закрывает раздел целиком, вместе с шапкой и пилюлями.
-    // Пилюли — это разрез **ленты** («Решения · Наблюдение · В работе»), и
-    // над открытой карточкой они управляют тем, чего на экране нет: нажатие
-    // меняло фильтр списка, спрятанного под разбором.
+
     final screen = Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -197,9 +210,6 @@ class AppShell extends StatelessWidget {
           pill: controller.pill,
           summary: controller.trades!,
         ),
-      // Стратегии и диагностика данных — подразделы настроек по ТЗ §13, но
-      // экраны у них свои: набивать их в общую ленту настроек значило бы
-      // прятать бэктест и живую проверку источников под скроллом.
       AppSection.settings => switch (SettingsPill
             .values[controller.pill.clamp(0, SettingsPill.values.length - 1)]) {
           SettingsPill.strategies => StrategiesScreen(
@@ -208,6 +218,11 @@ class AppShell extends StatelessWidget {
               optimizing: controller.optimizing,
               backtestStage: controller.analysisStage,
             ),
+          // В thin это отдельный серверный экран: прежний SettingsScreen
+          // намеренно урезал роли до read-only T-Invest и вообще скрывал
+          // Bybit, sandbox и trade credentials.
+          SettingsPill.connections when controller.thinMode =>
+            const ServerIntegrationsScreen(),
           SettingsPill.data when controller.thinMode => SettingsScreen(
               snapshot: controller.settings!,
               pill: controller.pill,
@@ -226,7 +241,6 @@ class AppShell extends StatelessWidget {
     final risk = controller.risk;
     if (signal == null || risk == null) return const SizedBox.shrink();
     return Positioned.fill(
-      // @keyframes sheetUp: подъём на 40px с проявлением, 250 мс
       child: TweenAnimationBuilder<double>(
         tween: Tween(begin: 0, end: 1),
         duration: const Duration(milliseconds: 250),
@@ -247,8 +261,6 @@ class AppShell extends StatelessWidget {
                 onExecute: controller.confirmCurrentSignal,
                 onClose: controller.closeSheet,
               )
-            // На планшете шит во всю ширину читался бы как строка длиной в
-            // экран: ограничиваем и центрируем, поведение прежнее.
             : Center(
                 child: ConstrainedBox(
                   constraints: const BoxConstraints(maxWidth: 440),
@@ -270,13 +282,6 @@ class AppShell extends StatelessWidget {
   }
 }
 
-/// Полоса «данные из макета» для демо-сборки.
-///
-/// Демо-сборка существует ради одного: посмотреть интерфейс, когда движка нет
-/// под рукой. Но приложение отправляет заявки, и выдуманный уровень входа
-/// выглядит на экране ровно так же, как настоящий. Полоса стоит над всеми
-/// разделами и не убирается: спрятать её значит однажды исполнить руками
-/// цену, которой на рынке не было.
 class DemoBanner extends StatelessWidget {
   const DemoBanner({super.key});
 
@@ -294,7 +299,6 @@ class DemoBanner extends StatelessWidget {
       );
 }
 
-/// Правая колонка планшета, пока идея не выбрана.
 class _PickIdea extends StatelessWidget {
   const _PickIdea();
 
@@ -311,7 +315,6 @@ class _PickIdea extends StatelessWidget {
       );
 }
 
-/// Разделитель колонок планшета.
 class VerticalDivider extends StatelessWidget {
   const VerticalDivider({super.key});
 
