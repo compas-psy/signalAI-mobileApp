@@ -21,9 +21,6 @@ permissions:
   statuses: read
 
 concurrency:
-  # Reusable QA invoked by deploy and APK must not cancel each other. The
-  # caller workflow name separates their tiny attestation checks, while PR QA
-  # still cancels an obsolete previous PR run.
   group: quality-${{ github.event.pull_request.number || inputs.source_ref || github.ref }}-${{ github.workflow }}
   cancel-in-progress: true
 
@@ -51,10 +48,6 @@ jobs:
         run: |
           set -euo pipefail
           echo 'reuse=false' >> "$GITHUB_OUTPUT"
-
-          # Pull-request and manual QA always run the full suite. Reuse is
-          # allowed only when one of the two delivery workflows calls this
-          # reusable gate with an immutable 40-char SHA.
           if [ "$EVENT_NAME" = 'pull_request' ] || [ -z "$SOURCE_REF" ]; then
             exit 0
           fi
@@ -66,10 +59,7 @@ jobs:
             *[!0-9a-f]*|'') exit 0 ;;
           esac
           [ "${#SOURCE_REF}" -eq 40 ] || exit 0
-
-          count="$(gh api \
-            "repos/$GITHUB_REPOSITORY/commits/$SOURCE_REF/status" \
-            --jq '[.statuses[] | select(.context == "signalai/release-qa" and .state == "success")] | length')"
+          count="$(gh api "repos/$GITHUB_REPOSITORY/commits/$SOURCE_REF/status" --jq '[.statuses[] | select(.context == "signalai/release-qa" and .state == "success")] | length')"
           if [ "$count" -gt 0 ]; then
             echo 'reuse=true' >> "$GITHUB_OUTPUT"
             echo "Exact SHA $SOURCE_REF already has signalai/release-qa=success; heavy QA is reused."
@@ -220,49 +210,16 @@ jobs:
           fi
           actual_sha="$(git rev-parse HEAD)"
           [ "$actual_sha" = "$SOURCE_SHA" ]
-
-          # This status is written only after the three heavy jobs above are
-          # green. Delivery workflows may reuse it for this exact SHA instead
-          # of burning Actions minutes on the same tests again.
-          gh api --method POST \
-            "repos/$GITHUB_REPOSITORY/statuses/$SOURCE_SHA" \
-            -f state='success' \
-            -f context='signalai/release-qa' \
-            -f description='Full PR server, Flutter and secret QA passed'
-
-          jq -n \
-            --arg ref "$TARGET_REF" \
-            --arg sha "$SOURCE_SHA" \
-            '{ref:$ref, inputs:{source_ref:$sha}}' \
-            > /tmp/deploy.json
-          gh api --method POST \
-            "repos/$GITHUB_REPOSITORY/actions/workflows/deploy-release.yml/dispatches" \
-            --input /tmp/deploy.json
-
-          # Deploy and APK may start together because both are pinned to the
-          # same immutable SHA. Their reusable quality gates only verify the
-          # attestation above; no second/third heavy test suite is launched.
-          jq -n \
-            --arg ref "$TARGET_REF" \
-            --arg sha "$SOURCE_SHA" \
-            '{ref:$ref, inputs:{source_ref:$sha, mode:"thin", api_base_url:"", backup_api_base_url:""}}' \
-            > /tmp/sideload.json
-          gh api --method POST \
-            "repos/$GITHUB_REPOSITORY/actions/workflows/android-sideload.yml/dispatches" \
-            --input /tmp/sideload.json
+          gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$SOURCE_SHA" -f state='success' -f context='signalai/release-qa' -f description='Full PR server, Flutter and secret QA passed'
+          jq -n --arg ref "$TARGET_REF" --arg sha "$SOURCE_SHA" '{ref:$ref, inputs:{source_ref:$sha}}' > /tmp/deploy.json
+          gh api --method POST "repos/$GITHUB_REPOSITORY/actions/workflows/deploy-release.yml/dispatches" --input /tmp/deploy.json
+          jq -n --arg ref "$TARGET_REF" --arg sha "$SOURCE_SHA" '{ref:$ref, inputs:{source_ref:$sha, mode:"thin", api_base_url:"", backup_api_base_url:""}}' > /tmp/sideload.json
+          gh api --method POST "repos/$GITHUB_REPOSITORY/actions/workflows/android-sideload.yml/dispatches" --input /tmp/sideload.json
 
           find_run() {
             workflow="$1"
             for _ in $(seq 1 30); do
-              run="$(gh run list \
-                --repo "$GITHUB_REPOSITORY" \
-                --workflow "$workflow" \
-                --event workflow_dispatch \
-                --branch "$TARGET_REF" \
-                --limit 20 \
-                --json databaseId,headSha,status,conclusion,url,createdAt \
-                --jq ".[] | select(.headSha == \"$SOURCE_SHA\") | @json" \
-                | head -1)"
+              run="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow "$workflow" --event workflow_dispatch --branch "$TARGET_REF" --limit 20 --json databaseId,headSha,status,conclusion,url,createdAt --jq ".[] | select(.headSha == \"$SOURCE_SHA\") | @json" | head -1)"
               if [ -n "$run" ]; then
                 printf '%s' "$run"
                 return 0
@@ -272,22 +229,12 @@ jobs:
             return 1
           }
 
-          deploy="$(find_run deploy-release.yml)" || {
-            gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
-              --body "Release gate could not observe deploy-release for source \`$SOURCE_SHA\`."
-            exit 1
-          }
-          sideload="$(find_run android-sideload.yml)" || {
-            gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
-              --body "Release gate could not observe android-sideload for source \`$SOURCE_SHA\`."
-            exit 1
-          }
-
+          deploy="$(find_run deploy-release.yml)" || { gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body "Release gate could not observe deploy-release for source \`$SOURCE_SHA\`."; exit 1; }
+          sideload="$(find_run android-sideload.yml)" || { gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body "Release gate could not observe android-sideload for source \`$SOURCE_SHA\`."; exit 1; }
           deploy_id="$(printf '%s' "$deploy" | jq -r .databaseId)"
           deploy_url="$(printf '%s' "$deploy" | jq -r .url)"
           sideload_id="$(printf '%s' "$sideload" | jq -r .databaseId)"
           sideload_url="$(printf '%s' "$sideload" | jq -r .url)"
-
           gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(cat <<EOF
 Release dispatch started for exact green source \`$SOURCE_SHA\`.
 
@@ -295,14 +242,12 @@ Release dispatch started for exact green source \`$SOURCE_SHA\`.
 - signed sideload run: $sideload_id — $sideload_url
 EOF
           )"
-
           set +e
           gh run watch "$deploy_id" --repo "$GITHUB_REPOSITORY" --exit-status
           deploy_rc=$?
           gh run watch "$sideload_id" --repo "$GITHUB_REPOSITORY" --exit-status
           sideload_rc=$?
           set -e
-
           deploy_conclusion="$(gh run view "$deploy_id" --repo "$GITHUB_REPOSITORY" --json conclusion --jq .conclusion)"
           sideload_conclusion="$(gh run view "$sideload_id" --repo "$GITHUB_REPOSITORY" --json conclusion --jq .conclusion)"
           gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(cat <<EOF
@@ -312,5 +257,4 @@ Release dispatch finished for \`$SOURCE_SHA\`.
 - signed sideload: **$sideload_conclusion** — $sideload_url
 EOF
           )"
-
           [ "$deploy_rc" -eq 0 ] && [ "$sideload_rc" -eq 0 ]
