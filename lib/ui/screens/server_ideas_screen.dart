@@ -10,12 +10,8 @@ import '../../theme/typography.dart';
 import '../widgets/common.dart';
 import 'ideas_screen.dart';
 
-/// Операционная лента thin-клиента.
-///
-/// Здесь сознательно нельзя показать одну сущность дважды. До решения
-/// существует Idea; после подтверждения операционной сущностью становится
-/// PaperTrade. Исходная идея остаётся доступна из сделки как объяснение, но
-/// больше не занимает место в «Решениях», «Наблюдении» и «В работе».
+/// Операционная лента thin-клиента: один инструмент — один текущий объект.
+/// До решения это Idea, после подтверждения — server-side PaperTrade.
 class ServerIdeasScreen extends StatelessWidget {
   const ServerIdeasScreen({
     super.key,
@@ -33,25 +29,23 @@ class ServerIdeasScreen extends StatelessWidget {
     final allIdeas = controller.ideas;
     final liveTrades = controller.paperPositions.where((t) => t.status.live).toList();
     final tradeIdeaIds = {for (final t in liveTrades) t.ideaId};
+    final lockedInstruments = {for (final t in liveTrades) t.instrumentId};
 
-    // Идея, из которой уже создана серверная сделка, больше не является
-    // самостоятельным операционным объектом. Убираем её по idea_id, а не по
-    // тикеру: две разные исторические идеи одного инструмента должны
-    // оставаться различимыми в «Все» после завершения.
+    // Пока по инструменту есть PENDING/OPEN trade, новая идея с другим UUID
+    // не конкурирует за внимание с уже принятым решением. Она остаётся в
+    // серверном аудите, но операционная лента не показывает два PEPE сразу.
     final undecided = [
       for (final idea in allIdeas)
-        if (idea.state != IdeaState.active && !tradeIdeaIds.contains(idea.id)) idea,
+        if (idea.state != IdeaState.active &&
+            !tradeIdeaIds.contains(idea.id) &&
+            !lockedInstruments.contains(idea.instrumentId))
+          idea,
     ];
 
     final ideas = switch (filter) {
       IdeasPill.decisions => IdeasScreen.filterIdeas(undecided, IdeasPill.decisions, now),
       IdeasPill.watch => IdeasScreen.filterIdeas(undecided, IdeasPill.watch, now),
-      // «В работе» — только фактический execution lifecycle. Статус Active
-      // у Idea больше не рисуется рядом со сделкой и не создаёт дубль PEPE.
       IdeasPill.active => const <Idea>[],
-      // «Все» показывает живые предложения плюс сделки. Терминальная история
-      // остаётся в серверном журнале, иначе эта вкладка снова превращается в
-      // бесконечную свалку старых карточек.
       IdeasPill.all => undecided.where((i) => !i.state.isTerminal).toList(),
     };
 
@@ -102,10 +96,6 @@ class ServerIdeasScreen extends StatelessWidget {
   }
 
   void _openIdea(BuildContext context, Idea idea) {
-    // Последняя страховка интерфейса от «догоняющей» сделки. Supervisor на
-    // сервере является главным шлюзом, но между его 15-минутными тиками цена
-    // может уже пройти дальнюю цель. Если загруженный график это показывает,
-    // не открываем подтверждение старого плана и просим сервер освежить ленту.
     final plan = idea.plan;
     final chart = controller.ideaChart(idea.id);
     if (plan != null && chart != null && chart.candles.isNotEmpty) {
@@ -156,9 +146,11 @@ class _Empty extends StatelessWidget {
       return Center(
         child: Padding(
           padding: const EdgeInsets.all(28),
-          child: Text(unavailable!,
-              textAlign: TextAlign.center,
-              style: T.body(12, color: C.warning, height: 1.5)),
+          child: Text(
+            unavailable!,
+            textAlign: TextAlign.center,
+            style: T.body(12, color: C.warning, height: 1.5),
+          ),
         ),
       );
     }
@@ -189,9 +181,11 @@ class _Empty extends StatelessWidget {
           children: [
             Text(title, style: T.jost(18)),
             const SizedBox(height: 8),
-            Text(note,
-                textAlign: TextAlign.center,
-                style: T.body(12, color: C.muted, height: 1.5)),
+            Text(
+              note,
+              textAlign: TextAlign.center,
+              style: T.body(12, color: C.muted, height: 1.5),
+            ),
           ],
         ),
       ),
