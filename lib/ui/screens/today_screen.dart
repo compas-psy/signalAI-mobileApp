@@ -2,6 +2,7 @@ import 'package:flutter/widgets.dart';
 
 import '../../core/format.dart';
 import '../../domain/idea/idea.dart';
+import '../../domain/idea/idea_state.dart';
 import '../../domain/idea/risk_center.dart';
 import '../../state/app_controller.dart';
 import '../../state/app_scope.dart';
@@ -12,12 +13,9 @@ import '../widgets/common.dart';
 import '../widgets/segmented.dart';
 import 'ideas_screen.dart';
 
-/// Экран «Сегодня» (ТЗ §6).
-///
-/// Назначение одно: показать максимум три решения, которые действительно
-/// требуют внимания сегодня. Здесь нет ни терминала, ни объяснений, зачем
-/// устроено именно так, — только состояние денег, состояние риска и то, что
-/// нужно решить.
+/// «Сегодня» показывает только объекты, которые действительно требуют
+/// внимания. В thin-режиме источник идеи перестаёт быть отдельной карточкой,
+/// как только по инструменту появилась живая server-side paper-сделка.
 class TodayScreen extends StatelessWidget {
   const TodayScreen({super.key});
 
@@ -25,17 +23,26 @@ class TodayScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final controller = AppScope.of(context);
     final now = DateTime.now();
-    final ideas = controller.ideas;
+    final lockedInstruments = controller.thinMode
+        ? {
+            for (final trade in controller.paperPositions)
+              if (trade.status.live) trade.instrumentId,
+          }
+        : const <String>{};
+    final ideas = controller.thinMode
+        ? [
+            for (final idea in controller.ideas)
+              if (idea.state != IdeaState.active &&
+                  !lockedInstruments.contains(idea.instrumentId))
+                idea,
+          ]
+        : controller.ideas;
     final top = IdeaPriority.top(ideas, now);
     final needDecision = ideas.where((i) => i.state.needsAttention).length;
 
     return ListView(
       padding: const EdgeInsets.fromLTRB(S.screen, 12, S.screen, 18),
       children: [
-        // Прототип открывает экран четырьмя числами, а не тремя карточками:
-        // капитал, результат, оставшийся риск и счётчик решений читаются
-        // одним взглядом. Раньше на то же уходил экран прокрутки, и «сколько
-        // ещё можно рискнуть сегодня» лежало ниже сгиба.
         _Metrics(
           controller: controller,
           needDecision: needDecision,
@@ -47,9 +54,6 @@ class TodayScreen extends StatelessWidget {
         const SizedBox(height: 16),
         _IdeasBlock(controller: controller, ideas: top, now: now),
         const SizedBox(height: 16),
-        // Пара «что мешает» и «где деньги»: на широком экране рядом, на
-        // телефоне колонкой. Пустые обе — не показываются вовсе: экран дня
-        // не место для объяснений, чего в системе нет.
         if ((controller.digest?.events.isNotEmpty ?? false) ||
             !(controller.capital?.isEmpty ?? true))
           _SideBySide(
@@ -61,7 +65,6 @@ class TodayScreen extends StatelessWidget {
   }
 }
 
-/// Две карточки рядом, когда хватает ширины.
 class _SideBySide extends StatelessWidget {
   const _SideBySide({required this.left, required this.right});
 
@@ -89,10 +92,6 @@ class _SideBySide extends StatelessWidget {
       );
 }
 
-/// Четыре числа дня (прототип: блок `cards`).
-///
-/// Каждое нажимается и ведёт туда, где число объясняется целиком: цифра без
-/// способа спросить «откуда» — это цифра, которой нельзя верить.
 class _Metrics extends StatelessWidget {
   const _Metrics({
     required this.controller,
@@ -116,7 +115,9 @@ class _Metrics extends StatelessWidget {
     void toPortfolio() => controller.goSection(AppSection.portfolio);
     void toRisk() {
       controller.goSection(AppSection.settings);
-      controller.goPill(SettingsPill.risk.index);
+      // В thin-порядке Risk — первая пилюля. Старый экран сохраняет
+      // исторический enum-index и туда попадает только вне thin-mode.
+      controller.goPill(controller.thinMode ? 0 : SettingsPill.risk.index);
     }
 
     return Column(
@@ -127,8 +128,6 @@ class _Metrics extends StatelessWidget {
           tiles: [
             MetricTile(
               label: 'Капитал',
-              // Пусто — это не ноль. Ноль означал бы «денег нет», а книга
-              // просто ещё не заполнена, и разница здесь принципиальная.
               value: capital == null
                   ? '—'
                   : (capital.isEmpty ? 'нет данных' : fmtMoney(capital.totalEquity)),
@@ -150,8 +149,6 @@ class _Metrics extends StatelessWidget {
               label: 'Риск дня',
               value: daily == null ? '—' : _pct(daily.remainingPercent),
               color: daily != null && daily.exhausted ? C.red : C.accent,
-              // Показывается остаток, а не израсходованное: решение звучит
-              // как «сколько ещё можно», а не «сколько уже потратил».
               hint: daily == null
                   ? 'профиль не загружен'
                   : 'осталось из ${_pct(daily.limitPercent)} за день',
@@ -181,11 +178,9 @@ class _Metrics extends StatelessWidget {
     );
   }
 
-  static String _pct(double v) =>
-      '${v.toStringAsFixed(2).replaceAll('.', ',')}%';
+  static String _pct(double v) => '${v.toStringAsFixed(2).replaceAll('.', ',')}%';
 }
 
-/// «Идеи на контроле» со ссылкой во всю ленту (прототип: `section-row`).
 class _IdeasBlock extends StatelessWidget {
   const _IdeasBlock({
     required this.controller,
@@ -206,8 +201,10 @@ class _IdeasBlock extends StatelessWidget {
               const Expanded(child: SectionLabel('Идеи на контроле')),
               Pressable(
                 onTap: () => controller.goSection(AppSection.ideas),
-                child: Text('Все идеи →',
-                    style: T.body(11.5, weight: 700, color: C.accent)),
+                child: Text(
+                  'Все идеи →',
+                  style: T.body(11.5, weight: 700, color: C.accent),
+                ),
               ),
             ],
           ),
@@ -215,8 +212,6 @@ class _IdeasBlock extends StatelessWidget {
           if (ideas.isEmpty)
             SectionCard(
               child: Text(
-                // Пустая лента — результат, а не молчание: причину знает
-                // движок, и она показана дословно.
                 controller.ideasUnavailableReason ??
                     controller.noSetupsReason ??
                     'Идей, требующих решения, сейчас нет.',
@@ -224,19 +219,18 @@ class _IdeasBlock extends StatelessWidget {
               ),
             )
           else
-            for (final idea in ideas) ...[
+            for (var index = 0; index < ideas.length; index++) ...[
               IdeaCard(
-                idea: idea,
+                idea: ideas[index],
                 now: now,
-                onTap: () => controller.openSignal(idea.id),
+                onTap: () => controller.openSignal(ideas[index].id),
               ),
-              if (idea != ideas.last) const SizedBox(height: S.gap),
+              if (index + 1 < ideas.length) const SizedBox(height: S.gap),
             ],
         ],
       );
 }
 
-/// Полоска использования одного лимита.
 class LimitBar extends StatelessWidget {
   const LimitBar({super.key, required this.usage});
 
@@ -255,8 +249,10 @@ class LimitBar extends StatelessWidget {
         Row(
           children: [
             Expanded(
-              child: Text('${usage.name} · ${usage.window}',
-                  style: T.body(11.5, color: C.muted)),
+              child: Text(
+                '${usage.name} · ${usage.window}',
+                style: T.body(11.5, color: C.muted),
+              ),
             ),
             Text(
               '${_pct(usage.usedPercent)} из ${_pct(usage.limitPercent)}',
@@ -284,11 +280,9 @@ class LimitBar extends StatelessWidget {
     );
   }
 
-  static String _pct(double v) =>
-      '${v.toStringAsFixed(2).replaceAll('.', ',')}%';
+  static String _pct(double v) => '${v.toStringAsFixed(2).replaceAll('.', ',')}%';
 }
 
-/// Ближайшее событие и его влияние (ТЗ §6, блок «Event risk»).
 class _EventCard extends StatelessWidget {
   const _EventCard({required this.controller, required this.now});
 
@@ -320,10 +314,7 @@ class _EventCard extends StatelessWidget {
                       width: 52,
                       child: Text(event.time, style: T.mono(11, color: C.muted)),
                     ),
-                    Expanded(
-                      child: Text(event.text,
-                          style: T.body(12, height: 1.4)),
-                    ),
+                    Expanded(child: Text(event.text, style: T.body(12, height: 1.4))),
                   ],
                 ),
               ),
@@ -333,7 +324,6 @@ class _EventCard extends StatelessWidget {
   }
 }
 
-/// Портфель: ближайший пересмотр (ТЗ §6, блок «Портфель»).
 class _PortfolioCard extends StatelessWidget {
   const _PortfolioCard({required this.controller});
 
@@ -355,7 +345,11 @@ class _PortfolioCard extends StatelessWidget {
               packages.isEmpty
                   ? 'Пакет не собран: целевые доли не заданы.'
                   : 'Пакетов в работе: ${packages.length}',
-              style: T.body(12, color: packages.isEmpty ? C.muted : C.text, height: 1.45),
+              style: T.body(
+                12,
+                color: packages.isEmpty ? C.muted : C.text,
+                height: 1.45,
+              ),
             ),
           ],
         ),
