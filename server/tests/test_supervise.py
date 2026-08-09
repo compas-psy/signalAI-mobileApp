@@ -1,8 +1,8 @@
 """Сопровождение живых идей §9, §18.
 
-Вопрос, ради которого этот модуль существует, задал владелец, глядя на
-карточку BTCUSDT: цена уже у третьей цели, а идея по-прежнему «Watch,
-сигнал живёт 4 дн 6 ч». Актуальна она или нет — ответить было нечем.
+WATCH — ожидающий H1-trigger setup, а не бронь инструмента на неделю. Если
+он старше 24 часов, supervisor закрывает его по времени даже при отсутствии
+нового бара: это освобождает symbol для нового рынка, не удаляя историю.
 """
 
 from __future__ import annotations
@@ -14,14 +14,13 @@ from sqlalchemy.orm import Session
 
 from app.models import Bar, IdeaEvent, TradeIdea
 from app.models.enums import IdeaStatus, Timeframe
-from app.pipeline.supervise import judge, supervise
+from app.pipeline.supervise import WATCH_TTL, judge, supervise
 from tests.conftest import idea_kwargs
 
 NOW = datetime(2026, 7, 29, 10, 0, tzinfo=UTC)
 
 
 def bar(instrument_id: str, at: datetime, low, high, close=None) -> Bar:
-    """Час рынка. Границы важнее закрытия: зону задевает тень."""
     low = Decimal(str(low))
     high = Decimal(str(high))
     close = Decimal(str(close)) if close is not None else (low + high) / 2
@@ -39,11 +38,6 @@ def bar(instrument_id: str, at: datetime, low, high, close=None) -> Bar:
 
 
 def short_idea(instrument_id: str, **overrides) -> TradeIdea:
-    """Шорт: зона 90000–90200, стоп 90800, цели вниз до 88000.
-
-    Числа как у настоящей идеи: цели по направлению сделки и стоп за зоной,
-    иначе ограничения таблицы отклонят запись раньше, чем начнётся проверка.
-    """
     base = idea_kwargs(instrument_id, NOW)
     base.update(
         direction="SHORT",
@@ -64,7 +58,6 @@ def short_idea(instrument_id: str, **overrides) -> TradeIdea:
 
 
 def test_price_reaching_the_far_target_without_us_is_missed(instrument):
-    """Тот самый BTCUSDT: цена у TP3, зону входа не трогали."""
     idea = short_idea(instrument.instrument_id)
     bars = [
         bar(instrument.instrument_id, NOW + timedelta(hours=1), 89500, 89900),
@@ -76,7 +69,6 @@ def test_price_reaching_the_far_target_without_us_is_missed(instrument):
 
 
 def test_price_through_the_stop_before_entry_is_a_broken_idea(instrument):
-    """Прошли стоп до входа — это не «поздний вход», а другая картина."""
     idea = short_idea(instrument.instrument_id)
     bars = [
         bar(instrument.instrument_id, NOW + timedelta(hours=1), 90400, 91000),
@@ -87,10 +79,8 @@ def test_price_through_the_stop_before_entry_is_a_broken_idea(instrument):
 
 
 def test_touching_the_zone_leaves_the_idea_alone(instrument):
-    """Цена в зоне, план ещё жив — это рабочая идея, а не событие."""
     idea = short_idea(instrument.instrument_id)
     bars = [
-        # Тень задела зону: лимитка исполняется тенью, а не телом.
         bar(instrument.instrument_id, NOW + timedelta(hours=1), 89500, 90050, close=89600),
         bar(instrument.instrument_id, NOW + timedelta(hours=2), 89300, 89800),
     ]
@@ -98,14 +88,6 @@ def test_touching_the_zone_leaves_the_idea_alone(instrument):
 
 
 def test_plan_that_played_out_after_the_touch_stops_being_live(instrument):
-    """Касание зоны больше не обрывает проверку.
-
-    Раньше здесь стоял ``break``: «вход был возможен, дальше это
-    сопровождение сделки». Сопровождать было некому — подтверждения не
-    было, сделки не существовало, — и идея замолкала навсегда. Полностью
-    отработавший план оставался в списке живых со статусом «Watch» и ценой
-    у третьей цели. Ровно это владелец и увидел на BTCUSDT.
-    """
     idea = short_idea(instrument.instrument_id)
     bars = [
         bar(instrument.instrument_id, NOW + timedelta(hours=1), 89500, 90050, close=89600),
@@ -113,8 +95,6 @@ def test_plan_that_played_out_after_the_touch_stops_being_live(instrument):
     ]
     verdict = judge(idea, bars, now=NOW + timedelta(hours=3))
     assert verdict.status is IdeaStatus.MISSED
-    # Причина отдельная: «мимо зоны» и «войти было можно, но не вошли» —
-    # разные промахи, и чинятся они разным.
     assert verdict.reason_code == "played_out_without_us"
     assert "подтверждения не было" in verdict.detail
 
@@ -131,22 +111,16 @@ def test_stop_after_the_touch_ends_the_plan(instrument):
 
 
 def test_idea_that_sat_in_the_zone_still_expires(instrument):
-    """Лимитка, простоявшая в зоне до конца срока, тоже перестаёт быть планом."""
     idea = short_idea(instrument.instrument_id)
     bars = [
         bar(instrument.instrument_id, NOW + timedelta(hours=1), 89900, 90100, close=90000),
     ]
-    verdict = judge(idea, bars, now=NOW + timedelta(days=9))
+    verdict = judge(idea, bars, now=NOW + WATCH_TTL + timedelta(minutes=1))
     assert verdict.status is IdeaStatus.TIMED_OUT
     assert "подтверждения не случилось" in verdict.detail
 
 
 def test_what_happened_first_wins_over_the_clock(instrument):
-    """Идею, которую рынок обогнал во вторник, нельзя закрыть «по сроку».
-
-    Иначе единственной причиной в журнале навсегда стало бы «срок вышел», и
-    статистика пропущенных сетапов перестала бы существовать.
-    """
     idea = short_idea(instrument.instrument_id)
     bars = [bar(instrument.instrument_id, NOW + timedelta(hours=1), 87900, 88500)]
     verdict = judge(idea, bars, now=NOW + timedelta(days=9))
@@ -154,10 +128,9 @@ def test_what_happened_first_wins_over_the_clock(instrument):
 
 
 def test_expiry_closes_an_idea_the_market_ignored(instrument):
-    """Цена никуда не пошла, срок вышел — это тайм-аут, и так и написано."""
     idea = short_idea(instrument.instrument_id)
     bars = [bar(instrument.instrument_id, NOW + timedelta(hours=1), 90300, 90500)]
-    verdict = judge(idea, bars, now=NOW + timedelta(days=6))
+    verdict = judge(idea, bars, now=NOW + WATCH_TTL + timedelta(minutes=1))
     assert verdict.status is IdeaStatus.TIMED_OUT
     assert "в зону входа так и не пришла" in verdict.detail
 
@@ -169,7 +142,6 @@ def test_live_idea_within_its_term_is_not_touched(instrument):
 
 
 def test_long_idea_is_judged_by_its_own_direction(instrument):
-    """У лонга «дальняя цель» — максимум, а не минимум."""
     idea = short_idea(
         instrument.instrument_id,
         direction="LONG",
@@ -209,21 +181,38 @@ def test_supervisor_writes_the_transition_into_the_journal(
         )
     )
     assert len(events) == 1
-    # Причина едет вместе с переходом: «MISSED» без объяснения в журнале
-    # ничем не лучше молчания.
     assert events[0].reason_code == "price_left_without_entry"
     assert "зону входа" in events[0].reason_detail
 
 
-def test_absent_bars_are_not_a_reason_to_close_an_idea(
+def test_stale_watch_without_bars_times_out_and_frees_instrument(
     session: Session, instrument
 ):
-    """Отказ загрузки — не событие рынка, и идею по нему хоронить нельзя."""
-    # Срок вышел — но баров нет, и сказать по ним нечего.
+    """Data outage не даёт market verdict, но WATCH SLA всё равно истекает."""
+    signal = NOW - WATCH_TTL - timedelta(minutes=1)
     idea = short_idea(
         instrument.instrument_id,
-        signal_time=NOW - timedelta(days=6),
-        expires_at=NOW - timedelta(hours=1),
+        signal_time=signal,
+        expires_at=NOW + timedelta(days=4),
+    )
+    session.add(idea)
+    session.flush()
+
+    report = supervise(session, now=NOW)
+    assert report.no_data == 0
+    assert report.timed_out == 1
+    assert report.changed == 1
+    assert IdeaStatus(idea.status) is IdeaStatus.TIMED_OUT
+    assert report.details
+
+
+def test_fresh_watch_without_bars_is_not_closed(
+    session: Session, instrument
+):
+    idea = short_idea(
+        instrument.instrument_id,
+        signal_time=NOW - timedelta(hours=2),
+        expires_at=NOW + timedelta(days=4),
     )
     session.add(idea)
     session.flush()
@@ -246,7 +235,6 @@ def test_terminal_ideas_are_not_revisited(session: Session, instrument):
 
 
 def test_triggered_idea_can_also_be_overtaken(session: Session, instrument):
-    """Сработавший, но неподтверждённый сигнал рынок обгоняет так же."""
     idea = short_idea(instrument.instrument_id, status=IdeaStatus.TRIGGERED)
     session.add(idea)
     session.add(bar(instrument.instrument_id, NOW + timedelta(hours=1), 87900, 88500))
@@ -257,16 +245,7 @@ def test_triggered_idea_can_also_be_overtaken(session: Session, instrument):
 
 
 def test_вход_и_стоп_одной_свечой_убивают_идею(instrument):
-    """Быстрый прокол: свеча коснулась зоны и в тот же час прошла стоп.
-
-    Раньше свеча входа исключалась из проверки стопа, и если цена тут же
-    вернулась, идея оставалась живой навсегда: следующие бары стоп уже не
-    трогали. Ровно так ETHUSDT неделю висел в «наблюдении» с пройденным
-    стопом — спринг случился за одну H1-свечу.
-    """
     idea = short_idea(instrument.instrument_id)
-    # SHORT: зона 90000–90200, стоп 90800. Одна свеча: вход в зону и
-    # прокол стопа сразу (верх 90900), затем возврат вниз.
     bars = [
         bar(instrument.instrument_id, NOW + timedelta(hours=1), 90100, 90900, 90150),
         bar(instrument.instrument_id, NOW + timedelta(hours=2), 89900, 90200, 90000),

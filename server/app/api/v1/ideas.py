@@ -1,9 +1,8 @@
 """Идеи (engine-ТЗ §23, блок Ideas).
 
-Сканирование работает: конвейер §7 связывает данные, детекторы, три стратегии
-§10–§12, оценку §15.1 и риск §17. Явное решение владельца либо создаёт
-paper-сделку для круглосуточного серверного сопровождения, либо остаётся в
-неизменяемой истории как отказ. Боевых заявок этот модуль не отправляет.
+Сканирование связывает данные, детекторы, стратегии, оценку и риск. Явное
+решение владельца создаёт только paper-сделку; live orders этот модуль не
+отправляет. Lifecycle идеи остаётся серверным и журналируемым.
 """
 
 from __future__ import annotations
@@ -184,21 +183,16 @@ _WAITING_IDEA_STATUSES = frozenset(
 
 @router.get("/ideas/today", response_model=DailyCards)
 def today(db: Session = Depends(get_db)) -> DailyCards:
-    """Операционная выдача: только идеи ДО решения владельца.
-
-    ACTIVE и последующие состояния принадлежат execution lifecycle. TRIGGERED
-    с quality ACTIVE идёт в Решения; TRIGGERED с quality WATCH остаётся в
-    Наблюдении. После approve статус ACTIVE исчезает из обеих корзин.
-    """
+    """Операционная выдача: только идеи до решения владельца."""
     now = datetime.now(UTC)
     rows = [
-        r
-        for r in db.execute(
+        row
+        for row in db.execute(
             select(TradeIdea)
             .where(TradeIdea.expires_at > now, TradeIdea.was_presented.is_(True))
             .order_by(TradeIdea.presentation_rank)
         ).scalars()
-        if not IdeaStatus(r.status).is_terminal
+        if not IdeaStatus(row.status).is_terminal
     ]
     trade_now = [_summary(row) for row in rows if _is_actionable(row)]
     waiting = [
@@ -306,7 +300,7 @@ def get_events(idea_id: UUID, db: Session = Depends(get_db)) -> list[IdeaEventOu
     idea = db.get(TradeIdea, idea_id)
     if idea is None:
         raise HTTPException(404, "идея не найдена")
-    return [IdeaEventOut.model_validate(e) for e in idea.events]
+    return [IdeaEventOut.model_validate(event) for event in idea.events]
 
 
 class ScanReport(ApiModel):
@@ -333,25 +327,25 @@ def run_scan(db: Session = Depends(get_db)) -> ScanReport:
         scanned=result.scanned,
         produced=result.produced,
         trade_now=[
-            _summary(next(i for i in result.ideas if str(i.id) == r.idea.idea_id))
-            for r in (daily.trade_now if daily else [])
+            _summary(next(i for i in result.ideas if str(i.id) == ranked.idea.idea_id))
+            for ranked in (daily.trade_now if daily else [])
         ],
         wait_for_trigger=[
-            _summary(next(i for i in result.ideas if str(i.id) == r.idea.idea_id))
-            for r in (daily.wait_for_trigger if daily else [])
+            _summary(next(i for i in result.ideas if str(i.id) == ranked.idea.idea_id))
+            for ranked in (daily.wait_for_trigger if daily else [])
         ],
         no_trade_reason=daily.no_trade_reason if daily else "",
         skipped=[
-            {"instrument_id": s.instrument_id, "stage": s.stage, "reason": s.reason}
-            for s in result.skipped
+            {"instrument_id": skip.instrument_id, "stage": skip.stage, "reason": skip.reason}
+            for skip in result.skipped
         ],
         rejected=[
             {
-                "strategy": r.strategy.value,
-                "reason": r.reason,
-                "failed": [c.name for c in r.failed],
+                "strategy": rejected.strategy.value,
+                "reason": rejected.reason,
+                "failed": [check.name for check in rejected.failed],
             }
-            for r in result.rejections
+            for rejected in result.rejections
         ],
     )
 
@@ -417,6 +411,13 @@ def _is_actionable(idea: TradeIdea) -> bool:
 def _validate_approval(idea: TradeIdea, *, now: datetime) -> None:
     quality = QualityStatus(idea.quality_status)
     status = IdeaStatus(idea.status)
+
+    # Supervisor вызывается непосредственно перед approval и имеет право
+    # успеть перевести просроченный TRIGGERED в TIMED_OUT. Для пользователя
+    # это всё равно одна причина: план уже устарел. Технический статус не
+    # должен скрывать бизнес-смысл и ломать контракт stale-approval.
+    if status is IdeaStatus.TIMED_OUT or _utc(idea.expires_at) <= now:
+        raise HTTPException(409, "идея устарела: срок плана уже наступил")
     if quality is not QualityStatus.ACTIVE:
         raise HTTPException(
             409,
@@ -433,8 +434,6 @@ def _validate_approval(idea: TradeIdea, *, now: datetime) -> None:
             409,
             f"идея уже не ждёт решения: status={status.value}; ожидается TRIGGERED",
         )
-    if _utc(idea.expires_at) <= now:
-        raise HTTPException(409, "идея устарела: expires_at уже наступил")
     if idea.quantity <= 0:
         raise HTTPException(409, "идея не исполнима: размер позиции равен нулю")
 

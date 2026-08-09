@@ -1,30 +1,10 @@
 """Отбор вселенной (engine-ТЗ §5).
 
-ТЗ не даёт списка инструментов — оно даёт **фильтры**. Это принципиально:
-захардкоженный список молча устаревает (серия истекла, контракт переименован,
-ликвидность ушла), а фильтр сам перестаёт пропускать то, что больше не годно.
-Поэтому здесь нет ни одного тикера, кроме двух обязательных по §5.3.
-
-Отбор идёт в два прохода, и это не усложнение, а следствие §5.2. Часть
-условий — «median daily notional за 30 дней», «≥ 250 закрытых часовых баров» —
-измеряется только по истории, а история загружается лишь для того, что уже
-попало во вселенную. Замкнутый круг разрывается так:
-
-1. **Кандидаты** — по снимку доски: срок до экспирации, наличие следующей
-   серии для роллирования, ненулевой оборот. Инструмент попадает в справочник
-   и начинает загружаться, но помечен как кандидат.
-2. **Допуск** — по накопленной истории: медианы оборота и открытого интереса,
-   спред, число баров. Прошедший становится торгуемым, не прошедший остаётся
-   в справочнике с причиной отказа.
-
-Инструмент, не прошедший второй проход, **не исчезает**: он остаётся с
-записанной причиной. «Пропал из списка» — худший вид ответа, потому что
-неотличим от сбоя загрузки.
-
-Про спред сказано отдельно. У ISS нет истории котировок, поэтому «median
-relative spread 30d» на срочном рынке измерить нечем, и вместо медианы берётся
-снимок. Это записано в причине допуска дословно, а не спрятано за одинаковым
-именем поля.
+ТЗ не даёт списка инструментов — оно даёт фильтры. Для FORTS исторические
+свечи ISS иногда содержат нулевой `value`/неполный ряд OI при полностью живой
+доске. Recovery не снимает пороги ликвидности: когда историческая медиана
+неизмерима или равна нулю, второй проход может использовать свежий снимок
+доски, но явно помечает источник измерения как snapshot.
 """
 
 from __future__ import annotations
@@ -44,24 +24,19 @@ from . import crypto, moex
 from .fx import record_rates
 from .http import FetchError
 
-# Обязательные по §5.3 — единственные тикеры во всём модуле.
 MANDATORY_CRYPTO = ("BTCUSDT", "ETHUSDT")
+FORTS_SNAPSHOT_MAX_AGE = timedelta(days=4)
 
 
 @dataclass
 class Verdict:
-    """Решение о допуске с перечислением того, что реально измерено."""
-
     admitted: bool
     reasons: list[str] = field(default_factory=list)
     measured: dict[str, str] = field(default_factory=dict)
 
     @property
     def note(self) -> str:
-        if self.admitted:
-            head = "допущен §5"
-        else:
-            head = "не допущен §5"
+        head = "допущен §5" if self.admitted else "не допущен §5"
         detail = "; ".join(self.reasons)
         return f"{head}: {detail}"[:256] if detail else head
 
@@ -90,12 +65,6 @@ def _daily_notionals(
 def _daily_oi_notionals(
     session: Session, instrument: Instrument, *, days: int, now: datetime
 ) -> list[Decimal]:
-    """Открытый интерес в деньгах.
-
-    На срочном рынке OI приходит в контрактах, и сравнивать его с порогом в
-    рублях напрямую нельзя. Перевод — через стоимость шага цены:
-    ``tick_value / tick_size`` даёт рубли на один пункт цены.
-    """
     since = now - timedelta(days=days)
     rows = session.execute(
         select(Bar.open_interest, Bar.close).where(
@@ -140,6 +109,51 @@ def _daily_bar_span_days(session: Session, instrument_id: str) -> int:
     return (row[1] - row[0]).days
 
 
+def _decimal_meta(meta: dict, key: str) -> Decimal | None:
+    raw = meta.get(key)
+    if raw in (None, ""):
+        return None
+    try:
+        return Decimal(str(raw))
+    except Exception:
+        return None
+
+
+def _fresh_forts_snapshot(instrument: Instrument, *, now: datetime) -> dict:
+    """Вернуть snapshot только пока он достаточно свежий для допуска.
+
+    Четыре дня покрывают обычные выходные, но не позволяют старому снимку
+    пережить неделю недоступности ISS и продолжать объявлять контракт живым.
+    """
+    meta = instrument.metadata_json or {}
+    raw_at = meta.get("snapshot_at")
+    if not raw_at:
+        return {}
+    try:
+        at = datetime.fromisoformat(str(raw_at))
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=UTC)
+        else:
+            at = at.astimezone(UTC)
+    except (TypeError, ValueError):
+        return {}
+    if now - at > FORTS_SNAPSHOT_MAX_AGE:
+        return {}
+    return meta
+
+
+def _snapshot_oi_notional(instrument: Instrument, meta: dict) -> Decimal | None:
+    oi = _decimal_meta(meta, "snapshot_open_interest")
+    last = _decimal_meta(meta, "snapshot_last")
+    if oi is None or oi <= 0 or last is None or last <= 0:
+        return None
+    if not instrument.tick_size or instrument.tick_size <= 0:
+        return None
+    rubles_per_point = instrument.tick_value / instrument.tick_size
+    value = oi * last * rubles_per_point
+    return value if value > 0 else None
+
+
 # ─── Фьючерсы (§5.2) ──────────────────────────────────────────────────────
 
 
@@ -161,23 +175,6 @@ def futures_candidates(
     min_days_to_expiry: int,
     min_snapshot_turnover: Decimal = Decimal(0),
 ) -> list[FuturesCandidate]:
-    """Ближняя торгуемая серия каждого корня и серия под роллирование.
-
-    Серия ближе порога §5.2 к экспирации не берётся вовсе: держать позицию в
-    истекающем контракте — отдельный риск, не имеющий отношения к сетапу.
-    Следующая серия ищется **среди всех** более дальних, включая те, что не
-    прошли бы порог сами: для роллирования важно её существование.
-
-    ``min_snapshot_turnover`` — грубый предварительный отсев, а **не** проверка
-    §5.2. Настоящий критерий — медиана за 30 дней, и посчитать её можно только
-    по загруженной истории; отсев нужен, чтобы не тянуть эту историю по паре
-    сотен заведомо мёртвых контрактов.
-
-    На закрытом рынке оборот за день равен нулю у всех — это факт о времени
-    суток, а не о ликвидности. Поэтому условие оборота применяется, только
-    если оборот есть **хоть у одной** серии на доске; иначе ночной прогон
-    вычистил бы вселенную целиком.
-    """
     board_trades = any((r.turnover or Decimal(0)) > 0 for r in rows)
     floor = min_snapshot_turnover if board_trades else Decimal(0)
 
@@ -211,7 +208,7 @@ def admit_futures(
     now: datetime | None = None,
     spread_snapshot: Decimal | None = None,
 ) -> Verdict:
-    """Проверить фьючерс по §5.2 на накопленной истории."""
+    """Проверить FORTS, сохраняя строгие пороги при дырявом ISS history."""
     config = cfg or get_config()
     moment = now or datetime.now(UTC)
     verdict = Verdict(admitted=True)
@@ -221,32 +218,55 @@ def admit_futures(
     max_spread = config.decimal("universe.futures.max_median_relative_spread")
     min_bars = int(config.get("universe.futures.min_closed_hourly_bars"))
     min_days = int(config.get("universe.futures.min_days_to_expiry"))
+    snapshot = _fresh_forts_snapshot(instrument, now=moment)
 
-    notional = _median(_daily_notionals(session, instrument.instrument_id, days=30, now=moment))
-    if notional is None:
-        verdict.admitted = False
-        verdict.reasons.append("оборот не измерен: дневных баров нет")
-    else:
+    history_notional = _median(
+        _daily_notionals(session, instrument.instrument_id, days=30, now=moment)
+    )
+    snapshot_notional = _decimal_meta(snapshot, "snapshot_turnover_rub")
+    if history_notional is not None and history_notional > 0:
+        notional = history_notional
         verdict.measured["median_daily_notional_rub"] = str(notional)
-        if notional < min_notional:
-            verdict.admitted = False
-            verdict.reasons.append(
-                f"медианный оборот {notional:.0f} ₽ ниже порога {min_notional:.0f} ₽"
-            )
-
-    oi = _median(_daily_oi_notionals(session, instrument, days=30, now=moment))
-    if oi is None:
-        # OI у ISS живёт в отдельном ряду и может не приехать. Это не повод
-        # объявить его нулевым — это повод сказать «не измерен».
-        verdict.admitted = False
-        verdict.reasons.append("открытый интерес не измерен: ряда OI нет")
+        verdict.measured["turnover_source"] = "history_30d_median"
+    elif snapshot_notional is not None and snapshot_notional > 0:
+        notional = snapshot_notional
+        verdict.measured["daily_notional_rub"] = str(notional)
+        verdict.measured["turnover_source"] = "fresh_board_snapshot"
+        verdict.reasons.append("оборот ISS history нулевой/пустой — использован свежий снимок доски")
     else:
+        notional = None
+        verdict.admitted = False
+        verdict.reasons.append("оборот не измерен: history и свежий снимок доски пусты")
+
+    if notional is not None and notional < min_notional:
+        verdict.admitted = False
+        verdict.reasons.append(
+            f"оборот {notional:.0f} ₽ ниже порога {min_notional:.0f} ₽"
+        )
+
+    history_oi = _median(
+        _daily_oi_notionals(session, instrument, days=30, now=moment)
+    )
+    snapshot_oi = _snapshot_oi_notional(instrument, snapshot)
+    if history_oi is not None and history_oi > 0:
+        oi = history_oi
         verdict.measured["median_oi_notional_rub"] = str(oi)
-        if oi < min_oi:
-            verdict.admitted = False
-            verdict.reasons.append(
-                f"медианный OI {oi:.0f} ₽ ниже порога {min_oi:.0f} ₽"
-            )
+        verdict.measured["oi_source"] = "history_30d_median"
+    elif snapshot_oi is not None:
+        oi = snapshot_oi
+        verdict.measured["oi_notional_rub"] = str(oi)
+        verdict.measured["oi_source"] = "fresh_board_snapshot"
+        verdict.reasons.append("ряд OI ISS пустой/нулевой — использован свежий снимок доски")
+    else:
+        oi = None
+        verdict.admitted = False
+        verdict.reasons.append("открытый интерес не измерен: history и свежий снимок пусты")
+
+    if oi is not None and oi < min_oi:
+        verdict.admitted = False
+        verdict.reasons.append(
+            f"OI {oi:.0f} ₽ ниже порога {min_oi:.0f} ₽"
+        )
 
     bars = _closed_hourly_bars(session, instrument.instrument_id)
     verdict.measured["closed_hourly_bars"] = str(bars)
@@ -269,8 +289,8 @@ def admit_futures(
         verdict.reasons.append("следующая серия недоступна — роллировать некуда")
 
     if spread_snapshot is None:
-        # Не проваливаем допуск: истории котировок у ISS нет в принципе, и
-        # требовать невозможного значит закрыть срочный рынок целиком.
+        spread_snapshot = _decimal_meta(snapshot, "spread_snapshot")
+    if spread_snapshot is None:
         verdict.reasons.append("спред не измерен: ISS не отдаёт историю котировок")
     else:
         verdict.measured["relative_spread_snapshot"] = str(spread_snapshot)
@@ -278,7 +298,7 @@ def admit_futures(
             verdict.admitted = False
             verdict.reasons.append(
                 f"спред {spread_snapshot:.4%} шире порога {max_spread:.4%} "
-                "(снимок, а не медиана за 30 дней)"
+                "(снимок, не медиана 30d)"
             )
 
     return verdict
@@ -287,26 +307,13 @@ def admit_futures(
 def sync_futures(
     session: Session, *, now: datetime | None = None, fetch=None, cfg=None
 ) -> list[Instrument]:
-    """Первый проход §5.2: справочник ближних серий по всей доске.
-
-    Спецификация **перезаписывается** при каждом проходе: шаг цены и его
-    стоимость меняются при пересмотре параметров контракта, а по ним считается
-    размер позиции. Устаревшая спецификация — тихая ошибка в деньгах.
-    """
     config = cfg or get_config()
     moment = now or datetime.now(UTC)
     kwargs = {"fetch": fetch} if fetch else {}
     min_days = int(config.get("universe.futures.min_days_to_expiry"))
 
     rows, _ = moex.forts_board(**kwargs)
-    # Курс валюты к рублю снимается здесь же, с уже загруженной доски: Si
-    # торгуется на этом самом рынке, а второй проход по нему стоил бы ещё
-    # одной полной выгрузки. Делается до отсева кандидатов — валютный
-    # фьючерс может не пройти фильтр вселенной, но курс из него верен.
     record_rates(session, rows, now=moment)
-    # Предварительный отсев — десятая часть порога §5.2. Настоящую проверку
-    # делает второй проход по истории; здесь задача скромнее — не тянуть
-    # историю по паре сотен контрактов, торгующихся на сотни рублей в день.
     prefilter = config.decimal("universe.futures.min_median_daily_notional_rub") / 10
     candidates = futures_candidates(
         rows, moment.date(),
@@ -314,15 +321,9 @@ def sync_futures(
         min_snapshot_turnover=prefilter,
     )
     if not candidates:
-        # Пустой снимок — это отказ источника или закрытая биржа, а не
-        # «инструментов больше нет». Снимать вселенную по нему нельзя:
-        # загрузка встала бы, а в журнале осталась бы дыра без причины.
         _record_empty_board(session, len(rows))
         return []
 
-    # Корень, который есть на доске, но не дал ни одной годной серии, обязан
-    # оставить след. Иначе исчезновение инструмента из выдачи неотличимо от
-    # сбоя загрузки, а владелец гадает, куда делся привычный фьючерс.
     passed = {c.root for c in candidates}
     for root in moex.series_by_root(rows):
         if root not in passed:
@@ -363,18 +364,42 @@ def sync_futures(
         )
         existing.correlation_cluster = cluster_for(candidate.root)
         existing.in_universe = True
-        # Торгуемость подтверждает второй проход, а не снимок доски.
         existing.is_tradable = False
         existing.universe_note = (
             f"кандидат §5.2: ближняя серия корня {candidate.root}, "
             f"экспирация {series.last_trade_date}"
             + ("" if candidate.can_roll else ", следующей серии нет")
         )
+        old = existing.metadata_json or {}
         spread = series.relative_spread
+
+        # Нулевой ночной снимок не стирает торговый. Но и LAST без оборота не
+        # имеет права обновлять freshness ликвидности: иначе старый оборот мог
+        # оставаться «свежим» каждую ночь бесконечно.
+        turnover = (
+            series.turnover
+            if (series.turnover or Decimal(0)) > 0
+            else _decimal_meta(old, "snapshot_turnover_rub")
+        )
+        open_interest = (
+            series.open_interest
+            if (series.open_interest or Decimal(0)) > 0
+            else _decimal_meta(old, "snapshot_open_interest")
+        )
+        last = (
+            series.last
+            if (series.last or Decimal(0)) > 0
+            else _decimal_meta(old, "snapshot_last")
+        )
+        snapshot_changed = (series.turnover or Decimal(0)) > 0
         existing.metadata_json = {
-            **(existing.metadata_json or {}),
+            **old,
             "root": candidate.root,
-            "spread_snapshot": str(spread) if spread is not None else None,
+            "spread_snapshot": str(spread) if spread is not None else old.get("spread_snapshot"),
+            "snapshot_turnover_rub": str(turnover) if turnover is not None else None,
+            "snapshot_open_interest": str(open_interest) if open_interest is not None else None,
+            "snapshot_last": str(last) if last is not None else None,
+            "snapshot_at": moment.isoformat() if snapshot_changed else old.get("snapshot_at"),
         }
         kept.append(existing)
 
@@ -403,11 +428,6 @@ def _retire_missing(
     venue: Venue,
     asset_class: AssetClass,
 ) -> None:
-    """Вывести из вселенной то, чего в новом снимке нет.
-
-    Инструмент остаётся в справочнике: по нему есть история и, возможно,
-    закрытые сделки. Меняется только участие в скане, и меняется с причиной.
-    """
     live = {i.instrument_id for i in kept}
     rows = session.execute(
         select(Instrument).where(
@@ -433,17 +453,10 @@ def crypto_candidates(
     min_turnover: Decimal,
     max_active: int,
 ) -> list[crypto.Ticker]:
-    """BTCUSDT и ETHUSDT плюс верх по обороту.
-
-    Обязательные два идут первыми и **не соревнуются за места**: §5.3
-    требует их при доступности, а не «если попадут в топ». Остальные —
-    по обороту, до предела активной вселенной.
-    """
     by_symbol = {t.symbol: t for t in tickers}
 
     def usable(symbol: str) -> bool:
         spec = specs.get(symbol)
-        # Нет спецификации — нет шага объёма; торговать вслепую нельзя.
         return spec is not None and spec.is_trading and spec.is_perpetual
 
     chosen: list[crypto.Ticker] = []
@@ -471,18 +484,6 @@ def crypto_candidate_pool(
     max_active: int,
     depth: int = 3,
 ) -> list[crypto.Ticker]:
-    """Расширенный список претендентов на активную вселенную §5.3.
-
-    «Active universe максимум 12» — про **допущенные** инструменты, а не про
-    претендентов. Разница обнаружилась на живой бирже: у Bybit в категории
-    linear теперь торгуются токенизированные акции и золото (SOXL, MU,
-    SKHYNIX, XAU). По суточному обороту они обходят половину криптовалют и
-    занимали все двенадцать мест, вытесняя настоящую крипту, — а потом всё
-    равно отсеивались вторым проходом за нехваткой годовой истории.
-
-    Поэтому претендентов берётся втрое больше предела, а до двенадцати список
-    режет допуск, где история и открытый интерес уже измерены.
-    """
     return crypto_candidates(
         tickers, specs,
         min_turnover=min_turnover,
@@ -498,7 +499,6 @@ def admit_crypto(
     cfg: EngineConfig | None = None,
     now: datetime | None = None,
 ) -> Verdict:
-    """Проверить криптоконтракт по §5.3."""
     config = cfg or get_config()
     moment = now or datetime.now(UTC)
     verdict = Verdict(admitted=True)
@@ -545,7 +545,6 @@ def admit_crypto(
 def sync_crypto(
     session: Session, *, now: datetime | None = None, fetch=None, cfg=None
 ) -> list[Instrument]:
-    """Первый проход §5.3: активная вселенная бессрочных контрактов."""
     config = cfg or get_config()
     kwargs = {"fetch": fetch} if fetch else {}
     max_active = int(config.get("universe.crypto.max_active"))
@@ -578,8 +577,6 @@ def sync_crypto(
 
         existing.title = f"{spec.base_coin}/{spec.quote_coin} бессрочный"
         existing.tick_size = spec.tick_size or Decimal("0.01")
-        # У бессрочного контракта «стоимость шага» — сам шаг цены: объём
-        # считается в базовой монете, а не в контрактах.
         existing.tick_value = spec.tick_size or Decimal("0.01")
         existing.quantity_step = spec.qty_step or Decimal(1)
         existing.min_quantity = spec.min_order_qty or spec.qty_step or Decimal(1)
@@ -611,12 +608,6 @@ class AdmissionReport:
 def review_universe(
     session: Session, *, now: datetime | None = None, fetch=None, cfg=None
 ) -> AdmissionReport:
-    """Второй проход §5: допуск по накопленной истории.
-
-    Вызывается после загрузки, а не вместо неё: пока баров нет, ни одно из
-    условий ликвидности не измеримо, и объявить инструмент негодным было бы
-    утверждением о рынке, а не о данных.
-    """
     config = cfg or get_config()
     moment = now or datetime.now(UTC)
     report = AdmissionReport()
@@ -632,8 +623,6 @@ def review_universe(
             rows, _ = crypto.tickers(**({"fetch": fetch} if fetch else {}))
             snapshot = {t.symbol: t for t in rows}
         except (FetchError, ValueError):
-            # Снимок не приехал — допуск крипты честно провалится с причиной
-            # «нет в снимке рынка», а не пройдёт по устаревшим данным.
             snapshot = {}
 
     for instrument in instruments:
@@ -671,13 +660,6 @@ def _cap_active_crypto(
     *,
     cfg: EngineConfig,
 ) -> None:
-    """Ограничить активную вселенную крипты пределом §5.3.
-
-    Предел применяется здесь, а не при отборе кандидатов: до загрузки истории
-    неизвестно, кто вообще пройдёт допуск, и двенадцать мест доставались бы
-    тому, у кого просто больше суточный оборот. Обязательные BTC и ETH места
-    не уступают.
-    """
     max_active = int(cfg.get("universe.crypto.max_active"))
     admitted = [
         i for i in instruments
@@ -704,9 +686,6 @@ def _cap_active_crypto(
         item.universe_note = verdict.note
 
 
-# Кластеры корреляции §17.2. Корень, которого нет в справочнике, получает
-# собственный кластер: без него лимит на кластер к нему просто не применялся
-# бы, и две серии одного корня считались бы независимыми позициями.
 _CLUSTERS = {
     "SI": "rub_fx", "CNY": "rub_fx", "ED": "rub_fx", "EU": "rub_fx",
     "RI": "ru_equity_index", "MX": "ru_equity_index", "MM": "ru_equity_index",

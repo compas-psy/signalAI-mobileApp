@@ -1,10 +1,4 @@
-"""Отбор вселенной §5.
-
-Проверяется главное свойство §5: вселенная — это **результат фильтров**, а не
-список. Поэтому здесь нет теста «SiU6 попал в выдачу»; есть тесты «серия у
-экспирации не берётся», «без следующей серии роллировать некуда», «без истории
-допуск не даётся». Инструмент, прошедший их, попадёт сам.
-"""
+"""Отбор вселенной §5: фильтры, а не захардкоженный список."""
 
 from __future__ import annotations
 
@@ -62,9 +56,6 @@ def forts_row(sec_id, expiry, *, turnover="1000000", bid=None, ask=None):
     )
 
 
-# ─── Корень контракта ─────────────────────────────────────────────────────
-
-
 @pytest.mark.parametrize(
     "sec_id,root",
     [
@@ -76,25 +67,18 @@ def forts_row(sec_id, expiry, *, turnover="1000000", bid=None, ask=None):
     ],
 )
 def test_root_is_parsed_from_the_end(sec_id, root):
-    """Разбор идёт с конца: у ``SiU6`` первые буквы — ``SiU``, а корень ``Si``.
-
-    Ошибка здесь не косметическая: каждая серия стала бы отдельным корнем, и
-    следующая серия для роллирования не нашлась бы никогда.
-    """
     assert moex.root_of(sec_id) == root
 
 
 @pytest.mark.parametrize("sec_id", ["Si-9.26", "", "SiU", "123"])
 def test_unparseable_code_is_not_guessed(sec_id):
-    """Непонятный код — None, а не выдуманный корень."""
     assert moex.root_of(sec_id) is None
 
 
-# ─── Кандидаты §5.2 ───────────────────────────────────────────────────────
+# ─── Кандидаты FORTS ──────────────────────────────────────────────────────
 
 
 def test_expiring_series_is_not_a_candidate():
-    """До экспирации пять дней — сетап тут ни при чём, это риск контракта."""
     rows = [forts_row("SiU6", TODAY + timedelta(days=3))]
     assert universe.futures_candidates(rows, TODAY, min_days_to_expiry=5) == []
 
@@ -111,7 +95,6 @@ def test_nearest_tradable_series_wins_over_far_one():
 
 
 def test_roll_target_is_seen_even_if_it_would_fail_alone():
-    """Для роллирования важно, что серия существует, а не её сегодняшний оборот."""
     rows = [
         forts_row("SiU6", TODAY + timedelta(days=50)),
         forts_row("SiZ6", TODAY + timedelta(days=140), turnover="0"),
@@ -127,7 +110,6 @@ def test_lonely_series_cannot_be_rolled():
 
 
 def test_dead_series_is_dropped_while_the_board_trades():
-    """На торгующейся доске нулевой оборот — свойство контракта."""
     rows = [
         forts_row("SiU6", TODAY + timedelta(days=50), turnover="0"),
         forts_row("BRV6", TODAY + timedelta(days=50), turnover="500000000"),
@@ -137,11 +119,6 @@ def test_dead_series_is_dropped_while_the_board_trades():
 
 
 def test_closed_market_does_not_empty_the_universe():
-    """Ночью оборот за день ноль у всех — это про время суток, а не про рынок.
-
-    Без этого различия ночной прогон вычистил бы вселенную целиком: загрузка
-    встала бы до утра, а в истории осталась бы дыра без объяснения.
-    """
     rows = [
         forts_row("SiU6", TODAY + timedelta(days=50), turnover="0"),
         forts_row("BRV6", TODAY + timedelta(days=50), turnover="0"),
@@ -156,7 +133,6 @@ def test_closed_market_does_not_empty_the_universe():
 
 
 def test_prefilter_drops_contracts_trading_on_pennies():
-    """Предварительный отсев — чтобы не тянуть историю по мёртвым контрактам."""
     rows = [
         forts_row("SiU6", TODAY + timedelta(days=50), turnover="500000000"),
         forts_row("UTV6", TODAY + timedelta(days=50), turnover="1200"),
@@ -176,33 +152,28 @@ def test_prefilter_drops_contracts_trading_on_pennies():
 def test_sync_creates_candidates_from_the_whole_board(session):
     kept = universe.sync_futures(session, now=NOW, fetch=board_fetch)
     symbols = {i.symbol for i in kept}
-    # BRQ6 истекает 31 июля — ближе пяти дней, в кандидаты не идёт.
     assert symbols == {"SiU6"}
     (item,) = kept
     assert item.next_contract == "MOEX:FUT:SiZ6"
     assert item.correlation_cluster == "rub_fx"
+    assert item.metadata_json["snapshot_turnover_rub"] == "15000000000"
+    assert item.metadata_json["snapshot_open_interest"] == "412000"
+    assert item.metadata_json["snapshot_last"] == "90123"
 
 
-def test_candidate_is_not_tradable_until_history_confirms_it(session):
-    """Снимок доски не доказывает ликвидность — её доказывает история."""
+def test_candidate_is_not_tradable_until_history_confirms_other_gates(session):
     (item,) = universe.sync_futures(session, now=NOW, fetch=board_fetch)
     assert item.in_universe is True
     assert item.is_tradable is False
 
 
 def test_root_without_liquid_series_leaves_a_trace(session):
-    """Молчаливо пропасть корень не может — иначе непонятно, почему его нет."""
     universe.sync_futures(session, now=NOW, fetch=board_fetch)
     events = session.execute(select(DataQualityEvent)).scalars().all()
     assert any("корень BR" in e.detail for e in events)
 
 
 def test_specification_is_overwritten_not_kept(session):
-    """Шаг цены меняется при пересмотре параметров контракта.
-
-    По нему считается размер позиции — устаревшая спецификация это тихая
-    ошибка в деньгах.
-    """
     session.add(
         Instrument(
             instrument_id="MOEX:FUT:SiU6", venue=Venue.MOEX,
@@ -219,7 +190,6 @@ def test_specification_is_overwritten_not_kept(session):
 
 
 def test_rolled_out_series_leaves_universe_but_stays_in_catalogue(session):
-    """По старой серии есть история и, возможно, закрытые сделки."""
     old = Instrument(
         instrument_id="MOEX:FUT:SiM6", venue=Venue.MOEX,
         asset_class=AssetClass.FUTURES, symbol="SiM6",
@@ -233,7 +203,7 @@ def test_rolled_out_series_leaves_universe_but_stays_in_catalogue(session):
     assert session.get(Instrument, old.id) is not None
 
 
-# ─── Допуск §5.2 по истории ───────────────────────────────────────────────
+# ─── Допуск FORTS ─────────────────────────────────────────────────────────
 
 
 def _futures(session, **over) -> Instrument:
@@ -292,14 +262,54 @@ def test_admission_passes_on_liquid_history(session):
     )
     assert verdict.admitted, verdict.reasons
     assert verdict.measured["closed_hourly_bars"] == "300"
+    assert verdict.measured["turnover_source"] == "history_30d_median"
+    assert verdict.measured["oi_source"] == "history_30d_median"
 
 
-def test_admission_fails_without_history(session):
-    """Пустая история — «не измерено», и это отказ, а не молчаливое «ок»."""
+def test_admission_fails_without_history_or_snapshot(session):
     item = _futures(session)
     verdict = universe.admit_futures(session, item, now=NOW)
     assert not verdict.admitted
     assert any("не измерен" in r for r in verdict.reasons)
+
+
+def test_zero_history_uses_fresh_board_snapshot_without_lowering_thresholds(session):
+    item = _futures(
+        session,
+        metadata_json={
+            "snapshot_turnover_rub": "15000000000",
+            "snapshot_open_interest": "6000000",
+            "snapshot_last": "100",
+            "snapshot_at": NOW.isoformat(),
+            "spread_snapshot": "0.0001",
+        },
+    )
+    _fill_history(
+        session,
+        item.instrument_id,
+        notional="0",
+        open_interest="0",
+    )
+    verdict = universe.admit_futures(session, item, now=NOW)
+    assert verdict.admitted, verdict.reasons
+    assert verdict.measured["turnover_source"] == "fresh_board_snapshot"
+    assert verdict.measured["oi_source"] == "fresh_board_snapshot"
+
+
+def test_stale_board_snapshot_cannot_rescue_zero_history(session):
+    item = _futures(
+        session,
+        metadata_json={
+            "snapshot_turnover_rub": "15000000000",
+            "snapshot_open_interest": "6000000",
+            "snapshot_last": "100",
+            "snapshot_at": (NOW - universe.FORTS_SNAPSHOT_MAX_AGE - timedelta(minutes=1)).isoformat(),
+        },
+    )
+    _fill_history(session, item.instrument_id, notional="0", open_interest="0")
+    verdict = universe.admit_futures(session, item, now=NOW)
+    assert not verdict.admitted
+    assert any("свежий снимок" in r for r in verdict.reasons)
 
 
 def test_thin_turnover_is_rejected_with_a_number(session):
@@ -319,7 +329,6 @@ def test_too_few_hourly_bars_is_rejected(session):
 
 
 def test_missing_roll_target_blocks_admission(session):
-    """§5.2 требует доступности следующего контракта — без неё позицию некуда переносить."""
     item = _futures(session, next_contract=None)
     _fill_history(session, item.instrument_id)
     verdict = universe.admit_futures(
@@ -336,11 +345,10 @@ def test_wide_spread_is_rejected_and_named_a_snapshot(session):
         session, item, now=NOW, spread_snapshot=Decimal("0.01")
     )
     assert not verdict.admitted
-    assert any("снимок, а не медиана" in r for r in verdict.reasons)
+    assert any("снимок" in r and "медиана" in r for r in verdict.reasons)
 
 
 def test_unmeasured_spread_does_not_silently_pass_as_zero(session):
-    """У ISS нет истории котировок. Отсутствие меры должно быть сказано вслух."""
     item = _futures(session)
     _fill_history(session, item.instrument_id)
     verdict = universe.admit_futures(session, item, now=NOW)
@@ -350,16 +358,11 @@ def test_unmeasured_spread_does_not_silently_pass_as_zero(session):
 
 
 def test_open_interest_is_converted_to_money(session):
-    """OI приходит в контрактах, а порог §5.2 — в рублях.
-
-    Стоимость шага у Si равна шагу, поэтому рубль на пункт — единица, и
-    500 000 контрактов по цене 100 дают 50 млн ₽: ниже порога в 500 млн.
-    """
     item = _futures(session)
     _fill_history(session, item.instrument_id, open_interest="500000")
     verdict = universe.admit_futures(session, item, now=NOW)
     assert not verdict.admitted
-    assert any("медианный OI" in r for r in verdict.reasons)
+    assert any("OI" in r for r in verdict.reasons)
 
 
 def test_review_writes_the_reason_onto_the_instrument(session):
@@ -372,7 +375,7 @@ def test_review_writes_the_reason_onto_the_instrument(session):
     assert "не допущен §5" in item.universe_note
 
 
-# ─── Crypto §5.3 ──────────────────────────────────────────────────────────
+# ─── Crypto ───────────────────────────────────────────────────────────────
 
 
 def ticker(symbol, turnover, *, oi="1000", bid="100", ask="100.01"):
@@ -394,7 +397,6 @@ def spec(symbol, *, status="Trading", contract_type="LinearPerpetual"):
 
 
 def test_mandatory_pair_does_not_compete_for_places():
-    """§5.3: BTC и ETH обязательны при доступности, а не «если попадут в топ»."""
     tickers = [
         ticker("SOLUSDT", "9000000000"),
         ticker("BTCUSDT", "1"),
@@ -420,7 +422,6 @@ def test_delisted_contract_is_not_taken():
 
 
 def test_contract_without_specification_is_not_taken():
-    """Нет шага объёма — нет размера позиции. Торговать вслепую нельзя."""
     tickers = [ticker("BTCUSDT", "9000000000"), ticker("NEWUSDT", "9000000000")]
     chosen = universe.crypto_candidates(
         tickers, {"BTCUSDT": spec("BTCUSDT")},
@@ -438,7 +439,7 @@ def test_active_universe_is_capped():
     assert len(chosen) == 12
 
 
-def test_crypto_admission_requires_a_year_of_history(session):
+def test_crypto_admission_requires_at_least_180_days_of_history(session):
     item = Instrument(
         instrument_id="CRYPTO:PERP:BTCUSDT", venue=Venue.CRYPTO,
         asset_class=AssetClass.CRYPTO_PERPETUAL, symbol="BTCUSDT",
@@ -446,7 +447,7 @@ def test_crypto_admission_requires_a_year_of_history(session):
     )
     session.add(item)
     session.flush()
-    for i in range(0, 200, 2):
+    for i in range(0, 120, 2):
         session.add(
             Bar(
                 instrument_id=item.instrument_id, timeframe=Timeframe.D1,
@@ -461,20 +462,13 @@ def test_crypto_admission_requires_a_year_of_history(session):
         session, item, ticker("BTCUSDT", "9000000000"), now=NOW
     )
     assert not verdict.admitted
-    assert any("истории 198 дней" in r for r in verdict.reasons)
+    assert any("истории 118 дней" in r for r in verdict.reasons)
 
 
-# ─── Предел активной вселенной §5.3 ───────────────────────────────────────
+# ─── Предел активной crypto-вселенной ────────────────────────────────────
 
 
 def test_candidate_pool_is_wider_than_the_active_limit():
-    """Предел §5.3 — про допущенные, а не про претендентов.
-
-    На живой бирже у Bybit в linear торгуются токенизированные акции и золото
-    (SOXL, MU, SKHYNIX, XAU). По суточному обороту они обходили половину
-    криптовалют, занимали все двенадцать мест и вытесняли настоящую крипту —
-    а потом всё равно отсеивались за нехваткой годовой истории.
-    """
     tickers = [ticker(f"C{i}USDT", str(10_000_000_000 - i)) for i in range(50)]
     specs = {t.symbol: spec(t.symbol) for t in tickers}
     pool = universe.crypto_candidate_pool(
@@ -484,9 +478,8 @@ def test_candidate_pool_is_wider_than_the_active_limit():
 
 
 def test_active_crypto_universe_is_capped_after_admission(session):
-    """Допущенных больше предела — лишние выбывают с названной причиной."""
     instruments = []
-    for i in range(30):
+    for i in range(40):
         item = Instrument(
             instrument_id=f"CRYPTO:PERP:C{i}USDT", venue=Venue.CRYPTO,
             asset_class=AssetClass.CRYPTO_PERPETUAL, symbol=f"C{i}USDT",
@@ -508,16 +501,14 @@ def test_active_crypto_universe_is_capped_after_admission(session):
     cap = int(get_config().get("universe.crypto.max_active"))
     tradable = [i.symbol for i in instruments if i.is_tradable]
     assert len(tradable) == cap
-    # Отсечены самые тонкие по обороту, а не случайные.
     assert set(tradable).isdisjoint({"C0USDT", "C1USDT", "C2USDT"})
     dropped = report.verdicts["CRYPTO:PERP:C0USDT"]
     assert any("предел" in r for r in dropped.reasons)
 
 
 def test_mandatory_pair_keeps_its_place_when_capping(session):
-    """BTC и ETH обязательны по §5.3 — предел их не выталкивает."""
     instruments = []
-    for symbol in ["BTCUSDT", "ETHUSDT", *[f"C{i}USDT" for i in range(28)]]:
+    for symbol in ["BTCUSDT", "ETHUSDT", *[f"C{i}USDT" for i in range(36)]]:
         item = Instrument(
             instrument_id=f"CRYPTO:PERP:{symbol}", venue=Venue.CRYPTO,
             asset_class=AssetClass.CRYPTO_PERPETUAL, symbol=symbol,
@@ -529,7 +520,6 @@ def test_mandatory_pair_keeps_its_place_when_capping(session):
 
     report = universe.AdmissionReport()
     for i, item in enumerate(instruments):
-        # У обязательных оборот наименьший — проверяем, что это не важно.
         turnover = "1" if item.symbol in universe.MANDATORY_CRYPTO else str(1000 + i)
         report.verdicts[item.instrument_id] = universe.Verdict(
             admitted=True, measured={"median_daily_notional_usdt": turnover},
