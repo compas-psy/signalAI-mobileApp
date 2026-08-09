@@ -42,10 +42,11 @@ class TrendPullbackParams:
     max_retracement: Decimal = Decimal("0.786")
     stop_atr_buffer: Decimal = Decimal("0.10")
     min_stop_ticks: int = 2
-    # Один подтверждённый setup-confluence достаточен, потому что финальный
-    # admission отдельно требует price-action trigger и score gates.
-    min_zones: int = 1
-    # Внутренний trigger стратегии больше не дублирует admission trigger.
+    # Двойной setup-конфлюэнс оставляем обязательным. Recovery не означает
+    # «торговать всё», он означает не терять хороший setup до trigger.
+    min_zones: int = 2
+    # Внутренний trigger больше не является structural rejection: финальный
+    # price-action gate живёт в admission и перепроверяется следующим H1.
     min_triggers: int = 1
     tp1_r_min: Decimal = Decimal("1.0")
     tp1_r_max: Decimal = Decimal("1.3")
@@ -207,9 +208,8 @@ def build(ctx: SetupContext, params: TrendPullbackParams | None = None) -> Outco
             + (f": {', '.join(triggers)}" if triggers else ""),
         )
     )
-    # ВАЖНО: triggers — не structural rejection. Финальный admission ниже по
-    # pipeline спросит настоящий price-action trigger и не сделает WATCH
-    # actionable раньше времени.
+    # Намеренно НЕ reject: отсутствие trigger — временное состояние setup,
+    # которое должен перепроверять pipeline.trigger, а не кладбище rejection.
 
     atr_trigger = ctx.atr_trigger or Decimal(0)
     stop_side_low = direction is Direction.LONG
@@ -228,9 +228,8 @@ def build(ctx: SetupContext, params: TrendPullbackParams | None = None) -> Outco
         ctx.tick_size * p.min_stop_ticks,
     )
 
-    # Если confluence только по fib и явной SMC-зоны под текущей ценой нет,
-    # зона WATCH строится узко вокруг текущего уровня. Actionable она станет
-    # только после отдельного price-action подтверждения в этой зоне.
+    # При двойном confluence хотя бы одна реальная SMC-зона обычно есть.
+    # Fallback оставляем только как fail-safe для иных комбинаций факторов.
     fib_half_width = max(atr_trigger * Decimal("0.10"), ctx.tick_size * 2)
     zone_low = min((z.low for z in hit), default=price - fib_half_width)
     zone_high = max((z.high for z in hit), default=price + fib_half_width)
