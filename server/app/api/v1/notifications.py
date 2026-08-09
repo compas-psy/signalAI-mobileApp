@@ -12,10 +12,11 @@ import asyncio
 import json
 from uuid import uuid4
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
+from sqlalchemy.orm import Session
 
-from ...db import session_scope
+from ...db import get_db, session_scope
 from ...notification_outbox import emit, list_after, materialize
 
 router = APIRouter(prefix="/notifications", tags=["notifications"])
@@ -28,9 +29,13 @@ def _batch(after: int) -> list[dict]:
 
 
 @router.get("")
-def notifications(after: int = Query(0, ge=0)) -> dict:
+def notifications(
+    after: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+) -> dict:
     """Durable fallback/readback for diagnostics and reconnect tests."""
-    events = _batch(after)
+    materialize(db)
+    events = [event.to_json() for event in list_after(db, after, limit=100)]
     return {
         "events": events,
         "cursor": events[-1]["id"] if events else after,
@@ -38,20 +43,19 @@ def notifications(after: int = Query(0, ge=0)) -> dict:
 
 
 @router.post("/test")
-def test_notification() -> dict:
+def test_notification(db: Session = Depends(get_db)) -> dict:
     """Create a real server-side test event; the client does not fabricate it."""
-    with session_scope() as session:
-        event_id = emit(
-            session,
-            key=f"system:manual-test:{uuid4()}",
-            kind="SYSTEM",
-            title="SignalAI · тест с сервера",
-            body="Это событие создано на VPS и отправлено по server push-каналу.",
-        )
-        if event_id is None:
-            return {"created": False}
-        event = list_after(session, event_id - 1, limit=1)[0]
-        return {"created": True, "event": event.to_json()}
+    event_id = emit(
+        db,
+        key=f"system:manual-test:{uuid4()}",
+        kind="SYSTEM",
+        title="SignalAI · тест с сервера",
+        body="Это событие создано на VPS и отправлено по server push-каналу.",
+    )
+    if event_id is None:
+        return {"created": False}
+    event = list_after(db, event_id - 1, limit=1)[0]
+    return {"created": True, "event": event.to_json()}
 
 
 @router.get("/stream")
@@ -60,8 +64,6 @@ async def notification_stream(after: int = Query(0, ge=0)) -> StreamingResponse:
 
     async def events():
         cursor = after
-        # Tell intermediaries/client that the connection is alive before the
-        # first materialization round finishes.
         yield ": signalai-connected\n\n"
         while True:
             batch = await asyncio.to_thread(_batch, cursor)
@@ -71,7 +73,7 @@ async def notification_stream(after: int = Query(0, ge=0)) -> StreamingResponse:
                     data = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
                     yield f"id: {cursor}\nevent: signalai\ndata: {data}\n\n"
             else:
-                # Existing nginx has proxy_read_timeout=30s.  Ten seconds is
+                # Existing nginx has proxy_read_timeout=30s. Ten seconds is
                 # intentionally well inside it and is cheap for one device.
                 yield ": heartbeat\n\n"
             await asyncio.sleep(10)
