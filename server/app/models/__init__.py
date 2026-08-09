@@ -34,6 +34,7 @@ from .enums import (
     VolatilityRegime,
 )
 from .ideas import IdeaEvent, IdeaOutcome, IdeaSkip, TradeIdea
+from .notifications import NotificationOutbox
 from .paper import PaperTrade
 from .research import (
     CollectionPermit,
@@ -76,6 +77,8 @@ __all__ = [
     "IdeaEvent",
     "IdeaOutcome",
     "IdeaSkip",
+    # delivery
+    "NotificationOutbox",
     # portfolio
     "Account",
     "Holding",
