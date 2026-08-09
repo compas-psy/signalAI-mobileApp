@@ -1,15 +1,9 @@
 """Fail-safe reconciliation for the owner-facing trading lifecycle.
 
-The scheduler remains the primary tracker.  This guard exists for one class of
-failure that is unacceptable in a personal trading product: the database can
-contain a paper trade while the idea shown to the owner still says
-``TRIGGERED / можно действовать``.  It also kills a pending entry when the
-market has already completed the thesis without ever giving the promised
-entry.
-
-The guard is deliberately conservative.  It never creates a trade and never
-moves an entry/stop/target.  It can only repair state to match an existing
-paper trade or terminate a stale plan.
+The scheduler is the primary tracker. This guard enforces the invariant the UI
+may rely on: an idea with an existing paper trade cannot remain an actionable
+TRIGGERED card, and a pending entry cannot wait until an old thesis becomes
+tradable again merely because price returned days later.
 """
 
 from __future__ import annotations
@@ -18,12 +12,13 @@ import hmac
 import os
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
-from starlette.responses import Response
+from starlette.responses import JSONResponse, Response
 
 from .db import session_scope
 from .journal.lifecycle import ALLOWED, TransitionRequest, transition
@@ -72,7 +67,6 @@ def _move(
     path = _path(start, goal)
     if not path:
         return False
-    changed = False
     for step in path:
         transition(
             session,
@@ -84,12 +78,11 @@ def _move(
                 market_snapshot=snapshot or {},
             ),
         )
-        changed = True
-    return changed
+    return True
 
 
 def _decision_ttl(idea: TradeIdea) -> timedelta:
-    """How long a trigger is still a decision, not historical information."""
+    """How long a trigger/limit entry remains a live intraday plan."""
     tf = str(idea.trigger_timeframe or "").strip().lower()
     if tf in {"1m", "3m", "5m", "15m", "30m", "m1", "m3", "m5", "m15", "m30"}:
         return timedelta(hours=2)
@@ -118,16 +111,8 @@ def _close_pending_without_entry(
     session: Session,
     trade: PaperTrade,
     idea: TradeIdea,
-    *,
-    now: datetime,
 ) -> bool:
-    """Cancel a limit entry if the thesis already happened before the entry.
-
-    We replay closed H1 bars from approval time in chronological order.  The
-    first touch of the entry wins: after that the normal paper tracker owns the
-    trade.  If TP1 or the invalidation side happens first, returning to the old
-    entry later must *not* resurrect the trade.
-    """
+    """Kill a limit plan if target/invalidation happened before entry touch."""
     if PaperStatus(trade.status) is not PaperStatus.PENDING:
         return False
 
@@ -152,8 +137,7 @@ def _close_pending_without_entry(
     tp1 = targets[0] if targets else None
     for bar in bars:
         if bar.low <= trade.entry <= bar.high:
-            # There was a valid entry before any stale condition.  Normal
-            # tracker will fill/manage it; do not reinterpret history here.
+            # A valid entry existed first. Normal tracker owns it from here.
             return False
 
         target_passed = tp1 is not None and (
@@ -172,11 +156,12 @@ def _close_pending_without_entry(
             trade.outcome = "MISS"
             trade.close_reason = "рынок дошёл до цели без входа — план пропущен"
             current = IdeaStatus(idea.status)
-            goal = IdeaStatus.MISSED if current in {
-                IdeaStatus.DISCOVERED,
-                IdeaStatus.WATCH,
-                IdeaStatus.TRIGGERED,
-            } else IdeaStatus.CANCELLED
+            goal = (
+                IdeaStatus.MISSED
+                if current
+                in {IdeaStatus.DISCOVERED, IdeaStatus.WATCH, IdeaStatus.TRIGGERED}
+                else IdeaStatus.CANCELLED
+            )
         else:
             trade.outcome = "INVALID"
             trade.close_reason = "план сломан до входа"
@@ -217,9 +202,17 @@ def _target_for_trade(trade: PaperTrade, idea: TradeIdea) -> IdeaStatus | None:
             IdeaStatus.TRIGGERED,
         }:
             return IdeaStatus.MISSED
-        return IdeaStatus.TIMED_OUT if current is not IdeaStatus.ACTIVE else IdeaStatus.CANCELLED
+        return (
+            IdeaStatus.CANCELLED
+            if current is IdeaStatus.ACTIVE
+            else IdeaStatus.TIMED_OUT
+        )
     if status is PaperStatus.CLOSED:
-        return IdeaStatus.STOPPED if trade.outcome in {"SL", "BE"} else IdeaStatus.CLOSED
+        return (
+            IdeaStatus.STOPPED
+            if trade.outcome in {"SL", "BE"}
+            else IdeaStatus.CLOSED
+        )
     return None
 
 
@@ -231,46 +224,52 @@ def reconcile_operational_lifecycle(
     """Repair owner-visible lifecycle invariants; return number of changes."""
     moment = now or datetime.now(UTC)
     changed = 0
-
     trades = list(session.execute(select(PaperTrade)).scalars())
     trade_by_idea = {trade.idea_id: trade for trade in trades}
 
-    # First invalidate stale pending entries.  This must happen before a
-    # legacy TRIGGERED+PENDING row is repaired to ACTIVE, otherwise a clean
-    # TRIGGERED -> MISSED transition would become impossible.
+    # Invalidate stale PENDING before repairing legacy TRIGGERED -> ACTIVE.
+    # This lets a HYPE-like thesis that already ran to target become MISSED
+    # rather than resurrecting when price later revisits the old limit.
     for trade in trades:
         if PaperStatus(trade.status) is not PaperStatus.PENDING:
             continue
         idea = session.get(TradeIdea, trade.idea_id)
         if idea is None:
             continue
-        if _close_pending_without_entry(session, trade, idea, now=moment):
+        if _close_pending_without_entry(session, trade, idea):
             changed += 1
             continue
-        if moment >= _utc(trade.expires_at):
+
+        entry_deadline = min(
+            _utc(trade.expires_at),
+            _utc(trade.opened_at) + _decision_ttl(idea),
+        )
+        if moment >= entry_deadline:
             trade.status = PaperStatus.CANCELLED
             trade.closed_at = moment
+            trade.last_reconciled_at = moment
             trade.outcome = "TIMEOUT"
-            trade.close_reason = "цена до заявки не дошла, срок вышел"
+            trade.close_reason = "цена до входа не дошла, окно сделки истекло"
             if _move(
                 session,
                 idea,
                 IdeaStatus.TIMED_OUT,
                 code="paper_entry_timeout_guard",
                 detail=trade.close_reason,
-                snapshot={"paper_trade_id": str(trade.id)},
+                snapshot={
+                    "paper_trade_id": str(trade.id),
+                    "entry_deadline": entry_deadline.isoformat(),
+                },
             ):
                 changed += 1
 
-    # Existing paper trade is stronger evidence than a stale idea status.
+    # Existing paper trade is stronger evidence than a stale card status.
     for trade in trades:
         idea = session.get(TradeIdea, trade.idea_id)
         if idea is None or IdeaStatus(idea.status).is_terminal:
             continue
         goal = _target_for_trade(trade, idea)
-        if goal is None:
-            continue
-        if _move(
+        if goal is not None and _move(
             session,
             idea,
             goal,
@@ -284,9 +283,8 @@ def reconcile_operational_lifecycle(
         ):
             changed += 1
 
-    # A trigger without a trade is a request for a decision, not a standing
-    # recommendation forever.  Expire it by the trigger timeframe even if an
-    # old idea-level horizon was much longer.
+    # Trigger without any trade is a short-lived decision request, not a
+    # standing recommendation for the full multi-day idea horizon.
     triggered = list(
         session.execute(
             select(TradeIdea).where(TradeIdea.status == IdeaStatus.TRIGGERED)
@@ -324,6 +322,39 @@ def _authorized(request: Request) -> bool:
     )
 
 
+def _terminal_approval_response(session: Session, request: Request) -> Response | None:
+    if request.method != "POST" or not request.url.path.endswith("/approve-paper"):
+        return None
+    parts = request.url.path.strip("/").split("/")
+    if len(parts) < 2:
+        return None
+    try:
+        idea_id = UUID(parts[-2])
+    except ValueError:
+        return None
+    trade = session.execute(
+        select(PaperTrade)
+        .where(PaperTrade.idea_id == idea_id)
+        .order_by(PaperTrade.created_at.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    if trade is None or PaperStatus(trade.status) in {
+        PaperStatus.PENDING,
+        PaperStatus.OPEN,
+    }:
+        return None
+    reason = trade.close_reason or trade.outcome or str(trade.status)
+    return JSONResponse(
+        status_code=409,
+        content={
+            "detail": (
+                "paper-план уже завершён и повторно не подтверждается: "
+                f"{reason}"
+            )
+        },
+    )
+
+
 class OperationalLifecycleMiddleware(BaseHTTPMiddleware):
     """Repair lifecycle before owner-facing reads without weakening auth."""
 
@@ -342,6 +373,9 @@ class OperationalLifecycleMiddleware(BaseHTTPMiddleware):
         if request.url.path.startswith(self._PREFIXES) and _authorized(request):
             with session_scope() as session:
                 reconcile_operational_lifecycle(session)
+                blocked = _terminal_approval_response(session, request)
+                if blocked is not None:
+                    return blocked
         return await call_next(request)
 
 
