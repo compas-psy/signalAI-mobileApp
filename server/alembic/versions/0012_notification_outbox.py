@@ -28,7 +28,12 @@ def upgrade() -> None:
         sa.Column("kind", sa.String(length=32), nullable=False),
         sa.Column("title", sa.Text(), nullable=False),
         sa.Column("body", sa.Text(), nullable=False),
-        sa.Column("payload", sa.Text(), server_default="", nullable=False),
+        sa.Column(
+            "payload",
+            sa.Text(),
+            server_default=sa.text("''"),
+            nullable=False,
+        ),
         sa.PrimaryKeyConstraint("id", name="pk_signalai_notification_outbox"),
         sa.UniqueConstraint(
             "dedup_key",
