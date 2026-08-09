@@ -1,30 +1,15 @@
-"""Сопровождение живых идей (engine-ТЗ §9, §18).
+"""Сопровождение живых идей.
 
-Идея рождалась и висела до истечения срока. Что с ней случилось за эти дни —
-не спрашивал никто: цена могла уйти к третьей цели без единого касания зоны
-входа, а карточка по-прежнему предлагала «Watch, сигнал живёт 4 дн 6 ч».
-Владелец смотрел на график, видел цену у TP3 и не мог ответить на простой
-вопрос: это ещё сделка или уже история.
-
-Ответить обязана система, а не человек. Здесь идея сверяется с барами,
-пришедшими **после** её появления, и переводится в состояние, которое
-соответствует случившемуся:
-
-* цена прошла все цели, не задев зону входа — ``MISSED``: сетап отработал
-  без нас, входить по этому плану уже некуда;
-* цена прошла стоп, не задев зону входа — ``CANCELLED``: замысел сломан;
-* цена была в зоне входа и после этого дошла до дальней цели — ``MISSED``;
-* цена была в зоне и после этого прошла стоп — ``CANCELLED``;
-* срок вышел — ``TIMED_OUT``.
-
-Чего здесь нет: автоматического перевода в ``TRIGGERED``. Триггер проверяет
-отдельный шаг ``pipeline.trigger`` на своём таймфрейме.
+Для H1-trigger неподтверждённый WATCH не может держать instrument lock пять
+дней: через сутки это уже другой рынок. Recovery policy поэтому даёт
+DISCOVERED/WATCH максимум 24 часа на подтверждение. История не удаляется —
+идея переводится в TIMED_OUT и освобождает инструмент для нового setup.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -45,6 +30,7 @@ WATCHED: frozenset[IdeaStatus] = frozenset(
 )
 
 CHECK_TF = Timeframe.H1
+WATCH_TTL = timedelta(hours=24)
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,17 +60,13 @@ class SuperviseReport:
 
 
 def _direction(idea: TradeIdea) -> Direction:
-    """Вернуть Direction независимо от состояния SQLAlchemy identity map.
-
-    После обычной загрузки StrEnumColumn возвращает enum. Но объект, созданный
-    в этой же сессии строкой ``"LONG"`` и ещё не перечитанный из БД, хранит
-    исходную строку. Проверка через ``is Direction.LONG`` тогда молча уходит
-    в SHORT-ветку. На stale approve это превращало уже дошедший до TP3 LONG
-    в CANCELLED вместо MISSED. Нормализация делает решение одинаковым до и
-    после round-trip через PostgreSQL.
-    """
     value = idea.direction
     return value if isinstance(value, Direction) else Direction(str(value))
+
+
+def _status(idea: TradeIdea) -> IdeaStatus:
+    value = idea.status
+    return value if isinstance(value, IdeaStatus) else IdeaStatus(str(value))
 
 
 def _touched_entry(idea: TradeIdea, low: Decimal, high: Decimal) -> bool:
@@ -166,6 +148,20 @@ def _expired(idea: TradeIdea, now: datetime, *, entered: bool) -> Verdict:
     expires = idea.expires_at
     if expires is not None and expires.tzinfo is None:
         expires = expires.replace(tzinfo=UTC)
+
+    signal_time = idea.signal_time
+    if signal_time is not None and signal_time.tzinfo is None:
+        signal_time = signal_time.replace(tzinfo=UTC)
+
+    # Неподтверждённый H1 setup имеет отдельный короткий SLA. Пятидневный
+    # horizon относится к сделке/идее после trigger, а не к ожиданию одной
+    # свечной формации. Старый WATCH иначе блокирует новые сигналы по symbol.
+    status = _status(idea)
+    if status in (IdeaStatus.DISCOVERED, IdeaStatus.WATCH) and signal_time is not None:
+        watch_expires = signal_time + WATCH_TTL
+        if expires is None or watch_expires < expires:
+            expires = watch_expires
+
     if expires is None or now < expires:
         return Verdict(None)
     tail = (
@@ -175,7 +171,7 @@ def _expired(idea: TradeIdea, now: datetime, *, entered: bool) -> Verdict:
     )
     return Verdict(
         IdeaStatus.TIMED_OUT,
-        "ttl_expired",
+        "watch_ttl_expired" if status in (IdeaStatus.DISCOVERED, IdeaStatus.WATCH) else "ttl_expired",
         f"срок сигнала вышел {expires:%d.%m %H:%M UTC}, {tail}",
     )
 
@@ -183,7 +179,6 @@ def _expired(idea: TradeIdea, now: datetime, *, entered: bool) -> Verdict:
 def supervise(
     session: Session, *, now: datetime | None = None, limit: int = 500
 ) -> SuperviseReport:
-    """Пройти по живым идеям и закрыть те, что рынок оставил позади."""
     moment = now or datetime.now(UTC)
     report = SuperviseReport()
 
@@ -214,12 +209,17 @@ def supervise(
             ).scalars()
         )
         if not bars:
-            report.no_data += 1
-            if idea.instrument_id not in report.no_data_instruments:
-                report.no_data_instruments.append(idea.instrument_id)
-            continue
+            # Даже без новых баров TTL обязан работать. Иначе выпавший из
+            # data feed WATCH снова блокирует инструмент навсегда.
+            verdict = _expired(idea, moment, entered=False)
+            if not verdict.changed:
+                report.no_data += 1
+                if idea.instrument_id not in report.no_data_instruments:
+                    report.no_data_instruments.append(idea.instrument_id)
+                continue
+        else:
+            verdict = judge(idea, bars, now=moment)
 
-        verdict = judge(idea, bars, now=moment)
         if not verdict.changed:
             continue
 
@@ -232,7 +232,7 @@ def supervise(
                 reason_detail=verdict.detail[:512],
                 market_snapshot={
                     "bars_checked": len(bars),
-                    "last_close": str(bars[-1].close),
+                    "last_close": str(bars[-1].close) if bars else None,
                     "checked_at": moment.isoformat(),
                 },
             ),
@@ -250,6 +250,7 @@ def supervise(
 
 __all__ = [
     "CHECK_TF",
+    "WATCH_TTL",
     "SuperviseReport",
     "Verdict",
     "judge",
