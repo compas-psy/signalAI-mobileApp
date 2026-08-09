@@ -16,13 +16,11 @@ def _ms(value: datetime) -> int:
     return int(value.timestamp() * 1000)
 
 
-def test_confirmed_crypto_entry_is_seen_from_closed_minute_without_waiting_for_h1(
-    session,
-):
+def _doge(session) -> Instrument:
     instrument = Instrument(
         instrument_id="CRYPTO:PERP:DOGEUSDT",
         venue=Venue.CRYPTO,
-        asset_class=AssetClass.CRYPTO_PERP,
+        asset_class=AssetClass.CRYPTO_PERPETUAL,
         symbol="DOGEUSDT",
         title="DOGE / USDT perpetual",
         currency="USDT",
@@ -37,7 +35,10 @@ def test_confirmed_crypto_entry_is_seen_from_closed_minute_without_waiting_for_h
     )
     session.add(instrument)
     session.flush()
+    return instrument
 
+
+def _idea(session, instrument: Instrument) -> TradeIdea:
     idea = TradeIdea(
         **idea_kwargs(
             instrument.instrument_id,
@@ -59,6 +60,14 @@ def test_confirmed_crypto_entry_is_seen_from_closed_minute_without_waiting_for_h
     )
     session.add(idea)
     session.flush()
+    return idea
+
+
+def test_confirmed_crypto_entry_is_seen_from_closed_minute_without_waiting_for_h1(
+    session,
+):
+    instrument = _doge(session)
+    idea = _idea(session, instrument)
     trade, created = approve_for(session, idea, now=NOW)
     assert created is True
     assert trade.status is PaperStatus.PENDING
@@ -103,45 +112,8 @@ def test_confirmed_crypto_entry_is_seen_from_closed_minute_without_waiting_for_h
 
 
 def test_forming_minute_is_not_used_as_execution_fact(session):
-    instrument = Instrument(
-        instrument_id="CRYPTO:PERP:DOGEUSDT",
-        venue=Venue.CRYPTO,
-        asset_class=AssetClass.CRYPTO_PERP,
-        symbol="DOGEUSDT",
-        title="DOGE / USDT perpetual",
-        currency="USDT",
-        tick_size=Decimal("0.0001"),
-        tick_value=Decimal("1"),
-        lot_size=1,
-        quantity_step=Decimal("1"),
-        min_quantity=Decimal("1"),
-        contract_multiplier=Decimal("1"),
-        correlation_cluster="crypto_alt",
-        in_universe=True,
-    )
-    session.add(instrument)
-    session.flush()
-    idea = TradeIdea(
-        **idea_kwargs(
-            instrument.instrument_id,
-            NOW,
-            direction="LONG",
-            status=IdeaStatus.TRIGGERED,
-            quality_status="ACTIVE",
-            was_presented=True,
-            entry_low=Decimal("0.0995"),
-            entry_high=Decimal("0.1005"),
-            entry_reference=Decimal("0.1000"),
-            stop=Decimal("0.0950"),
-            tp1=Decimal("0.1050"),
-            tp2=Decimal("0.1100"),
-            tp3=Decimal("0.1150"),
-            risk_per_unit=Decimal("0.0050"),
-            quantity=Decimal("1000"),
-        )
-    )
-    session.add(idea)
-    session.flush()
+    instrument = _doge(session)
+    idea = _idea(session, instrument)
     trade, _ = approve_for(session, idea, now=NOW)
 
     forming = NOW + timedelta(minutes=2)
