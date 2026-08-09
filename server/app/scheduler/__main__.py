@@ -15,7 +15,7 @@ import sys
 from datetime import timedelta
 
 from ..db import get_session_factory
-from ..notification_outbox import materialize
+from ..notification_outbox import emit, materialize
 from ..paper.live_tracker import track_crypto_live
 from ..version import ENGINE_VERSION
 from .runner import build_default_scheduler, run_forever
@@ -78,12 +78,24 @@ def main() -> int:
     session_factory = get_session_factory()
 
     # This is deliberately server-originated. On every deployment/restart the
-    # VPS reconciles owner-facing lifecycle and queues the stable smoke event
-    # before any phone connects. The unique outbox key prevents duplicates;
-    # the new Android SSE client later replays it from its durable cursor.
+    # VPS reconciles owner-facing lifecycle before any phone connects. The v2
+    # key is new for the native Android SSE transport, so this deployment
+    # creates one fresh smoke event instead of reusing the already-consumed v1
+    # event from the broken secondary-Flutter-isolate implementation.
     startup_session = session_factory()
     try:
         created = materialize(startup_session, include_smoke=True)
+        native_smoke = emit(
+            startup_session,
+            key="system:server-push-ready:v2-native",
+            kind="SYSTEM",
+            title="SignalAI · server push работает",
+            body=(
+                "Это событие создано на VPS после запуска нативного Android "
+                "SSE-канала и доставлено без локального опроса приложения."
+            ),
+        )
+        created += int(native_smoke is not None)
         startup_session.commit()
         log.info("server push outbox ready: queued %d new event(s)", created)
     except Exception:
