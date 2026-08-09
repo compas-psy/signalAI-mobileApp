@@ -373,16 +373,25 @@ def sync_futures(
         old = existing.metadata_json or {}
         spread = series.relative_spread
 
-        # Ночной/выходной snapshot может отдавать нули. Он не должен стирать
-        # последний измеренный торговый снимок: freshness TTL выше не даст ему
-        # жить дольше четырёх дней.
-        turnover = series.turnover if (series.turnover or Decimal(0)) > 0 else _decimal_meta(old, "snapshot_turnover_rub")
-        open_interest = series.open_interest if (series.open_interest or Decimal(0)) > 0 else _decimal_meta(old, "snapshot_open_interest")
-        last = series.last if (series.last or Decimal(0)) > 0 else _decimal_meta(old, "snapshot_last")
-        snapshot_changed = any(
-            value is not None and value > 0
-            for value in (series.turnover, series.open_interest, series.last)
+        # Нулевой ночной снимок не стирает торговый. Но и LAST без оборота не
+        # имеет права обновлять freshness ликвидности: иначе старый оборот мог
+        # оставаться «свежим» каждую ночь бесконечно.
+        turnover = (
+            series.turnover
+            if (series.turnover or Decimal(0)) > 0
+            else _decimal_meta(old, "snapshot_turnover_rub")
         )
+        open_interest = (
+            series.open_interest
+            if (series.open_interest or Decimal(0)) > 0
+            else _decimal_meta(old, "snapshot_open_interest")
+        )
+        last = (
+            series.last
+            if (series.last or Decimal(0)) > 0
+            else _decimal_meta(old, "snapshot_last")
+        )
+        snapshot_changed = (series.turnover or Decimal(0)) > 0
         existing.metadata_json = {
             **old,
             "root": candidate.root,
