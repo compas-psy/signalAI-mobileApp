@@ -10,7 +10,6 @@
 
 version: "1.1-recovery"
 
-# ─── Капитал (§2) ─────────────────────────────────────────────────────────
 capital:
   investment_share: 0.80
   risk_share: 0.20
@@ -19,7 +18,6 @@ capital:
     base: {investment: 0.80, risk: 0.20}
     active: {investment: 0.70, risk: 0.30}
 
-# ─── Риск (§17) ───────────────────────────────────────────────────────────
 risk:
   base_risk_per_trade: 0.005
   max_risk_per_trade: 0.0075
@@ -49,14 +47,8 @@ risk:
     tp1_close_fraction: 0.50
     max_reentries: 1
 
-# ─── Отбор идей дня (§16) ─────────────────────────────────────────────────
 ideas:
-  # Personal product: три карточки создавали искусственную тишину даже когда
-  # рынок давал больше независимых сетапов. Пять остаются обозримым пределом.
   max_daily_cards: 5
-  # Recovery-порог не снимает quality gates: RR>=2, confidence>=0.50,
-  # ликвидность и риск остаются обязательными. Убирается только чрезмерная
-  # зависимость от rule-prior до накопления собственной статистики.
   active_probability_min: 0.54
   active_expected_r_min: 0.20
   min_rr_tp2: 2.0
@@ -70,7 +62,6 @@ ideas:
     diversification: 0.10
     execution: 0.05
 
-# ─── Оценка (§15.1) ───────────────────────────────────────────────────────
 scoring:
   weights:
     regime_fit: 0.16
@@ -89,7 +80,6 @@ scoring:
   fib_max_contribution: 0.08
   elliott_max_contribution: 0.05
 
-# ─── Вероятность и уверенность (§15.3, §15.4) ─────────────────────────────
 probability:
   rule_prior_cap: 0.68
   min_oos_trades_for_model: 100
@@ -104,7 +94,6 @@ probability:
     low_below: 0.45
     high_above: 0.70
 
-# ─── Классификатор режима (§9) ────────────────────────────────────────────
 regime:
   ema_fast: 50
   ema_slow: 200
@@ -117,7 +106,6 @@ regime:
   volatility_percentile_window: 252
   volatility_bands: {low: 30, normal: 75, high: 90}
 
-# ─── Формализация методов (§8) ────────────────────────────────────────────
 structure:
   pivot_confirm_bars: 2
   bos_min_atr: 0.10
@@ -130,7 +118,6 @@ structure:
   fib_levels: [0.382, 0.5, 0.618, 0.786]
   fib_extensions: [1.272, 1.618]
 
-# ─── Стратегии (§10–§12) ──────────────────────────────────────────────────
 strategies:
   trend_pullback:
     enabled: true
@@ -140,11 +127,10 @@ strategies:
     max_retracement: 0.786
     stop_atr_buffer: 0.10
     min_stop_ticks: 2
-    # Финальный admission всё равно требует подтверждённый price-action
-    # trigger. Два конфлюэнса + два триггера здесь дублировали те же ворота
-    # и структурно выключали поток; один setup-confluence и один внутренний
-    # trigger достаточно для кандидата, но не для автоматического допуска.
-    min_zones: 1
+    # Двойной setup-конфлюэнс сохраняем: качество не размениваем на поток.
+    # Исправление recovery в другом: setup без финального trigger теперь
+    # становится WATCH и получает шанс подтвердиться следующим H1-баром.
+    min_zones: 2
     min_triggers: 1
     reversal_body_atr: 0.60
     volume_z_min: 0.50
@@ -176,13 +162,11 @@ strategies:
     tp2_rr_min: 2.2
     risk_multiplier: 0.75
 
-# ─── Мультитаймфрейм (§7) ─────────────────────────────────────────────────
 horizons:
   short:   {days: [1, 3],  context: "1D",    setup: "4H", trigger: "1H"}
   medium:  {days: [4, 7],  context: "1W+1D", setup: "4H", trigger: "1H"}
   long:    {days: [8, 14], context: "1W",    setup: "1D", trigger: "4H"}
 
-# ─── Вселенная (§5) ───────────────────────────────────────────────────────
 universe:
   futures:
     min_median_daily_notional_rub: 100000000
@@ -193,10 +177,8 @@ universe:
   crypto:
     mandatory: ["BTCUSDT", "ETHUSDT"]
     min_median_daily_notional_usdt: 25000000
-    # Год истории отрезал значительную часть реально ликвидного crypto-beta.
-    # Для текущего 1D/4H/1H движка 180 дней дают многократный запас к минимуму
-    # 60 D1 + 120 H1, при этом новые листинги без достаточной истории всё ещё
-    # не проходят.
+    # Для текущего 1D/4H/1H движка 180 дней дают большой запас к минимуму
+    # 60 D1 + 120 H1, но не отрезают ликвидные новые crypto-beta на целый год.
     min_history_days: 180
     max_active: 30
   investments:
@@ -212,7 +194,6 @@ universe:
     max_relative_spread: 0.07
     min_open_interest: 500
 
-# ─── Портфель (§6) ────────────────────────────────────────────────────────
 portfolio:
   crypto_max_weight: 0.05
   drift_min_pp: 0.02
@@ -222,7 +203,6 @@ portfolio:
     balanced: [5, 8]
     max_potential: [7, 12]
 
-# ─── Бэктест и допуски (§19) ──────────────────────────────────────────────
 backtest:
   walk_forward:
     min_history_months: 36
@@ -240,13 +220,11 @@ backtest:
     min_paper_trades: 100
     min_paper_days: 60
 
-# ─── Исполнение (§21) ─────────────────────────────────────────────────────
 execution:
   mode: PAPER
   protection_sla_seconds: 30
   weekend_slippage_multiplier: 1.5
 
-# ─── Данные (§4) ──────────────────────────────────────────────────────────
 data:
   max_bar_age_seconds:
     crypto: 120
