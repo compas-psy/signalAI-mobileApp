@@ -1,8 +1,8 @@
-"""Конфигурация: числа ТЗ на месте, противоречия не проходят загрузку.
+"""Конфигурация: критические risk/safety числа закреплены тестом.
 
-Смысл этих тестов — не «yaml читается». Смысл в том, что параметр, которым
-считается размер позиции, соответствует документу, и что испорченную
-конфигурацию сервер отвергает при старте, а не на сделке.
+Recovery меняет только product-funnel выдачи: число показываемых карточек,
+rule-prior admission threshold и ширину crypto universe. Денежные лимиты,
+RR, confidence и PAPER gate остаются прежними.
 """
 
 from __future__ import annotations
@@ -21,9 +21,6 @@ def cfg():
     return load_config()
 
 
-# ─── Числа engine-ТЗ §17 и §27 ────────────────────────────────────────────
-
-
 @pytest.mark.parametrize(
     ("path", "expected"),
     [
@@ -35,8 +32,11 @@ def cfg():
         ("risk.weekly_loss_limit", "0.035"),
         ("risk.monthly_loss_limit", "0.06"),
         ("risk.max_crypto_leverage", "3.0"),
-        ("ideas.max_daily_cards", "3"),
-        ("ideas.active_probability_min", "0.56"),
+        # Recovery: пять кандидатов обозримы в personal UI и не меняют risk.
+        ("ideas.max_daily_cards", "5"),
+        # До собственной OOS-статистики rule-prior не должен выключать весь
+        # funnel; RR/confidence/EV/trigger/liquidity остаются отдельными gates.
+        ("ideas.active_probability_min", "0.54"),
         ("ideas.active_expected_r_min", "0.20"),
         ("ideas.min_rr_tp2", "2.0"),
         ("ideas.min_confidence", "0.50"),
@@ -44,21 +44,29 @@ def cfg():
         ("probability.rule_prior_cap", "0.68"),
     ],
 )
-def test_matches_engine_tz(cfg, path, expected):
+def test_recovery_config_and_safety_limits(cfg, path, expected):
     assert cfg.decimal(path) == Decimal(expected), path
 
 
-def test_paper_only_is_on_by_default(cfg):
-    """§0.5 и §21: MVP работает в PAPER, боевые заявки по умолчанию закрыты."""
+def test_recovery_does_not_open_live_trading(cfg):
     assert cfg.get("risk.paper_only") is True
     assert cfg.get("execution.mode") == "PAPER"
 
 
-def test_scoring_weights_sum_to_one_exactly(cfg):
-    """§15.1: одиннадцать слагаемых дают ровно 1; data_quality — множитель.
+def test_recovery_keeps_core_quality_gates(cfg):
+    assert cfg.decimal("ideas.min_rr_tp2") >= Decimal("2.0")
+    assert cfg.decimal("ideas.min_confidence") >= Decimal("0.50")
+    assert cfg.decimal("ideas.active_expected_r_min") >= Decimal("0.20")
+    assert cfg.decimal("ideas.watch_probability_min") >= Decimal("0.45")
+    assert int(cfg.get("strategies.trend_pullback.min_zones")) >= 2
 
-    Проверка идёт в Decimal: во float та же сумма даёт 1.0000000000000002.
-    """
+
+def test_crypto_recovery_still_requires_meaningful_history(cfg):
+    assert int(cfg.get("universe.crypto.min_history_days")) >= 180
+    assert int(cfg.get("universe.crypto.max_active")) <= 30
+
+
+def test_scoring_weights_sum_to_one_exactly(cfg):
     weights = cfg.get("scoring.weights")
     assert sum(Decimal(str(v)) for v in weights.values()) == Decimal("1")
     assert "data_quality" not in weights
@@ -81,7 +89,6 @@ def test_scoring_weights_match_tz_verbatim(cfg):
 
 
 def test_drawdown_ladder_ends_with_halt(cfg):
-    """§17: просадка больше 10% останавливает торговлю, а не уменьшает объём."""
     ladder = cfg.get("risk.drawdown_scaling")
     assert [Decimal(str(s["multiplier"])) for s in ladder] == [
         Decimal("1.00"),
@@ -92,13 +99,11 @@ def test_drawdown_ladder_ends_with_halt(cfg):
 
 
 def test_ranking_weights_sum_to_one(cfg):
-    """§16.7: веса ранжирования карточек дня."""
     ranking = cfg.get("ideas.ranking")
     assert sum(Decimal(str(v)) for v in ranking.values()) == Decimal("1")
 
 
 def test_three_strategies_and_no_more(cfg):
-    """§10–§12: стратегий ровно три. Четвёртая — расхождение с ТЗ."""
     assert set(cfg.get("strategies")) == {
         "trend_pullback",
         "breakout_retest",
@@ -107,12 +112,6 @@ def test_three_strategies_and_no_more(cfg):
 
 
 def test_config_hash_is_stable_and_content_bound(tmp_path):
-    """Отпечаток меняется от значений, но не от порядка строк.
-
-    §27 требует хранить `config_hash` у каждой идеи. Если хэш плавает от
-    переформатирования файла, связь «идея ↔ параметры» рвётся; если не
-    меняется от правки числа — она врёт.
-    """
     original = load_config()
 
     data = yaml.safe_load(open(original.source, encoding="utf-8"))
@@ -126,9 +125,6 @@ def test_config_hash_is_stable_and_content_bound(tmp_path):
     other = tmp_path / "other.yaml"
     other.write_text(yaml.safe_dump(changed, allow_unicode=True), encoding="utf-8")
     assert load_config(other).config_hash != original.config_hash
-
-
-# ─── Отказ от противоречивой конфигурации ─────────────────────────────────
 
 
 def _write(tmp_path, mutate):
@@ -146,7 +142,6 @@ def test_rejects_weights_that_do_not_sum_to_one(tmp_path):
 
 
 def test_rejects_limits_out_of_order(tmp_path):
-    """Недельный лимит меньше дневного — дневной перестал бы что-то значить."""
     path = _write(tmp_path, lambda d: d["risk"].update(weekly_loss_limit=0.01))
     with pytest.raises(ConfigError, match="лимиты потерь должны расти"):
         load_config(path)
@@ -159,8 +154,6 @@ def test_rejects_base_risk_above_max(tmp_path):
 
 
 def test_rejects_ladder_without_halt(tmp_path):
-    """Лестница просадки, которая никогда не останавливает, — не лестница."""
-
     def mutate(d):
         d["risk"]["drawdown_scaling"][-1]["multiplier"] = 0.25
 
@@ -177,10 +170,6 @@ def test_rejects_unsorted_ladder(tmp_path):
 
 
 def test_missing_parameter_is_an_error_not_none(cfg):
-    """Отсутствующий параметр обязан упасть.
-
-    Тихий None в торговой формуле — это посчитанный не тот размер позиции.
-    """
     with pytest.raises(ConfigError, match="нет параметра"):
         cfg.get("risk.no_such_limit")
     assert cfg.get("risk.no_such_limit", default=None) is None
