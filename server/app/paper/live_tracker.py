@@ -67,6 +67,11 @@ def track_crypto_live(
     preserving deterministic chronology. A forming candle is deliberately not
     replayed: after TP1 moves the stop to breakeven, reprocessing the same
     changing minute could fabricate a stop that happened before the move.
+
+    Up to three hours are replayed on each call. This matters immediately after
+    a deploy/restart: a DOGE entry crossed shortly before the new server came up
+    must still be reconciled instead of being forgotten because the live loop
+    was temporarily absent.
     """
     moment = now or datetime.now(UTC)
     report = LivePaperReport()
@@ -86,7 +91,7 @@ def track_crypto_live(
             kwargs = {"fetch": fetch} if fetch is not None else {}
             candles, _ = crypto.minute_klines(
                 instrument.symbol,
-                limit=20,
+                limit=180,
                 now=moment,
                 **kwargs,
             )
