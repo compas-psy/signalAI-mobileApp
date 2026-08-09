@@ -48,7 +48,6 @@ def test_pending_entry_is_missed_when_market_reaches_target_before_entry(session
     """HYPE case: a return to an old entry must not resurrect a completed thesis."""
     idea = _idea(session, instrument)
     trade, _ = approve_for(session, idea, now=NOW)
-    # LONG entry 90100 was never touched.  Market ran straight through TP1.
     session.add(
         Bar(
             instrument_id=instrument.instrument_id,
@@ -71,6 +70,19 @@ def test_pending_entry_is_missed_when_market_reaches_target_before_entry(session
     assert trade.outcome == "MISS"
     assert "без входа" in trade.close_reason
     assert idea.status is IdeaStatus.MISSED
+
+
+def test_h1_pending_entry_times_out_after_one_session_even_without_bars(session, instrument):
+    """No market data is not permission to keep an old H1 limit alive for days."""
+    idea = _idea(session, instrument)
+    trade, _ = approve_for(session, idea, now=NOW)
+
+    reconcile_operational_lifecycle(session, now=NOW + timedelta(hours=7))
+
+    assert trade.status is PaperStatus.CANCELLED
+    assert trade.outcome == "TIMEOUT"
+    assert "окно сделки истекло" in trade.close_reason
+    assert idea.status is IdeaStatus.TIMED_OUT
 
 
 def test_entry_touch_before_target_keeps_pending_for_normal_tracker(session, instrument):
