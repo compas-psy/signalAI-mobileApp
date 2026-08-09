@@ -20,9 +20,6 @@ void main() {
       systemNavigationBarIconBrightness: Brightness.light,
     ),
   );
-  // Ориентация свободная: на планшете альбом — основной режим работы, и
-  // блокировать его значит отдать половину экрана. Разметка сама выбирает
-  // каркас по ширине (см. lib/ui/layout.dart).
   SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,
     DeviceOrientation.portraitDown,
@@ -33,25 +30,8 @@ void main() {
   // Режим production — `thin`: LocalAnalysisRepository временно остаётся
   // хранилищем настроек, снимка T-Invest и старого журнала, но controller не
   // запускает его scanner/optimizer и не смешивает ledger с server paper.
-  // `local` оставлен только для legacy/dev, `demo` — fixture без сети.
-  //
-  // В `thin` идеи и пакеты капитала берёт `EngineClient` по адресу движка
-  // §18. `demo` использует только fixture, а `local` не является production-
-  // режимом и сохранён временно для разработки старого контура.
-  //
-  // Режима «server» здесь больше нет. Он поднимал `RestRepository` — клиент
-  // старого контракта (`/v1/settings`, `/v1/trades`, `/v1/strategies`),
-  // адресов которого у движка §18 не существует: первый же запрос при старте
-  // падал, и приложение показывало «Не удалось запуститься» при полностью
-  // исправном сервере. Раньше на этом месте стояла оговорка словами — её не
-  // хватило, 30.07 сборка с этим режимом уехала на устройство. Комментарий
-  // не защищает от выбора, которого не должно существовать; выбор убран и из
-  // сборки (`.github/workflows/android-sideload.yml`), и отсюда.
   const mode = AppMode.name;
   if (mode == 'server') {
-    // Отказ, а не тихая подмена на local: сборка, которая называет себя
-    // серверной, а считает на устройстве, вводит в заблуждение сильнее, чем
-    // падение с внятной причиной.
     throw StateError(
       'SIGNALAI_MODE=server больше не поддерживается: RestRepository ходит по '
       'адресам старого контракта /v1/*, которых у движка §18 нет. '
@@ -91,8 +71,6 @@ class _SignalAiAppState extends State<SignalAiApp> with WidgetsBindingObserver {
     thinMode: widget.thinMode,
   );
 
-  /// Legacy-контур поднимается только вне UI. Thin polling пишет отдельный
-  /// server snapshot и сохраняет Android-расписание при возврате на экран.
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     switch (state) {
@@ -103,7 +81,6 @@ class _SignalAiAppState extends State<SignalAiApp> with WidgetsBindingObserver {
       case AppLifecycleState.hidden:
         _controller.onAppPaused();
       case AppLifecycleState.inactive:
-        // Шторка уведомлений или входящий звонок — приложение ещё живо.
         break;
     }
   }
@@ -122,11 +99,6 @@ class _SignalAiAppState extends State<SignalAiApp> with WidgetsBindingObserver {
     super.dispose();
   }
 
-  /// Тема собирается один раз.
-  ///
-  /// [AppScope] стоит над [MaterialApp], то есть каждое уведомление
-  /// контроллера пересобирает приложение целиком. Готовая тема снимает
-  /// главную аллокацию этой пересборки.
   static final _theme = ThemeData(
     brightness: Brightness.dark,
     scaffoldBackgroundColor: C.bg,
@@ -142,13 +114,8 @@ class _SignalAiAppState extends State<SignalAiApp> with WidgetsBindingObserver {
     ),
   );
 
-  // AppScope стоит НАД MaterialApp сознательно.
-  //
-  // Раньше он жил внутри `home:`, то есть под корневым Navigator. Маршрут,
-  // открытый через Navigator.push, встаёт рядом с `home`, а не под ним —
-  // и контроллера оттуда не видно. В релизе это не ошибка на экране, а
-  // серый прямоугольник: assert вырезан, срабатывает null-check, Flutter
-  // рисует ErrorWidget. Ровно так «пропал» разбор пакета.
+  // AppScope stays above MaterialApp so pushed routes and the root back-scope
+  // see the same controller.
   @override
   Widget build(BuildContext context) => AppScope(
         controller: _controller,
@@ -156,20 +123,42 @@ class _SignalAiAppState extends State<SignalAiApp> with WidgetsBindingObserver {
           title: 'SignalAI',
           debugShowCheckedModeBanner: false,
           theme: _theme,
-          // builder оборачивает сам Navigator, поэтому предок Material
-          // появляется у всех маршрутов сразу — и у нынешних, и у будущих.
-          // Без него MaterialApp подставляет тексту вне Material свой
-          // «ошибочный» стиль, от которого наследуется жёлтое двойное
-          // подчёркивание: наши стили задают цвет и размер, но не decoration.
-          // MaterialType.transparency не рисует ни фона, ни чернил.
           builder: (context, child) => Material(
             type: MaterialType.transparency,
             child: child ?? const SizedBox.shrink(),
           ),
           home: const Scaffold(
             backgroundColor: C.bg,
-            body: AppShell(),
+            body: _RootBackScope(),
           ),
         ),
       );
+}
+
+/// Maps Android's system/predictive back gesture to SignalAI's controller
+/// state before allowing the root Navigator route to leave the application.
+///
+/// Idea details are controller state, not Navigator.push routes.  Without this
+/// scope Android sees only the root route and correctly exits the task, while
+/// the owner expects to return to the list/journal that opened the detail.
+class _RootBackScope extends StatelessWidget {
+  const _RootBackScope();
+
+  @override
+  Widget build(BuildContext context) {
+    final controller = AppScope.of(context);
+    final intercept = controller.sheetOpen || controller.isDetailOpen;
+    return PopScope(
+      canPop: !intercept,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) return;
+        if (controller.sheetOpen) {
+          controller.closeSheet();
+        } else if (controller.isDetailOpen) {
+          controller.back();
+        }
+      },
+      child: const AppShell(),
+    );
+  }
 }

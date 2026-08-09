@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ...db import get_db
+from ...market import crypto
 from ...models import Bar, DataQualityEvent, Instrument, RegimeSnapshot
 from ...models.enums import Timeframe, Venue
 from ...schemas.common import ApiModel, Money
@@ -147,9 +148,6 @@ def data_status(db: Session = Depends(get_db)) -> DataStatusOut:
         )
 
     current = [r for r in rows if r.is_tradable and r.in_universe]
-    # Старые записи могут иметь is_tradable=true, но уже быть вне текущего
-    # universe. Если из-за миграции current пуст, используем is_tradable как
-    # безопасный fallback, иначе шапка ошибочно скажет «0 из 0».
     if not current:
         current = [r for r in rows if r.is_tradable]
 
@@ -190,15 +188,40 @@ def _require_instrument(db: Session, instrument_id: str) -> Instrument:
     return item
 
 
+def _bar_out(row) -> BarOut:
+    return BarOut(
+        open_time=row.open_time,
+        open=row.open,
+        high=row.high,
+        low=row.low,
+        close=row.close,
+        volume_units=row.volume_units,
+        volume_notional=row.volume_notional,
+        open_interest=row.open_interest,
+        is_closed=bool(row.is_closed),
+        source=str(row.source),
+        quality_flags=list(row.quality_flags or []),
+    )
+
+
 @router.get("/market/{instrument_id:path}/bars", response_model=list[BarOut])
 def get_bars(
     instrument_id: str,
     timeframe: Timeframe = Query(...),
     limit: int = Query(300, ge=1, le=5000),
     closed_only: bool = Query(True),
+    display_live: bool = Query(True),
     db: Session = Depends(get_db),
-) -> list[Bar]:
-    _require_instrument(db, instrument_id)
+) -> list[BarOut]:
+    """Chart bars plus a non-persisted live crypto overlay.
+
+    Canonical calculations still use only closed rows from PostgreSQL. For an
+    owner-facing chart, however, showing the last H1 close while DOGE has
+    already crossed the entry is misleading. Crypto therefore gets a tiny
+    direct Bybit tail on read. The forming candle is explicitly marked
+    ``is_closed=false`` and never enters feature/scanner storage.
+    """
+    instrument = _require_instrument(db, instrument_id)
     stmt = (
         select(Bar)
         .where(Bar.instrument_id == instrument_id, Bar.timeframe == timeframe)
@@ -207,7 +230,33 @@ def get_bars(
     )
     if closed_only:
         stmt = stmt.where(Bar.is_closed.is_(True))
-    return list(reversed(list(db.execute(stmt).scalars())))
+    persisted = list(reversed(list(db.execute(stmt).scalars())))
+    merged: dict[datetime, BarOut] = {row.open_time: _bar_out(row) for row in persisted}
+
+    if display_live and instrument.venue is Venue.CRYPTO:
+        try:
+            live, _ = crypto.klines(
+                instrument.symbol,
+                timeframe,
+                limit=min(5, limit),
+            )
+        except Exception:
+            # Chart freshness may degrade, but a transient Bybit read must not
+            # hide the audited history already stored on the VPS.
+            live = []
+        for candle in live:
+            item = _bar_out(candle)
+            if not item.is_closed:
+                item = item.model_copy(
+                    update={
+                        "source": "bybit-live-display",
+                        "quality_flags": [*item.quality_flags, "DISPLAY_ONLY"],
+                    }
+                )
+            merged[candle.open_time] = item
+
+    rows = [merged[key] for key in sorted(merged)]
+    return rows[-limit:]
 
 
 @router.get("/market/{instrument_id:path}/regime", response_model=RegimeOut)

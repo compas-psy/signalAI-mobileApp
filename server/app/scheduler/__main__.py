@@ -4,9 +4,6 @@
 практические. Uvicorn с несколькими воркерами запустил бы столько же копий
 расписания, и каждая пошла бы грузить биржу и писать бары. А перезапуск API
 ради выкатки не должен обрывать загрузку на середине.
-
-Процесс намеренно не имеет входящих портов: он читает биржи и пишет в базу,
-принимать команды снаружи ему незачем.
 """
 
 from __future__ import annotations
@@ -18,6 +15,8 @@ import sys
 from datetime import timedelta
 
 from ..db import get_session_factory
+from ..notification_outbox import materialize
+from ..paper.live_tracker import track_crypto_live
 from ..version import ENGINE_VERSION
 from .runner import build_default_scheduler, run_forever
 
@@ -31,9 +30,6 @@ def _minutes(name: str, default: int) -> timedelta:
     try:
         value = int(raw)
     except ValueError:
-        # Опечатка в переменной окружения не должна тихо превращаться в
-        # расписание по умолчанию: это выглядело бы как «настройка не
-        # применилась» без единого следа.
         raise SystemExit(f"{name}={raw!r} — ожидались минуты целым числом") from None
     if value < 1:
         raise SystemExit(f"{name}={value} — интервал меньше минуты бессмыслен")
@@ -54,11 +50,53 @@ def main() -> int:
         portfolio_every=_minutes("SIGNALAI_PORTFOLIO_EVERY_MINUTES", 60),
     )
 
+    # Execution monitoring is intentionally faster than signal discovery.
+    # H1/H4/D1 closed bars remain the only source for setups; after explicit
+    # approval a crypto limit/TP/SL is an execution fact and must not wait up
+    # to an hour. Closed Bybit 1m bars cap the delay at about one minute.
+    # Materialising the outbox in the same committed scheduler job makes the
+    # notification genuinely server-originated even when the phone is offline.
+    def paper_live(session):
+        report = track_crypto_live(session)
+        queued = materialize(session, include_smoke=False)
+        return f"{report.summary()}, уведомлений в outbox {queued}"
+
+    scheduler.add(
+        "paper-live",
+        _minutes("SIGNALAI_PAPER_LIVE_EVERY_MINUTES", 1),
+        paper_live,
+    )
+    # Run it next to the ordinary paper tracker, before scan/portfolio/research
+    # can occupy the sequential scheduler with heavier work.
+    live_job = scheduler.jobs.pop()
+    paper_index = next(
+        (i for i, job in enumerate(scheduler.jobs) if job.name == "paper"),
+        len(scheduler.jobs),
+    )
+    scheduler.jobs.insert(paper_index, live_job)
+
+    session_factory = get_session_factory()
+
+    # This is deliberately server-originated. On every deployment/restart the
+    # VPS reconciles owner-facing lifecycle and queues the stable smoke event
+    # before any phone connects. The unique outbox key prevents duplicates;
+    # the new Android SSE client later replays it from its durable cursor.
+    startup_session = session_factory()
+    try:
+        created = materialize(startup_session, include_smoke=True)
+        startup_session.commit()
+        log.info("server push outbox ready: queued %d new event(s)", created)
+    except Exception:
+        startup_session.rollback()
+        # Delivery bootstrap must not stop market ingestion. The exact-alarm
+        # client remains a fallback and the SSE request will retry materialize.
+        log.exception("server push outbox startup reconciliation failed")
+    finally:
+        startup_session.close()
+
     stopping = {"now": False}
 
     def handle(signum, _frame):
-        # Останов между задачами, а не посреди задачи: прерванная загрузка
-        # оставила бы половину баров периода.
         log.info("получен сигнал %s — остановлюсь после текущей задачи", signum)
         stopping["now"] = True
 
@@ -68,11 +106,13 @@ def main() -> int:
     log.info(
         "планировщик %s запущен: %s",
         ENGINE_VERSION,
-        ", ".join(f"{j.name} каждые {int(j.every.total_seconds() // 60)} мин"
-                  for j in scheduler.jobs),
+        ", ".join(
+            f"{j.name} каждые {int(j.every.total_seconds() // 60)} мин"
+            for j in scheduler.jobs
+        ),
     )
     run_forever(
-        get_session_factory(),
+        session_factory,
         scheduler,
         interval_seconds=int(os.environ.get("SIGNALAI_TICK_SECONDS", "60")),
         stop=lambda: stopping["now"],

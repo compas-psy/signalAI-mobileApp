@@ -8,12 +8,11 @@ import android.content.Intent
 import android.os.Build
 
 /**
- * Time-critical server polling для personal thin-client.
+ * Time-critical fallback polling for the personal thin-client.
  *
- * Это fallback до отдельного FCM credential. На Android 12+ именно exact
- * alarm даёт фоновой доставке системное исключение для запуска bounded
- * foreground-service. Если special access не выдан, остаётся degraded
- * inexact fallback и пользователь получает диагностическое уведомление.
+ * Primary delivery is the persistent server SSE channel (PushService). Exact
+ * alarm remains independent reconciliation: if a VPN/OEM kills that channel,
+ * the phone still checks server truth roughly every five minutes.
  */
 object MonitorAlarm {
 
@@ -30,11 +29,6 @@ object MonitorAlarm {
         return manager.canScheduleExactAlarms()
     }
 
-    /**
-     * В нормальном personal-режиме проверяем server outbox каждые ~5 минут.
-     * В Doze Android всё ещё может раздвигать exact-and-idle alarms, но exact
-     * PendingIntent разрешено поднимать foreground-service из background.
-     */
     fun schedule(context: Context, mode: String, minutes: Int = DEFAULT_MINUTES) {
         val manager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
         val exact = exactAllowed(context)
@@ -84,8 +78,6 @@ class MonitorAlarmReceiver : BroadcastReceiver() {
         try {
             MonitorService.start(context, mode)
         } catch (error: IllegalStateException) {
-            // Typical Android 12+ failure for a background FGS started from an
-            // inexact alarm. Do not silently pretend monitoring is healthy.
             Notifications.post(
                 context,
                 id = 9042,
@@ -111,5 +103,9 @@ class MonitorBootReceiver : BroadcastReceiver() {
         if (intent.action != Intent.ACTION_BOOT_COMPLETED) return
         val mode = MonitorAlarm.remembered(context) ?: return
         MonitorAlarm.schedule(context, mode)
+        // PushService.start is fail-soft: OEM/Android boot restrictions cannot
+        // break boot processing, while supported devices regain low-latency
+        // delivery without requiring the owner to open the app after reboot.
+        if (Notifications.hasPermission(context)) PushService.start(context)
     }
 }

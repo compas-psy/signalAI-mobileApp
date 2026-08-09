@@ -34,6 +34,9 @@ class MainActivity : FlutterActivity() {
                 MonitorAlarm.schedule(this, it, MonitorAlarm.DEFAULT_MINUTES)
             }
         }
+        // Persistent SSE is the primary low-latency path.  Re-entering the
+        // app is also a safe retry point if an OEM killed the FGS earlier.
+        if (Notifications.hasPermission(this)) PushService.start(this)
     }
 
     override fun onRequestPermissionsResult(
@@ -42,7 +45,10 @@ class MainActivity : FlutterActivity() {
         grantResults: IntArray,
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == notificationRequest) requestExactAlarmAccessIfNeeded()
+        if (requestCode == notificationRequest) {
+            if (Notifications.hasPermission(this)) PushService.start(this)
+            requestExactAlarmAccessIfNeeded()
+        }
     }
 
     private fun readPayload(intent: Intent?) {
@@ -58,6 +64,7 @@ class MainActivity : FlutterActivity() {
             )
             return
         }
+        PushService.start(this)
         requestExactAlarmAccessIfNeeded()
     }
 
@@ -88,9 +95,8 @@ class MainActivity : FlutterActivity() {
         super.configureFlutterEngine(flutterEngine)
         readPayload(intent)
 
-        // В personal thin-client фоновый монитор — часть базового продукта,
-        // а не скрытая опция. Один запуск приложения включает его и сохраняет
-        // восстановление после reboot.
+        // Exact-alarm polling remains the independent fallback/reconciliation
+        // path even after server push is enabled.
         MonitorAlarm.remember(this, MonitorService.MODE_PERSISTENT)
         if (!MonitorService.running) {
             MonitorService.start(this, MonitorService.MODE_PERSISTENT)
@@ -109,6 +115,7 @@ class MainActivity : FlutterActivity() {
                                 notificationRequest,
                             )
                         } else {
+                            PushService.start(this)
                             requestExactAlarmAccessIfNeeded()
                         }
                         result.success(Notifications.hasPermission(this))
@@ -151,17 +158,23 @@ class MainActivity : FlutterActivity() {
                         MonitorAlarm.remember(this, mode)
                         if (!MonitorService.running) MonitorService.start(this, mode)
                         MonitorAlarm.schedule(this, mode)
+                        PushService.start(this)
                         result.success(true)
                     }
 
                     "monitorStop" -> {
+                        // User explicitly disabling monitoring disables both
+                        // delivery paths.  Re-enabling starts both again.
                         MonitorAlarm.remember(this, null)
                         MonitorAlarm.cancel(this)
                         MonitorService.stop(this)
+                        PushService.stop(this)
                         result.success(true)
                     }
 
-                    "monitorRunning" -> result.success(MonitorService.running)
+                    "monitorRunning" -> result.success(
+                        MonitorService.running || PushService.running,
+                    )
 
                     else -> shared.handle(call, result)
                 }
