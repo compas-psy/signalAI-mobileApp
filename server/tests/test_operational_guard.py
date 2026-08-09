@@ -49,7 +49,6 @@ def test_pending_entry_is_missed_when_market_reaches_target_before_entry(session
     idea = _idea(session, instrument)
     trade, _ = approve_for(session, idea, now=NOW)
     tp1 = Decimal(str(trade.tp_prices[0]))
-    # Stay strictly above the LONG entry while crossing the actual paper TP1.
     low = trade.entry + Decimal("100")
     high = max(tp1 + Decimal("100"), low + Decimal("100"))
     session.add(
@@ -73,10 +72,10 @@ def test_pending_entry_is_missed_when_market_reaches_target_before_entry(session
     assert trade.status is PaperStatus.CANCELLED
     assert trade.outcome == "MISS"
     assert "без входа" in trade.close_reason
-    # Once the owner approved it, the plan is an ACTIVE execution object;
-    # a missed target closes that approved plan as CANCELLED, not as a fresh
-    # pre-decision MISSED card.
-    assert idea.status is IdeaStatus.CANCELLED
+    # The legacy database row is still TRIGGERED until reconciliation sees the
+    # paper trade. Because the thesis completed first, it terminates directly
+    # as MISSED and never becomes ACTIVE/actionable again.
+    assert idea.status is IdeaStatus.MISSED
 
 
 def test_h1_pending_entry_times_out_after_one_session_even_without_bars(session, instrument):
@@ -89,7 +88,7 @@ def test_h1_pending_entry_times_out_after_one_session_even_without_bars(session,
     assert trade.status is PaperStatus.CANCELLED
     assert trade.outcome == "TIMEOUT"
     assert "окно сделки истекло" in trade.close_reason
-    assert idea.status is IdeaStatus.CANCELLED
+    assert idea.status is IdeaStatus.TIMED_OUT
 
 
 def test_entry_touch_before_target_keeps_pending_for_normal_tracker(session, instrument):
