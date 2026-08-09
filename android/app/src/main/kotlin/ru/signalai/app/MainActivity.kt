@@ -17,20 +17,11 @@ class MainActivity : FlutterActivity() {
     private val shared by lazy { NativeChannel(applicationContext) }
     private val biometrics by lazy { Biometrics(this) }
 
-    /**
-     * Адрес, по которому нажали в уведомлении, — до того, как интерфейс за
-     * ним придёт.
-     *
-     * Хранится здесь, а не отдаётся сразу в Dart: при холодном старте
-     * приложение получает намерение раньше, чем поднимется движок Flutter,
-     * и отправлять некому. Интерфейс забирает адрес сам, когда готов.
-     */
+    /** Адрес, по которому нажали в уведомлении, до готовности Flutter UI. */
     private var pendingPayload: String? = null
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        // Заменяем намерение активити: без этого следующий `takeLaunchPayload`
-        // прочитал бы то, с которым приложение запустилось в прошлый раз.
         setIntent(intent)
         readPayload(intent)
     }
@@ -43,11 +34,28 @@ class MainActivity : FlutterActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         readPayload(intent)
+
+        // Personal thin-client обязан следить за сервером без отдельного
+        // скрытого переключателя. Раньше backgroundEnabled по умолчанию был
+        // false, поэтому владелец ожидал push, а Android-monitor физически не
+        // запускался. Запоминаем режим сразу: после reboot BootReceiver его
+        // восстановит. Если device-token ещё не сохранён, первый poll честно
+        // завершится ошибкой, но следующий уже подхватит credential.
+        MonitorAlarm.remember(this, MonitorService.MODE_PERSISTENT)
+        if (!MonitorService.running) {
+            MonitorService.start(this, MonitorService.MODE_PERSISTENT)
+        }
+
+        // На Android 13+ без runtime permission канал SIGNALS молчит даже при
+        // исправном monitor. Для персонального приложения просим разрешение
+        // сразу после первого запуска новой сборки, а не прячем его в Settings.
+        if (Build.VERSION.SDK_INT >= 33 && !Notifications.hasPermission(this)) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1001)
+        }
+
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
-                    // Разрешение на уведомления (Android 13+). До 13 оно не
-                    // требуется — отвечаем текущим состоянием сразу.
                     "requestNotificationPermission" -> {
                         if (Build.VERSION.SDK_INT >= 33 &&
                             !Notifications.hasPermission(this)
@@ -59,9 +67,6 @@ class MainActivity : FlutterActivity() {
                         result.success(Notifications.hasPermission(this))
                     }
 
-                    // Системный экран уведомлений приложения. Нужен, когда
-                    // разрешение отклонено дважды: Android больше не покажет
-                    // диалог, и единственный путь — включить руками там.
                     "notificationSettings" -> {
                         val intent = android.content.Intent(
                             android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS,
@@ -72,9 +77,6 @@ class MainActivity : FlutterActivity() {
                         result.success(true)
                     }
 
-                    // Адрес из нажатого уведомления. Отдаётся один раз:
-                    // повторное открытие той же идеи при каждом возврате в
-                    // приложение — это не диплинк, а навязчивость.
                     "takeLaunchPayload" -> {
                         val payload = pendingPayload
                         pendingPayload = null
@@ -82,11 +84,7 @@ class MainActivity : FlutterActivity() {
                     }
 
                     "biometricsAvailable" -> result.success(biometrics.isAvailable())
-
-                    // Не «да/нет», а чем именно: владелец должен видеть, что
-                    // сделку подтвердит отпечаток, ПИН — или ничего.
                     "confirmMethod" -> result.success(biometrics.method())
-
                     "confirmMethodDetails" -> result.success(biometrics.methodDetails())
 
                     "biometricConfirm" -> biometrics.confirm(
@@ -99,11 +97,14 @@ class MainActivity : FlutterActivity() {
                         val mode = call.argument<String>("mode")
                             ?: MonitorService.MODE_PERSISTENT
                         MonitorAlarm.remember(this, mode)
-                        MonitorService.start(this, mode)
+                        if (!MonitorService.running) MonitorService.start(this, mode)
                         result.success(true)
                     }
 
                     "monitorStop" -> {
+                        // Остановка из UI остаётся доступной как аварийная
+                        // диагностика, но следующий обычный запуск приложения
+                        // снова включает personal monitor.
                         MonitorAlarm.remember(this, null)
                         MonitorAlarm.cancel(this)
                         MonitorService.stop(this)
