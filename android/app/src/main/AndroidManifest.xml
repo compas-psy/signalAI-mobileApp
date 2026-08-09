@@ -1,24 +1,20 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- Клиент ходит только в мобильный гейтвей Server B по HTTPS (ТЗ §2, §11). -->
     <uses-permission android:name="android.permission.INTERNET"/>
-    <!-- Пуш-уведомления о сигналах и критичных событиях (ТЗ §8). -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
-    <!-- Подтверждение сделки отпечатком/лицом. Без этого разрешения
-         canAuthenticate и сам диалог бросают SecurityException — приложение
-         показывало «подтверждать нечем» при включённых ПИНе и отпечатке. -->
     <uses-permission android:name="android.permission.USE_BIOMETRIC"/>
-    <!-- То же для API 28, где биометрию спрашивает старый API. -->
     <uses-permission android:name="android.permission.USE_FINGERPRINT"/>
-    <!-- Фоновый thin-poll сервера, пока приложение закрыто. Каждый dataSync
-         service живёт только один bounded запрос; следующий неточный запуск
-         ставится примерно через 15 минут: лимит Android 15 расходуется только
-         на короткий запрос, а не на ожидание между запусками. -->
+
+    <!-- SignalAI — персональное приложение, где пользователь явно просит
+         своевременное уведомление о торговом сигнале. На Android 12+ только
+         exact alarm имеет системное исключение, позволяющее поднять bounded
+         foreground-service из фона. Без этого inexact alarm мог сработать,
+         но startForegroundService() быть отклонён системой. -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
-    <!-- Прогон не должен обрываться посреди сетевого запроса, если экран погас. -->
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
-    <!-- Расписание контура восстанавливается после перезагрузки. -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
+
     <application
         android:label="SignalAI"
         android:name="${applicationName}"
@@ -36,10 +32,6 @@
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
             android:hardwareAccelerated="true"
             android:windowSoftInputMode="adjustResize">
-            <!-- Specifies an Android theme to apply to this Activity as soon as
-                 the Android process has started. This theme is visible to the user
-                 while the Flutter UI initializes. After that, this theme continues
-                 to determine the Window background behind the Flutter UI. -->
             <meta-data
               android:name="io.flutter.embedding.android.NormalTheme"
               android:resource="@style/NormalTheme"
@@ -49,6 +41,7 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+
         <service
             android:name=".MonitorService"
             android:exported="false"
@@ -66,17 +59,11 @@
             </intent-filter>
         </receiver>
 
-        <!-- Don't delete the meta-data below.
-             This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
     </application>
-    <!-- Required to query activities that can process text, see:
-         https://developer.android.com/training/package-visibility and
-         https://developer.android.com/reference/android/content/Intent#ACTION_PROCESS_TEXT.
 
-         In particular, this is used by the Flutter engine in io.flutter.plugin.text.ProcessTextPlugin. -->
     <queries>
         <intent>
             <action android:name="android.intent.action.PROCESS_TEXT"/>
