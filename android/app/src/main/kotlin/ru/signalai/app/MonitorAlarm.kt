@@ -10,27 +10,23 @@ import android.os.Build
 /**
  * Будильник server polling фонового thin-клиента.
  *
- * Старые имена режимов сохранены только для совместимости с настройками. Оба
- * запускают один bounded foreground-service poll и сразу завершаются; следующий
- * запуск целиком зависит от этого будильника.
- *
- * Будильник неточный (`setAndAllowWhileIdle`): точный потребовал бы разрешения
- * SCHEDULE_EXACT_ALARM, а пятнадцатиминутному polling минутная точность не
- * нужна. Doze вправе отложить запуск — это ограничение Android, не обещание
- * точного таймера.
+ * Это не замена remote push, а страховочный pull-канал персонального sideload:
+ * пока FCM не настроен отдельным credential, телефон сам забирает server
+ * outbox. Пять минут соответствуют часовому trigger-TF и дают приемлемую
+ * задержку без постоянного foreground-service.
  */
 object MonitorAlarm {
 
     const val EXTRA_MODE = "mode"
 
     private const val REQUEST = 4242
-    const val DEFAULT_MINUTES = 15
+    const val DEFAULT_MINUTES = 5
     private const val PREFS = "signalai.monitor"
 
-    /** [minutes] — через сколько будить; production использует не меньше 15 минут. */
+    /** [minutes] — через сколько будить; production не ставит чаще 5 минут. */
     fun schedule(context: Context, mode: String, minutes: Int = DEFAULT_MINUTES) {
         val manager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        val at = System.currentTimeMillis() + minutes.coerceIn(15, 720) * 60_000L
+        val at = System.currentTimeMillis() + minutes.coerceIn(5, 720) * 60_000L
         val intent = pending(context, mode)
         if (Build.VERSION.SDK_INT >= 23) {
             manager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, intent)
@@ -68,8 +64,6 @@ class MonitorAlarmReceiver : BroadcastReceiver() {
         val mode = intent.getStringExtra(MonitorAlarm.EXTRA_MODE)
             ?: MonitorService.MODE_PERSISTENT
         if (MonitorService.running) {
-            // Предыдущий bounded poll ещё не закончен. Не запускаем второй,
-            // а безопасно переносим следующую попытку.
             MonitorAlarm.schedule(context, mode)
             return
         }
@@ -77,12 +71,7 @@ class MonitorAlarmReceiver : BroadcastReceiver() {
     }
 }
 
-/**
- * Восстановление контура после перезагрузки.
- *
- * Без него фон молчал бы до первого открытия приложения — а телефон
- * перезагружается ровно тогда, когда этого не ждёшь.
- */
+/** Восстановление контура после перезагрузки. */
 class MonitorBootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != Intent.ACTION_BOOT_COMPLETED) return
