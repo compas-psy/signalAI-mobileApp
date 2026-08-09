@@ -4,7 +4,7 @@ import 'package:flutter/widgets.dart';
 ///
 /// Interaction deliberately follows the familiar mobile-chart contract:
 /// two-finger pinch zooms around the fingers, one-finger drag pans the zoomed
-/// chart, and double tap resets the viewport.  The chart itself remains our
+/// chart, and double tap resets the viewport. The chart itself remains our
 /// audited CustomPainter; only its viewport is transformed.
 class ZoomableChart extends StatefulWidget {
   const ZoomableChart({super.key, required this.child});
@@ -25,8 +25,8 @@ class _ZoomableChartState extends State<ZoomableChart> {
   }
 
   void _reset() {
-    if (_transform.value == Matrix4.identity()) return;
-    setState(() => _transform.value = Matrix4.identity());
+    final identity = _transform.value.clone()..setIdentity();
+    setState(() => _transform.value = identity);
   }
 
   @override
