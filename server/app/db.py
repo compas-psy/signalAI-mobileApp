@@ -18,7 +18,27 @@ DEFAULT_DSN = "postgresql+psycopg://signalai:signalai_local_dev@127.0.0.1:5432/s
 
 
 def database_url() -> str:
-    return os.environ.get("SIGNALAI_DATABASE_URL", DEFAULT_DSN)
+    explicit = os.environ.get("SIGNALAI_DATABASE_URL", "").strip()
+    if explicit:
+        return explicit
+
+    # Pytest запускается против отдельной настоящей PostgreSQL-базы. API
+    # dependencies в тестах подменяются на транзакционную session fixture,
+    # но middleware намеренно открывает собственную короткую сессию и поэтому
+    # не видит dependency override. Раньше он уходил в DEFAULT_DSN `/signalai`,
+    # тогда как CI создаёт `signalai_test`: после появления lifecycle guard
+    # это превратило один неверный DSN в десятки ложных падений API-тестов.
+    #
+    # SIGNALAI_ADMIN_DSN задаётся только тестовому runner'у. В production его
+    # нет, поэтому боевой DSN по-прежнему берётся исключительно из
+    # SIGNALAI_DATABASE_URL и никакой тестовый fallback туда попасть не может.
+    admin = os.environ.get("SIGNALAI_ADMIN_DSN", "").strip()
+    if admin:
+        test_db = os.environ.get("SIGNALAI_TEST_DB", "signalai_test").strip()
+        if test_db:
+            return admin.rsplit("/", 1)[0] + f"/{test_db}"
+
+    return DEFAULT_DSN
 
 
 _engine = None
