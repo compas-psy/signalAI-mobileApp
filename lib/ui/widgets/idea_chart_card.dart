@@ -7,13 +7,10 @@ import '../../theme/tokens.dart';
 import '../../theme/typography.dart';
 import 'common.dart';
 import 'trade_chart.dart';
+import 'zoomable_chart.dart';
 
 /// График идеи с панелью управления — единый блок, как в прототипе
 /// (`chart-card`: тулбар сверху, разметка поверх графика, пояснение снизу).
-///
-/// Раньше график и переключатели слоёв были двумя отдельными элементами
-/// ленты, между ними стоял отступ, и панель читалась как настройка экрана, а
-/// не как управление этой картинкой.
 class IdeaChartCard extends StatelessWidget {
   const IdeaChartCard({
     super.key,
@@ -33,29 +30,13 @@ class IdeaChartCard extends StatelessWidget {
 
   final TradingSignal signal;
   final Idea? idea;
-
-  /// Выбранный таймфрейм. Пустая строка — берём тот, которым подписаны свечи.
   final String timeframe;
-
-  /// Переключение таймфрейма. null — переключать нечем, и пилюли остаются
-  /// подписью, а не кнопкой.
   final ValueChanged<String>? onTimeframe;
-
-  /// Свечи запрошены и ещё не пришли.
   final bool loading;
-
-  /// Источник не дал свечей этого таймфрейма.
   final bool failed;
-
-  /// Почему свечей нет — словами владельца, а не кодом.
   final String failureReason;
-
-  /// Свечи с движка. null — рисуем то, что пришло с сигналом.
   final SignalChart? chart;
-
-  /// Слои, за которыми стоит доказательство этой идеи.
   final Set<ChartLayer> available;
-
   final Set<ChartLayer> visible;
   final Set<String> highlight;
   final ValueChanged<ChartLayer> onToggle;
@@ -68,17 +49,7 @@ class IdeaChartCard extends StatelessWidget {
     ];
     final drawn = chart ?? signal.chart;
     final hasChart = drawn != null;
-    // Активна та пилюля, чьи свечи **нарисованы**, а не та, что запрошена.
-    //
-    // Разница не теоретическая: карточка идеи открывается сводкой, у которой
-    // таймфреймов ещё нет, и первый график грузится часовым. Потом приезжает
-    // полная карточка, сетапный таймфрейм оказывается 4h — и тулбар начинал
-    // подсвечивать «4h» поверх часовых свечей. График честно писал «1h» в
-    // своём углу, и два элемента одного экрана спорили друг с другом.
     final active = drawn?.timeframeLabel ?? timeframe;
-    // Тулбар живёт и без свечей: пока грузится другой таймфрейм,
-    // переключатель обязан остаться на месте. Исчезающая панель управления
-    // читается как поломка — владелец нажал кнопку, и кнопка пропала.
     final showToolbar = hasChart || loading || failed;
     return Container(
       clipBehavior: Clip.antiAlias,
@@ -112,49 +83,43 @@ class IdeaChartCard extends StatelessWidget {
                   'таймфрейма картинки не зависят.',
                 )
               else
-                TradeChart(
-                  signal: signal,
-                  chart: chart,
-                  // Свеча, на которой движок принял решение (§10.7):
-                  // без неё точка постановки идеи выглядит взятой с потолка.
-                  bornAt: idea?.createdAt,
-                  // Разметка §10.6 — та, что нашли детекторы движка.
-                  annotations: idea?.annotations ?? const [],
-                  visibleLayers: visible,
-                  highlight: highlight,
+                ZoomableChart(
+                  child: TradeChart(
+                    signal: signal,
+                    chart: chart,
+                    bornAt: idea?.createdAt,
+                    annotations: idea?.annotations ?? const [],
+                    visibleLayers: visible,
+                    highlight: highlight,
+                  ),
                 ),
-              // Легенда справа: тег таймфрейма график рисует сам слева, и
-              // накладывать на него ещё три пилюли значит спрятать оба.
               Positioned(
                 top: 9,
                 right: 9,
-                child: Wrap(
-                  alignment: WrapAlignment.end,
-                  spacing: 5,
-                  runSpacing: 5,
-                  // Оценка и R:R — те же числа, что в шапке и в плане: у
-                  // сигнала и у идеи они свои, и показывать здесь сигнальные
-                  // значило бы подписать график чужими цифрами.
-                  children: [
-                    _LegendPill('Оценка ${idea?.score.value ?? signal.score}'),
-                    ?_rrPill(),
-                  ],
+                child: IgnorePointer(
+                  child: Wrap(
+                    alignment: WrapAlignment.end,
+                    spacing: 5,
+                    runSpacing: 5,
+                    children: [
+                      _LegendPill('Оценка ${idea?.score.value ?? signal.score}'),
+                      ?_rrPill(),
+                    ],
+                  ),
                 ),
               ),
             ],
           ),
-          if (hasChart && layers.length > 1)
+          if (hasChart)
             Container(
               padding: const EdgeInsets.fromLTRB(12, 9, 12, 11),
               decoration: const BoxDecoration(
                 border: Border(top: BorderSide(color: C.divider)),
               ),
               child: Text(
-                'Верхний ряд — таймфрейм картинки, нижний — слои разметки. '
-                'Разметка показывает не «всё подряд», а только факторы, '
-                'вошедшие в оценку этой идеи; слой выключается, чтобы '
-                'проверить каждую гипотезу отдельно. '
-                '${_lockedNote(layers)}',
+                'График: растяните двумя пальцами для масштаба, проведите '
+                'пальцем для сдвига по времени, двойной тап — сброс. '
+                '${layers.length > 1 ? 'Слои разметки показывают только факторы, вошедшие в оценку идеи. ${_lockedNote(layers)}' : ''}',
                 style: T.body(10.5, color: C.faint, height: 1.45),
               ),
             ),
@@ -163,8 +128,6 @@ class IdeaChartCard extends StatelessWidget {
     );
   }
 
-  /// Пилюля R:R. Значение плана точнее сигнального: план и есть то, что
-  /// подписывают. Нет ни того, ни другого — пилюли нет.
   Widget? _rrPill() {
     final plan = idea?.plan;
     if (plan != null) {
@@ -175,22 +138,12 @@ class IdeaChartCard extends StatelessWidget {
     return signal.riskReward.isEmpty ? null : _LegendPill('R:R ${signal.riskReward}');
   }
 
-  /// Таймфреймы для переключателя — все, что участвовали в анализе.
-  ///
-  /// Раньше их показывали как подпись: свечи приезжали одним рядом, и
-  /// нажимать было не на что. Теперь каждый таймфрейм — отдельный запрос
-  /// к источнику, и кнопка делает ровно то, на что похожа.
   List<String> _timeframes(String chartTf) {
     final all = [...?idea?.timeframes];
     if (chartTf.isNotEmpty && !all.contains(chartTf)) all.insert(0, chartTf);
     return all;
   }
 
-  /// Почему часть слоёв не нажимается.
-  ///
-  /// «Candles» выключить нельзя — без свечей разметка висит в пустоте, — но
-  /// нажатие по нему выглядит как сломанная кнопка ровно до тех пор, пока
-  /// причина не написана рядом.
   static String _lockedNote(List<ChartLayer> layers) {
     final locked = [for (final l in layers) if (l.alwaysOn) l.label];
     if (locked.isEmpty) return '';
@@ -199,7 +152,6 @@ class IdeaChartCard extends StatelessWidget {
         : '${locked.map((l) => '«$l»').join(', ')} не выключаются.';
   }
 
-  /// Таймфрейм сетапа — на нём построена идея и лежит её разметка.
   String _setupLabel() {
     final list = idea?.timeframes ?? const <String>[];
     if (list.isEmpty) return 'сетапном таймфрейме';
@@ -207,8 +159,6 @@ class IdeaChartCard extends StatelessWidget {
   }
 }
 
-/// Место графика, пока свечей нет. Не заглушка «недоступно»: причина здесь
-/// известна и названа, а высота сохраняется, чтобы лента не прыгала.
 class _ChartPending extends StatelessWidget {
   const _ChartPending(this.message);
 
@@ -265,10 +215,6 @@ class _Toolbar extends StatelessWidget {
                 _TimeframePill(
                   label: tf,
                   active: tf == active,
-                  // Пока грузится один таймфрейм, второй не запрашиваем:
-                  // два ответа на один график приходят вразнобой, и
-                  // нарисован будет тот, что приехал последним, а не тот,
-                  // что нажали.
                   onTap: switcher == null || loading || tf == active
                       ? null
                       : () => switcher(tf),
@@ -313,11 +259,6 @@ class _Toolbar extends StatelessWidget {
   }
 }
 
-/// Таймфрейм графика. Активен ровно один — тот, чьи свечи нарисованы.
-///
-/// Остальные переключают картинку: разметка привязана ко времени, а не к
-/// ряду баров, и на любом таймфрейме встаёт на свои места. Крупный показывает
-/// контекст сделки, мелкий — как отработал триггер.
 class _TimeframePill extends StatelessWidget {
   const _TimeframePill({
     required this.label,
@@ -359,8 +300,6 @@ class _LayerPill extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Слой, который нельзя выключить, выглядит иначе нажимаемого: иначе
-    // владелец жмёт по свечам и решает, что чип сломан.
     final locked = onTap == null;
     final color = locked
         ? C.dim
@@ -369,9 +308,6 @@ class _LayerPill extends StatelessWidget {
             : C.muted;
     return Pressable(
       onTap: onTap,
-      // Без `alignment`: заданное выравнивание заставляет Container занять всю
-      // доступную ширину, и внутри Wrap пилюли встают одна под другой во всю
-      // строку вместо ряда чипов.
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
         decoration: BoxDecoration(
