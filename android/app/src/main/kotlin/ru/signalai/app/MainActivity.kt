@@ -2,23 +2,22 @@ package ru.signalai.app
 
 import android.Manifest
 import android.content.Intent
+import android.net.Uri
 import android.os.Build
+import android.provider.Settings
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 
-// Нативный мост приложения. Сознательно без плагинов и androidx-обвязки:
-// в приложении, которое подтверждает сделки, чем меньше стороннего кода, тем
-// лучше. Общие с фоновым контуром методы живут в NativeChannel, здесь — только
-// то, что требует активити: разрешения, биометрия и управление контуром.
 class MainActivity : FlutterActivity() {
     private val channelName = "ru.signalai.app/native"
+    private val notificationRequest = 1001
 
     private val shared by lazy { NativeChannel(applicationContext) }
     private val biometrics by lazy { Biometrics(this) }
 
-    /** Адрес, по которому нажали в уведомлении, до готовности Flutter UI. */
     private var pendingPayload: String? = null
+    private var exactPromptLaunched = false
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
@@ -26,32 +25,77 @@ class MainActivity : FlutterActivity() {
         readPayload(intent)
     }
 
+    override fun onResume() {
+        super.onResume()
+        // Возврат со страницы special access: новый exact alarm ставим сразу,
+        // не ждём завершения ранее поставленного degraded fallback.
+        if (MonitorAlarm.exactAllowed(this)) {
+            MonitorAlarm.remembered(this)?.let {
+                MonitorAlarm.schedule(this, it, MonitorAlarm.DEFAULT_MINUTES)
+            }
+        }
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray,
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == notificationRequest) requestExactAlarmAccessIfNeeded()
+    }
+
     private fun readPayload(intent: Intent?) {
         val payload = intent?.getStringExtra(Notifications.PAYLOAD)
         if (!payload.isNullOrEmpty()) pendingPayload = payload
+    }
+
+    private fun ensureSignalPermissions() {
+        if (Build.VERSION.SDK_INT >= 33 && !Notifications.hasPermission(this)) {
+            requestPermissions(
+                arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+                notificationRequest,
+            )
+            return
+        }
+        requestExactAlarmAccessIfNeeded()
+    }
+
+    private fun requestExactAlarmAccessIfNeeded() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
+            MonitorAlarm.exactAllowed(this) || exactPromptLaunched
+        ) {
+            return
+        }
+        exactPromptLaunched = true
+        try {
+            startActivity(
+                Intent(
+                    Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM,
+                    Uri.parse("package:$packageName"),
+                ),
+            )
+        } catch (_: Exception) {
+            // Не роняем приложение на OEM-прошивке без стандартной страницы.
+            startActivity(
+                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                    .setData(Uri.parse("package:$packageName")),
+            )
+        }
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         readPayload(intent)
 
-        // Personal thin-client обязан следить за сервером без отдельного
-        // скрытого переключателя. Раньше backgroundEnabled по умолчанию был
-        // false, поэтому владелец ожидал push, а Android-monitor физически не
-        // запускался. Запоминаем режим сразу: после reboot BootReceiver его
-        // восстановит. Если device-token ещё не сохранён, первый poll честно
-        // завершится ошибкой, но следующий уже подхватит credential.
+        // В personal thin-client фоновый монитор — часть базового продукта,
+        // а не скрытая опция. Один запуск приложения включает его и сохраняет
+        // восстановление после reboot.
         MonitorAlarm.remember(this, MonitorService.MODE_PERSISTENT)
         if (!MonitorService.running) {
             MonitorService.start(this, MonitorService.MODE_PERSISTENT)
         }
-
-        // На Android 13+ без runtime permission канал SIGNALS молчит даже при
-        // исправном monitor. Для персонального приложения просим разрешение
-        // сразу после первого запуска новой сборки, а не прячем его в Settings.
-        if (Build.VERSION.SDK_INT >= 33 && !Notifications.hasPermission(this)) {
-            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1001)
-        }
+        ensureSignalPermissions()
 
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
             .setMethodCallHandler { call, result ->
@@ -61,19 +105,28 @@ class MainActivity : FlutterActivity() {
                             !Notifications.hasPermission(this)
                         ) {
                             requestPermissions(
-                                arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1001,
+                                arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+                                notificationRequest,
                             )
+                        } else {
+                            requestExactAlarmAccessIfNeeded()
                         }
                         result.success(Notifications.hasPermission(this))
                     }
 
                     "notificationSettings" -> {
-                        val intent = android.content.Intent(
-                            android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS,
-                        )
-                            .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, packageName)
-                            .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                        val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                            .putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                         startActivity(intent)
+                        result.success(true)
+                    }
+
+                    "exactAlarmAllowed" -> result.success(MonitorAlarm.exactAllowed(this))
+
+                    "exactAlarmSettings" -> {
+                        exactPromptLaunched = false
+                        requestExactAlarmAccessIfNeeded()
                         result.success(true)
                     }
 
@@ -92,19 +145,16 @@ class MainActivity : FlutterActivity() {
                         call.argument<String>("subtitle") ?: "",
                     ) { ok -> result.success(ok) }
 
-                    // ── Фоновый контур ────────────────────────────────────
                     "monitorStart" -> {
                         val mode = call.argument<String>("mode")
                             ?: MonitorService.MODE_PERSISTENT
                         MonitorAlarm.remember(this, mode)
                         if (!MonitorService.running) MonitorService.start(this, mode)
+                        MonitorAlarm.schedule(this, mode)
                         result.success(true)
                     }
 
                     "monitorStop" -> {
-                        // Остановка из UI остаётся доступной как аварийная
-                        // диагностика, но следующий обычный запуск приложения
-                        // снова включает personal monitor.
                         MonitorAlarm.remember(this, null)
                         MonitorAlarm.cancel(this)
                         MonitorService.stop(this)
