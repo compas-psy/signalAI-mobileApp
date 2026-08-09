@@ -14,7 +14,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -30,6 +30,13 @@ INTERVALS: dict[Timeframe, str] = {
     Timeframe.H1: "60",
     Timeframe.H4: "240",
     Timeframe.D1: "D",
+}
+
+_TIMEFRAME_DURATION: dict[Timeframe, timedelta] = {
+    Timeframe.M15: timedelta(minutes=15),
+    Timeframe.H1: timedelta(hours=1),
+    Timeframe.H4: timedelta(hours=4),
+    Timeframe.D1: timedelta(days=1),
 }
 
 
@@ -179,32 +186,13 @@ def instruments_info(
     return out, report
 
 
-def klines(
-    symbol: str,
-    timeframe: Timeframe,
+def _parse_kline_rows(
+    rows: list,
     *,
-    limit: int = 200,
-    category: str = "linear",
-    fetch=http_json,
-) -> tuple[list[Candle], FetchReport]:
-    """Свечи.
-
-    Биржа отдаёт их **от новых к старым** — ряд разворачивается здесь, один
-    раз и навсегда. Перевёрнутый ряд не падает, он просто считает всё
-    наоборот, и заметить это по одному числу невозможно.
-    """
-    if timeframe not in INTERVALS:
-        raise ValueError(
-            f"Bybit не отдаёт таймфрейм {timeframe.value}; "
-            f"доступны {sorted(t.value for t in INTERVALS)}"
-        )
-    url = (
-        f"{BASE}/v5/market/kline?category={category}&symbol={symbol}"
-        f"&interval={INTERVALS[timeframe]}&limit={limit}"
-    )
-    payload, report = fetch(url)
-    rows = _result(payload).get("list") or []
-
+    duration: timedelta,
+    moment: datetime,
+    source: str,
+) -> list[Candle]:
     out: list[Candle] = []
     for row in rows:
         if not isinstance(row, list) or len(row) < 6:
@@ -222,12 +210,91 @@ def klines(
                 close=close,
                 volume_units=_dec(row[5]),
                 volume_notional=_dec(row[6]) if len(row) > 6 else None,
-                is_closed=True,
-                source="bybit",
+                # Bybit includes the currently forming candle in /kline.
+                # Treating it as closed made the canonical DB repaint and,
+                # more importantly, allowed the tracker to believe a move was
+                # final before the interval ended.
+                is_closed=open_time + duration <= moment,
+                source=source,
             )
         )
     out.sort(key=lambda c: c.open_time)
-    return out, report
+    return out
+
+
+def klines(
+    symbol: str,
+    timeframe: Timeframe,
+    *,
+    limit: int = 200,
+    category: str = "linear",
+    fetch=http_json,
+    now: datetime | None = None,
+) -> tuple[list[Candle], FetchReport]:
+    """Свечи старших таймфреймов с честным признаком закрытия.
+
+    Биржа отдаёт их **от новых к старым** и включает текущую формирующуюся
+    свечу. Ряд разворачивается здесь, а ``is_closed`` вычисляется по времени
+    интервала — ingestion сохранит только закрытые бары, в то время как UI
+    может использовать текущую свечу как display-only overlay.
+    """
+    if timeframe not in INTERVALS:
+        raise ValueError(
+            f"Bybit не отдаёт таймфрейм {timeframe.value}; "
+            f"доступны {sorted(t.value for t in INTERVALS)}"
+        )
+    url = (
+        f"{BASE}/v5/market/kline?category={category}&symbol={symbol}"
+        f"&interval={INTERVALS[timeframe]}&limit={limit}"
+    )
+    payload, report = fetch(url)
+    rows = _result(payload).get("list") or []
+    moment = now or datetime.now(UTC)
+    return (
+        _parse_kline_rows(
+            rows,
+            duration=_TIMEFRAME_DURATION[timeframe],
+            moment=moment,
+            source="bybit",
+        ),
+        report,
+    )
+
+
+def minute_klines(
+    symbol: str,
+    *,
+    limit: int = 20,
+    category: str = "linear",
+    fetch=http_json,
+    now: datetime | None = None,
+) -> tuple[list[Candle], FetchReport]:
+    """Последние минутные свечи для server-side сопровождения paper-сделок.
+
+    Они намеренно **не пишутся** в каноническую таблицу ``bars`` и не
+    участвуют в поиске сетапов. Это оперативный датчик исполнения: серверу
+    нельзя ждать закрытия H1, если цена DOGE/USDT уже коснулась подтверждённой
+    точки входа. Используются только закрытые минуты; задержка не больше одной
+    минуты, зато одна и та же формирующаяся свеча не переигрывается после
+    переноса стопа.
+    """
+    safe_limit = max(2, min(int(limit), 200))
+    url = (
+        f"{BASE}/v5/market/kline?category={category}&symbol={symbol}"
+        f"&interval=1&limit={safe_limit}"
+    )
+    payload, report = fetch(url)
+    rows = _result(payload).get("list") or []
+    moment = now or datetime.now(UTC)
+    return (
+        _parse_kline_rows(
+            rows,
+            duration=timedelta(minutes=1),
+            moment=moment,
+            source="bybit-1m-live",
+        ),
+        report,
+    )
 
 
 def open_interest_series(
