@@ -1,9 +1,8 @@
 """Три стратегии §10–§12: каждое условие ТЗ снимается отдельно.
 
-Форма теста одна: собираем контекст, где кандидат обязан появиться, затем
-ломаем ровно одно условие ТЗ и убеждаемся, что кандидата нет **и что причина
-названа**. Отбраковка без причины не позволяет отличить «рынок не дал» от
-«движок сломался».
+Structural setup failures reject a strategy. A qualified pullback that is
+missing only the final trigger remains a Candidate so pipeline admission can
+store it as WATCH and recheck it on later H1 bars.
 """
 
 from __future__ import annotations
@@ -151,17 +150,19 @@ def test_pullback_needs_two_zones():
     assert "zone_confluence" in {c.name for c in result.failed}
 
 
-def test_pullback_needs_two_triggers():
-    """§10.3: минимум два подтверждения."""
+def test_pullback_without_final_trigger_remains_watch_candidate():
+    """Хороший setup без trigger не теряется: его перепроверит H1 pipeline."""
     ctx = pullback_context()
-    lonely = reading(
+    no_trigger = reading(
         "smc", "smc_context", {**ctx.smc.payload, "sweeps": [], "events": []}
     )
     result = trend_pullback.build(
-        replace(ctx, smc=lonely, price_action=None, volume_reading=None)
+        replace(ctx, smc=no_trigger, price_action=None, volume_reading=None)
     )
-    assert isinstance(result, Rejection)
-    assert "triggers" in {c.name for c in result.failed}
+    assert isinstance(result, Candidate)
+    checks = {c.name: c for c in result.checks}
+    assert checks["zone_confluence"].passed
+    assert not checks["triggers"].passed
 
 
 def test_pullback_rejects_too_deep_retracement():
@@ -195,8 +196,8 @@ def breakout_context(**over) -> SetupContext:
         support_touches=3, resistance_touches=3, inside_ratio=0.95, width_atr=2.5,
     )
     bars = [bar(i, "104", "106", "102", "105") for i in range(40)]
-    bars.append(bar(40, "110", "116", "109", "115", "500"))   # пробой
-    bars.append(bar(41, "115", "116", "110", "111"))          # ретест удержан
+    bars.append(bar(40, "110", "116", "109", "115", "500"))
+    bars.append(bar(41, "115", "116", "110", "111"))
     wyckoff = reading("wyckoff", "wyckoff_phase", {"range": trading_range, "events": []})
     base = dict(
         instrument_id="MOEX:FUT:SIU6",
@@ -219,17 +220,15 @@ def test_breakout_produces_candidate():
 
 
 def test_breakout_needs_a_range_from_wyckoff_detector():
-    """Диапазон один на весь движок: своего определения здесь нет."""
     result = breakout_retest.build(breakout_context(wyckoff=None))
     assert isinstance(result, Rejection)
     assert "range" in {c.name for c in result.failed}
 
 
 def test_breakout_needs_body():
-    """§11.2: тело пробоя ≥0.7 ATR — иначе это не импульс."""
     ctx = breakout_context()
     weak = list(ctx.setup_bars)
-    weak[40] = bar(40, "110", "116", "109", "111", "500")   # тело 1 при ATR 4
+    weak[40] = bar(40, "110", "116", "109", "111", "500")
     result = breakout_retest.build(replace(ctx, setup_bars=weak, context_bars=weak))
     assert isinstance(result, Rejection)
     assert "breakout_body" in {c.name for c in result.failed}
@@ -242,10 +241,9 @@ def test_breakout_needs_volume():
 
 
 def test_false_breakout_is_refused_not_reversed():
-    """§11.4: ложный пробой отменяет идею, автопереворот запрещён."""
     ctx = breakout_context()
     bars = list(ctx.setup_bars)
-    bars[41] = bar(41, "115", "116", "104", "105")   # закрытие глубоко внутрь
+    bars[41] = bar(41, "115", "116", "104", "105")
     result = breakout_retest.build(replace(ctx, setup_bars=bars, context_bars=bars))
     assert isinstance(result, Rejection)
     assert "retest_held" in {c.name for c in result.failed}
@@ -307,7 +305,6 @@ def test_reversal_produces_candidate_when_all_six_hold():
     [("climax", "climax"), ("spring", "spring"), ("lps", "test")],
 )
 def test_reversal_requires_every_event(drop, expected_check):
-    """§12.3: без любого подтверждения — только наблюдение."""
     ctx = reversal_context()
     events = [e for e in ctx.wyckoff.payload["events"] if e.kind != drop]
     trimmed = reading(
@@ -320,7 +317,6 @@ def test_reversal_requires_every_event(drop, expected_check):
 
 
 def test_reversal_requires_choch_after_spring_not_before():
-    """Порядок проверяется по времени, а не по факту наличия CHoCH."""
     ctx = reversal_context()
     early = reading(
         "smc", "smc_context",
@@ -333,7 +329,6 @@ def test_reversal_requires_choch_after_spring_not_before():
 
 
 def test_reversal_requires_prior_move():
-    """§12.1: разворачивать нечего, если до диапазона не было движения."""
     ctx = reversal_context()
     flat = [bar(i, "105", "107", "103", "106") for i in range(62)]
     result = wyckoff_reversal.build(replace(ctx, setup_bars=flat, context_bars=flat))
@@ -342,7 +337,6 @@ def test_reversal_requires_prior_move():
 
 
 def test_reversal_stop_is_behind_spring():
-    """Пробили Spring — разворота не было; другой стоп бессмыслен."""
     result = wyckoff_reversal.build(reversal_context())
     assert isinstance(result, Candidate)
     assert result.stop < Decimal(98)
@@ -370,16 +364,6 @@ def _on_grid(price: Decimal, tick: Decimal) -> bool:
     ],
 )
 def test_все_цены_плана_лежат_на_шаге_инструмента(build, context):
-    """Ни одна цена плана не может быть вне сетки цен инструмента.
-
-    Стоп и цели округлялись всегда, зона входа — нет: она приходила из ATR
-    числом вроде 1874.023606. Такую заявку биржа не примет, а приложение,
-    подбирающее число знаков по самим ценам, из-за одного такого края
-    показывало ВСЕ цены идеи с шестью знаками.
-
-    Тест общий для всех стратегий намеренно: следующая забудет округлить
-    ровно так же, и поймать это должен не разбор скриншота.
-    """
     tick = Decimal("0.01")
     result = build(context(tick_size=tick))
     assert isinstance(result, Candidate), result
@@ -391,5 +375,4 @@ def test_все_цены_плана_лежат_на_шаге_инструмен�
         *[(f"tp{i}", t.price) for i, t in enumerate(result.targets, start=1)],
     ):
         assert _on_grid(price, tick), f"{name}={price} не лежит на шаге {tick}"
-    # Опорная цена обязана остаться внутри зоны: из неё считается риск.
     assert result.entry_low <= result.entry_reference <= result.entry_high
