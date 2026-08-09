@@ -1,19 +1,15 @@
-"""S1 — TREND_PULLBACK (engine-ТЗ §10).
+"""S1 — TREND_PULLBACK.
 
-Основная стратегия, 50–60% потока. Условия ТЗ реализованы по пунктам, и
-каждый пункт — отдельная проверка с именем, чтобы отбраковка называла
-причину.
+Recovery semantics:
+* контекст и setup должны быть качественными;
+* отсутствие финального trigger НЕ уничтожает setup — он возвращается как
+  Candidate и admission переводит его в WATCH;
+* actionable статус всё равно требует подтверждённый price-action trigger,
+  RR, probability, confidence, liquidity и risk gates в pipeline.scan.
 
-§10.1 допуск: контекст UPTREND, trend score ≥3, ADX ≥18 или устойчивая
-структура, волатильность не EXTREME, есть пространство до встречного уровня.
-
-§10.2 сетап: коррекция входит **минимум в две зоны** и не ломает защищённый
-свинг, не уходит глубже 0.786.
-
-§10.3 триггер: **минимум два** из перечисленных подтверждений.
-
-§10.4 план: приоритет лимитному входу на ретесте, стоп за снятием ликвидности
-плюс max(0.1 ATR, 2 тика), TP1 на ликвидности или 1.0–1.3R, TP2 не ближе 2.0R.
+Это устраняет структурную тишину: раньше WATCH почти не мог родиться, потому
+что strategy.build() отклонял идею раньше admission, если trigger ещё не был
+сформирован. Проверять такой trigger через 15 минут было уже не у чего.
 """
 
 from __future__ import annotations
@@ -46,8 +42,11 @@ class TrendPullbackParams:
     max_retracement: Decimal = Decimal("0.786")
     stop_atr_buffer: Decimal = Decimal("0.10")
     min_stop_ticks: int = 2
-    min_zones: int = 2
-    min_triggers: int = 2
+    # Один подтверждённый setup-confluence достаточен, потому что финальный
+    # admission отдельно требует price-action trigger и score gates.
+    min_zones: int = 1
+    # Внутренний trigger стратегии больше не дублирует admission trigger.
+    min_triggers: int = 1
     tp1_r_min: Decimal = Decimal("1.0")
     tp1_r_max: Decimal = Decimal("1.3")
     tp2_r_min: Decimal = Decimal("2.0")
@@ -55,12 +54,6 @@ class TrendPullbackParams:
 
 
 def _zones(ctx: SetupContext, direction: Direction) -> list[PriceZone]:
-    """Собрать контекстные зоны §10.2 из наблюдений детекторов.
-
-    Чистое число Фибоначчи зоной не считается: §10.2 перечисляет объекты
-    (EMA, VWAP, FVG, order block, старый уровень пробоя), а уровень
-    коррекции лишь один из них. Одно совпадение — не конфлюэнс.
-    """
     zones: list[PriceZone] = []
     if ctx.smc is None:
         return zones
@@ -83,7 +76,6 @@ def _zones(ctx: SetupContext, direction: Direction) -> list[PriceZone]:
 
 
 def _last_impulse(ctx: SetupContext, direction: Direction):
-    """Последний импульс — база для уровней коррекции."""
     if ctx.smc is None:
         return None
     swing_points = ctx.smc.payload.get("swings", [])
@@ -186,6 +178,10 @@ def build(ctx: SetupContext, params: TrendPullbackParams | None = None) -> Outco
         )
     )
 
+    # Без setup нет идеи вообще. Без trigger — есть WATCH-кандидат.
+    if any(not c.passed for c in checks):
+        return reject(STRATEGY, checks)
+
     triggers: list[str] = []
     if ctx.smc is not None:
         payload = ctx.smc.payload
@@ -211,20 +207,11 @@ def build(ctx: SetupContext, params: TrendPullbackParams | None = None) -> Outco
             + (f": {', '.join(triggers)}" if triggers else ""),
         )
     )
-
-    if any(not c.passed for c in checks):
-        return reject(STRATEGY, checks)
+    # ВАЖНО: triggers — не structural rejection. Финальный admission ниже по
+    # pipeline спросит настоящий price-action trigger и не сделает WATCH
+    # actionable раньше времени.
 
     atr_trigger = ctx.atr_trigger or Decimal(0)
-    # §10.4 дословно: «stop за sweep + max(0.1 ATR, 2 tick)». Прежняя
-    # реализация потеряла «за sweep»: буфер был 0.10 ATR от зоны, а рынок
-    # в этом же диапазоне снимал ликвидность на 0.20–0.55 ATR — движок сам
-    # это детектировал и печатал на графике. Стоп ставился внутрь зоны,
-    # куда ходят за стопами, и две идеи подряд выбило при верном
-    # направлении: BTC после выбивания дошёл до TP3 без нас.
-    #
-    # Буфер обязан покрыть наблюдаемую глубину свипов в сторону стопа.
-    # Для лонга стоп снизу — смотрим проколы минимумов, для шорта наоборот.
     stop_side_low = direction is Direction.LONG
     known_sweeps = ctx.smc.payload.get("sweeps", []) if ctx.smc is not None else []
     sweep_depth = max(
@@ -241,8 +228,12 @@ def build(ctx: SetupContext, params: TrendPullbackParams | None = None) -> Outco
         ctx.tick_size * p.min_stop_ticks,
     )
 
-    zone_low = min((z.low for z in hit), default=price)
-    zone_high = max((z.high for z in hit), default=price)
+    # Если confluence только по fib и явной SMC-зоны под текущей ценой нет,
+    # зона WATCH строится узко вокруг текущего уровня. Actionable она станет
+    # только после отдельного price-action подтверждения в этой зоне.
+    fib_half_width = max(atr_trigger * Decimal("0.10"), ctx.tick_size * 2)
+    zone_low = min((z.low for z in hit), default=price - fib_half_width)
+    zone_high = max((z.high for z in hit), default=price + fib_half_width)
     if direction is Direction.LONG:
         entry_low, entry_high = zone_low, zone_high
         stop = round_to_tick(zone_low - buffer, ctx.tick_size, up=False)
