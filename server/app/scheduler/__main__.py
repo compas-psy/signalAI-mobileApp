@@ -16,6 +16,7 @@ from datetime import timedelta
 
 from ..db import get_session_factory
 from ..notification_outbox import materialize
+from ..paper.live_tracker import track_crypto_live
 from ..version import ENGINE_VERSION
 from .runner import build_default_scheduler, run_forever
 
@@ -48,6 +49,32 @@ def main() -> int:
         scan_every=_minutes("SIGNALAI_SCAN_EVERY_MINUTES", 15),
         portfolio_every=_minutes("SIGNALAI_PORTFOLIO_EVERY_MINUTES", 60),
     )
+
+    # Execution monitoring is intentionally faster than signal discovery.
+    # H1/H4/D1 closed bars remain the only source for setups; after explicit
+    # approval a crypto limit/TP/SL is an execution fact and must not wait up
+    # to an hour. Closed Bybit 1m bars cap the delay at about one minute.
+    # Materialising the outbox in the same committed scheduler job makes the
+    # notification genuinely server-originated even when the phone is offline.
+    def paper_live(session):
+        report = track_crypto_live(session)
+        queued = materialize(session, include_smoke=False)
+        return f"{report.summary()}, уведомлений в outbox {queued}"
+
+    scheduler.add(
+        "paper-live",
+        _minutes("SIGNALAI_PAPER_LIVE_EVERY_MINUTES", 1),
+        paper_live,
+    )
+    # Run it next to the ordinary paper tracker, before scan/portfolio/research
+    # can occupy the sequential scheduler with heavier work.
+    live_job = scheduler.jobs.pop()
+    paper_index = next(
+        (i for i, job in enumerate(scheduler.jobs) if job.name == "paper"),
+        len(scheduler.jobs),
+    )
+    scheduler.jobs.insert(paper_index, live_job)
+
     session_factory = get_session_factory()
 
     # This is deliberately server-originated. On every deployment/restart the
