@@ -11,7 +11,9 @@ import org.json.JSONObject
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
-import java.time.Instant
+import java.text.SimpleDateFormat
+import java.util.Locale
+import java.util.TimeZone
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlin.math.min
@@ -139,12 +141,15 @@ class PushService : Service() {
                     .take(110)
                 updateStatus("Server push: переподключение · $short")
                 sleepInterruptibly(backoffSeconds)
-                backoffSeconds = min(60, when {
-                    backoffSeconds < 5 -> 5
-                    backoffSeconds < 15 -> 15
-                    backoffSeconds < 30 -> 30
-                    else -> 60
-                })
+                backoffSeconds = min(
+                    60L,
+                    when {
+                        backoffSeconds < 5 -> 5L
+                        backoffSeconds < 15 -> 15L
+                        backoffSeconds < 30 -> 30L
+                        else -> 60L
+                    },
+                )
             }
         }
     }
@@ -217,8 +222,19 @@ class PushService : Service() {
 
     private fun isRecent(event: JSONObject): Boolean {
         val raw = event.optString("created_at", "")
-        val created = runCatching { Instant.parse(raw).epochSecond }.getOrNull() ?: return true
-        return Instant.now().epochSecond - created <= FIRST_RUN_RECENT_SECONDS
+        if (raw.isBlank()) return true
+        // Server emits ISO-8601 with microseconds. java.time is API 26+, while
+        // SignalAI still supports older Android, so normalize to milliseconds
+        // and parse with the platform date formatter instead of relying on
+        // desugaring being enabled in a sideload build.
+        val normalized = raw
+            .replace(Regex("(\\.\\d{3})\\d+"), "$1")
+            .replace("Z", "+00:00")
+        val format = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSXXX", Locale.US).apply {
+            timeZone = TimeZone.getTimeZone("UTC")
+        }
+        val created = runCatching { format.parse(normalized)?.time }.getOrNull() ?: return true
+        return System.currentTimeMillis() - created <= FIRST_RUN_RECENT_SECONDS * 1000
     }
 
     private fun postEvent(event: JSONObject, id: Long) {
