@@ -42,5 +42,9 @@ def test_manual_test_event_is_created_on_server_and_read_from_outbox(client):
 
 
 def test_sse_route_is_registered_as_owner_api():
-    paths = {getattr(route, "path", "") for route in app.routes}
+    # FastAPI/Starlette may internally nest included APIRouters, so walking
+    # only ``app.routes`` is an implementation-detail assertion and can show
+    # just the parent router. OpenAPI is the actual HTTP contract exposed by
+    # the application and therefore the right registration check.
+    paths = set(app.openapi()["paths"])
     assert "/api/v1/notifications/stream" in paths
