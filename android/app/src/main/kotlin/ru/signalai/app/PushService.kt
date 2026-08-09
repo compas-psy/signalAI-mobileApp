@@ -227,8 +227,8 @@ class PushService : Service() {
         // SignalAI still supports older Android, so normalize to milliseconds
         // and parse with the platform date formatter instead of relying on
         // desugaring being enabled in a sideload build.
-        val normalized = raw
-            .replace(Regex("(\\.\\d{3})\\d+"), "$1")
+        val normalized = Regex("(\\.\\d{3})\\d+")
+            .replace(raw) { match -> match.groupValues[1] }
             .replace("Z", "+00:00")
         val format = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSXXX", Locale.US).apply {
             timeZone = TimeZone.getTimeZone("UTC")
