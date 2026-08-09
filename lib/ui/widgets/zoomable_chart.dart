@@ -36,7 +36,7 @@ SignalChart sliceSignalChart(
       ChartZone(
         from: zone.from,
         to: zone.to,
-        startIndex: math.max(0, zone.startIndex - safeStart),
+        startIndex: math.max(0, zone.startIndex - safeStart).toInt(),
         label: zone.label,
       ),
     );
