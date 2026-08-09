@@ -5,13 +5,12 @@
     <uses-permission android:name="android.permission.USE_FINGERPRINT"/>
 
     <!-- SignalAI — персональное приложение, где пользователь явно просит
-         своевременное уведомление о торговом сигнале. На Android 12+ только
-         exact alarm имеет системное исключение, позволяющее поднять bounded
-         foreground-service из фона. Без этого inexact alarm мог сработать,
-         но startForegroundService() быть отклонён системой. -->
+         своевременное уведомление о торговом сигнале. На Android 12+ exact
+         alarm остаётся независимым fallback для bounded reconciliation. -->
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
 
@@ -46,6 +45,19 @@
             android:name=".MonitorService"
             android:exported="false"
             android:foregroundServiceType="dataSync"/>
+
+        <!-- Long-lived authenticated SSE is the primary low-latency
+             server→phone channel. It only transfers SignalAI notification
+             events; market analysis and order execution remain on the VPS. -->
+        <service
+            android:name=".PushService"
+            android:exported="false"
+            android:stopWithTask="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Persistent authenticated server-sent trading signal notifications for the device owner"/>
+        </service>
 
         <receiver
             android:name=".MonitorAlarmReceiver"
