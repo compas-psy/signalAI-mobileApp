@@ -30,6 +30,9 @@ def test_crypto_chart_contains_current_display_candle_without_polluting_db(
         in_universe=True,
     )
     session.add(instrument)
+    # ``Bar.instrument_id`` points to the business key rather than the ORM
+    # relationship, so make the FK parent explicit before inserting the bar.
+    session.flush()
     session.add(
         Bar(
             instrument_id=instrument.instrument_id,
