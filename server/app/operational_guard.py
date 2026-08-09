@@ -1,9 +1,13 @@
 """Fail-safe reconciliation for the owner-facing trading lifecycle.
 
-The scheduler is the primary tracker. This guard enforces the invariant the UI
-may rely on: an idea with an existing paper trade cannot remain an actionable
-TRIGGERED card, and a pending entry cannot wait until an old thesis becomes
-tradable again merely because price returned days later.
+The scheduler remains the primary tracker. This guard enforces a smaller set
+of invariants that must never be violated in the owner UI:
+
+* an idea with a live paper trade is not still an actionable TRIGGERED card;
+* an intraday limit entry cannot remain alive for days;
+* if target/invalidation happened before the promised entry, a later return to
+  the old price does not resurrect the plan;
+* a terminal paper plan cannot be approved again.
 """
 
 from __future__ import annotations
@@ -31,20 +35,21 @@ def _utc(value: datetime) -> datetime:
 
 
 def _is_long(value) -> bool:
-    return str(value) == str(Direction.LONG)
+    return str(getattr(value, "value", value)) == Direction.LONG.value
 
 
 def _path(start: IdeaStatus, goal: IdeaStatus) -> list[IdeaStatus]:
+    """Shortest valid §18 path, used only to repair an existing fact."""
     if start is goal:
         return []
     seen = {start}
     queue: list[tuple[IdeaStatus, list[IdeaStatus]]] = [(start, [])]
     while queue:
-        node, path = queue.pop(0)
+        node, prefix = queue.pop(0)
         for nxt in ALLOWED.get(node, frozenset()):
             if nxt in seen:
                 continue
-            candidate = [*path, nxt]
+            candidate = [*prefix, nxt]
             if nxt is goal:
                 return candidate
             seen.add(nxt)
@@ -61,10 +66,10 @@ def _move(
     detail: str,
     snapshot: dict | None = None,
 ) -> bool:
-    start = IdeaStatus(idea.status)
-    if start is goal or start.is_terminal:
+    current = IdeaStatus(idea.status)
+    if current is goal or current.is_terminal:
         return False
-    path = _path(start, goal)
+    path = _path(current, goal)
     if not path:
         return False
     for step in path:
@@ -82,7 +87,6 @@ def _move(
 
 
 def _decision_ttl(idea: TradeIdea) -> timedelta:
-    """How long a trigger/limit entry remains a live intraday plan."""
     tf = str(idea.trigger_timeframe or "").strip().lower()
     if tf in {"1m", "3m", "5m", "15m", "30m", "m1", "m3", "m5", "m15", "m30"}:
         return timedelta(hours=2)
@@ -90,7 +94,7 @@ def _decision_ttl(idea: TradeIdea) -> timedelta:
         return timedelta(hours=24)
     if tf in {"1d", "d1", "day"}:
         return timedelta(hours=72)
-    # H1 and unknown intraday triggers: one trading session at most.
+    # H1 and unknown intraday trigger: one trading session.
     return timedelta(hours=6)
 
 
@@ -107,16 +111,24 @@ def _triggered_at(session: Session, idea: TradeIdea) -> datetime:
     return _utc(value or idea.signal_time)
 
 
-def _close_pending_without_entry(
+def _approved_terminal_goal(idea: TradeIdea) -> IdeaStatus:
+    # ACTIVE is already post-owner-approval. §18 permits ACTIVE -> CANCELLED,
+    # while TIMED_OUT is used for a pre-decision trigger/watch window.
+    return (
+        IdeaStatus.CANCELLED
+        if IdeaStatus(idea.status) is IdeaStatus.ACTIVE
+        else IdeaStatus.TIMED_OUT
+    )
+
+
+def _cancel_if_thesis_happened_before_entry(
     session: Session,
     trade: PaperTrade,
     idea: TradeIdea,
 ) -> bool:
-    """Kill a limit plan if target/invalidation happened before entry touch."""
     if PaperStatus(trade.status) is not PaperStatus.PENDING:
         return False
 
-    activated = _utc(trade.opened_at)
     bars = list(
         session.execute(
             select(Bar)
@@ -124,7 +136,7 @@ def _close_pending_without_entry(
                 Bar.instrument_id == trade.instrument_id,
                 Bar.timeframe == Timeframe.H1,
                 Bar.is_closed.is_(True),
-                Bar.open_time > activated,
+                Bar.open_time > _utc(trade.opened_at),
             )
             .order_by(Bar.open_time)
         ).scalars()
@@ -135,9 +147,11 @@ def _close_pending_without_entry(
     long = _is_long(trade.direction)
     targets = [Decimal(str(raw)) for raw in (trade.tp_prices or [])]
     tp1 = targets[0] if targets else None
+
     for bar in bars:
+        # Chronology matters: once an entry was really available, the ordinary
+        # paper tracker owns the trade and this guard must not reinterpret it.
         if bar.low <= trade.entry <= bar.high:
-            # A valid entry existed first. Normal tracker owns it from here.
             return False
 
         target_passed = tp1 is not None and (
@@ -158,8 +172,7 @@ def _close_pending_without_entry(
             current = IdeaStatus(idea.status)
             goal = (
                 IdeaStatus.MISSED
-                if current
-                in {IdeaStatus.DISCOVERED, IdeaStatus.WATCH, IdeaStatus.TRIGGERED}
+                if current in {IdeaStatus.DISCOVERED, IdeaStatus.WATCH, IdeaStatus.TRIGGERED}
                 else IdeaStatus.CANCELLED
             )
         else:
@@ -195,24 +208,9 @@ def _target_for_trade(trade: PaperTrade, idea: TradeIdea) -> IdeaStatus | None:
             return IdeaStatus.TP2_HIT
         return IdeaStatus.MANAGING
     if status is PaperStatus.CANCELLED:
-        current = IdeaStatus(idea.status)
-        if trade.outcome == "MISS" and current in {
-            IdeaStatus.DISCOVERED,
-            IdeaStatus.WATCH,
-            IdeaStatus.TRIGGERED,
-        }:
-            return IdeaStatus.MISSED
-        return (
-            IdeaStatus.CANCELLED
-            if current is IdeaStatus.ACTIVE
-            else IdeaStatus.TIMED_OUT
-        )
+        return _approved_terminal_goal(idea)
     if status is PaperStatus.CLOSED:
-        return (
-            IdeaStatus.STOPPED
-            if trade.outcome in {"SL", "BE"}
-            else IdeaStatus.CLOSED
-        )
+        return IdeaStatus.STOPPED if trade.outcome in {"SL", "BE"} else IdeaStatus.CLOSED
     return None
 
 
@@ -227,16 +225,16 @@ def reconcile_operational_lifecycle(
     trades = list(session.execute(select(PaperTrade)).scalars())
     trade_by_idea = {trade.idea_id: trade for trade in trades}
 
-    # Invalidate stale PENDING before repairing legacy TRIGGERED -> ACTIVE.
-    # This lets a HYPE-like thesis that already ran to target become MISSED
-    # rather than resurrecting when price later revisits the old limit.
+    # Resolve PENDING before repairing old TRIGGERED -> ACTIVE, so a thesis
+    # that already ran without entry may still become MISSED rather than being
+    # resurrected as an active approved plan.
     for trade in trades:
         if PaperStatus(trade.status) is not PaperStatus.PENDING:
             continue
         idea = session.get(TradeIdea, trade.idea_id)
         if idea is None:
             continue
-        if _close_pending_without_entry(session, trade, idea):
+        if _cancel_if_thesis_happened_before_entry(session, trade, idea):
             changed += 1
             continue
 
@@ -250,10 +248,11 @@ def reconcile_operational_lifecycle(
             trade.last_reconciled_at = moment
             trade.outcome = "TIMEOUT"
             trade.close_reason = "цена до входа не дошла, окно сделки истекло"
+            goal = _approved_terminal_goal(idea)
             if _move(
                 session,
                 idea,
-                IdeaStatus.TIMED_OUT,
+                goal,
                 code="paper_entry_timeout_guard",
                 detail=trade.close_reason,
                 snapshot={
@@ -263,7 +262,7 @@ def reconcile_operational_lifecycle(
             ):
                 changed += 1
 
-    # Existing paper trade is stronger evidence than a stale card status.
+    # Existing paper trade is stronger evidence than a stale idea card.
     for trade in trades:
         idea = session.get(TradeIdea, trade.idea_id)
         if idea is None or IdeaStatus(idea.status).is_terminal:
@@ -277,14 +276,14 @@ def reconcile_operational_lifecycle(
             detail=f"статус идеи восстановлен из paper-сделки {trade.id}",
             snapshot={
                 "paper_trade_id": str(trade.id),
-                "paper_status": str(trade.status),
+                "paper_status": str(getattr(trade.status, "value", trade.status)),
                 "tps_taken": trade.tps_taken,
             },
         ):
             changed += 1
 
-    # Trigger without any trade is a short-lived decision request, not a
-    # standing recommendation for the full multi-day idea horizon.
+    # Trigger without a trade is a short-lived decision request, not standing
+    # advice for the full multi-day idea horizon.
     triggered = list(
         session.execute(
             select(TradeIdea).where(TradeIdea.status == IdeaStatus.TRIGGERED)
@@ -326,11 +325,9 @@ def _terminal_approval_response(session: Session, request: Request) -> Response 
     if request.method != "POST" or not request.url.path.endswith("/approve-paper"):
         return None
     parts = request.url.path.strip("/").split("/")
-    if len(parts) < 2:
-        return None
     try:
         idea_id = UUID(parts[-2])
-    except ValueError:
+    except (IndexError, ValueError):
         return None
     trade = session.execute(
         select(PaperTrade)
@@ -338,19 +335,13 @@ def _terminal_approval_response(session: Session, request: Request) -> Response 
         .order_by(PaperTrade.created_at.desc())
         .limit(1)
     ).scalar_one_or_none()
-    if trade is None or PaperStatus(trade.status) in {
-        PaperStatus.PENDING,
-        PaperStatus.OPEN,
-    }:
+    if trade is None or PaperStatus(trade.status) in {PaperStatus.PENDING, PaperStatus.OPEN}:
         return None
     reason = trade.close_reason or trade.outcome or str(trade.status)
     return JSONResponse(
         status_code=409,
         content={
-            "detail": (
-                "paper-план уже завершён и повторно не подтверждается: "
-                f"{reason}"
-            )
+            "detail": "paper-план уже завершён и повторно не подтверждается: " + reason
         },
     )
 
