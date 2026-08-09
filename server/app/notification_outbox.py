@@ -1,10 +1,4 @@
-"""Durable owner notification outbox.
-
-The Android client may change networks, lose a VPN route, or be killed.  A
-notification therefore cannot exist only in process memory.  The server writes
-each semantic event under a stable dedup key and the phone consumes rows by a
-monotonic cursor.  Reconnection is then lossless and idempotent.
-"""
+"""Durable owner notification outbox."""
 
 from __future__ import annotations
 
@@ -12,10 +6,11 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import select, text
+from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
-from .models import Instrument, PaperTrade, TradeIdea
+from .models import Instrument, NotificationOutbox, PaperTrade, TradeIdea
 from .models.enums import IdeaStatus, PaperStatus, QualityStatus
 from .operational_guard import reconcile_operational_lifecycle
 
@@ -42,27 +37,6 @@ class NotificationEvent:
         }
 
 
-def ensure_outbox(session: Session) -> None:
-    # Kept outside Alembic deliberately: this is delivery infrastructure, not
-    # trading truth.  Lazy creation also lets an existing VPS gain server push
-    # without a destructive schema migration.
-    session.execute(
-        text(
-            """
-            CREATE TABLE IF NOT EXISTS signalai_notification_outbox (
-                id BIGSERIAL PRIMARY KEY,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                dedup_key TEXT NOT NULL UNIQUE,
-                kind VARCHAR(32) NOT NULL,
-                title TEXT NOT NULL,
-                body TEXT NOT NULL,
-                payload TEXT NOT NULL DEFAULT ''
-            )
-            """
-        )
-    )
-
-
 def emit(
     session: Session,
     *,
@@ -72,25 +46,19 @@ def emit(
     body: str,
     payload: str = "",
 ) -> int | None:
-    ensure_outbox(session)
-    return session.execute(
-        text(
-            """
-            INSERT INTO signalai_notification_outbox
-                (dedup_key, kind, title, body, payload)
-            VALUES (:key, :kind, :title, :body, :payload)
-            ON CONFLICT (dedup_key) DO NOTHING
-            RETURNING id
-            """
-        ),
-        {
-            "key": key[:240],
-            "kind": kind[:32],
-            "title": title[:240],
-            "body": body[:1000],
-            "payload": payload[:500],
-        },
-    ).scalar_one_or_none()
+    stmt = (
+        insert(NotificationOutbox)
+        .values(
+            dedup_key=key[:240],
+            kind=kind[:32],
+            title=title[:240],
+            body=body[:1000],
+            payload=payload[:500],
+        )
+        .on_conflict_do_nothing(index_elements=[NotificationOutbox.dedup_key])
+        .returning(NotificationOutbox.id)
+    )
+    return session.execute(stmt).scalar_one_or_none()
 
 
 def list_after(
@@ -99,28 +67,23 @@ def list_after(
     *,
     limit: int = 100,
 ) -> list[NotificationEvent]:
-    ensure_outbox(session)
-    rows = session.execute(
-        text(
-            """
-            SELECT id, created_at, dedup_key, kind, title, body, payload
-            FROM signalai_notification_outbox
-            WHERE id > :after
-            ORDER BY id
-            LIMIT :limit
-            """
-        ),
-        {"after": max(0, int(after)), "limit": max(1, min(int(limit), 200))},
-    ).all()
+    rows = list(
+        session.execute(
+            select(NotificationOutbox)
+            .where(NotificationOutbox.id > max(0, int(after)))
+            .order_by(NotificationOutbox.id)
+            .limit(max(1, min(int(limit), 200)))
+        ).scalars()
+    )
     return [
         NotificationEvent(
-            id=int(row[0]),
-            created_at=row[1],
-            key=str(row[2]),
-            kind=str(row[3]),
-            title=str(row[4]),
-            body=str(row[5]),
-            payload=str(row[6] or ""),
+            id=row.id,
+            created_at=row.created_at,
+            key=row.dedup_key,
+            kind=row.kind,
+            title=row.title,
+            body=row.body,
+            payload=row.payload,
         )
         for row in rows
     ]
@@ -256,10 +219,4 @@ def materialize(
     return created
 
 
-__all__ = [
-    "NotificationEvent",
-    "emit",
-    "ensure_outbox",
-    "list_after",
-    "materialize",
-]
+__all__ = ["NotificationEvent", "emit", "list_after", "materialize"]
