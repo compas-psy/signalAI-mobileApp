@@ -1,0 +1,75 @@
+name: Verify one-shot production deploy
+
+on:
+  push:
+    branches:
+      - claude/release-y40hk5
+    paths:
+      - .github/workflows/verify-deploy-once.yml
+
+concurrency:
+  group: signalai-production-deploy
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Prepare SSH
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
+        run: |
+          set -euo pipefail
+          test -n "$HOST"
+          test -n "$KEY"
+          umask 077
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          if ssh-keyscan -T 10 -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null && [ -s ~/.ssh/known_hosts ]; then
+            :
+          else
+            echo 'StrictHostKeyChecking=accept-new' >> ~/.ssh/config
+          fi
+
+      - name: Read deployed source and health
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          USER_NAME: ${{ secrets.VPS_USER || 'root' }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$USER_NAME@$HOST" 'bash -s' <<'REMOTE' > /tmp/verify.txt
+          set -euo pipefail
+          printf 'deployed_sha='
+          git -C "$HOME/signalai" rev-parse --verify HEAD^{commit}
+          printf 'health='
+          curl -fsS --max-time 30 http://127.0.0.1:8000/health
+          REMOTE
+          cat /tmp/verify.txt
+
+      - name: Comment verification on PR 11
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          text = open('/tmp/verify.txt', encoding='utf-8').read().strip()
+          body = 'Production deploy verification:\n\n```text\n' + text[:5000] + '\n```'
+          with open('/tmp/comment.json', 'w', encoding='utf-8') as f:
+              json.dump({'body': body}, f)
+          PY
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/issues/11/comments" \
+            --data-binary @/tmp/comment.json >/dev/null
+
+      - name: Cleanup
+        if: always()
+        run: shred -u ~/.ssh/id_deploy 2>/dev/null || rm -f ~/.ssh/id_deploy
