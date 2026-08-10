@@ -1,6 +1,6 @@
 """Точка входа сервера SignalAI.
 
-Запуск одной командой (engine-ТЗ §29.1):
+Запуск одной командой (engine-ТЗ §29.1).
 
     uvicorn app.main:app --host 0.0.0.0 --port 8000
 
@@ -22,6 +22,7 @@ from sqlalchemy import text
 from .api.v1 import control as control_routes
 from .api.v1 import ideas as ideas_routes
 from .api.v1 import integrations as integrations_routes
+from .api.v1 import investment_radar as investment_radar_routes
 from .api.v1 import journal as journal_routes
 from .api.v1 import market as market_routes
 from .api.v1 import notifications as notification_routes
@@ -59,6 +60,7 @@ v1.include_router(market_routes.router)
 v1.include_router(ideas_routes.router)
 v1.include_router(risk_routes.router)
 v1.include_router(portfolio_routes.router)
+v1.include_router(investment_radar_routes.router)
 v1.include_router(research_routes.router)
 v1.include_router(paper_routes.router)
 v1.include_router(integrations_routes.router)
