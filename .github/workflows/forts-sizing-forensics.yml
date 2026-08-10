@@ -1,0 +1,86 @@
+name: FORTS sizing forensics
+
+on:
+  pull_request:
+    branches:
+      - claude/release-y40hk5
+    paths:
+      - .github/workflows/forts-sizing-forensics.yml
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prepare read-only SSH access
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
+        run: |
+          set -euo pipefail
+          test -n "$HOST"
+          test -n "$KEY"
+          umask 077
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_forensics
+          chmod 600 ~/.ssh/id_forensics
+          ssh-keyscan -T 10 -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Read FORTS sizing facts
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          USER_NAME: ${{ secrets.VPS_USER || 'root' }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/id_forensics -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+            "$USER_NAME@$HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          cd "$HOME/signalai/server"
+          SUDO=""; [ "$(id -u)" -eq 0 ] || SUDO=sudo
+          $SUDO docker compose --env-file /etc/signalai/.env exec -T api python - <<'PY'
+          from sqlalchemy import select
+          from app.db import get_session_factory
+          from app.models import Instrument, TradeIdea
+
+          session = get_session_factory()()
+          try:
+              rows = session.execute(
+                  select(TradeIdea, Instrument)
+                  .join(Instrument, Instrument.instrument_id == TradeIdea.instrument_id)
+                  .where(TradeIdea.instrument_id.in_(['MOEX:FUT:CCQ6', 'MOEX:FUT:RIU6']))
+                  .order_by(TradeIdea.signal_time.desc())
+              ).all()
+              for idea, ins in rows:
+                  exp = idea.explanation_json or {}
+                  print('FORTS_SIZING', {
+                      'instrument': idea.instrument_id,
+                      'status': getattr(idea.status, 'value', str(idea.status)),
+                      'quality_status': getattr(idea.quality_status, 'value', str(idea.quality_status)),
+                      'admission': exp.get('admission'),
+                      'admission_failed': exp.get('admission_failed'),
+                      'sizing_note': exp.get('sizing_note'),
+                      'quantity': str(idea.quantity),
+                      'risk_pct': str(idea.risk_pct),
+                      'risk_amount': str(idea.risk_amount),
+                      'risk_per_unit': str(idea.risk_per_unit),
+                      'entry_reference': str(idea.entry_reference),
+                      'stop': str(idea.stop),
+                      'currency': ins.currency,
+                      'tick_size': str(ins.tick_size),
+                      'tick_value': str(ins.tick_value),
+                      'quantity_step': str(ins.quantity_step),
+                      'min_quantity': str(ins.min_quantity),
+                      'contract_multiplier': str(ins.contract_multiplier),
+                      'min_notional': str(ins.min_notional),
+                      'metadata_admission': (ins.metadata_json or {}).get('admission'),
+                  })
+          finally:
+              session.close()
+          PY
+          REMOTE
+
+      - name: Cleanup SSH key
+        if: always()
+        run: shred -u ~/.ssh/id_forensics 2>/dev/null || rm -f ~/.ssh/id_forensics
