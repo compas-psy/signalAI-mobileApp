@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:signal_ai/domain/research/equity_radar.dart';
+import 'package:signalai/domain/research/equity_radar.dart';
 
 void main() {
   test('equity radar sorts cards by score descending', () {
