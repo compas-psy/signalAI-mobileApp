@@ -17,7 +17,7 @@ from datetime import timedelta
 from ..db import get_session_factory
 from ..notification_outbox import emit, materialize
 from ..paper.live_tracker import track_crypto_live
-from ..portfolio.equity_ranking import build_daily_ranking, summary as ranking_summary
+from ..portfolio.equity_ranking_refresh import refresh as refresh_equity_ranking
 from ..version import ENGINE_VERSION
 from .runner import build_default_scheduler, run_forever
 
@@ -52,12 +52,12 @@ def main() -> int:
     )
 
     # Portfolio → Signals is a daily market snapshot, not a trading scanner.
-    # Check hourly so a restart cannot make us miss the night run; the builder
-    # itself is idempotent by Moscow calendar day and returns immediately when
-    # today's snapshot already exists.  Under normal operation the first tick
-    # after Moscow midnight creates the new ranking.
+    # Check hourly so restarts cannot make us miss a refresh.  The refresh
+    # policy follows a *new closed MOEX equity D1*, not midnight: on weekends
+    # and before the exchange has produced a new daily bar the previous good
+    # ranking remains untouched; after the new D1 arrives it is rebuilt once.
     def equity_ranking(session):
-        return ranking_summary(build_daily_ranking(session))
+        return refresh_equity_ranking(session)
 
     scheduler.add(
         "equity-ranking",
