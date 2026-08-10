@@ -9,8 +9,9 @@ import '../../theme/tokens.dart';
 import '../../theme/typography.dart';
 import '../widgets/common.dart';
 
-/// Thin-журнал читает только VPS: PENDING → OPEN → CLOSED/CANCELLED — один
-/// lifecycle. Ошибка чтения ledger никогда не превращается в «0 сделок».
+/// Thin-журнал читает только VPS. Сделки живут в paper-ledger, а показанные
+/// идеи, которые завершились до создания сделки, читаются из server lifecycle.
+/// Ошибка чтения любого источника никогда не превращается в «история пуста».
 class ServerJournalScreen extends StatefulWidget {
   const ServerJournalScreen({super.key, required this.pill});
 
@@ -48,14 +49,18 @@ class _ServerJournalScreenState extends State<ServerJournalScreen> {
           'источник истины недоступен.',
         );
       }
-      final raw = await _api.getList('/api/v1/journal/skips?limit=100');
+      final rawSkips = await _api.getList('/api/v1/journal/skips?limit=100');
+      final rawMisses = await _api.getList('/api/v1/journal/misses?limit=100');
+      final noTrades = <_Skip>[
+        for (final item in rawSkips)
+          if (item is Map<String, dynamic>) _Skip.fromJson(item),
+        for (final item in rawMisses)
+          if (item is Map<String, dynamic>) _Skip.fromJson(item),
+      ]..sort((a, b) => b.at.compareTo(a.at));
       if (!mounted) return;
       setState(() {
         _trades = trades;
-        _skips = [
-          for (final item in raw)
-            if (item is Map<String, dynamic>) _Skip.fromJson(item),
-        ];
+        _skips = noTrades;
       });
     } catch (error) {
       if (mounted) setState(() => _error = '$error');
@@ -265,15 +270,16 @@ class _Skips extends StatelessWidget {
         padding: const EdgeInsets.fromLTRB(S.screen, 12, S.screen, 90),
         children: [
           _Status(
-            text: '${rows.length} решений об отказе на VPS',
+            text: '${rows.length} идей завершились без paper-сделки',
             loading: loading,
             onReload: onReload,
           ),
           const SizedBox(height: 12),
           if (rows.isEmpty)
             const _Empty(
-              title: 'Отказов пока нет',
-              note: 'Отклонённая идея и причина останутся в server ledger.',
+              title: 'Завершённых без сделки идей пока нет',
+              note: 'Явный отказ, отмена, пропуск или истечение показанной идеи '
+                  'останутся здесь с серверной причиной.',
             )
           else
             for (final row in rows) ...[
