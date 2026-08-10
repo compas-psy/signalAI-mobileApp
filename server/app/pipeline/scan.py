@@ -485,11 +485,16 @@ def scan_instrument(
         ),
     )
 
-    # Идея, которую нельзя исполнить, всё равно сохраняется — §12 требует
-    # хранить любую. Но статусом она остаётся наблюдением.
+    # Lifecycle отвечает за факт рыночного сигнала, sizing — только за то,
+    # можно ли исполнить этот сигнал при текущем риск-бюджете. Смешивать их
+    # нельзя: у FORTS минимальный объём равен одному контракту, поэтому
+    # корректный ACTIVE-сигнал при маленьком/неизвестном risk equity может
+    # иметь quantity=0. Раньше такой сигнал ошибочно переводился обратно в
+    # WATCH, хотя все ворота §15.6 уже были пройдены. Approval всё равно
+    # fail-closed проверяет quantity > 0, поэтому разделение не ослабляет риск.
     status = (
         IdeaStatus.TRIGGERED
-        if verdict.status is QualityStatus.ACTIVE and sizing.tradable
+        if verdict.status is QualityStatus.ACTIVE
         else IdeaStatus.WATCH
     )
 
