@@ -221,13 +221,23 @@ def _equity_metrics(
     price = _last_close(session, instrument.instrument_id)
 
     payments: list[tuple[date, Decimal]] = []
+    dividends_available = True
     try:
         kwargs = {"fetch": fetch} if fetch else {}
         payments, _ = moex.dividends(instrument.symbol, **kwargs)
     except (FetchError, ValueError):
-        payments = []
+        dividends_available = False
 
-    if price is None or price <= 0:
+    if not dividends_available:
+        metrics.append(
+            Metric(
+                "dividend_yield",
+                "Дивидендная доходность",
+                Measure.MISSING,
+                text="источник дивидендов временно недоступен",
+            )
+        )
+    elif price is None or price <= 0:
         metrics.append(
             Metric("dividend_yield", "Дивидендная доходность", Measure.MISSING,
                    text="нет цены — доходность не считается")

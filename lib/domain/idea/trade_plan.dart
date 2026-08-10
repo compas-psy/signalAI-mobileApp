@@ -56,6 +56,7 @@ class TradePlan {
     required this.orderType,
     required this.entryLow,
     required this.entryHigh,
+    this.entryReference,
     required this.maxSlippagePercent,
     required this.stop,
     required this.targets,
@@ -83,6 +84,10 @@ class TradePlan {
   /// Зона входа. Заявка вне зоны — уже другая сделка (ТЗ §11.1).
   final double entryLow;
   final double entryHigh;
+
+  /// Опорная цена, по которой сервер считает риск и создаёт заявку.
+  /// null допускается только для старого кэша/демо; тогда используем середину зоны.
+  final double? entryReference;
 
   /// Допустимое проскальзывание в процентах от цены входа.
   final double maxSlippagePercent;
@@ -135,8 +140,9 @@ class TradePlan {
   /// Жёсткие условия, при которых замысел считается сломанным (ТЗ §9).
   final List<String> invalidation;
 
-  /// Опорная цена входа — середина зоны.
-  double get entry => (entryLow + entryHigh) / 2;
+  /// Каноническая цена входа — ровно серверный `entry_reference`.
+  /// Середина зоны остаётся только fallback для старых сохранённых данных.
+  double get entry => entryReference ?? (entryLow + entryHigh) / 2;
 
   /// Расстояние до стопа в пунктах цены. Это знаменатель всего сайзинга.
   double get priceRisk => (entry - stop).abs();
@@ -293,6 +299,7 @@ class TradePlan {
         orderType: orderType,
         entryLow: entryLow,
         entryHigh: entryHigh,
+        entryReference: entryReference,
         maxSlippagePercent: maxSlippagePercent,
         stop: stop,
         targets: targets,
