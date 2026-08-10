@@ -7,6 +7,7 @@ import 'data/mock/demo_repository.dart';
 import 'data/repository.dart';
 import 'state/app_controller.dart';
 import 'state/app_scope.dart';
+import 'state/navigation.dart';
 import 'theme/tokens.dart';
 import 'ui/app_shell.dart';
 
@@ -135,19 +136,63 @@ class _SignalAiAppState extends State<SignalAiApp> with WidgetsBindingObserver {
       );
 }
 
-/// Maps Android's system/predictive back gesture to SignalAI's controller
-/// state before allowing the root Navigator route to leave the application.
+/// Maps Android's system/predictive back gesture to SignalAI's internal
+/// navigation before allowing the root Navigator route to leave the app.
 ///
-/// Idea details are controller state, not Navigator.push routes.  Without this
-/// scope Android sees only the root route and correctly exits the task, while
-/// the owner expects to return to the list/journal that opened the detail.
-class _RootBackScope extends StatelessWidget {
+/// SignalAI keeps section/pill/detail navigation in [AppController] rather
+/// than Navigator routes. Android therefore sees a single root route unless we
+/// maintain a tiny UI history here. Back now unwinds, in order: modal sheet,
+/// idea detail, previous section/pill. Only when that history is exhausted is
+/// Android allowed to leave the task.
+class _RootBackScope extends StatefulWidget {
   const _RootBackScope();
+
+  @override
+  State<_RootBackScope> createState() => _RootBackScopeState();
+}
+
+class _RootBackScopeState extends State<_RootBackScope> {
+  static const _historyLimit = 24;
+
+  final List<AppRoute> _history = <AppRoute>[];
+  AppRoute? _seenRoute;
+  bool _restoring = false;
+
+  void _observeRoute(AppController controller) {
+    final current = controller.route;
+    final seen = _seenRoute;
+    if (seen == null) {
+      _seenRoute = current;
+      return;
+    }
+    if (current == seen) return;
+
+    if (_restoring) {
+      _restoring = false;
+      _seenRoute = current;
+      return;
+    }
+
+    _history.add(seen);
+    if (_history.length > _historyLimit) _history.removeAt(0);
+    _seenRoute = current;
+  }
+
+  void _restorePreviousRoute(AppController controller) {
+    if (_history.isEmpty) return;
+    final previous = _history.removeLast();
+    _restoring = true;
+    controller.goSection(previous.section);
+    controller.goPill(previous.pill);
+  }
 
   @override
   Widget build(BuildContext context) {
     final controller = AppScope.of(context);
-    final intercept = controller.sheetOpen || controller.isDetailOpen;
+    _observeRoute(controller);
+    final intercept = controller.sheetOpen ||
+        controller.isDetailOpen ||
+        _history.isNotEmpty;
     return PopScope(
       canPop: !intercept,
       onPopInvokedWithResult: (didPop, result) {
@@ -156,6 +201,8 @@ class _RootBackScope extends StatelessWidget {
           controller.closeSheet();
         } else if (controller.isDetailOpen) {
           controller.back();
+        } else {
+          _restorePreviousRoute(controller);
         }
       },
       child: const AppShell(),

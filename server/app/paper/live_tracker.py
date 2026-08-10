@@ -10,7 +10,7 @@ persisted into the canonical feature store and never influence signal scoring.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -53,6 +53,46 @@ class LivePaperReport:
 
 def _utc(value: datetime) -> datetime:
     return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
+def _execution_since(trade: PaperTrade, *, moment: datetime) -> datetime:
+    """Return a safe exclusive cursor for the 1m execution stream.
+
+    Before the dedicated minute tracker existed, crypto positions were advanced
+    by the generic H1 paper tracker. That tracker stores the *open time* of the
+    processed hour in ``last_reconciled_at``. Replaying minute bars immediately
+    after that timestamp is not a finer reconstruction of the same hour: the
+    H1 bar has already changed trade state (most importantly moved the stop to
+    breakeven after TP1), so minutes from the already-consumed hour can be
+    interpreted with a stop that did not exist yet. This is exactly the shape
+    of a false BE close.
+
+    A legacy H1 TP1 cursor is identifiable without touching signal logic: both
+    ``breakeven_at`` and ``last_reconciled_at`` equal an old hour boundary. On
+    the one-time handoff we skip the remainder of that already-consumed hour.
+    Native minute tracking then owns chronology from the next hour onward.
+
+    The age guard keeps a legitimate minute event at xx:00 from being mistaken
+    for a legacy H1 cursor on the very next scheduler tick.
+    """
+    since = _utc(trade.last_reconciled_at or trade.opened_at)
+    breakeven = trade.breakeven_at
+    if breakeven is None:
+        return since
+    breakeven = _utc(breakeven)
+    hour_aligned = (
+        since.minute == 0
+        and since.second == 0
+        and since.microsecond == 0
+    )
+    legacy_h1_handoff = (
+        hour_aligned
+        and breakeven == since
+        and moment - since >= timedelta(minutes=5)
+    )
+    if legacy_h1_handoff:
+        return since + timedelta(hours=1) - timedelta(microseconds=1)
+    return since
 
 
 def track_crypto_live(
@@ -102,7 +142,7 @@ def track_crypto_live(
             )
             continue
 
-        since = _utc(trade.last_reconciled_at or trade.opened_at)
+        since = _execution_since(trade, moment=moment)
         bars = [
             candle
             for candle in candles

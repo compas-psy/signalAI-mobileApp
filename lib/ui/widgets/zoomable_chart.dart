@@ -53,12 +53,34 @@ SignalChart sliceSignalChart(
   );
 }
 
+/// Initial horizontal fit by timeframe.
+///
+/// A single 48-candle default looked acceptable on D1 and H1 but made H4 too
+/// compressed on a phone: 48 four-hour bars are eight days of structure in a
+/// 294px plot. H4 therefore opens slightly tighter while D1/H1 keep the
+/// already-good owner-approved density. Pinch/pan remain continuous after the
+/// first frame and double tap returns to this semantic default.
+int initialVisibleBars(SignalChart chart) {
+  final count = chart.candles.length;
+  if (count <= 0) return 0;
+  final label = chart.timeframeLabel.trim().toLowerCase();
+  final target = switch (label) {
+    '4h' || 'h4' => 32,
+    '15m' || 'm15' => 64,
+    '1h' || 'h1' => 48,
+    '1d' || 'd1' => 48,
+    _ => 48,
+  };
+  return math.min(count, target);
+}
+
 /// Semantic touch viewport for [TradeChart].
 ///
 /// Pinch changes the number of visible candles around the fingers. Horizontal
 /// drag moves the candle window through time. Double tap returns to the latest
-/// default window. The child painter is rebuilt from the selected candles;
-/// there is intentionally no [InteractiveViewer] and no bitmap/canvas zoom.
+/// timeframe-aware default window. The child painter is rebuilt from the
+/// selected candles; there is intentionally no [InteractiveViewer] and no
+/// bitmap/canvas zoom.
 class ZoomableChart extends StatefulWidget {
   const ZoomableChart({super.key, required this.child});
 
@@ -72,7 +94,6 @@ class _ZoomableChartState extends State<ZoomableChart> {
   static const double _designWidth = TradeChart.viewWidth;
   static const double _plotLeft = 8;
   static const double _plotRight = 302;
-  static const int _defaultBars = 48;
   static const int _minimumBars = 8;
 
   String _signature = '';
@@ -102,20 +123,21 @@ class _ZoomableChartState extends State<ZoomableChart> {
     final signature = _chartSignature(chart);
     if (_signature == signature) return;
     _signature = signature;
-    _resetValues(chart.candles.length);
+    _resetValues(chart);
   }
 
-  void _resetValues(int count) {
+  void _resetValues(SignalChart chart) {
+    final count = chart.candles.length;
     if (count <= 0) {
       _visible = 0;
       _start = 0;
       return;
     }
-    _visible = math.min(count, _defaultBars).toDouble();
+    _visible = initialVisibleBars(chart).toDouble();
     _start = math.max(0.0, count - _visible).toDouble();
   }
 
-  void _reset(int count) => setState(() => _resetValues(count));
+  void _reset(SignalChart chart) => setState(() => _resetValues(chart));
 
   double _minVisible(int count) =>
       math.min(count, _minimumBars).toDouble();
@@ -220,7 +242,7 @@ class _ZoomableChartState extends State<ZoomableChart> {
         );
         return GestureDetector(
           behavior: HitTestBehavior.opaque,
-          onDoubleTap: () => _reset(chart.candles.length),
+          onDoubleTap: () => _reset(chart),
           onScaleStart: (details) => _scaleStart(details, chart, size),
           onScaleUpdate: (details) => _scaleUpdate(details, chart, size),
           child: _rebuildTrade(trade, visibleChart),
