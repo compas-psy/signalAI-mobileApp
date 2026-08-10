@@ -1,0 +1,102 @@
+name: FORTS intrabar forensics
+
+on:
+  pull_request:
+    branches:
+      - claude/release-y40hk5
+    types: [opened, reopened, synchronize]
+    paths:
+      - .github/workflows/forts-intrabar-forensics.yml
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prepare read-only SSH access
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
+        run: |
+          set -euo pipefail
+          test -n "$HOST"
+          test -n "$KEY"
+          umask 077
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_forensics
+          chmod 600 ~/.ssh/id_forensics
+          ssh-keyscan -T 10 -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Read bars around reported FORTS lifecycles
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          USER_NAME: ${{ secrets.VPS_USER || 'root' }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/id_forensics -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+            "$USER_NAME@$HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          cd "$HOME/signalai/server"
+          SUDO=""; [ "$(id -u)" -eq 0 ] || SUDO=sudo
+          $SUDO docker compose --env-file /etc/signalai/.env exec -T api python - <<'PY'
+          from datetime import timedelta
+          from sqlalchemy import select
+          from app.db import get_session_factory
+          from app.models import Bar, IdeaEvent, TradeIdea
+          from app.models.enums import Timeframe
+
+          ids = [
+              '4323f985-28ad-4c84-96dd-3d3cd5ca2b3d',
+              '8198a1cf-9e97-44c7-93fa-e68e9a133059',
+          ]
+          session = get_session_factory()()
+          try:
+              for raw_id in ids:
+                  idea = session.get(TradeIdea, raw_id)
+                  if idea is None:
+                      print('MISSING_IDEA', raw_id)
+                      continue
+                  end = idea.signal_time + timedelta(hours=12)
+                  bars = list(session.execute(
+                      select(Bar)
+                      .where(
+                          Bar.instrument_id == idea.instrument_id,
+                          Bar.timeframe == Timeframe.H1,
+                          Bar.is_closed.is_(True),
+                          Bar.open_time >= idea.signal_time - timedelta(hours=1),
+                          Bar.open_time <= end,
+                      )
+                      .order_by(Bar.open_time)
+                  ).scalars())
+                  print('IDEA', idea.instrument_id, 'signal', idea.signal_time.isoformat(),
+                        'entry', str(idea.entry_low), str(idea.entry_high),
+                        'stop', str(idea.stop), 'direction', str(idea.direction))
+                  for b in bars:
+                      touched = b.low <= idea.entry_high and b.high >= idea.entry_low
+                      stop = b.low <= idea.stop if str(idea.direction).endswith('LONG') else b.high >= idea.stop
+                      targets = [x for x in (idea.tp1, idea.tp2, idea.tp3) if x is not None]
+                      far = max(targets) if str(idea.direction).endswith('LONG') else min(targets)
+                      target = b.high >= far if str(idea.direction).endswith('LONG') else b.low <= far
+                      print('BAR', {
+                          'open_time': b.open_time.isoformat(),
+                          'o': str(b.open), 'h': str(b.high), 'l': str(b.low), 'c': str(b.close),
+                          'touch_entry': touched, 'touch_stop': stop, 'touch_far_target': target,
+                      })
+                  events = list(session.execute(
+                      select(IdeaEvent).where(IdeaEvent.idea_id == idea.id).order_by(IdeaEvent.sequence)
+                  ).scalars())
+                  print('EVENTS', [
+                      {'seq': e.sequence, 'new': str(e.new_status), 'reason': e.reason_code,
+                       'at': e.occurred_at.isoformat(), 'snapshot': e.market_snapshot}
+                      for e in events
+                  ])
+          finally:
+              session.close()
+          PY
+          REMOTE
+
+      - name: Cleanup SSH key
+        if: always()
+        run: shred -u ~/.ssh/id_forensics 2>/dev/null || rm -f ~/.ssh/id_forensics
