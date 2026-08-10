@@ -1,13 +1,13 @@
 """Daily equity radar for Portfolio → Signals.
 
-This is deliberately separate from short-term trading ideas.  It ranks every
+This is deliberately separate from short-term trading ideas. It ranks every
 tracked MOEX equity on the latest *closed D1* information so the owner sees a
 full ordered watch universe instead of an empty list when no research
 hypothesis crossed a promotion threshold.
 
-The score is descriptive, not an order instruction.  It combines the data we
+The score is descriptive, not an order instruction. It combines the data we
 actually have today: research/economic evidence, daily technical context and
-liquidity.  Missing research does not remove a company; it lowers confidence
+liquidity. Missing research does not remove a company; it lowers confidence
 and is stated explicitly on the card.
 """
 
@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import math
 from datetime import UTC, datetime
-from decimal import Decimal
 from statistics import median
 
 from sqlalchemy import desc, select
@@ -107,6 +106,8 @@ def _liquidity(notional: list[float]) -> tuple[float, float | None]:
 
 def _research(h: ResearchHypothesis | None) -> tuple[float, str, list[str], bool]:
     if h is None:
+        # Conservative ranking baseline, not fabricated fundamental data. The
+        # card explicitly says that the issuer research contour has no thesis.
         return 35.0, "фундаментальный ранний сигнал пока не сформирован", [
             "фундаментальный контур пока не дал отдельной гипотезы"
         ], False
@@ -158,14 +159,19 @@ def _latest_hypothesis(session: Session, instrument_id: str) -> ResearchHypothes
     ).scalar_one_or_none()
 
 
+def _tracked_equities_query():
+    """Current investment watch universe, not stale historical instruments."""
+    return select(Instrument).where(
+        Instrument.asset_class == AssetClass.EQUITY,
+        Instrument.in_universe.is_(True),
+        Instrument.is_tradable.is_(True),
+    )
+
+
 def build(session: Session) -> dict:
     """Build one deterministic snapshot from latest closed daily data."""
     instruments = list(
-        session.execute(
-            select(Instrument)
-            .where(Instrument.asset_class == AssetClass.EQUITY)
-            .order_by(Instrument.symbol)
-        ).scalars()
+        session.execute(_tracked_equities_query().order_by(Instrument.symbol)).scalars()
     )
 
     cards: list[dict] = []
@@ -195,7 +201,7 @@ def build(session: Session) -> dict:
         research, thesis, research_reasons, has_research = _research(hypothesis)
 
         # Research/fundamental context intentionally has the largest weight;
-        # technicals decide timing, not the business thesis.  Liquidity keeps
+        # technicals decide timing, not the business thesis. Liquidity keeps
         # tiny/unusable names from floating to the top on one strong factor.
         total = _clamp(0.45 * research + 0.40 * technical + 0.15 * liquidity)
         warnings: list[str] = []
@@ -203,8 +209,8 @@ def build(session: Session) -> dict:
             warnings.append(f"дневной истории мало: {len(closes)} баров")
         if median_notional is None:
             warnings.append("оборот не измерен")
-        if not instrument.in_universe:
-            warnings.append("вне текущей инвестиционной вселенной")
+        if not has_research:
+            warnings.append("фундаментальный скоринг ограничен: issuer-гипотезы нет")
 
         reasons = [*research_reasons, *tech_reasons]
         cards.append(
@@ -238,21 +244,33 @@ def build(session: Session) -> dict:
     }
 
 
-def refresh_daily(session: Session) -> str:
-    """Persist at most one snapshot per newest closed D1 bar.
-
-    DataQualityEvent is already the scheduler's durable operational journal and
-    has an unrestricted JSON payload.  Reusing it avoids introducing a table
-    whose only purpose would be a single latest cache row.
-    """
-    newest = session.execute(
+def _latest_tracked_equity_d1(session: Session) -> datetime | None:
+    """Newest closed D1 only for the current MOEX equity watch universe."""
+    return session.execute(
         select(Bar.open_time)
-        .where(Bar.timeframe == Timeframe.D1, Bar.is_closed.is_(True))
+        .join(Instrument, Instrument.instrument_id == Bar.instrument_id)
+        .where(
+            Instrument.asset_class == AssetClass.EQUITY,
+            Instrument.in_universe.is_(True),
+            Instrument.is_tradable.is_(True),
+            Bar.timeframe == Timeframe.D1,
+            Bar.is_closed.is_(True),
+        )
         .order_by(desc(Bar.open_time))
         .limit(1)
     ).scalar_one_or_none()
+
+
+def refresh_daily(session: Session) -> str:
+    """Persist at most one snapshot per newest closed tracked-equity D1 bar.
+
+    DataQualityEvent is already the scheduler's durable operational journal and
+    has an unrestricted JSON payload. Reusing it avoids introducing a table
+    whose only purpose would be a single latest cache row.
+    """
+    newest = _latest_tracked_equity_d1(session)
     if newest is None:
-        return "закрытых D1 нет — рейтинг не пересчитан"
+        return "закрытых D1 по отслеживаемым акциям нет — рейтинг не пересчитан"
 
     previous = session.execute(
         select(DataQualityEvent)
