@@ -41,6 +41,64 @@ class IdeaChartCard extends StatelessWidget {
   final Set<String> highlight;
   final ValueChanged<ChartLayer> onToggle;
 
+  /// TradeChart historically received the compatibility TradingSignal while
+  /// PlanCard showed the immutable server TradePlan. Once the plan was sized,
+  /// those could legitimately contain different reference entries (the DOGE
+  /// screenshot showed 0.06987 on the chart vs limit 0.06940 in the plan).
+  ///
+  /// The visible order levels must have one source of truth. Build a display
+  /// signal whose prices are the exact signed plan values; all non-price
+  /// metadata stays untouched. This changes rendering only — signal discovery
+  /// and scoring remain on the server exactly as before.
+  TradingSignal get _chartSignal {
+    final plan = idea?.plan;
+    if (plan == null) return signal;
+    return TradingSignal(
+      id: signal.id,
+      symbol: signal.symbol,
+      name: signal.name,
+      market: signal.market,
+      direction: signal.direction,
+      horizon: signal.horizon,
+      horizonLabel: signal.horizonLabel,
+      score: signal.score,
+      // PlanCard labels entryLow as the actual limit/stop-limit order price.
+      // Using the midpoint here would still disagree with the number the owner
+      // is about to confirm.
+      entry: plan.entryLow,
+      stopLoss: plan.stop,
+      takeProfits: [
+        for (var i = 0; i < plan.targets.length; i++)
+          TakeProfit(
+            index: i + 1,
+            price: plan.targets[i].price,
+            sharePercent: (plan.targets[i].fraction * 100).round(),
+          ),
+      ],
+      priceDecimals: signal.priceDecimals,
+      riskReward: signal.riskReward,
+      chips: signal.chips,
+      note: signal.note,
+      factors: signal.factors,
+      events: signal.events,
+      unitRisk: signal.unitRisk,
+      unitRiskLabel: signal.unitRiskLabel,
+      unitMultiplier: signal.unitMultiplier,
+      unitDecimals: signal.unitDecimals,
+      unitName: signal.unitName,
+      lastPrice: signal.lastPrice,
+      changeLabel: signal.changeLabel,
+      changeUp: signal.changeUp,
+      status: signal.status,
+      validUntil: signal.validUntil,
+      invalidationPrice: signal.invalidationPrice,
+      correlationGroup: signal.correlationGroup,
+      strategyId: signal.strategyId,
+      chart: signal.chart,
+      entryIsStop: signal.entryIsStop,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final layers = [
@@ -51,6 +109,7 @@ class IdeaChartCard extends StatelessWidget {
     final hasChart = drawn != null;
     final active = drawn?.timeframeLabel ?? timeframe;
     final showToolbar = hasChart || loading || failed;
+    final chartSignal = _chartSignal;
     return Container(
       clipBehavior: Clip.antiAlias,
       decoration: BoxDecoration(
@@ -85,7 +144,7 @@ class IdeaChartCard extends StatelessWidget {
               else
                 ZoomableChart(
                   child: TradeChart(
-                    signal: signal,
+                    signal: chartSignal,
                     chart: chart,
                     bornAt: idea?.createdAt,
                     annotations: idea?.annotations ?? const [],
