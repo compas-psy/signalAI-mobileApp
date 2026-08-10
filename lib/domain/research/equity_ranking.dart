@@ -1,0 +1,189 @@
+/// Daily company ranking shown in Portfolio → Signals.
+///
+/// This is not a trading idea: there is no side, entry, stop, quantity or
+/// execution action.  It is a once-per-day research queue that combines
+/// measured fundamentals with slow D1 technical context.
+library;
+
+class EquityRankingState {
+  const EquityRankingState({
+    required this.marketDay,
+    required this.generatedAt,
+    required this.items,
+    this.dataAsOf,
+    this.methodology = '',
+    this.universeCount = 0,
+    this.scoredCount = 0,
+    this.reason = '',
+    this.unavailableReason,
+  });
+
+  const EquityRankingState.unavailable(String reason)
+      : marketDay = '',
+        generatedAt = null,
+        dataAsOf = null,
+        methodology = '',
+        universeCount = 0,
+        scoredCount = 0,
+        items = const [],
+        reason = '',
+        unavailableReason = reason;
+
+  final String marketDay;
+  final DateTime? generatedAt;
+  final DateTime? dataAsOf;
+  final String methodology;
+  final int universeCount;
+  final int scoredCount;
+  final List<EquityRankingItem> items;
+  final String reason;
+  final String? unavailableReason;
+
+  bool get isAvailable => unavailableReason == null;
+
+  factory EquityRankingState.fromJson(Map<String, dynamic> json) =>
+      EquityRankingState(
+        marketDay: '${json['market_day'] ?? ''}',
+        generatedAt: DateTime.tryParse('${json['generated_at'] ?? ''}'),
+        dataAsOf: DateTime.tryParse('${json['data_as_of'] ?? ''}'),
+        methodology: '${json['methodology'] ?? ''}',
+        universeCount: _int(json['universe_count']),
+        scoredCount: _int(json['scored_count']),
+        items: [
+          for (final item in json['items'] as List<dynamic>? ?? const [])
+            if (item is Map<String, dynamic>) EquityRankingItem.fromJson(item),
+        ],
+        reason: '${json['reason'] ?? ''}',
+      );
+
+  static int _int(Object? raw) => switch (raw) {
+        num n => n.toInt(),
+        String s => int.tryParse(s) ?? 0,
+        _ => 0,
+      };
+}
+
+class EquityRankingItem {
+  const EquityRankingItem({
+    required this.rank,
+    required this.instrumentId,
+    required this.symbol,
+    required this.title,
+    required this.score,
+    required this.tier,
+    required this.eligible,
+    required this.fundamentalScore,
+    required this.technicalScore,
+    this.catalystAdjustment = 0,
+    this.technicalState = '',
+    this.price,
+    this.momentum3m,
+    this.momentum6m,
+    this.drawdown6m,
+    this.volatility3m,
+    this.fundamentalFacts = const [],
+    this.technicalFacts = const [],
+    this.warnings = const [],
+    this.hypothesis,
+  });
+
+  final int rank;
+  final String instrumentId;
+  final String symbol;
+  final String title;
+  final double score;
+  final String tier;
+  final bool eligible;
+  final double fundamentalScore;
+  final double technicalScore;
+  final double catalystAdjustment;
+  final String technicalState;
+  final double? price;
+  final double? momentum3m;
+  final double? momentum6m;
+  final double? drawdown6m;
+  final double? volatility3m;
+  final List<String> fundamentalFacts;
+  final List<String> technicalFacts;
+  final List<String> warnings;
+  final RankingHypothesis? hypothesis;
+
+  factory EquityRankingItem.fromJson(Map<String, dynamic> json) =>
+      EquityRankingItem(
+        rank: _int(json['rank']),
+        instrumentId: '${json['instrument_id'] ?? ''}',
+        symbol: '${json['symbol'] ?? ''}',
+        title: '${json['title'] ?? ''}',
+        score: _num(json['score']),
+        tier: '${json['tier'] ?? ''}',
+        eligible: json['eligible'] == true,
+        fundamentalScore: _num(json['fundamental_score']),
+        technicalScore: _num(json['technical_score']),
+        catalystAdjustment: _num(json['catalyst_adjustment']),
+        technicalState: '${json['technical_state'] ?? ''}',
+        price: _nullable(json['price']),
+        momentum3m: _nullable(json['momentum_3m']),
+        momentum6m: _nullable(json['momentum_6m']),
+        drawdown6m: _nullable(json['drawdown_6m']),
+        volatility3m: _nullable(json['volatility_3m']),
+        fundamentalFacts: _strings(json['fundamental_facts']),
+        technicalFacts: _strings(json['technical_facts']),
+        warnings: _strings(json['warnings']),
+        hypothesis: switch (json['hypothesis']) {
+          Map<String, dynamic> value => RankingHypothesis.fromJson(value),
+          _ => null,
+        },
+      );
+
+  static int _int(Object? raw) => switch (raw) {
+        num n => n.toInt(),
+        String s => int.tryParse(s) ?? 0,
+        _ => 0,
+      };
+
+  static double _num(Object? raw) => switch (raw) {
+        num n => n.toDouble(),
+        String s => double.tryParse(s) ?? 0,
+        _ => 0,
+      };
+
+  static double? _nullable(Object? raw) => raw == null ? null : _num(raw);
+
+  static List<String> _strings(Object? raw) => [
+        for (final value in raw as List<dynamic>? ?? const []) '$value',
+      ];
+}
+
+class RankingHypothesis {
+  const RankingHypothesis({
+    required this.title,
+    required this.direction,
+    required this.state,
+    required this.evidenceScore,
+    required this.economicScore,
+    required this.priority,
+    this.asOf,
+  });
+
+  final String title;
+  final String direction;
+  final String state;
+  final double evidenceScore;
+  final double economicScore;
+  final double priority;
+  final DateTime? asOf;
+
+  bool get positive => direction == 'positive';
+  bool get negative => direction == 'negative';
+
+  factory RankingHypothesis.fromJson(Map<String, dynamic> json) =>
+      RankingHypothesis(
+        title: '${json['title'] ?? ''}',
+        direction: '${json['direction'] ?? ''}',
+        state: '${json['state'] ?? ''}',
+        evidenceScore: EquityRankingItem._num(json['evidence_score']),
+        economicScore: EquityRankingItem._num(json['economic_score']),
+        priority: EquityRankingItem._num(json['priority']),
+        asOf: DateTime.tryParse('${json['as_of'] ?? ''}'),
+      );
+}
