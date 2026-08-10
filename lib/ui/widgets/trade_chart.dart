@@ -268,23 +268,45 @@ class _ChartPainter extends CustomPainter {
     final candles = chart.candles;
     final tps = signal.takeProfits;
 
-    // Диапазон цен: свечи плюс все уровни сделки, с небольшим запасом.
-    var lo = signal.stopLoss;
-    var hi = signal.entry;
-    for (final tp in tps) {
-      lo = math.min(lo, tp.price);
-      hi = math.max(hi, tp.price);
+    // Первичный fit — по реально видимым свечам. Раньше Entry/SL/TP всегда
+    // насильно включались в Y-диапазон. На младших TF дальний TP или исходный
+    // стоп мог быть на несколько локальных диапазонов от текущей цены и
+    // сплющивал свечи почти в линию. Близкие уровни по-прежнему расширяют
+    // шкалу, дальние остаются честно за краем текущего viewport и не ломают
+    // читаемость price action.
+    var candleLo = candles.first.low;
+    var candleHi = candles.first.high;
+    for (final c in candles.skip(1)) {
+      candleLo = math.min(candleLo, c.low);
+      candleHi = math.max(candleHi, c.high);
     }
-    for (final c in candles) {
-      lo = math.min(lo, c.low);
-      hi = math.max(hi, c.high);
+    final candleSpan = math.max(candleHi - candleLo, 1e-9);
+    final nearbyLo = candleLo - candleSpan * 0.55;
+    final nearbyHi = candleHi + candleSpan * 0.55;
+    var lo = candleLo;
+    var hi = candleHi;
+
+    void includeNearby(double price) {
+      if (price < nearbyLo || price > nearbyHi) return;
+      lo = math.min(lo, price);
+      hi = math.max(hi, price);
+    }
+
+    if (_showLevels) {
+      includeNearby(signal.stopLoss);
+      includeNearby(signal.entry);
+      for (final tp in tps) {
+        includeNearby(tp.price);
+      }
     }
     final level = chart.breakLevel;
-    if (level != null) {
-      lo = math.min(lo, level);
-      hi = math.max(hi, level);
+    if (level != null) includeNearby(level);
+    for (final zone in chart.zones) {
+      includeNearby(zone.from);
+      includeNearby(zone.to);
     }
-    final pad = math.max((hi - lo) * 0.05, 1e-9);
+
+    final pad = math.max((hi - lo) * 0.08, candleSpan * 0.03);
     lo -= pad;
     hi += pad;
 
