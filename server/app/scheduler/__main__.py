@@ -87,6 +87,8 @@ def main() -> int:
         _minutes("SIGNALAI_PAPER_LIVE_EVERY_MINUTES", 1),
         paper_live,
     )
+    # Run it next to the ordinary paper tracker, before scan/portfolio/research
+    # can occupy the sequential scheduler with heavier work.
     live_job = scheduler.jobs.pop()
     paper_index = next(
         (i for i, job in enumerate(scheduler.jobs) if job.name == "paper"),
@@ -96,6 +98,11 @@ def main() -> int:
 
     session_factory = get_session_factory()
 
+    # This is deliberately server-originated. On every deployment/restart the
+    # VPS reconciles owner-facing lifecycle before any phone connects. The v2
+    # key is new for the native Android SSE transport, so this deployment
+    # creates one fresh smoke event instead of reusing the already-consumed v1
+    # event from the broken secondary-Flutter-isolate implementation.
     startup_session = session_factory()
     try:
         created = materialize(startup_session, include_smoke=True)
@@ -114,6 +121,8 @@ def main() -> int:
         log.info("server push outbox ready: queued %d new event(s)", created)
     except Exception:
         startup_session.rollback()
+        # Delivery bootstrap must not stop market ingestion. The exact-alarm
+        # client remains a fallback and the SSE request will retry materialize.
         log.exception("server push outbox startup reconciliation failed")
     finally:
         startup_session.close()
