@@ -10,7 +10,7 @@ import '../widgets/common.dart';
 /// Portfolio → Signals: a full daily ranking of Russian listed companies.
 ///
 /// Rare early-signal hypotheses are an overlay on a company card, not the
-/// admission ticket to the screen.  Therefore a calm research day still
+/// admission ticket to the screen. Therefore a calm research day still
 /// contains the full ranked equity universe instead of an empty page.
 class SignalsScreen extends StatefulWidget {
   const SignalsScreen({super.key, required this.controller});
@@ -53,9 +53,7 @@ class _SignalsScreenState extends State<SignalsScreen> {
     if (ranking == null) {
       return _StateCard(
         title: 'Рейтинг компаний',
-        text: _loading
-            ? 'Загружаю ночной срез…'
-            : 'Рейтинг ещё не запрошен.',
+        text: _loading ? 'Загружаю ночной срез…' : 'Рейтинг ещё не запрошен.',
         busy: _loading,
         onRetry: _load,
       );
@@ -204,8 +202,7 @@ class _CompanyCardState extends State<_CompanyCard> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(item.symbol,
-                          style: T.jost(15, weight: 700, color: C.text)),
+                      Text(item.symbol, style: T.jost(15, weight: 700, color: C.text)),
                       if (item.title.isNotEmpty && item.title != item.symbol)
                         Text(
                           item.title,
@@ -508,7 +505,15 @@ class _StateCard extends StatelessWidget {
                 Text(text, style: T.body(11.5, color: C.muted, height: 1.45)),
                 if (busy) ...[
                   const SizedBox(height: 10),
-                  const LinearProgressIndicator(minHeight: 2),
+                  SizedBox(
+                    height: 2,
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: C.info.withValues(alpha: 0.7),
+                        borderRadius: BorderRadius.circular(2),
+                      ),
+                    ),
+                  ),
                 ],
                 if (onRetry != null && !busy) ...[
                   const SizedBox(height: 10),
