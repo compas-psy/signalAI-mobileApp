@@ -1,0 +1,80 @@
+name: Dispatch hardening delivery
+
+on:
+  push:
+    branches:
+      - claude/release-y40hk5
+    paths:
+      - .github/workflows/dispatch-hardening-delivery.yml
+
+permissions:
+  actions: write
+  contents: write
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    env:
+      TARGET_SHA: b656b1277917351e8e0597f4173def8737f42ed7
+      TARGET_BRANCH: claude/release-y40hk5
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Dispatch exact verified source
+        run: |
+          set -euo pipefail
+
+          latest_id() {
+            gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$1/runs?event=workflow_dispatch&per_page=1" \
+              --jq '.workflow_runs[0].id // 0'
+          }
+
+          before_server="$(latest_id deploy-server-package.yml)"
+          before_apk="$(latest_id android-sideload.yml)"
+
+          gh workflow run deploy-server-package.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$TARGET_BRANCH" \
+            -f source_ref="$TARGET_SHA"
+
+          gh workflow run android-sideload.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$TARGET_BRANCH" \
+            -f source_ref="$TARGET_SHA" \
+            -f mode=thin
+
+          server_run=0
+          apk_run=0
+          for _ in $(seq 1 40); do
+            current="$(latest_id deploy-server-package.yml)"
+            if [ "$current" != 0 ] && [ "$current" != "$before_server" ]; then
+              server_run="$current"
+              break
+            fi
+            sleep 2
+          done
+          for _ in $(seq 1 40); do
+            current="$(latest_id android-sideload.yml)"
+            if [ "$current" != 0 ] && [ "$current" != "$before_apk" ]; then
+              apk_run="$current"
+              break
+            fi
+            sleep 2
+          done
+
+          [ "$server_run" != 0 ] || { echo '::error::server dispatch produced no run'; exit 1; }
+          [ "$apk_run" != 0 ] || { echo '::error::sideload dispatch produced no run'; exit 1; }
+
+          cat > /tmp/delivery-hardening.json <<EOF
+          {
+            "source_sha": "$TARGET_SHA",
+            "server_run": $server_run,
+            "sideload_run": $apk_run
+          }
+          EOF
+          encoded="$(base64 -w0 /tmp/delivery-hardening.json)"
+          gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/.github/delivery-hardening.json" \
+            -f message='ops: record hardening delivery runs' \
+            -f content="$encoded" -f branch="$TARGET_BRANCH" >/dev/null
+
+          echo "server run: $server_run"
+          echo "sideload run: $apk_run"
