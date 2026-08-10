@@ -20,6 +20,7 @@ from fastapi import APIRouter, FastAPI
 from sqlalchemy import text
 
 from .api.v1 import control as control_routes
+from .api.v1 import equity_rankings as equity_ranking_routes
 from .api.v1 import ideas as ideas_routes
 from .api.v1 import integrations as integrations_routes
 from .api.v1 import journal as journal_routes
@@ -60,6 +61,7 @@ v1.include_router(ideas_routes.router)
 v1.include_router(risk_routes.router)
 v1.include_router(portfolio_routes.router)
 v1.include_router(research_routes.router)
+v1.include_router(equity_ranking_routes.router)
 v1.include_router(paper_routes.router)
 v1.include_router(integrations_routes.router)
 v1.include_router(journal_routes.router)

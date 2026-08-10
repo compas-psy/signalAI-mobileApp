@@ -17,6 +17,7 @@ from datetime import timedelta
 from ..db import get_session_factory
 from ..notification_outbox import emit, materialize
 from ..paper.live_tracker import track_crypto_live
+from ..portfolio.equity_ranking import build_daily_ranking, summary as ranking_summary
 from ..version import ENGINE_VERSION
 from .runner import build_default_scheduler, run_forever
 
@@ -49,6 +50,26 @@ def main() -> int:
         scan_every=_minutes("SIGNALAI_SCAN_EVERY_MINUTES", 15),
         portfolio_every=_minutes("SIGNALAI_PORTFOLIO_EVERY_MINUTES", 60),
     )
+
+    # Portfolio → Signals is a daily market snapshot, not a trading scanner.
+    # Check hourly so a restart cannot make us miss the night run; the builder
+    # itself is idempotent by Moscow calendar day and returns immediately when
+    # today's snapshot already exists.  Under normal operation the first tick
+    # after Moscow midnight creates the new ranking.
+    def equity_ranking(session):
+        return ranking_summary(build_daily_ranking(session))
+
+    scheduler.add(
+        "equity-ranking",
+        _minutes("SIGNALAI_EQUITY_RANKING_EVERY_MINUTES", 60),
+        equity_ranking,
+    )
+    ranking_job = scheduler.jobs.pop()
+    portfolio_index = next(
+        (i for i, job in enumerate(scheduler.jobs) if job.name == "portfolio"),
+        len(scheduler.jobs),
+    )
+    scheduler.jobs.insert(portfolio_index, ranking_job)
 
     # Execution monitoring is intentionally faster than signal discovery.
     # H1/H4/D1 closed bars remain the only source for setups; after explicit
