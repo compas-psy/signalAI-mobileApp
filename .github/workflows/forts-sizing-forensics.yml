@@ -28,7 +28,7 @@ jobs:
           chmod 600 ~/.ssh/id_forensics
           ssh-keyscan -T 10 -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
 
-      - name: Read FORTS sizing facts
+      - name: Read FORTS sizing and risk-equity facts
         env:
           HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
           USER_NAME: ${{ secrets.VPS_USER || 'root' }}
@@ -38,14 +38,49 @@ jobs:
             "$USER_NAME@$HOST" 'bash -s' <<'REMOTE'
           set -euo pipefail
           cd "$HOME/signalai/server"
+          echo '── source risk-equity references ──'
+          grep -RInE --include='*.py' 'RiskSnapshot\(|risk_equity|circuit.?=.?.?risk|Account\(' app | head -n 240 || true
           SUDO=""; [ "$(id -u)" -eq 0 ] || SUDO=sudo
           $SUDO docker compose --env-file /etc/signalai/.env exec -T api python - <<'PY'
           from sqlalchemy import select
           from app.db import get_session_factory
-          from app.models import Instrument, TradeIdea
+          from app.models import Account, Instrument, RiskSnapshot, TradeIdea
 
           session = get_session_factory()()
           try:
+              accounts = list(session.execute(
+                  select(Account).order_by(Account.circuit, Account.synced_at.desc())
+              ).scalars())
+              print('ACCOUNTS', [
+                  {
+                      'broker': a.broker,
+                      'external_id': a.external_id,
+                      'title': a.title,
+                      'circuit': a.circuit,
+                      'currency': a.currency,
+                      'equity': str(a.equity),
+                      'free_margin': None if a.free_margin is None else str(a.free_margin),
+                      'synced_at': a.synced_at.isoformat() if a.synced_at else None,
+                  }
+                  for a in accounts
+              ])
+              snaps = list(session.execute(
+                  select(RiskSnapshot).order_by(RiskSnapshot.taken_at.desc()).limit(10)
+              ).scalars())
+              print('RISK_SNAPSHOTS', [
+                  {
+                      'taken_at': r.taken_at.isoformat() if r.taken_at else None,
+                      'risk_equity': str(r.risk_equity),
+                      'open_risk': str(r.open_risk),
+                      'day_pnl_pct': str(r.day_pnl_pct),
+                      'week_pnl_pct': str(r.week_pnl_pct),
+                      'month_pnl_pct': str(r.month_pnl_pct),
+                      'drawdown': str(r.current_drawdown),
+                      'binding': r.binding_limit,
+                      'entries_blocked': r.entries_blocked,
+                  }
+                  for r in snaps
+              ])
               rows = session.execute(
                   select(TradeIdea, Instrument)
                   .join(Instrument, Instrument.instrument_id == TradeIdea.instrument_id)
@@ -61,6 +96,7 @@ jobs:
                       'admission': exp.get('admission'),
                       'admission_failed': exp.get('admission_failed'),
                       'sizing_note': exp.get('sizing_note'),
+                      'binding_limit': exp.get('binding_limit'),
                       'quantity': str(idea.quantity),
                       'risk_pct': str(idea.risk_pct),
                       'risk_amount': str(idea.risk_amount),
@@ -74,7 +110,6 @@ jobs:
                       'min_quantity': str(ins.min_quantity),
                       'contract_multiplier': str(ins.contract_multiplier),
                       'min_notional': str(ins.min_notional),
-                      'metadata_admission': (ins.metadata_json or {}).get('admission'),
                   })
           finally:
               session.close()
