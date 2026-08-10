@@ -67,18 +67,17 @@ class PlanCard extends StatelessWidget {
     final decimals = signal.priceDecimals;
     final tiles = <Widget>[
       MetricTile(
-        // Вход бывает лимитным (ретест зоны) и стоповым (пробой) — подпись
-        // обязана это различать, иначе ордер уйдёт не тот.
+        // Главное число — именно цена заявки, которую сервер переносит в
+        // paper-сделку (`entry_reference`). Границы зоны — допустимый коридор,
+        // а не две конкурирующие «цены входа».
         label: plan == null
             ? (signal.entryIsStop ? 'Вход · стоп' : 'Вход · лимит')
             : 'Вход · ${plan.orderType.label.toLowerCase()}',
-        // Зона входа двумя числами в одну плитку не помещается и обрезается
-        // многоточием — а обрезанная цена хуже отсутствующей. Нижняя граница
-        // это цена заявки, верхняя — предел, за которым сделка уже другая;
-        // вторая уходит подписью и остаётся на экране целиком.
-        value: fmtPrice(plan?.entryLow ?? signal.entry, decimals),
+        value: fmtPrice(plan?.entry ?? signal.entry, decimals),
         color: C.accent,
-        hint: plan == null ? null : 'до ${fmtPrice(plan.entryHigh, decimals)}',
+        hint: plan == null
+            ? null
+            : 'зона ${fmtPrice(plan.entryLow, decimals)}–${fmtPrice(plan.entryHigh, decimals)}',
       ),
       MetricTile(
         label: 'Стоп',
