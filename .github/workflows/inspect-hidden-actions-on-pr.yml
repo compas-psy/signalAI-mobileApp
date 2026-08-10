@@ -1,0 +1,37 @@
+name: Inspect hidden one-shot Actions
+
+on:
+  pull_request:
+    types: [opened]
+    branches:
+      - claude/release-y40hk5
+    paths:
+      - .github/inspect-actions-trigger.txt
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: List recent one-shot workflow runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for wf in \
+            deploy-once-update.yml \
+            verify-deploy-once.yml \
+            verify-sideload-once.yml \
+            actions-trigger-smoke.yml \
+            deploy-package-on-pr.yml \
+            android-sideload.yml \
+            deploy-server.yml
+          do
+            echo "===== $wf ====="
+            gh run list --repo "$GITHUB_REPOSITORY" --workflow "$wf" --limit 10 \
+              --json databaseId,status,conclusion,event,createdAt,url,headSha,displayTitle \
+              --jq '.[] | [.databaseId,.status,.conclusion,.event,.createdAt,.headSha,.url] | @tsv' \
+              || true
+          done
