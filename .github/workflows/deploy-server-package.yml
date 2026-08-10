@@ -174,14 +174,13 @@ jobs:
           [ "$actual" = "$SOURCE_SHA" ] || { echo "source receipt mismatch $actual" >&2; exit 1; }
           echo "deployed source: $actual"
 
-          # Build today's investment ranking immediately after a deployment.
-          # Scheduler remains the daily owner afterwards.  This makes a new
-          # Portfolio → Signals release useful on first open instead of making
-          # the owner wait for the next hourly scheduler tick.
-          echo '── build today equity ranking ──'
+          # Reconcile Portfolio → Signals immediately after deployment using
+          # the same fresh-closed-D1 policy as the scheduler. This avoids both
+          # a first-open wait and an accidental stale same-day rebuild.
+          echo '── reconcile equity ranking ──'
           $SUDO docker compose --env-file "$ENV_FILE" run --rm -T api \
-            python -c "from app.db import get_session_factory; from app.portfolio.equity_ranking import build_daily_ranking, summary; s=get_session_factory()(); r=build_daily_ranking(s, force=True); s.commit(); print(summary(r)); s.close()" </dev/null \
-            || echo '::warning::equity ranking warm-up failed; scheduler will retry'
+            python -c "from app.db import get_session_factory; from app.portfolio.equity_ranking_refresh import refresh; s=get_session_factory()(); print(refresh(s)); s.commit(); s.close()" </dev/null \
+            || echo '::warning::equity ranking reconciliation failed; scheduler will retry'
 
           echo '── scheduler tail ──'
           $SUDO docker compose --env-file "$ENV_FILE" logs --tail 30 scheduler </dev/null || true

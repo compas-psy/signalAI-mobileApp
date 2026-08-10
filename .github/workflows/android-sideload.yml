@@ -266,18 +266,22 @@ jobs:
           MODE: ${{ inputs.mode || 'thin' }}
         run: |
           set -euo pipefail
-          cat > release-notes.md <<NOTES
-          SignalAI personal sideload channel.
+          python3 - <<'PY'
+          import os
+          notes = f"""SignalAI personal sideload channel.
 
-          - authoritative source commit: \`$SOURCE_SHA\`
-          - mode: \`$MODE\`
-          - APK SHA-256: \`$APK_SHA256\`
-          - signer SHA-256: \`$SIGNER_SHA256\`
-          - bearer token compiled into APK: \`false\`
-          - workflow run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
+          - authoritative source commit: `{os.environ['SOURCE_SHA']}`
+          - mode: `{os.environ['MODE']}`
+          - APK SHA-256: `{os.environ['APK_SHA256']}`
+          - signer SHA-256: `{os.environ['SIGNER_SHA256']}`
+          - bearer token compiled into APK: `false`
+          - workflow run: {os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}
 
           Personal builds allow only thin or demo; legacy `local` is disabled.
-          NOTES
+          """
+          with open("release-notes.md", "w", encoding="utf-8") as output:
+              output.write(notes)
+          PY
           if gh release view sideload >/dev/null 2>&1; then
             gh release edit sideload --prerelease --title 'SignalAI sideload' --notes-file release-notes.md
           else
