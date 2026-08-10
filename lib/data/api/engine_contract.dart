@@ -364,6 +364,7 @@ abstract final class EngineContract {
       orderType: _orderType(plan['order_intent'] as String?),
       entryLow: _num(plan['entry_low']),
       entryHigh: _num(plan['entry_high']),
+      entryReference: _numOrNull(plan['entry_reference']),
       maxSlippagePercent: 0.1,
       stop: _num(plan['stop']),
       targets: targets,
@@ -401,7 +402,8 @@ abstract final class EngineContract {
     Map<String, dynamic> plan,
   ) {
     final riskPerUnit = _numOrNull(sizing?['risk_per_unit']);
-    final entry = (_num(plan['entry_low']) + _num(plan['entry_high'])) / 2;
+    final entry = _numOrNull(plan['entry_reference']) ??
+        (_num(plan['entry_low']) + _num(plan['entry_high'])) / 2;
     final stop = _num(plan['stop']);
     final priceRisk = (entry - stop).abs();
     if (riskPerUnit == null || priceRisk == 0) return 1;
