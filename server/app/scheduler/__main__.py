@@ -15,6 +15,7 @@ import sys
 from datetime import timedelta
 
 from ..db import get_session_factory
+from ..investment_radar import refresh_daily as refresh_equity_radar
 from ..notification_outbox import emit, materialize
 from ..paper.live_tracker import track_crypto_live
 from ..version import ENGINE_VERSION
@@ -48,6 +49,17 @@ def main() -> int:
         review_every=_minutes("SIGNALAI_REVIEW_EVERY_MINUTES", 360),
         scan_every=_minutes("SIGNALAI_SCAN_EVERY_MINUTES", 15),
         portfolio_every=_minutes("SIGNALAI_PORTFOLIO_EVERY_MINUTES", 60),
+    )
+
+    # Портфельный радар проверяется регулярно, но пересчитывается только когда
+    # в базе появился новый закрытый D1. Поэтому в обычный день создаётся
+    # ровно один новый снимок после вечерней/ночной загрузки MOEX, а экран в
+    # течение дня остаётся стабильным. Это не скан торговых сетапов и не
+    # меняет их правила — отдельный инвестиционный контур внимания.
+    scheduler.add(
+        "equity-radar",
+        _minutes("SIGNALAI_EQUITY_RADAR_EVERY_MINUTES", 60),
+        refresh_equity_radar,
     )
 
     # Execution monitoring is intentionally faster than signal discovery.
