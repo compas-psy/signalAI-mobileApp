@@ -1,0 +1,128 @@
+name: FORTS lifecycle forensics
+
+on:
+  push:
+    branches:
+      - agent/forts-lifecycle-forensics
+    paths:
+      - .github/workflows/forts-lifecycle-forensics.yml
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Locate journal and lifecycle filters in source
+        run: |
+          set -euo pipefail
+          echo '── source references ──'
+          grep -RInE --include='*.py' --include='*.dart' \
+            'was_presented|IdeaStatus\.(TIMED_OUT|MISSED|CANCELLED)|is_terminal|journal|history\(' \
+            server/app lib | head -n 350 || true
+
+      - name: Prepare read-only SSH access
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
+        run: |
+          set -euo pipefail
+          test -n "$HOST"
+          test -n "$KEY"
+          umask 077
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_forensics
+          chmod 600 ~/.ssh/id_forensics
+          ssh-keyscan -T 10 -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Read recent production FORTS lifecycle
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          USER_NAME: ${{ secrets.VPS_USER || 'root' }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/id_forensics -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+            "$USER_NAME@$HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          cd "$HOME/signalai/server"
+          SUDO=""; [ "$(id -u)" -eq 0 ] || SUDO=sudo
+          $SUDO docker compose --env-file /etc/signalai/.env exec -T api python - <<'PY'
+          from datetime import UTC, datetime, timedelta
+          from sqlalchemy import select
+          from app.db import get_session_factory
+          from app.models import IdeaEvent, Instrument, PaperTrade, TradeIdea
+          from app.models.enums import AssetClass
+
+          def val(x):
+              return getattr(x, 'value', str(x)) if x is not None else None
+
+          session = get_session_factory()()
+          try:
+              since = datetime.now(UTC) - timedelta(days=3)
+              rows = session.execute(
+                  select(TradeIdea, Instrument)
+                  .join(Instrument, Instrument.instrument_id == TradeIdea.instrument_id)
+                  .where(
+                      Instrument.asset_class == AssetClass.FUTURES,
+                      TradeIdea.signal_time >= since,
+                  )
+                  .order_by(TradeIdea.signal_time.desc())
+              ).all()
+              print(f'FORTS_IDEAS_LAST_3D={len(rows)} since={since.isoformat()}')
+              for idea, instrument in rows:
+                  print('IDEA', {
+                      'id': str(idea.id),
+                      'instrument_id': idea.instrument_id,
+                      'symbol': getattr(instrument, 'symbol', None),
+                      'title': getattr(instrument, 'title', None),
+                      'status': val(idea.status),
+                      'quality_status': val(idea.quality_status),
+                      'was_presented': idea.was_presented,
+                      'presentation_rank': idea.presentation_rank,
+                      'signal_time': idea.signal_time.isoformat() if idea.signal_time else None,
+                      'expires_at': idea.expires_at.isoformat() if idea.expires_at else None,
+                      'entry_low': str(idea.entry_low),
+                      'entry_high': str(idea.entry_high),
+                      'stop': str(idea.stop),
+                      'tp1': str(idea.tp1),
+                      'tp2': str(idea.tp2),
+                  })
+                  events = list(session.execute(
+                      select(IdeaEvent)
+                      .where(IdeaEvent.idea_id == idea.id)
+                      .order_by(IdeaEvent.sequence)
+                  ).scalars())
+                  print('EVENTS', [
+                      {
+                          'seq': e.sequence,
+                          'old': val(e.old_status),
+                          'new': val(e.new_status),
+                          'reason': e.reason_code,
+                          'detail': e.reason_detail,
+                          'at': e.occurred_at.isoformat() if e.occurred_at else None,
+                      }
+                      for e in events
+                  ])
+                  papers = list(session.execute(
+                      select(PaperTrade).where(PaperTrade.idea_id == idea.id)
+                  ).scalars())
+                  print('PAPER', [
+                      {
+                          'status': val(getattr(p, 'status', None)),
+                          'opened_at': getattr(p, 'opened_at', None).isoformat() if getattr(p, 'opened_at', None) else None,
+                          'closed_at': getattr(p, 'closed_at', None).isoformat() if getattr(p, 'closed_at', None) else None,
+                          'exit_reason': getattr(p, 'exit_reason', None),
+                      }
+                      for p in papers
+                  ])
+          finally:
+              session.close()
+          PY
+          REMOTE
+
+      - name: Cleanup SSH key
+        if: always()
+        run: shred -u ~/.ssh/id_forensics 2>/dev/null || rm -f ~/.ssh/id_forensics
