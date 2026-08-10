@@ -45,7 +45,7 @@ from ..detectors import price_action
 from ..detectors.price_action import PriceZone
 from ..journal.lifecycle import TransitionRequest, transition
 from ..models import Bar, TradeIdea
-from ..models.enums import Direction, IdeaStatus, Timeframe
+from ..models.enums import Direction, IdeaStatus, QualityStatus, Timeframe
 
 # Состояния, в которых перепроверка имеет смысл: план жив, сделки нет.
 PENDING: frozenset[IdeaStatus] = frozenset(
@@ -159,6 +159,31 @@ def _candles(session: Session, idea: TradeIdea, *, limit: int = WINDOW):
     return _load_bars(session, idea.instrument_id, TRIGGER_TF, limit)
 
 
+def mark_confirmed(idea: TradeIdea, summary: str) -> None:
+    """Синхронизировать семантику качества после отложенного триггера.
+
+    WATCH был качественным результатом именно потому, что не хватало
+    рыночного подтверждения. Если это был последний непройденный gate и тот
+    же детектор позже его подтвердил, идея уже ACTIVE по тем же правилам
+    §15.6. Оставлять ``quality_status=WATCH`` рядом с ``status=TRIGGERED``
+    означало хранить два взаимоисключающих ответа и блокировать approve-paper.
+
+    Никакой балл/вероятность/стратегия здесь не пересчитываются: меняется
+    только факт прохождения уже существующего trigger gate.
+    """
+    idea.quality_status = QualityStatus.ACTIVE
+    explanation = dict(idea.explanation_json or {})
+    explanation["admission_failed"] = []
+    explanation["admission"] = "все условия §15.6 выполнены после подтверждения триггера"
+    timeframes = [dict(row) for row in explanation.get("timeframes", [])]
+    for row in timeframes:
+        if row.get("role") == "trigger" or row.get("tf") == "1H":
+            row["summary"] = summary
+    if timeframes:
+        explanation["timeframes"] = timeframes
+    idea.explanation_json = explanation
+
+
 def recheck(
     session: Session, *, now: datetime | None = None, limit: int = 500
 ) -> TriggerReport:
@@ -212,6 +237,7 @@ def recheck(
             )
             continue
 
+        mark_confirmed(idea, reading.summary)
         transition(
             session,
             idea,
@@ -236,6 +262,7 @@ def recheck(
 
 __all__ = [
     "confirmed",
+    "mark_confirmed",
     "still_blocked",
     "PENDING",
     "TRIGGER_GATE",
