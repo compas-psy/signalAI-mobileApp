@@ -27,6 +27,8 @@ on:
           - thin
           - demo
   push:
+    branches:
+      - 'claude/release-y40hk5'
     tags:
       - 'sideload-*'
 
