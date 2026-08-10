@@ -1,0 +1,80 @@
+name: One-shot delivery dispatcher
+
+on:
+  pull_request:
+    types: [opened]
+    branches:
+      - claude/release-y40hk5
+    paths:
+      - .github/delivery-trigger.txt
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+      issues: write
+    env:
+      TARGET_SHA: 1a3d11dfe99af3d7da90624977daa57b4f1e1995
+    steps:
+      - name: Dispatch signed sideload and production server update
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          latest_run_id() {
+            local workflow="$1"
+            gh api --method GET \
+              "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/runs" \
+              -f event=workflow_dispatch -f per_page=1 \
+              --jq '.workflow_runs[0].id // 0'
+          }
+
+          before_sideload="$(latest_run_id android-sideload.yml)"
+          before_deploy="$(latest_run_id deploy-server.yml)"
+
+          gh workflow run android-sideload.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref claude/release-y40hk5 \
+            -f source_ref="$TARGET_SHA" \
+            -f mode=thin
+
+          gh workflow run deploy-server.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref claude/release-y40hk5 \
+            -f source_ref="$TARGET_SHA" \
+            -f admin_ip=127.0.0.1 \
+            -f ssh_user=root \
+            -f action=update
+
+          sideload_run=0
+          deploy_run=0
+          for _ in $(seq 1 30); do
+            current="$(latest_run_id android-sideload.yml)"
+            if [ "$current" != "$before_sideload" ] && [ "$current" != 0 ]; then
+              sideload_run="$current"
+              break
+            fi
+            sleep 2
+          done
+          for _ in $(seq 1 30); do
+            current="$(latest_run_id deploy-server.yml)"
+            if [ "$current" != "$before_deploy" ] && [ "$current" != 0 ]; then
+              deploy_run="$current"
+              break
+            fi
+            sleep 2
+          done
+
+          [ "$sideload_run" != 0 ] || { echo '::error::sideload dispatch did not produce a run'; exit 1; }
+          [ "$deploy_run" != 0 ] || { echo '::error::deploy dispatch did not produce a run'; exit 1; }
+
+          cat > /tmp/comment.md <<EOF
+          Delivery dispatched for fixed source \`$TARGET_SHA\`.
+
+          - sideload run: \`$sideload_run\` — https://github.com/$GITHUB_REPOSITORY/actions/runs/$sideload_run
+          - server deploy run: \`$deploy_run\` — https://github.com/$GITHUB_REPOSITORY/actions/runs/$deploy_run
+          EOF
+          gh pr comment 11 --repo "$GITHUB_REPOSITORY" --body-file /tmp/comment.md
