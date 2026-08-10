@@ -1,28 +1,17 @@
 import 'package:flutter/widgets.dart';
 
-import '../../domain/research/hypothesis.dart';
+import '../../data/api/equity_ranking_source.dart';
+import '../../domain/research/equity_ranking.dart';
 import '../../state/app_controller.dart';
 import '../../theme/tokens.dart';
 import '../../theme/typography.dart';
 import '../widgets/common.dart';
 
-/// Ранние сигналы: гипотезы об экономике эмитента (ТЗ Early Signals).
+/// Portfolio → Signals: a full daily ranking of Russian listed companies.
 ///
-/// Раздел живёт в «Портфеле», а не в «Идеях», и это решение, а не раскладка.
-/// Идея отвечает, когда входить: у неё есть зона входа, стоп, цели и срок в
-/// днях, и она исполняется по биометрии. Гипотеза отвечает, что изменилось
-/// в экономике компании и за какой срок это должно проявиться в отчётности.
-/// Горизонт — год-два, исполнять её нечем, и кнопки подтверждения здесь нет
-/// и не будет: ТЗ прямо запрещает выдавать BUY, SELL и размер позиции.
-///
-/// Соседство с пакетами не случайно: гипотеза отвечает на вопрос «что
-/// вообще стоит держать», то есть на тот же вопрос, что и состав пакета, —
-/// только раньше и по другим данным.
-///
-/// Экран обязан объяснять emptyту. Контур зависит от источников, у которых
-/// разный правовой режим, и «гипотез нет, потому что рынок спокоен»
-/// неотличимо от «гипотез нет, потому что ни один источник не подключён» —
-/// а это разные новости, и вторая требует действия владельца.
+/// Rare early-signal hypotheses are an overlay on a company card, not the
+/// admission ticket to the screen.  Therefore a calm research day still
+/// contains the full ranked equity universe instead of an empty page.
 class SignalsScreen extends StatefulWidget {
   const SignalsScreen({super.key, required this.controller});
 
@@ -33,379 +22,468 @@ class SignalsScreen extends StatefulWidget {
 }
 
 class _SignalsScreenState extends State<SignalsScreen> {
+  final EquityRankingSource _source = EquityRankingSource();
+  EquityRankingState? _ranking;
+  bool _loading = false;
+
   @override
   void initState() {
     super.initState();
+    _load();
+    // Keep the existing early-signal contour warm: the nightly server rank
+    // already embeds its latest overlay, while this request preserves the
+    // diagnostics/source state for the rest of the app.
     widget.controller.loadResearch();
+  }
+
+  Future<void> _load() async {
+    if (_loading) return;
+    setState(() => _loading = true);
+    final result = await _source.load();
+    if (!mounted) return;
+    setState(() {
+      _ranking = result;
+      _loading = false;
+    });
   }
 
   @override
   Widget build(BuildContext context) {
-    final controller = widget.controller;
-    final state = controller.research;
-
-    if (state == null) {
-      return _Note(
-        title: 'Ранние сигналы',
-        text: controller.researchLoading
-            ? 'Спрашиваю движок…'
-            : 'Гипотезы считает сервер — запрос ещё не ушёл.',
-        busy: controller.researchLoading,
+    final ranking = _ranking;
+    if (ranking == null) {
+      return _StateCard(
+        title: 'Рейтинг компаний',
+        text: _loading
+            ? 'Загружаю ночной срез…'
+            : 'Рейтинг ещё не запрошен.',
+        busy: _loading,
+        onRetry: _load,
       );
     }
-    if (!state.isAvailable) {
-      return _Note(
-        title: 'Движок не ответил',
-        text: state.unavailableReason!,
-        onRetry: () => controller.loadResearch(force: true),
+    if (!ranking.isAvailable) {
+      return _StateCard(
+        title: 'Рейтинг недоступен',
+        text: ranking.unavailableReason!,
+        onRetry: _load,
+      );
+    }
+    if (ranking.items.isEmpty) {
+      return _StateCard(
+        title: 'Рейтинг пока не собран',
+        text: ranking.reason.isEmpty
+            ? 'Движок ответил, но в инвестиционной вселенной пока нет компаний с данными.'
+            : ranking.reason,
+        onRetry: _load,
       );
     }
 
-    // Порядок здесь и есть ответ на вопрос «что у меня по сигналам».
-    // Гипотезы сверху, устройство контура — под раскрытием: пока их нет,
-    // объяснение нужно, а когда они есть, оно отодвигает результат вниз и
-    // заставляет искать его прокруткой.
-    final empty = state.hypotheses.isEmpty;
     return ListView(
       padding: const EdgeInsets.fromLTRB(S.screen, 12, S.screen, 90),
       children: [
-        if (empty)
-          _Waiting(state: state)
-        else
-          for (final h in state.hypotheses) ...[
-            _HypothesisCard(hypothesis: h),
-            const SizedBox(height: 10),
-          ],
-        const SizedBox(height: 12),
-        _Details(state: state),
+        _RankingHead(ranking: ranking, loading: _loading, onRefresh: _load),
+        const SizedBox(height: 10),
+        for (final item in ranking.items) ...[
+          _CompanyCard(item: item),
+          const SizedBox(height: 9),
+        ],
       ],
     );
   }
 }
 
-/// Чем это отличается от идей. Ставится первым и не сворачивается.
-///
-/// Без этой карточки раздел читается как «идеи, только медленнее», и первое
-/// же движение владельца будет попыткой по нему торговать.
-class _Explainer extends StatelessWidget {
-  const _Explainer();
+class _RankingHead extends StatelessWidget {
+  const _RankingHead({
+    required this.ranking,
+    required this.loading,
+    required this.onRefresh,
+  });
+
+  final EquityRankingState ranking;
+  final bool loading;
+  final VoidCallback onRefresh;
 
   @override
   Widget build(BuildContext context) => SectionCard(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const SectionLabel('Что это'),
-            const SizedBox(height: 6),
-            Text(
-              'Гипотеза — не сделка. Идея говорит, когда входить: у неё есть '
-              'зона входа, стоп и срок в днях. Гипотеза говорит, что '
-              'изменилось в экономике компании и за какой срок это должно '
-              'проявиться в отчётности. Горизонт — год-два.',
-              style: T.body(11.5, color: C.muted, height: 1.5),
+            Row(
+              children: [
+                const Expanded(child: SectionLabel('Рейтинг компаний')),
+                Pressable(
+                  onTap: loading ? null : onRefresh,
+                  child: Text(
+                    loading ? 'обновляю…' : 'обновить',
+                    style: T.body(10.5, weight: 700, color: C.info),
+                  ),
+                ),
+              ],
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 7),
             Text(
-              'Здесь нет и не будет кнопки «купить»: максимум, который выдаёт '
-              'система, — «стоит изучить вручную». Каждая гипотеза несёт то, '
-              'что её опровергнет, и срок, после которого она протухает.',
-              style: T.body(11.5, color: C.faint, height: 1.5),
+              'Сверху — компании, которые сейчас разумнее разбирать глубже. '
+              'Внизу остаются слабые и недопущенные: они не исчезают, чтобы '
+              'было видно весь рынок, а не только победителей.',
+              style: T.body(11.5, color: C.textSecondary, height: 1.45),
+            ),
+            const SizedBox(height: 9),
+            Wrap(
+              spacing: 8,
+              runSpacing: 5,
+              children: [
+                _MiniChip('${ranking.scoredCount} компаний'),
+                _MiniChip('срез ${_day(ranking.marketDay)}'),
+                if (ranking.dataAsOf != null)
+                  _MiniChip('рынок до ${_dateTime(ranking.dataAsOf!)}'),
+                const _MiniChip('пересчёт 1×/день'),
+              ],
+            ),
+            const SizedBox(height: 9),
+            Text(
+              'Скоринг: 55% измеренный фундаментал + 45% D1-контекст. '
+              'Подтверждённый ранний сигнал может добавить или снять до 10 баллов. '
+              'Это очередь на изучение, не команда BUY/SELL.',
+              style: T.body(10.5, color: C.faint, height: 1.45),
             ),
           ],
         ),
       );
+
+  static String _day(String raw) {
+    final d = DateTime.tryParse(raw);
+    return d == null
+        ? raw
+        : '${d.day.toString().padLeft(2, '0')}.${d.month.toString().padLeft(2, '0')}';
+  }
+
+  static String _dateTime(DateTime value) {
+    final local = value.toLocal();
+    return '${local.day.toString().padLeft(2, '0')}.${local.month.toString().padLeft(2, '0')} '
+        '${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
+  }
 }
 
-/// Одна гипотеза: утверждение, чем доказано, чем опровергается.
-class _HypothesisCard extends StatelessWidget {
-  const _HypothesisCard({required this.hypothesis});
+class _CompanyCard extends StatefulWidget {
+  const _CompanyCard({required this.item});
 
-  final Hypothesis hypothesis;
+  final EquityRankingItem item;
 
-  Color get _stateColor => switch (hypothesis.state) {
-        HypothesisState.diligenceReady => C.green,
-        HypothesisState.confirmed => C.info,
-        HypothesisState.earlyCandidate => C.accent,
-        HypothesisState.invalidated || HypothesisState.rejected => C.red,
-        _ => C.muted,
-      };
+  @override
+  State<_CompanyCard> createState() => _CompanyCardState();
+}
+
+class _CompanyCardState extends State<_CompanyCard> {
+  bool _open = false;
 
   @override
   Widget build(BuildContext context) {
-    final h = hypothesis;
+    final item = widget.item;
+    final tone = _tone(item);
     return SectionCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          Pressable(
+            onTap: () => setState(() => _open = !_open),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  width: 31,
+                  height: 31,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: C.inset,
+                    border: Border.all(color: C.border),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Text('#${item.rank}', style: T.mono(10.5, color: C.muted)),
+                ),
+                const SizedBox(width: 9),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(item.symbol,
+                          style: T.jost(15, weight: 700, color: C.text)),
+                      if (item.title.isNotEmpty && item.title != item.symbol)
+                        Text(
+                          item.title,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: T.body(10.5, color: C.muted, height: 1.3),
+                        ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Text(
+                      item.score.toStringAsFixed(0),
+                      style: T.mono(20, weight: 700, color: tone),
+                    ),
+                    Text('/100', style: T.mono(8.5, color: C.faint)),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 8),
           Row(
             children: [
-              if (h.symbol.isNotEmpty) ...[
-                Text(h.symbol, style: T.jost(15, weight: 700, color: C.text)),
-                const SizedBox(width: 8),
-              ],
+              _TierChip(label: item.tier, color: tone),
+              const SizedBox(width: 6),
               Expanded(
                 child: Text(
-                  h.state.label.toUpperCase(),
-                  style: T.mono(9.5, color: _stateColor),
+                  item.technicalState,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.right,
+                  style: T.body(10.5, color: C.textSecondary),
                 ),
-              ),
-              // Приоритет проверки, а не ожидаемая доходность. Подпись
-              // обязательна: число без неё читается как прогноз.
-              Text(
-                h.researchPriority.toStringAsFixed(0),
-                style: T.mono(13, weight: 700, color: _stateColor),
               ),
             ],
           ),
-          Align(
-            alignment: Alignment.centerRight,
-            child: Text('приоритет проверки', style: T.body(9, color: C.faint)),
-          ),
-          const SizedBox(height: 8),
-          Text(h.title, style: T.body(12.5, color: C.text, height: 1.4)),
-          const SizedBox(height: 4),
-          Text(h.state.meaning, style: T.body(10.5, color: C.faint, height: 1.4)),
           const SizedBox(height: 10),
-          _Scores(hypothesis: h),
-          if (h.shortfall.isNotEmpty) ...[
-            const SizedBox(height: 10),
-            const SectionLabel('До подтверждения не хватает', color: C.faint),
-            const SizedBox(height: 4),
-            for (final gap in h.shortfall)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 2),
-                child: Text('· $gap',
-                    style: T.body(10.5, color: C.warning, height: 1.4)),
-              ),
+          Row(
+            children: [
+              _ScoreCell('фундаментал', item.fundamentalScore),
+              const SizedBox(width: 7),
+              _ScoreCell('D1 техника', item.technicalScore),
+              const SizedBox(width: 7),
+              _DeltaCell(item.catalystAdjustment),
+            ],
+          ),
+          if (item.hypothesis != null) ...[
+            const SizedBox(height: 9),
+            _HypothesisStrip(item: item),
           ],
-          if (h.targetKpis.isNotEmpty) ...[
-            const SizedBox(height: 10),
-            const SectionLabel('Что должно измениться', color: C.faint),
-            const SizedBox(height: 4),
-            for (final kpi in h.targetKpis)
-              KeyValueRow(
-                name: kpi.metric,
-                value: kpi.window.isEmpty ? kpi.expectedDirection : kpi.window,
-                valueStyle: T.mono(11, color: C.textSoft),
-                showDivider: false,
-              ),
-          ],
-          if (h.falsifiers.isNotEmpty) ...[
-            const SizedBox(height: 10),
-            // Утверждение, которое нечем опровергнуть, — не гипотеза. Этот
-            // блок здесь не для полноты: он и есть проверяемость.
-            const SectionLabel('Что её опровергнет', color: C.faint),
-            const SizedBox(height: 4),
-            for (final f in h.falsifiers)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 2),
-                child: Text('· $f',
-                    style: T.body(10.5, color: C.textSecondary, height: 1.4)),
-              ),
-          ],
-          if (h.evidence.any((e) => e.contradicts)) ...[
-            const SizedBox(height: 10),
-            const SectionLabel('Противоречит', color: C.faint),
-            const SizedBox(height: 4),
-            // Опровергающее доказательство не прячется никогда: гипотеза,
-            // из которой вычистили неудобные факты, перестаёт быть
-            // проверяемой.
-            for (final e in h.evidence.where((e) => e.contradicts))
-              Padding(
-                padding: const EdgeInsets.only(bottom: 2),
-                child: Text('· ${e.claim}',
-                    style: T.body(10.5, color: C.red, height: 1.4)),
-              ),
-          ],
-          if (h.expectedLag.isNotEmpty) ...[
+          if (item.warnings.isNotEmpty) ...[
             const SizedBox(height: 8),
             Text(
-              'ожидаемый лаг ${h.expectedLag}',
-              style: T.mono(9.5, color: C.faint),
+              item.warnings.first,
+              style: T.body(10.5, color: C.warning, height: 1.4),
+            ),
+          ],
+          if (_open) ...[
+            const SizedBox(height: 11),
+            _Details(item: item),
+          ] else ...[
+            const SizedBox(height: 7),
+            Align(
+              alignment: Alignment.centerRight,
+              child: Text('почему · раскрыть', style: T.body(9.5, color: C.faint)),
             ),
           ],
         ],
       ),
     );
   }
+
+  static Color _tone(EquityRankingItem item) {
+    if (!item.eligible) return C.red;
+    if (item.score >= 75) return C.green;
+    if (item.score >= 60) return C.accent;
+    if (item.score >= 45) return C.info;
+    return C.muted;
+  }
 }
 
-/// Три оценки раздельно — сводить их в одну запрещено ТЗ §2.6.
-class _Scores extends StatelessWidget {
-  const _Scores({required this.hypothesis});
+class _Details extends StatelessWidget {
+  const _Details({required this.item});
 
-  final Hypothesis hypothesis;
+  final EquityRankingItem item;
 
   @override
-  Widget build(BuildContext context) => Row(
-        children: [
-          _Score(
-            label: 'доказано',
-            value: hypothesis.evidenceScore,
-            hint: 'надёжность источников',
-          ),
-          const SizedBox(width: 8),
-          _Score(
-            label: 'материально',
-            value: hypothesis.economicScore,
-            hint: 'размер эффекта',
-          ),
-          const SizedBox(width: 8),
-          _Score(
-            label: 'тех. момент',
-            value: hypothesis.marketContextScore,
-            // Это D1 timing overlay, не консенсус и не торговая команда.
-            hint: hypothesis.marketContextLabel,
-          ),
-        ],
+  Widget build(BuildContext context) => InsetBox(
+        padding: const EdgeInsets.fromLTRB(11, 10, 11, 10),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const SectionLabel('Почему здесь', color: C.faint),
+            const SizedBox(height: 6),
+            if (item.fundamentalFacts.isEmpty)
+              Text('Фундаментальные факты не измерены.',
+                  style: T.body(10.5, color: C.faint))
+            else
+              for (final fact in item.fundamentalFacts)
+                _Bullet(fact, color: C.textSecondary),
+            if (item.technicalFacts.isNotEmpty) ...[
+              const SizedBox(height: 7),
+              const SectionLabel('D1 сейчас', color: C.faint),
+              const SizedBox(height: 5),
+              for (final fact in item.technicalFacts)
+                _Bullet(fact, color: C.textSecondary),
+            ],
+            if (item.price != null) ...[
+              const SizedBox(height: 7),
+              Text(
+                'последняя цена ${_price(item.price!)}'
+                '${item.volatility3m == null ? '' : ' · волатильность 3м ${_pct(item.volatility3m!)}'}',
+                style: T.mono(9.5, color: C.faint),
+              ),
+            ],
+          ],
+        ),
       );
+
+  static String _pct(double value) => '${(value * 100).toStringAsFixed(1)}%';
+
+  static String _price(double value) {
+    final digits = value < 1 ? 4 : value < 100 ? 2 : 1;
+    return value.toStringAsFixed(digits).replaceAll('.', ',');
+  }
 }
 
-class _Score extends StatelessWidget {
-  const _Score({required this.label, required this.value, required this.hint});
+class _HypothesisStrip extends StatelessWidget {
+  const _HypothesisStrip({required this.item});
+
+  final EquityRankingItem item;
+
+  @override
+  Widget build(BuildContext context) {
+    final hypothesis = item.hypothesis!;
+    final color = hypothesis.positive
+        ? C.green
+        : hypothesis.negative
+            ? C.red
+            : C.info;
+    final delta = item.catalystAdjustment;
+    final deltaText = delta == 0
+        ? '0'
+        : '${delta > 0 ? '+' : '−'}${delta.abs().toStringAsFixed(1)}';
+    return InsetBox(
+      padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('ранний сигнал', style: T.mono(9, color: color)),
+                const SizedBox(height: 3),
+                Text(
+                  hypothesis.title,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: T.body(10.5, color: C.textSecondary, height: 1.35),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          Text(deltaText, style: T.mono(12, weight: 700, color: color)),
+        ],
+      ),
+    );
+  }
+}
+
+class _ScoreCell extends StatelessWidget {
+  const _ScoreCell(this.label, this.value);
 
   final String label;
-  final double? value;
-  final String hint;
+  final double value;
 
   @override
   Widget build(BuildContext context) => Expanded(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              value == null ? '—' : (value! * 100).toStringAsFixed(0),
-              style: T.mono(
-                14,
-                weight: 700,
-                color: value == null ? C.faint : C.textSoft,
-              ),
-            ),
-            Text(label, style: T.body(10, color: C.muted)),
-            Text(hint, style: T.body(9, color: C.faint)),
-          ],
+        child: InsetBox(
+          padding: const EdgeInsets.fromLTRB(8, 7, 8, 7),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(value.toStringAsFixed(0),
+                  style: T.mono(13, weight: 700, color: C.textSoft)),
+              Text(label, style: T.body(8.8, color: C.faint)),
+            ],
+          ),
         ),
       );
 }
 
-/// Девять движков и чего каждому не хватает.
-///
-/// Блок отвечает на вопрос, который иначе останется без ответа: emptyй
-/// экран — это «система не дописана» или «система готова, но её нечем
-/// кормить»? Разница определяет, что делать дальше, и потому показывается
-/// числом, а не подразумевается.
-class _Engines extends StatelessWidget {
-  const _Engines({required this.state});
+class _DeltaCell extends StatelessWidget {
+  const _DeltaCell(this.value);
 
-  final ResearchState state;
+  final double value;
 
   @override
-  Widget build(BuildContext context) => SectionCard(
+  Widget build(BuildContext context) {
+    final color = value > 0
+        ? C.green
+        : value < 0
+            ? C.red
+            : C.faint;
+    final text = value == 0
+        ? '0'
+        : '${value > 0 ? '+' : '−'}${value.abs().toStringAsFixed(1)}';
+    return Expanded(
+      child: InsetBox(
+        padding: const EdgeInsets.fromLTRB(8, 7, 8, 7),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const SectionLabel('Движки'),
-            const SizedBox(height: 6),
-            Text(
-              'Написано и проверено ${state.enginesReady} из '
-              '${state.engines.length}. Все входы закрыты у '
-              '${state.enginesFed}, часть входов — у '
-              '${state.engines.where((e) => e.partial).length}.',
-              style: T.body(11.5, color: C.text, height: 1.45),
-            ),
-            const SizedBox(height: 10),
-            for (final engine in state.engines)
-              KeyValueRow(
-                name: engine.title,
-                value: engine.stateLabel,
-                valueStyle: T.mono(
-                  11,
-                  color: engine.fed
-                      ? C.green
-                      : (engine.partial ? C.info : C.warning),
-                ),
-                showDivider: engine != state.engines.last,
-              ),
+            Text(text, style: T.mono(13, weight: 700, color: color)),
+            Text('ранний сигнал', style: T.body(8.8, color: C.faint)),
           ],
         ),
-      );
+      ),
+    );
+  }
 }
 
-/// Откуда берутся данные и почему их пока нет.
-///
-/// Список не декоративный. Контур зависит от источников с разным правовым
-/// режимом, и владельцу нужно видеть три разные вещи: что можно подключить
-/// бесплатно прямо сейчас, что придётся носить руками, и что не будет
-/// подключено никогда — с заменой.
-class _Sources extends StatelessWidget {
-  const _Sources({required this.state});
+class _TierChip extends StatelessWidget {
+  const _TierChip({required this.label, required this.color});
 
-  final ResearchState state;
+  final String label;
+  final Color color;
 
   @override
-  Widget build(BuildContext context) => SectionCard(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const SectionLabel('Откуда данные'),
-            const SizedBox(height: 6),
-            if (state.reason.isNotEmpty) ...[
-              Text(state.reason,
-                  style: T.body(11.5, color: C.text, height: 1.45)),
-              const SizedBox(height: 10),
-            ],
-            KeyValueRow(
-              name: 'Бесплатный официальный маршрут',
-              value: '${state.freeRoute} из ${state.totalSources}',
-              valueStyle: T.mono(12, color: C.green),
-            ),
-            KeyValueRow(
-              name: 'Ждут проверки условий',
-              value: '${state.awaitingTermsCheck.length}',
-              valueStyle: T.mono(12, color: C.warning),
-            ),
-            KeyValueRow(
-              name: 'Только ручной импорт',
-              value: '${state.manualOnly.length}',
-              valueStyle: T.mono(12, color: C.muted),
-              showDivider: state.unavailable.isNotEmpty,
-            ),
-            if (state.unavailable.isNotEmpty) ...[
-              const SizedBox(height: 10),
-              const SectionLabel('Недоступны', color: C.faint),
-              const SizedBox(height: 4),
-              for (final source in state.unavailable)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 6),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        '${source.name} · ${source.statusLabel}',
-                        style: T.body(11, color: C.textSecondary),
-                      ),
-                      Text(
-                        source.note,
-                        style: T.body(10, color: C.faint, height: 1.4),
-                      ),
-                    ],
-                  ),
-                ),
-            ],
-            if (state.connectOrder.isNotEmpty) ...[
-              const SizedBox(height: 8),
-              Text(
-                'Порядок подключения: ${state.connectOrder.take(6).join(', ')}…',
-                style: T.mono(9.5, color: C.dim, height: 1.4),
-              ),
-            ],
-          ],
+  Widget build(BuildContext context) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.10),
+          border: Border.all(color: color.withValues(alpha: 0.35)),
+          borderRadius: BorderRadius.circular(R.pill),
         ),
+        child: Text(label, style: T.body(9.5, weight: 700, color: color)),
       );
 }
 
-class _Note extends StatelessWidget {
-  const _Note({
+class _MiniChip extends StatelessWidget {
+  const _MiniChip(this.text);
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        decoration: BoxDecoration(
+          color: C.inset,
+          border: Border.all(color: C.border),
+          borderRadius: BorderRadius.circular(R.pill),
+        ),
+        child: Text(text, style: T.mono(9, color: C.muted)),
+      );
+}
+
+class _Bullet extends StatelessWidget {
+  const _Bullet(this.text, {required this.color});
+
+  final String text;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: const EdgeInsets.only(bottom: 3),
+        child: Text('· $text', style: T.body(10.5, color: color, height: 1.35)),
+      );
+}
+
+class _StateCard extends StatelessWidget {
+  const _StateCard({
     required this.title,
     required this.text,
     this.busy = false,
@@ -426,97 +504,22 @@ class _Note extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 SectionLabel(title),
-                const SizedBox(height: 6),
-                Text(text, style: T.body(11.5, color: C.muted, height: 1.5)),
-                if (onRetry != null) ...[
+                const SizedBox(height: 7),
+                Text(text, style: T.body(11.5, color: C.muted, height: 1.45)),
+                if (busy) ...[
                   const SizedBox(height: 10),
-                  ActionButton(label: 'Спросить ещё раз', onTap: onRetry!),
+                  const LinearProgressIndicator(minHeight: 2),
+                ],
+                if (onRetry != null && !busy) ...[
+                  const SizedBox(height: 10),
+                  Pressable(
+                    onTap: onRetry,
+                    child: Text('Повторить', style: T.body(11, weight: 700, color: C.info)),
+                  ),
                 ],
               ],
             ),
           ),
-        ],
-      );
-}
-
-/// Одна строка вместо трёх карточек, пока гипотез нет.
-///
-/// «Почему empty» — вопрос из одного предложения, и отвечать на него
-/// страницей про правовые режимы источников значит топить ответ в
-/// подробностях. Подробности никуда не делись: они под раскрытием ниже.
-class _Waiting extends StatelessWidget {
-  const _Waiting({required this.state});
-
-  final ResearchState state;
-
-  @override
-  Widget build(BuildContext context) {
-    // Считаются работающие, а не объявленные. Прежняя строка брала
-    // покрытие из реестра и сообщала «считают пять» при одном движке,
-    // который действительно обрабатывает данные.
-    final working = state.engines.where((e) => e.working).length;
-    final waiting = state.engines.where((e) => e.wired && !e.working).length;
-    return SectionCard(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text('Гипотез пока нет', style: T.jost(15, weight: 700, color: C.text)),
-          const SizedBox(height: 6),
-          Text(
-            working == 0
-                ? (waiting == 0
-                    ? 'Переходники к движкам ещё не написаны.'
-                    : 'Данные пока не пришли.')
-                : 'Обрабатывают данные $working из ${state.engines.length}. '
-                    'Для подтверждения нужны независимые источники и '
-                    'подтверждение в разных периодах.',
-            style: T.body(12.5, color: C.muted, height: 1.4),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-/// Устройство контура под раскрытием.
-///
-/// Владельцу нужен результат, а не отчёт о том, как он получается. Но и
-/// спрятать это насовсем нельзя: когда гипотез нет, единственный способ
-/// понять, что делать, — увидеть, чего не хватает движкам.
-class _Details extends StatefulWidget {
-  const _Details({required this.state});
-
-  final ResearchState state;
-
-  @override
-  State<_Details> createState() => _DetailsState();
-}
-
-class _DetailsState extends State<_Details> {
-  bool open = false;
-
-  @override
-  Widget build(BuildContext context) => Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          GestureDetector(
-            onTap: () => setState(() => open = !open),
-            behavior: HitTestBehavior.opaque,
-            child: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 8),
-              child: Text(
-                open ? 'Скрыть устройство контура' : 'Как это считается',
-                style: T.jost(13, weight: 600, color: C.accent),
-              ),
-            ),
-          ),
-          if (open) ...[
-            const _Explainer(),
-            const SizedBox(height: 12),
-            _Engines(state: widget.state),
-            const SizedBox(height: 12),
-            _Sources(state: widget.state),
-          ],
         ],
       );
 }
