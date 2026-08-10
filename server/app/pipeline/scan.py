@@ -19,7 +19,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -33,6 +33,7 @@ from ..market.candles import Candle, resample_hours
 from ..market.fx import rate_note, rate_to_rub
 from ..models import Bar, IdeaEvent, Instrument, TradeIdea
 from ..models.enums import (
+    AssetClass,
     Direction,
     IdeaStatus,
     LiquidityRegime,
@@ -142,6 +143,57 @@ def _load_bars(
         for b in rows
     ]
     return list(reversed(candles))
+
+
+def _decimal(value) -> Decimal | None:
+    if value in (None, ""):
+        return None
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+
+
+def _liquidity_inputs(
+    instrument: Instrument,
+    context: Sequence[Candle],
+) -> tuple[float | None, Decimal | None]:
+    """Ликвидность для scan без повторного отказа уже допущенного FORTS.
+
+    Стратегические пороги здесь не меняются. Для crypto и прочих классов
+    сохраняется прежнее поведение. Для FORTS второй проход universe уже
+    измерил ликвидность по 30-дневной медиане, а при дырявом ISS history —
+    по свежему снимку доски. Раньше scan забывал это измерение и подставлял
+    только ``context[-1].volume_notional``. Если у последней D1-свечи ISS
+    отдавал пустой/нулевой ``value``, контракт сначала честно проходил §5.2,
+    а через несколько строк объявлялся UNTRADEABLE и до стратегий не доходил.
+
+    Используем ровно те данные, на которых был сделан admission. Это ремонт
+    data plumbing, а не ослабление фильтров поиска сигнала.
+    """
+    turnover = context[-1].volume_notional if context else None
+    spread = 0.0005 if turnover else None
+    if instrument.asset_class is not AssetClass.FUTURES:
+        return spread, turnover
+
+    meta = instrument.metadata_json or {}
+    admission = meta.get("admission") or {}
+    measured_turnover = _decimal(
+        admission.get("median_daily_notional_rub")
+        or admission.get("daily_notional_rub")
+    )
+    if measured_turnover is not None and measured_turnover > 0:
+        turnover = measured_turnover
+
+    measured_spread = _decimal(
+        admission.get("relative_spread_snapshot") or meta.get("spread_snapshot")
+    )
+    if measured_spread is not None and measured_spread >= 0:
+        spread = float(measured_spread)
+    elif turnover is None:
+        spread = None
+
+    return spread, turnover
 
 
 def _zones_from(readings: Sequence[Reading | None], direction: Direction) -> list[PriceZone]:
@@ -282,9 +334,9 @@ def scan_instrument(
         return None, [Skipped(iid, "данные", f"баров 4H после склейки {len(setup)}, нужно 40")], []
 
     # ── Ликвидность и режим ──────────────────────────────────────────────
-    turnover = context[-1].volume_notional
+    spread, turnover = _liquidity_inputs(instrument, context)
     liquidity, liq_reasons = classify_liquidity(
-        relative_spread=0.0005 if turnover else None,
+        relative_spread=spread,
         median_notional=turnover,
         min_notional=Decimal(str(cfg.get("universe.futures.min_median_daily_notional_rub"))),
         max_spread=float(cfg.get("universe.futures.max_median_relative_spread")),
@@ -334,10 +386,6 @@ def scan_instrument(
     )
 
     # ── Стратегии §10–§12 ────────────────────────────────────────────────
-    #
-    # Прогоняются все три. Несколько кандидатов на один инструмент — берём
-    # лучший по R/R, остальные попадают в отказы с причиной: молчаливая
-    # потеря альтернативы в личном торговом приложении недопустима.
     outcomes = [
         trend_pullback.build(ctx),
         breakout_retest.build(ctx),
@@ -371,13 +419,10 @@ def scan_instrument(
     probability = rule_prior(
         quality.total, cap=Decimal(str(cfg.get("probability.rule_prior_cap")))
     )
-    # `None`, а не ноль: статистики закрытых сделок ещё нет, и это
-    # незнание, а не приговор. Ноль здесь занулял 0,55 веса и делал порог
-    # допуска непроходимым для любой идеи при любом рынке.
     conf_value, conf_band, conf_weights = confidence(
         ConfidenceInput(
-            sample_adequacy=None,                # статистики ещё нет
-            calibration=None,                    # сравнивать оценки не с чем
+            sample_adequacy=None,
+            calibration=None,
             data_completeness=quality.data_quality,
             regime_similarity=Decimal("0.5"),
             stability=Decimal("0.5"),
@@ -397,12 +442,6 @@ def scan_instrument(
         rr_tp2=rr_tp2,
         confidence=conf_value,
         liquidity=liquidity,
-        # Та же семантика, что у перепроверки (`trigger.confirmed`):
-        # детектор возвращает чтение и вне зоны входа, и «паттерн есть
-        # где-то» — не подтверждение. Асимметрия давала идее пройти
-        # ворота при скане и стать недоступной для перепроверки: отказа
-        # по триггеру в `admission_failed` не было, а подтверждения не
-        # было тоже.
         has_trigger=trigger_confirmed(pa_reading),
         risk_blocked=False,
         thresholds=AdmissionThresholds(
@@ -428,10 +467,6 @@ def scan_instrument(
         ),
         strategy_multiplier=candidate.risk_multiplier,
     )
-    # Курс котировочной валюты к рублю. У инструмента MOEX он равен единице,
-    # у бессрочного контракта — рыночный курс доллара: бюджет риска задан в
-    # рублях, а риск на единицу ETHUSDT — в USDT, и без пересчёта деление
-    # даёт объём, который не на что купить.
     quote_rate = rate_to_rub(session, instrument.currency, now=now)
     sizing = size_position(
         budget=budget,
@@ -511,18 +546,7 @@ def scan_instrument(
             "supporting_factors": [c.detail for c in candidate.checks if c.passed],
             "counter_factors": list(candidate.counter_factors),
             "admission": verdict.reason,
-            # Какие ворота §15.6 не прошли — именами, а не одной строкой.
-            #
-            # Строку нельзя разобрать обратно, а разобрать нужно: идея,
-            # которой не хватило **только** подтверждения на триггерном
-            # таймфрейме, обязана получить это подтверждение, когда оно
-            # появится. Идея, которой не хватило вероятности или ожидания,
-            # не обязана: качество перепроверкой не улучшается.
             "admission_failed": [g.name for g in verdict.failed],
-            # Что в уверенности осталось неизмеренным. Без этого списка
-            # число 0,60 выглядит суждением, а оно наполовину признание
-            # незнания: статистики закрытых сделок ещё нет, и калибровку
-            # сравнивать не с чем.
             "confidence_unmeasured": unmeasured_components(conf_weights),
             "binding_limit": budget.binding,
             "score_breakdown": [
@@ -535,10 +559,6 @@ def scan_instrument(
                 for c in quality.components
             ],
             "sizing_note": sizing.reason,
-            # Валюта котировки и курс, по которому посчитаны рубли. Хранится
-            # именно тот курс, что участвовал в расчёте: карточка идеи живёт
-            # днями, а курс меняется, и подписывать вчерашний объём сегодняшним
-            # курсом значит показывать риск, которого не считали.
             "quote_currency": instrument.currency,
             "quote_rate_rub": None if quote_rate is None else str(quote_rate),
             "quote_note": rate_note(session, instrument.currency, now=now),
@@ -568,23 +588,13 @@ def scan_instrument(
 
 
 def _live_idea_ids(session: Session) -> dict[str, str]:
-    """Инструмент → идентификатор живой идеи по нему.
-
-    Живая — любая нетерминальная: от наблюдения до сопровождаемой позиции.
-    Терминальная (закрыта, обогнана рынком, отменена, протухла) созданию
-    новой не мешает — сетап действительно может появиться снова.
-
-    Один запрос на весь проход, а не по запросу на инструмент: скан ходит
-    по всей вселенной каждые пятнадцать минут.
-    """
+    """Инструмент → идентификатор живой идеи по нему."""
     terminal = [s for s in IdeaStatus if s.is_terminal]
     rows = session.execute(
         select(TradeIdea.instrument_id, TradeIdea.id)
         .where(TradeIdea.status.notin_(terminal))
         .order_by(TradeIdea.created_at)
     ).all()
-    # Первая по времени и остаётся: если живых почему-то несколько, ссылаться
-    # надо на ту, которую владельцу показали раньше.
     out: dict[str, str] = {}
     for instrument_id, idea_id in rows:
         out.setdefault(instrument_id, str(idea_id))
@@ -598,12 +608,7 @@ def scan(
     risk_state: RiskState | None = None,
     now: datetime | None = None,
 ) -> ScanResult:
-    """Просканировать вселенную и записать найденное.
-
-    Записываются **все** идеи, включая непоказанные (§12 UX-ТЗ). Отбор трёх
-    карточек — отдельный шаг после записи, и он не влияет на то, что попало
-    в журнал.
-    """
+    """Просканировать вселенную и записать найденное."""
     config = cfg or get_config()
     moment = now or datetime.now(UTC)
     state = risk_state or RiskState(risk_equity=Decimal(100_000))
@@ -627,7 +632,7 @@ def scan(
             idea, skipped, rejections = scan_instrument(
                 session, instrument, cfg=config, risk_state=state, now=moment
             )
-        except Exception as exc:  # один инструмент не должен ронять скан
+        except Exception as exc:
             result.skipped.append(
                 Skipped(instrument.instrument_id, "ошибка", f"{type(exc).__name__}: {exc}")
             )
@@ -635,14 +640,6 @@ def scan(
         result.skipped.extend(skipped)
         result.rejections.extend(rejections)
         if idea is not None:
-            # Тот же сетап, найденный через пятнадцать минут, — не новая
-            # идея, а прежняя, подтверждённая ещё раз. Записывать её второй
-            # строкой значит плодить план: у владельца в «В работе»
-            # оказалось десять позиций по HYPEUSDT с входами 52,2860 …
-            # 52,2950 — одна сделка, пересчитанная десять раз.
-            #
-            # §12 требует хранить найденное, и оно хранится: повтор уходит в
-            # пропуски с причиной, а не исчезает молча.
             прежняя = живые.get(instrument.instrument_id)
             if прежняя is not None:
                 result.skipped.append(
