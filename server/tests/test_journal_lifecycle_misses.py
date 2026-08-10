@@ -3,7 +3,7 @@ from app.journal.lifecycle import TransitionRequest, record_initial, transition
 from app.models import TradeIdea
 from app.models.enums import IdeaStatus
 from app.paper.tracker import approve_for
-from conftest import idea_kwargs
+from tests.conftest import idea_kwargs
 
 
 def _idea(session, instrument, now, **overrides):
