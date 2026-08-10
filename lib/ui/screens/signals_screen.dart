@@ -1,28 +1,19 @@
 import 'package:flutter/widgets.dart';
 
+import '../../data/api/equity_radar_client.dart';
+import '../../domain/research/equity_radar.dart';
 import '../../domain/research/hypothesis.dart';
 import '../../state/app_controller.dart';
 import '../../theme/tokens.dart';
 import '../../theme/typography.dart';
 import '../widgets/common.dart';
 
-/// Ранние сигналы: гипотезы об экономике эмитента (ТЗ Early Signals).
+/// Ежедневный радар российских акций в «Портфель → Сигналы».
 ///
-/// Раздел живёт в «Портфеле», а не в «Идеях», и это решение, а не раскладка.
-/// Идея отвечает, когда входить: у неё есть зона входа, стоп, цели и срок в
-/// днях, и она исполняется по биометрии. Гипотеза отвечает, что изменилось
-/// в экономике компании и за какой срок это должно проявиться в отчётности.
-/// Горизонт — год-два, исполнять её нечем, и кнопки подтверждения здесь нет
-/// и не будет: ТЗ прямо запрещает выдавать BUY, SELL и размер позиции.
-///
-/// Соседство с пакетами не случайно: гипотеза отвечает на вопрос «что
-/// вообще стоит держать», то есть на тот же вопрос, что и состав пакета, —
-/// только раньше и по другим данным.
-///
-/// Экран обязан объяснять emptyту. Контур зависит от источников, у которых
-/// разный правовой режим, и «гипотез нет, потому что рынок спокоен»
-/// неотличимо от «гипотез нет, потому что ни один источник не подключён» —
-/// а это разные новости, и вторая требует действия владельца.
+/// В отличие от торговых идей, здесь компания не исчезает только потому, что
+/// сегодня нет готового сетапа или подтверждённой research-гипотезы. Владелец
+/// видит весь отслеживаемый equity-universe сверху вниз: сильные кандидаты,
+/// нейтральные и слабые. Это рейтинг для дальнейшего изучения, а не BUY/SELL.
 class SignalsScreen extends StatefulWidget {
   const SignalsScreen({super.key, required this.controller});
 
@@ -33,444 +24,314 @@ class SignalsScreen extends StatefulWidget {
 }
 
 class _SignalsScreenState extends State<SignalsScreen> {
+  final EquityRadarClient _client = EquityRadarClient();
+  EquityRadarState? _radar;
+  Object? _error;
+  bool _loading = false;
+
   @override
   void initState() {
     super.initState();
+    _load();
+    // Research stays a separate evidence contour. It enriches company cards
+    // but no longer controls whether a company is visible at all.
     widget.controller.loadResearch();
+  }
+
+  Future<void> _load() async {
+    if (_loading) return;
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final value = await _client.load();
+      if (!mounted) return;
+      setState(() => _radar = value);
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _error = error);
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    final controller = widget.controller;
-    final state = controller.research;
-
-    if (state == null) {
-      return _Note(
-        title: 'Ранние сигналы',
-        text: controller.researchLoading
-            ? 'Спрашиваю движок…'
-            : 'Гипотезы считает сервер — запрос ещё не ушёл.',
-        busy: controller.researchLoading,
+    final radar = _radar;
+    if (radar == null && _loading) {
+      return const _StateNote(
+        title: 'Рейтинг компаний',
+        text: 'Загружаю ежедневный срез российских акций…',
       );
     }
-    if (!state.isAvailable) {
-      return _Note(
-        title: 'Движок не ответил',
-        text: state.unavailableReason!,
-        onRetry: () => controller.loadResearch(force: true),
+    if (radar == null) {
+      return _StateNote(
+        title: 'Рейтинг компаний недоступен',
+        text: _error == null
+            ? 'Сервер ещё не вернул ежедневный срез.'
+            : 'Не удалось получить рейтинг: $_error',
+        action: 'Повторить',
+        onTap: _load,
       );
     }
 
-    // Порядок здесь и есть ответ на вопрос «что у меня по сигналам».
-    // Гипотезы сверху, устройство контура — под раскрытием: пока их нет,
-    // объяснение нужно, а когда они есть, оно отодвигает результат вниз и
-    // заставляет искать его прокруткой.
-    final empty = state.hypotheses.isEmpty;
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(S.screen, 12, S.screen, 90),
-      children: [
-        if (empty)
-          _Waiting(state: state)
-        else
-          for (final h in state.hypotheses) ...[
-            _HypothesisCard(hypothesis: h),
-            const SizedBox(height: 10),
-          ],
-        const SizedBox(height: 12),
-        _Details(state: state),
-      ],
+    return RefreshIndicator(
+      onRefresh: _load,
+      child: ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.fromLTRB(S.screen, 12, S.screen, 90),
+        children: [
+          _RadarHeader(radar: radar, loading: _loading),
+          const SizedBox(height: 12),
+          if (radar.cards.isEmpty)
+            const _StateNote(
+              title: 'Нет акций для ранжирования',
+              text: 'В движке пока нет отслеживаемых российских акций. Это состояние данных, а не «всё плохо».',
+            )
+          else
+            for (var i = 0; i < radar.cards.length; i++) ...[
+              _CompanyCard(card: radar.cards[i], rank: i + 1),
+              const SizedBox(height: 10),
+            ],
+          const SizedBox(height: 4),
+          _ResearchHealth(state: widget.controller.research),
+        ],
+      ),
     );
   }
 }
 
-/// Чем это отличается от идей. Ставится первым и не сворачивается.
-///
-/// Без этой карточки раздел читается как «идеи, только медленнее», и первое
-/// же движение владельца будет попыткой по нему торговать.
-class _Explainer extends StatelessWidget {
-  const _Explainer();
+class _RadarHeader extends StatelessWidget {
+  const _RadarHeader({required this.radar, required this.loading});
 
-  @override
-  Widget build(BuildContext context) => SectionCard(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const SectionLabel('Что это'),
-            const SizedBox(height: 6),
-            Text(
-              'Гипотеза — не сделка. Идея говорит, когда входить: у неё есть '
-              'зона входа, стоп и срок в днях. Гипотеза говорит, что '
-              'изменилось в экономике компании и за какой срок это должно '
-              'проявиться в отчётности. Горизонт — год-два.',
-              style: T.body(11.5, color: C.muted, height: 1.5),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              'Здесь нет и не будет кнопки «купить»: максимум, который выдаёт '
-              'система, — «стоит изучить вручную». Каждая гипотеза несёт то, '
-              'что её опровергнет, и срок, после которого она протухает.',
-              style: T.body(11.5, color: C.faint, height: 1.5),
-            ),
-          ],
-        ),
-      );
-}
-
-/// Одна гипотеза: утверждение, чем доказано, чем опровергается.
-class _HypothesisCard extends StatelessWidget {
-  const _HypothesisCard({required this.hypothesis});
-
-  final Hypothesis hypothesis;
-
-  Color get _stateColor => switch (hypothesis.state) {
-        HypothesisState.diligenceReady => C.green,
-        HypothesisState.confirmed => C.info,
-        HypothesisState.earlyCandidate => C.accent,
-        HypothesisState.invalidated || HypothesisState.rejected => C.red,
-        _ => C.muted,
-      };
+  final EquityRadarState radar;
+  final bool loading;
 
   @override
   Widget build(BuildContext context) {
-    final h = hypothesis;
+    final asOf = radar.asOf;
+    final date = asOf == null
+        ? 'дата дневного среза неизвестна'
+        : '${asOf.day.toString().padLeft(2, '0')}.${asOf.month.toString().padLeft(2, '0')}.${asOf.year}';
     return SectionCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              if (h.symbol.isNotEmpty) ...[
-                Text(h.symbol, style: T.jost(15, weight: 700, color: C.text)),
-                const SizedBox(width: 8),
-              ],
-              Expanded(
-                child: Text(
-                  h.state.label.toUpperCase(),
-                  style: T.mono(9.5, color: _stateColor),
-                ),
-              ),
-              // Приоритет проверки, а не ожидаемая доходность. Подпись
-              // обязательна: число без неё читается как прогноз.
-              Text(
-                h.researchPriority.toStringAsFixed(0),
-                style: T.mono(13, weight: 700, color: _stateColor),
-              ),
+              const Expanded(child: SectionLabel('Ежедневный рейтинг компаний')),
+              if (loading) Text('обновляю…', style: T.mono(9.5, color: C.faint)),
             ],
           ),
-          Align(
-            alignment: Alignment.centerRight,
-            child: Text('приоритет проверки', style: T.body(9, color: C.faint)),
+          const SizedBox(height: 7),
+          Text(
+            'Сверху — то, что сейчас имеет смысл разбирать глубже. Ниже — нейтральные и слабые бумаги. '
+            'Слабая компания не удаляется из списка: завтра она может подняться после новых данных.',
+            style: T.body(11.5, color: C.textSecondary, height: 1.5),
           ),
-          const SizedBox(height: 8),
-          Text(h.title, style: T.body(12.5, color: C.text, height: 1.4)),
-          const SizedBox(height: 4),
-          Text(h.state.meaning, style: T.body(10.5, color: C.faint, height: 1.4)),
-          const SizedBox(height: 10),
-          _Scores(hypothesis: h),
-          if (h.shortfall.isNotEmpty) ...[
-            const SizedBox(height: 10),
-            const SectionLabel('До подтверждения не хватает', color: C.faint),
-            const SizedBox(height: 4),
-            for (final gap in h.shortfall)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 2),
-                child: Text('· $gap',
-                    style: T.body(10.5, color: C.warning, height: 1.4)),
-              ),
-          ],
-          if (h.targetKpis.isNotEmpty) ...[
-            const SizedBox(height: 10),
-            const SectionLabel('Что должно измениться', color: C.faint),
-            const SizedBox(height: 4),
-            for (final kpi in h.targetKpis)
-              KeyValueRow(
-                name: kpi.metric,
-                value: kpi.window.isEmpty ? kpi.expectedDirection : kpi.window,
-                valueStyle: T.mono(11, color: C.textSoft),
-                showDivider: false,
-              ),
-          ],
-          if (h.falsifiers.isNotEmpty) ...[
-            const SizedBox(height: 10),
-            // Утверждение, которое нечем опровергнуть, — не гипотеза. Этот
-            // блок здесь не для полноты: он и есть проверяемость.
-            const SectionLabel('Что её опровергнет', color: C.faint),
-            const SizedBox(height: 4),
-            for (final f in h.falsifiers)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 2),
-                child: Text('· $f',
-                    style: T.body(10.5, color: C.textSecondary, height: 1.4)),
-              ),
-          ],
-          if (h.evidence.any((e) => e.contradicts)) ...[
-            const SizedBox(height: 10),
-            const SectionLabel('Противоречит', color: C.faint),
-            const SizedBox(height: 4),
-            // Опровергающее доказательство не прячется никогда: гипотеза,
-            // из которой вычистили неудобные факты, перестаёт быть
-            // проверяемой.
-            for (final e in h.evidence.where((e) => e.contradicts))
-              Padding(
-                padding: const EdgeInsets.only(bottom: 2),
-                child: Text('· ${e.claim}',
-                    style: T.body(10.5, color: C.red, height: 1.4)),
-              ),
-          ],
-          if (h.expectedLag.isNotEmpty) ...[
-            const SizedBox(height: 8),
-            Text(
-              'ожидаемый лаг ${h.expectedLag}',
-              style: T.mono(9.5, color: C.faint),
-            ),
-          ],
+          const SizedBox(height: 7),
+          Text(
+            '$date · ${radar.cards.length} компаний · ${radar.method}',
+            style: T.mono(9.5, color: C.faint),
+          ),
+          const SizedBox(height: 5),
+          Text(
+            'Рейтинг пересчитывается после новой закрытой дневной свечи. Это фильтр внимания, не торговая команда.',
+            style: T.body(10.5, color: C.faint, height: 1.4),
+          ),
         ],
       ),
     );
   }
 }
 
-/// Три оценки раздельно — сводить их в одну запрещено ТЗ §2.6.
-class _Scores extends StatelessWidget {
-  const _Scores({required this.hypothesis});
+class _CompanyCard extends StatelessWidget {
+  const _CompanyCard({required this.card, required this.rank});
 
-  final Hypothesis hypothesis;
+  final EquityRadarCard card;
+  final int rank;
+
+  Color get tone {
+    if (card.score >= 75) return C.green;
+    if (card.score >= 60) return C.accent;
+    if (card.score >= 45) return C.textSecondary;
+    if (card.score >= 30) return C.warning;
+    return C.red;
+  }
 
   @override
-  Widget build(BuildContext context) => Row(
-        children: [
-          _Score(
-            label: 'доказано',
-            value: hypothesis.evidenceScore,
-            hint: 'надёжность источников',
-          ),
-          const SizedBox(width: 8),
-          _Score(
-            label: 'материально',
-            value: hypothesis.economicScore,
-            hint: 'размер эффекта',
-          ),
-          const SizedBox(width: 8),
-          _Score(
-            label: 'тех. момент',
-            value: hypothesis.marketContextScore,
-            // Это D1 timing overlay, не консенсус и не торговая команда.
-            hint: hypothesis.marketContextLabel,
-          ),
-        ],
+  Widget build(BuildContext context) => SectionCard(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  width: 28,
+                  height: 28,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: C.inset,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: C.border),
+                  ),
+                  child: Text('$rank', style: T.mono(10, color: C.muted)),
+                ),
+                const SizedBox(width: 9),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(card.symbol, style: T.jost(16, weight: 700, color: C.text)),
+                      if (card.title.isNotEmpty && card.title != card.symbol)
+                        Text(card.title, style: T.body(10.5, color: C.muted)),
+                    ],
+                  ),
+                ),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Text(
+                      card.score.toStringAsFixed(0),
+                      style: T.mono(22, weight: 700, color: tone),
+                    ),
+                    Text(card.label, style: T.body(9.5, weight: 700, color: tone)),
+                  ],
+                ),
+              ],
+            ),
+            const SizedBox(height: 11),
+            Row(
+              children: [
+                _Score(label: 'фундамент', value: card.researchScore),
+                const SizedBox(width: 8),
+                _Score(label: 'техника D1', value: card.technicalScore),
+                const SizedBox(width: 8),
+                _Score(label: 'ликвидность', value: card.liquidityScore),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(child: _Change(label: '20 дней', value: card.return20d)),
+                const SizedBox(width: 8),
+                Expanded(child: _Change(label: '60 дней', value: card.return60d)),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: _Mini(
+                    label: 'ранний сигнал',
+                    value: card.hasResearchHypothesis ? 'есть' : 'нет',
+                    color: card.hasResearchHypothesis ? C.green : C.faint,
+                  ),
+                ),
+              ],
+            ),
+            if (card.thesis.isNotEmpty) ...[
+              const SizedBox(height: 11),
+              Text(card.thesis, style: T.body(11.5, color: C.text, height: 1.45)),
+            ],
+            if (card.reasons.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              for (final reason in card.reasons.take(3))
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 2),
+                  child: Text('· $reason', style: T.body(10.5, color: C.textSecondary, height: 1.4)),
+                ),
+            ],
+            if (card.warnings.isNotEmpty) ...[
+              const SizedBox(height: 7),
+              Text(
+                card.warnings.join(' · '),
+                style: T.body(9.5, color: C.warning, height: 1.35),
+              ),
+            ],
+          ],
+        ),
       );
 }
 
 class _Score extends StatelessWidget {
-  const _Score({required this.label, required this.value, required this.hint});
-
+  const _Score({required this.label, required this.value});
   final String label;
-  final double? value;
-  final String hint;
+  final double value;
 
   @override
   Widget build(BuildContext context) => Expanded(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              value == null ? '—' : (value! * 100).toStringAsFixed(0),
-              style: T.mono(
-                14,
-                weight: 700,
-                color: value == null ? C.faint : C.textSoft,
-              ),
-            ),
-            Text(label, style: T.body(10, color: C.muted)),
-            Text(hint, style: T.body(9, color: C.faint)),
-          ],
-        ),
-      );
-}
-
-/// Девять движков и чего каждому не хватает.
-///
-/// Блок отвечает на вопрос, который иначе останется без ответа: emptyй
-/// экран — это «система не дописана» или «система готова, но её нечем
-/// кормить»? Разница определяет, что делать дальше, и потому показывается
-/// числом, а не подразумевается.
-class _Engines extends StatelessWidget {
-  const _Engines({required this.state});
-
-  final ResearchState state;
-
-  @override
-  Widget build(BuildContext context) => SectionCard(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const SectionLabel('Движки'),
-            const SizedBox(height: 6),
-            Text(
-              'Написано и проверено ${state.enginesReady} из '
-              '${state.engines.length}. Все входы закрыты у '
-              '${state.enginesFed}, часть входов — у '
-              '${state.engines.where((e) => e.partial).length}.',
-              style: T.body(11.5, color: C.text, height: 1.45),
-            ),
-            const SizedBox(height: 10),
-            for (final engine in state.engines)
-              KeyValueRow(
-                name: engine.title,
-                value: engine.stateLabel,
-                valueStyle: T.mono(
-                  11,
-                  color: engine.fed
-                      ? C.green
-                      : (engine.partial ? C.info : C.warning),
-                ),
-                showDivider: engine != state.engines.last,
-              ),
-          ],
-        ),
-      );
-}
-
-/// Откуда берутся данные и почему их пока нет.
-///
-/// Список не декоративный. Контур зависит от источников с разным правовым
-/// режимом, и владельцу нужно видеть три разные вещи: что можно подключить
-/// бесплатно прямо сейчас, что придётся носить руками, и что не будет
-/// подключено никогда — с заменой.
-class _Sources extends StatelessWidget {
-  const _Sources({required this.state});
-
-  final ResearchState state;
-
-  @override
-  Widget build(BuildContext context) => SectionCard(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const SectionLabel('Откуда данные'),
-            const SizedBox(height: 6),
-            if (state.reason.isNotEmpty) ...[
-              Text(state.reason,
-                  style: T.body(11.5, color: C.text, height: 1.45)),
-              const SizedBox(height: 10),
-            ],
-            KeyValueRow(
-              name: 'Бесплатный официальный маршрут',
-              value: '${state.freeRoute} из ${state.totalSources}',
-              valueStyle: T.mono(12, color: C.green),
-            ),
-            KeyValueRow(
-              name: 'Ждут проверки условий',
-              value: '${state.awaitingTermsCheck.length}',
-              valueStyle: T.mono(12, color: C.warning),
-            ),
-            KeyValueRow(
-              name: 'Только ручной импорт',
-              value: '${state.manualOnly.length}',
-              valueStyle: T.mono(12, color: C.muted),
-              showDivider: state.unavailable.isNotEmpty,
-            ),
-            if (state.unavailable.isNotEmpty) ...[
-              const SizedBox(height: 10),
-              const SectionLabel('Недоступны', color: C.faint),
-              const SizedBox(height: 4),
-              for (final source in state.unavailable)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 6),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        '${source.name} · ${source.statusLabel}',
-                        style: T.body(11, color: C.textSecondary),
-                      ),
-                      Text(
-                        source.note,
-                        style: T.body(10, color: C.faint, height: 1.4),
-                      ),
-                    ],
-                  ),
-                ),
-            ],
-            if (state.connectOrder.isNotEmpty) ...[
-              const SizedBox(height: 8),
-              Text(
-                'Порядок подключения: ${state.connectOrder.take(6).join(', ')}…',
-                style: T.mono(9.5, color: C.dim, height: 1.4),
-              ),
-            ],
-          ],
-        ),
-      );
-}
-
-class _Note extends StatelessWidget {
-  const _Note({
-    required this.title,
-    required this.text,
-    this.busy = false,
-    this.onRetry,
-  });
-
-  final String title;
-  final String text;
-  final bool busy;
-  final VoidCallback? onRetry;
-
-  @override
-  Widget build(BuildContext context) => ListView(
-        padding: const EdgeInsets.fromLTRB(S.screen, 12, S.screen, 90),
-        children: [
-          SectionCard(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                SectionLabel(title),
-                const SizedBox(height: 6),
-                Text(text, style: T.body(11.5, color: C.muted, height: 1.5)),
-                if (onRetry != null) ...[
-                  const SizedBox(height: 10),
-                  ActionButton(label: 'Спросить ещё раз', onTap: onRetry!),
-                ],
-              ],
-            ),
+        child: Container(
+          padding: const EdgeInsets.fromLTRB(9, 8, 9, 8),
+          decoration: BoxDecoration(
+            color: C.inset,
+            borderRadius: BorderRadius.circular(9),
           ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(value.toStringAsFixed(0), style: T.mono(13, weight: 700, color: C.textSoft)),
+              Text(label, style: T.body(9, color: C.faint)),
+            ],
+          ),
+        ),
+      );
+}
+
+class _Change extends StatelessWidget {
+  const _Change({required this.label, required this.value});
+  final String label;
+  final double? value;
+
+  @override
+  Widget build(BuildContext context) {
+    final v = value;
+    final color = v == null
+        ? C.faint
+        : v > 0
+            ? C.green
+            : v < 0
+                ? C.red
+                : C.muted;
+    final text = v == null ? '—' : '${v > 0 ? '+' : ''}${v.toStringAsFixed(1)}%';
+    return _Mini(label: label, value: text, color: color);
+  }
+}
+
+class _Mini extends StatelessWidget {
+  const _Mini({required this.label, required this.value, required this.color});
+  final String label;
+  final String value;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(value, style: T.mono(10.5, weight: 700, color: color)),
+          Text(label, style: T.body(8.5, color: C.faint)),
         ],
       );
 }
 
-/// Одна строка вместо трёх карточек, пока гипотез нет.
-///
-/// «Почему empty» — вопрос из одного предложения, и отвечать на него
-/// страницей про правовые режимы источников значит топить ответ в
-/// подробностях. Подробности никуда не делись: они под раскрытием ниже.
-class _Waiting extends StatelessWidget {
-  const _Waiting({required this.state});
+class _ResearchHealth extends StatelessWidget {
+  const _ResearchHealth({required this.state});
 
-  final ResearchState state;
+  final ResearchState? state;
 
   @override
   Widget build(BuildContext context) {
-    // Считаются работающие, а не объявленные. Прежняя строка брала
-    // покрытие из реестра и сообщала «считают пять» при одном движке,
-    // который действительно обрабатывает данные.
-    final working = state.engines.where((e) => e.working).length;
-    final waiting = state.engines.where((e) => e.wired && !e.working).length;
+    final s = state;
+    if (s == null) return const SizedBox.shrink();
     return SectionCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('Гипотез пока нет', style: T.jost(15, weight: 700, color: C.text)),
+          const SectionLabel('Контур ранних фундаментальных сигналов'),
           const SizedBox(height: 6),
           Text(
-            working == 0
-                ? (waiting == 0
-                    ? 'Переходники к движкам ещё не написаны.'
-                    : 'Данные пока не пришли.')
-                : 'Обрабатывают данные $working из ${state.engines.length}. '
-                    'Для подтверждения нужны независимые источники и '
-                    'подтверждение в разных периодах.',
-            style: T.body(12.5, color: C.muted, height: 1.4),
+            s.isAvailable
+                ? 'Живых гипотез ${s.hypotheses.length}. Они усиливают или ослабляют карточки выше, но их отсутствие больше не делает раздел пустым.'
+                : 'Контур гипотез временно недоступен: ${s.unavailableReason}',
+            style: T.body(10.5, color: C.faint, height: 1.45),
           ),
         ],
       ),
@@ -478,45 +339,40 @@ class _Waiting extends StatelessWidget {
   }
 }
 
-/// Устройство контура под раскрытием.
-///
-/// Владельцу нужен результат, а не отчёт о том, как он получается. Но и
-/// спрятать это насовсем нельзя: когда гипотез нет, единственный способ
-/// понять, что делать, — увидеть, чего не хватает движкам.
-class _Details extends StatefulWidget {
-  const _Details({required this.state});
+class _StateNote extends StatelessWidget {
+  const _StateNote({
+    required this.title,
+    required this.text,
+    this.action,
+    this.onTap,
+  });
 
-  final ResearchState state;
-
-  @override
-  State<_Details> createState() => _DetailsState();
-}
-
-class _DetailsState extends State<_Details> {
-  bool open = false;
+  final String title;
+  final String text;
+  final String? action;
+  final VoidCallback? onTap;
 
   @override
-  Widget build(BuildContext context) => Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          GestureDetector(
-            onTap: () => setState(() => open = !open),
-            behavior: HitTestBehavior.opaque,
-            child: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 8),
-              child: Text(
-                open ? 'Скрыть устройство контура' : 'Как это считается',
-                style: T.jost(13, weight: 600, color: C.accent),
-              ),
+  Widget build(BuildContext context) => Center(
+        child: Padding(
+          padding: const EdgeInsets.all(S.screen),
+          child: SectionCard(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title, style: T.jost(16, weight: 700, color: C.text)),
+                const SizedBox(height: 6),
+                Text(text, style: T.body(11.5, color: C.muted, height: 1.5)),
+                if (action != null && onTap != null) ...[
+                  const SizedBox(height: 12),
+                  GestureDetector(
+                    onTap: onTap,
+                    child: Text(action!, style: T.body(11.5, weight: 700, color: C.accent)),
+                  ),
+                ],
+              ],
             ),
           ),
-          if (open) ...[
-            const _Explainer(),
-            const SizedBox(height: 12),
-            _Engines(state: widget.state),
-            const SizedBox(height: 12),
-            _Sources(state: widget.state),
-          ],
-        ],
+        ),
       );
 }
