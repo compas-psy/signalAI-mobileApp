@@ -6,6 +6,11 @@ on:
       - agent/forts-lifecycle-forensics
     paths:
       - .github/workflows/forts-lifecycle-forensics.yml
+  pull_request:
+    branches:
+      - claude/release-y40hk5
+    paths:
+      - .github/workflows/forts-lifecycle-forensics.yml
 
 permissions:
   contents: read
