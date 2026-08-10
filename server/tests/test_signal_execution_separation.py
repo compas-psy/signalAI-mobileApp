@@ -1,3 +1,4 @@
+from decimal import Decimal
 from inspect import getsource
 
 import pytest
@@ -65,7 +66,7 @@ def test_zero_quantity_still_blocks_user_approval(session, instrument, now):
             now,
             status=IdeaStatus.TRIGGERED.value,
             quality_status=QualityStatus.ACTIVE.value,
-            quantity="0",
+            quantity=Decimal("0"),
         )
     )
     session.add(idea)
