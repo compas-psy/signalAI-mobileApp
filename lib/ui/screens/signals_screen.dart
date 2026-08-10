@@ -1,3 +1,4 @@
+import 'package:flutter/material.dart' show RefreshIndicator;
 import 'package:flutter/widgets.dart';
 
 import '../../data/api/equity_radar_client.dart';
@@ -33,8 +34,6 @@ class _SignalsScreenState extends State<SignalsScreen> {
   void initState() {
     super.initState();
     _load();
-    // Research stays a separate evidence contour. It enriches company cards
-    // but no longer controls whether a company is visible at all.
     widget.controller.loadResearch();
   }
 
