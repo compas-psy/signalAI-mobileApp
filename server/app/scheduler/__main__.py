@@ -52,7 +52,7 @@ def main() -> int:
     )
 
     # Portfolio → Signals is a daily market snapshot, not a trading scanner.
-    # Check hourly so restarts cannot make us miss a refresh.  The refresh
+    # Check hourly so restarts cannot make us miss a refresh. The refresh
     # policy follows a *new closed MOEX equity D1*, not midnight: on weekends
     # and before the exchange has produced a new daily bar the previous good
     # ranking remains untouched; after the new D1 arrives it is rebuilt once.
