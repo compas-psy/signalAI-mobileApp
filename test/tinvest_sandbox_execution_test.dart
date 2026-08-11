@@ -33,6 +33,9 @@ class _RequestLog {
   final Map<String, dynamic> body;
 }
 
+bool _method(String path, String service, String method) =>
+    path.endsWith('.$service/$method');
+
 Future<({HttpServer server, List<_RequestLog> log})> _sandboxServer({
   bool existingSignalAiAccount = false,
 }) async {
@@ -47,7 +50,7 @@ Future<({HttpServer server, List<_RequestLog> log})> _sandboxServer({
 
     Object answer;
     final path = request.uri.path;
-    if (path.endsWith('/SandboxService/GetSandboxAccounts')) {
+    if (_method(path, 'SandboxService', 'GetSandboxAccounts')) {
       answer = {
         'accounts': existingSignalAiAccount
             ? [
@@ -61,11 +64,11 @@ Future<({HttpServer server, List<_RequestLog> log})> _sandboxServer({
               ]
             : <Object>[],
       };
-    } else if (path.endsWith('/SandboxService/OpenSandboxAccount')) {
+    } else if (_method(path, 'SandboxService', 'OpenSandboxAccount')) {
       answer = {'accountId': 'sandbox-account'};
-    } else if (path.endsWith('/SandboxService/SandboxPayIn')) {
+    } else if (_method(path, 'SandboxService', 'SandboxPayIn')) {
       answer = {'balance': {'currency': 'rub', 'units': '300000', 'nano': 0}};
-    } else if (path.endsWith('/InstrumentsService/FutureBy')) {
+    } else if (_method(path, 'InstrumentsService', 'FutureBy')) {
       answer = {
         'instrument': {
           'uid': 'pxu6-uid',
@@ -74,14 +77,14 @@ Future<({HttpServer server, List<_RequestLog> log})> _sandboxServer({
           'minPriceIncrement': {'units': '1', 'nano': 0},
         }
       };
-    } else if (path.endsWith('/SandboxService/PostSandboxOrder')) {
+    } else if (_method(path, 'SandboxService', 'PostSandboxOrder')) {
       answer = {
         'orderId': 'entry-order',
         'executionReportStatus': 'EXECUTION_REPORT_STATUS_NEW',
       };
-    } else if (path.endsWith('/SandboxService/PostSandboxStopOrder')) {
+    } else if (_method(path, 'SandboxService', 'PostSandboxStopOrder')) {
       answer = {'stopOrderId': 'stop-order'};
-    } else if (path.endsWith('/SandboxService/CancelSandboxOrder')) {
+    } else if (_method(path, 'SandboxService', 'CancelSandboxOrder')) {
       answer = {'time': DateTime.now().toUtc().toIso8601String()};
     } else {
       request.response.statusCode = 404;
@@ -112,10 +115,10 @@ void main() {
     await broker.accounts();
 
     final open = fixture.log
-        .where((r) => r.path.endsWith('/SandboxService/OpenSandboxAccount'))
+        .where((r) => _method(r.path, 'SandboxService', 'OpenSandboxAccount'))
         .toList();
     final payIn = fixture.log
-        .where((r) => r.path.endsWith('/SandboxService/SandboxPayIn'))
+        .where((r) => _method(r.path, 'SandboxService', 'SandboxPayIn'))
         .toList();
     expect(open, hasLength(1));
     expect(open.single.body['name'], 'SignalAI risk sandbox');
@@ -140,7 +143,7 @@ void main() {
     await broker.accounts();
 
     expect(
-      fixture.log.where((r) => r.path.endsWith('/SandboxService/SandboxPayIn')),
+      fixture.log.where((r) => _method(r.path, 'SandboxService', 'SandboxPayIn')),
       isEmpty,
     );
   });
@@ -168,7 +171,7 @@ void main() {
 
     expect(result.accepted, isTrue);
     final entry = fixture.log.singleWhere(
-      (r) => r.path.endsWith('/SandboxService/PostSandboxOrder'),
+      (r) => _method(r.path, 'SandboxService', 'PostSandboxOrder'),
     );
     expect(entry.body['instrumentId'], 'pxu6-uid');
     expect(entry.body['quantity'], '10');
@@ -178,7 +181,7 @@ void main() {
     expect(entry.body['confirmMarginTrade'], isTrue);
 
     final stop = fixture.log.singleWhere(
-      (r) => r.path.endsWith('/SandboxService/PostSandboxStopOrder'),
+      (r) => _method(r.path, 'SandboxService', 'PostSandboxStopOrder'),
     );
     expect(stop.body['instrumentId'], 'pxu6-uid');
     expect(stop.body['direction'], 'STOP_ORDER_DIRECTION_BUY');
@@ -187,7 +190,7 @@ void main() {
     expect((stop.body['orderId'] as String).length, lessThanOrEqualTo(36));
 
     expect(
-      fixture.log.where((r) => r.path.contains('/StopOrdersService/')),
+      fixture.log.where((r) => r.path.contains('.StopOrdersService/')),
       isEmpty,
     );
   });
