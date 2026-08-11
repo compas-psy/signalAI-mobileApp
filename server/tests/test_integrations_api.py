@@ -17,32 +17,36 @@ def client(session):
     app.dependency_overrides.clear()
 
 
-def test_integrations_list_has_tinvest_and_bybit_without_secret_values(client):
+def test_integrations_list_has_server_owned_tinvest_and_bybit_without_secret_values(client):
     response = client.get("/api/v1/integrations")
     assert response.status_code == 200
     body = response.json()
     slots = {item["slot"] for item in body}
     assert {
-        "tinvest_sandbox",
         "tinvest_invest_read",
         "tinvest_trade",
         "bybit_read",
         "bybit_testnet_trade",
         "bybit_trade",
     } <= slots
+    # Sandbox execution is intentionally device-owned: exposing a second
+    # server credential slot would create two competing credentials/owners for
+    # the same confirmed FORTS plan.
+    assert "tinvest_sandbox" not in slots
     assert all(item["configured"] is False for item in body)
     assert "token" not in response.text.lower() or "fields" in response.text
 
     by_slot = {item["slot"]: item for item in body}
-    assert by_slot["tinvest_sandbox"]["required"] is True
+    assert by_slot["tinvest_invest_read"]["required"] is True
+    assert by_slot["tinvest_trade"]["required"] is True
     assert by_slot["bybit_testnet_trade"]["required"] is False
     assert by_slot["bybit_trade"]["required"] is True
 
 
-def test_tinvest_token_is_write_only_and_encrypted_at_rest(client, session):
+def test_tinvest_server_token_is_write_only_and_encrypted_at_rest(client, session):
     secret = "t.example-super-secret-token-123456789"
     response = client.put(
-        "/api/v1/integrations/tinvest_sandbox",
+        "/api/v1/integrations/tinvest_invest_read",
         json={"values": {"token": secret}},
     )
     assert response.status_code == 200
@@ -50,11 +54,21 @@ def test_tinvest_token_is_write_only_and_encrypted_at_rest(client, session):
     assert secret not in response.text
 
     status = client.get("/api/v1/integrations").json()
-    sandbox = next(item for item in status if item["slot"] == "tinvest_sandbox")
-    assert sandbox["configured"] is True
-    assert sandbox["required"] is True
-    assert secret not in str(sandbox)
-    assert load_secret(session, "tinvest_sandbox") == {"token": secret}
+    invest_read = next(
+        item for item in status if item["slot"] == "tinvest_invest_read"
+    )
+    assert invest_read["configured"] is True
+    assert invest_read["required"] is True
+    assert secret not in str(invest_read)
+    assert load_secret(session, "tinvest_invest_read") == {"token": secret}
+
+
+def test_tinvest_sandbox_token_cannot_be_stored_on_server(client):
+    response = client.put(
+        "/api/v1/integrations/tinvest_sandbox",
+        json={"values": {"token": "must-stay-on-phone"}},
+    )
+    assert response.status_code == 404
 
 
 def test_bybit_requires_key_and_secret_together(client):
