@@ -15,6 +15,7 @@ import sys
 from datetime import timedelta
 
 from ..db import get_session_factory
+from ..market.review_resilience import install as install_review_resilience
 from ..notification_outbox import emit, materialize
 from ..paper.live_tracker import track_crypto_live
 from ..portfolio.equity_ranking_refresh import refresh as refresh_equity_ranking
@@ -42,6 +43,13 @@ def main() -> int:
         level=os.environ.get("SIGNALAI_LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
+
+    # Universe review должен различать «Bybit измерил и тикер не прошёл» и
+    # «Bybit вообще не удалось измерить». Один временный отказ snapshot раньше
+    # делал все crypto is_tradable=false на шесть часов. Устанавливаем wrapper
+    # до build_default_scheduler(), потому что runner захватывает ссылку на
+    # review_universe именно при сборке расписания.
+    install_review_resilience()
 
     scheduler = build_default_scheduler(
         universe_every=_minutes("SIGNALAI_UNIVERSE_EVERY_MINUTES", 360),
