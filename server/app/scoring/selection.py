@@ -2,8 +2,10 @@
 
 Три правила, которые здесь важнее кода:
 
-1. **Не более трёх карточек.** Не «три лучших плюс ещё немного» — ровно три
-   места, и за них конкурируют.
+1. **Квота и нормализация внимания независимы по торговым контурам.** FORTS
+   и crypto не должны вытеснять или переранжировать друг друга только потому,
+   что в одном скане одновременно нашлось много кандидатов. Общий риск между
+   ними остаётся общим на этапе исполнения.
 2. **Не более одной идеи из кластера при превышении риска кластера.**
    Три лонга по нефти — это одна сделка тройного размера.
 3. **«Сделок нет» — валидный результат** (§32). Он оформляется как результат
@@ -12,7 +14,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from collections import defaultdict
+from dataclasses import dataclass
 from decimal import Decimal
 
 from ..models.enums import LiquidityRegime, QualityStatus
@@ -83,14 +86,25 @@ def _normalise(value: Decimal, low: Decimal, high: Decimal) -> Decimal:
     return max(Decimal(0), min(Decimal(1), (value - low) / (high - low)))
 
 
+def _presentation_lane(instrument_id: str) -> str:
+    """Контур, который получает собственную квоту и шкалу ранжирования.
+
+    Это **не** риск-кластер и не новый торговый фильтр. Один общий пул создавал
+    две нежелательные связи: FORTS занимал места Bybit, а его экстремальные
+    score/EV меняли min/max нормализации и могли переставить местами уже сами
+    crypto-идеи. Оба эффекта относятся к presentation, не к стратегии.
+    """
+    if instrument_id.startswith("CRYPTO:"):
+        return "crypto"
+    if instrument_id.startswith("MOEX:FUT:"):
+        return "forts"
+    return "other"
+
+
 def rank(
     ideas: list[RankedIdea], weights: RankingWeights | None = None
 ) -> list[RankedResult]:
-    """Ранжирование §16.7 с разложением по слагаемым.
-
-    Слагаемые сохраняются: «эта идея выше той» должно объясняться, иначе
-    порядок карточек выглядит произволом.
-    """
+    """Ранжирование §16.7 с разложением по слагаемым."""
     w = weights or RankingWeights()
     if w.total() != Decimal(1):
         raise ValueError(f"сумма весов ранжирования = {w.total()}, должна быть 1")
@@ -102,7 +116,6 @@ def rank(
     score_low = min(i.score for i in ideas)
     score_high = max(i.score for i in ideas)
 
-    # Разнообразие: идея из кластера, который уже представлен, ценится ниже.
     seen: dict[str, int] = {}
     for item in ideas:
         key = item.cluster or item.instrument_id
@@ -130,6 +143,25 @@ def rank(
     return sorted(results, key=lambda r: r.rank_value, reverse=True)
 
 
+def _rank_for_presentation(
+    ideas: list[RankedIdea], weights: RankingWeights | None
+) -> list[RankedResult]:
+    """Нормализовать каждую площадку только относительно её кандидатов.
+
+    Затем результаты можно слить для одного экрана: квота всё равно считается
+    на lane. Абсолютное rank_value между площадками не является сравнением
+    «FORTS лучше BTC» — это лишь порядок отрисовки двух независимых списков.
+    """
+    lanes: dict[str, list[RankedIdea]] = defaultdict(list)
+    for idea in ideas:
+        lanes[_presentation_lane(idea.instrument_id)].append(idea)
+
+    ranked: list[RankedResult] = []
+    for lane_ideas in lanes.values():
+        ranked.extend(rank(lane_ideas, weights))
+    return sorted(ranked, key=lambda result: result.rank_value, reverse=True)
+
+
 def select_daily(
     ideas: list[RankedIdea],
     *,
@@ -139,25 +171,29 @@ def select_daily(
 ) -> DailySelection:
     """Собрать выдачу дня (§16).
 
-    Порядок: сначала готовые к исполнению, затем наблюдение — до общего числа
-    ``max_cards``. Наблюдение не вытесняет готовую сделку, но и не оставляет
-    экран пустым, когда готовых нет.
+    FORTS и crypto имеют независимые ``max_cards`` и независимую нормализацию.
+    Общий cluster/open risk остаётся общим и применяется при исполнении.
     """
     exceeded = cluster_risk_exceeded or set()
-    ranked = rank(ideas, weights)
+    ranked = _rank_for_presentation(ideas, weights)
 
     taken_clusters: set[str] = set()
     trade_now: list[RankedResult] = []
+    waiting_candidates: list[RankedResult] = []
     waiting: list[RankedResult] = []
     dropped: list[RankedResult] = []
+    active_per_lane: dict[str, int] = defaultdict(int)
 
     for result in ranked:
         item = result.idea
         cluster = item.cluster
+        lane = _presentation_lane(item.instrument_id)
         if cluster and cluster in exceeded and cluster in taken_clusters:
             dropped.append(
                 RankedResult(
-                    item, result.rank_value, result.parts,
+                    item,
+                    result.rank_value,
+                    result.parts,
                     dropped_reason=(
                         f"кластер {cluster} уже представлен, а риск кластера "
                         "превышен — три сделки одного кластера это одна сделка "
@@ -167,28 +203,51 @@ def select_daily(
             )
             continue
 
-        if item.quality_status is QualityStatus.ACTIVE and len(trade_now) < max_cards:
+        if (
+            item.quality_status is QualityStatus.ACTIVE
+            and active_per_lane[lane] < max_cards
+        ):
             trade_now.append(result)
+            active_per_lane[lane] += 1
             if cluster:
                 taken_clusters.add(cluster)
         elif item.quality_status is QualityStatus.WATCH:
-            waiting.append(result)
+            waiting_candidates.append(result)
+        elif item.quality_status is QualityStatus.ACTIVE:
+            dropped.append(
+                RankedResult(
+                    item,
+                    result.rank_value,
+                    result.parts,
+                    dropped_reason=f"не поместилась в {max_cards} карточки lane {lane}",
+                )
+            )
         else:
             dropped.append(
                 RankedResult(
-                    item, result.rank_value, result.parts,
+                    item,
+                    result.rank_value,
+                    result.parts,
                     dropped_reason="статус REJECTED",
                 )
             )
 
-    free = max(0, max_cards - len(trade_now))
-    overflow = waiting[free:]
-    waiting = waiting[:free]
-    dropped.extend(
-        RankedResult(r.idea, r.rank_value, r.parts,
-                     dropped_reason=f"не поместилась в {max_cards} карточки дня")
-        for r in overflow
-    )
+    waiting_per_lane: dict[str, int] = defaultdict(int)
+    for result in waiting_candidates:
+        lane = _presentation_lane(result.idea.instrument_id)
+        free = max_cards - active_per_lane[lane] - waiting_per_lane[lane]
+        if free > 0:
+            waiting.append(result)
+            waiting_per_lane[lane] += 1
+        else:
+            dropped.append(
+                RankedResult(
+                    result.idea,
+                    result.rank_value,
+                    result.parts,
+                    dropped_reason=f"не поместилась в {max_cards} карточки lane {lane}",
+                )
+            )
 
     reason = ""
     if not trade_now and not waiting:

@@ -15,9 +15,17 @@ import sys
 from datetime import timedelta
 
 from ..db import get_session_factory
+from ..market.moex_bar_guard import (
+    install as install_moex_bar_guard,
+    purge_premature_moex_bars,
+)
+from ..market.review_resilience import install as install_review_resilience
 from ..notification_outbox import emit, materialize
 from ..paper.live_tracker import track_crypto_live
+from ..paper.management_policy import install as install_paper_management
+from ..pipeline.risk_equity_runtime import install as install_risk_equity
 from ..portfolio.equity_ranking_refresh import refresh as refresh_equity_ranking
+from ..portfolio.equity_warmup import warm_equity_history
 from ..version import ENGINE_VERSION
 from .runner import build_default_scheduler, run_forever
 
@@ -43,6 +51,31 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
 
+    # Universe review должен различать «Bybit измерил и тикер не прошёл» и
+    # «Bybit вообще не удалось измерить». Один временный отказ snapshot раньше
+    # делал все crypto is_tradable=false на шесть часов. Устанавливаем wrapper
+    # до build_default_scheduler(), потому что runner захватывает ссылку на
+    # review_universe именно при сборке расписания.
+    install_review_resilience()
+
+    # Аналогично убираем скрытый 100k fallback scan(): scheduler обязан считать
+    # FORTS + crypto от явно выбранного владельцем risk.equity_rub=300000.
+    # Явный RiskState из теста/бэктеста wrapper не перезаписывает.
+    install_risk_equity()
+
+    # Новый PaperTrade должен получить те же доли целей, которые подписывает
+    # владелец на телефоне (40/40/20). Доли копируются в саму сделку, поэтому
+    # дальнейшее сопровождение не зависит от будущих изменений конфига.
+    install_paper_management()
+
+    # MOEX ISS includes the currently forming intraday candle in the same
+    # response as history. The legacy adapter labelled every returned row as
+    # closed, so scanner inputs could include a partial H1 bar. Install the
+    # closure guard before build_default_scheduler imports ingest callbacks.
+    # Signal rules are unchanged; the guard only restores the documented
+    # contract "features use closed bars".
+    install_moex_bar_guard()
+
     scheduler = build_default_scheduler(
         universe_every=_minutes("SIGNALAI_UNIVERSE_EVERY_MINUTES", 360),
         ingest_every=_minutes("SIGNALAI_INGEST_EVERY_MINUTES", 15),
@@ -50,6 +83,24 @@ def main() -> int:
         scan_every=_minutes("SIGNALAI_SCAN_EVERY_MINUTES", 15),
         portfolio_every=_minutes("SIGNALAI_PORTFOLIO_EVERY_MINUTES", 60),
     )
+
+    # The generic first-load budget is shared by all venues/classes. Give
+    # Portfolio → Signals a bounded equity-only warm-up so an empty D1 history
+    # cannot leave this product surface blank for many scheduler cycles.
+    def equity_warmup(session):
+        return warm_equity_history(session)
+
+    scheduler.add(
+        "equity-warmup",
+        _minutes("SIGNALAI_EQUITY_WARMUP_EVERY_MINUTES", 15),
+        equity_warmup,
+    )
+    warmup_job = scheduler.jobs.pop()
+    portfolio_index = next(
+        (i for i, job in enumerate(scheduler.jobs) if job.name == "portfolio"),
+        len(scheduler.jobs),
+    )
+    scheduler.jobs.insert(portfolio_index, warmup_job)
 
     # Portfolio → Signals is a daily market snapshot, not a trading scanner.
     # Check hourly so restarts cannot make us miss a refresh. The refresh
@@ -97,6 +148,20 @@ def main() -> int:
     scheduler.jobs.insert(paper_index, live_job)
 
     session_factory = get_session_factory()
+
+    # Repair only the current tail that older versions could have persisted as
+    # closed while it was still forming. Historical audited bars are untouched.
+    startup_session = session_factory()
+    try:
+        removed = purge_premature_moex_bars(startup_session)
+        startup_session.commit()
+        if removed:
+            log.warning("removed %d prematurely-closed MOEX bar(s)", removed)
+    except Exception:
+        startup_session.rollback()
+        log.exception("MOEX forming-bar startup reconciliation failed")
+    finally:
+        startup_session.close()
 
     # This is deliberately server-originated. On every deployment/restart the
     # VPS reconciles owner-facing lifecycle before any phone connects. The v2

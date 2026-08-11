@@ -21,9 +21,12 @@ from sqlalchemy import text
 
 from .api.v1 import control as control_routes
 from .api.v1 import equity_rankings as equity_ranking_routes
+from .api.v1 import idea_progress as idea_progress_routes
 from .api.v1 import ideas as ideas_routes
 from .api.v1 import integrations as integrations_routes
+from .api.v1 import investment_signals as investment_signal_routes
 from .api.v1 import journal as journal_routes
+from .api.v1 import live_market as live_market_routes
 from .api.v1 import market as market_routes
 from .api.v1 import notifications as notification_routes
 from .api.v1 import paper as paper_routes
@@ -34,9 +37,15 @@ from .config import get_config
 from .db import get_engine
 from .models.enums import ExecutionMode
 from .operational_guard import OperationalLifecycleMiddleware
+from .paper.management_policy import install as install_paper_management
 from .schemas.common import HealthResponse
 from .security import DeviceTokenMiddleware
 from .version import API_VERSION, ENGINE_VERSION, FEATURE_VERSION
+
+# approve-paper выполняется в API-процессе, поэтому policy ставится здесь, а
+# не только в scheduler. Новый PaperTrade сразу получает подписанные доли
+# 40/40/20; tracker потом читает уже сохранённый snapshot сделки.
+install_paper_management()
 
 app = FastAPI(
     title="SignalAI Engine",
@@ -57,11 +66,14 @@ app.add_middleware(DeviceTokenMiddleware)
 
 v1 = APIRouter(prefix="/api/v1")
 v1.include_router(market_routes.router)
+v1.include_router(live_market_routes.router)
 v1.include_router(ideas_routes.router)
+v1.include_router(idea_progress_routes.router)
 v1.include_router(risk_routes.router)
 v1.include_router(portfolio_routes.router)
 v1.include_router(research_routes.router)
 v1.include_router(equity_ranking_routes.router)
+v1.include_router(investment_signal_routes.router)
 v1.include_router(paper_routes.router)
 v1.include_router(integrations_routes.router)
 v1.include_router(journal_routes.router)

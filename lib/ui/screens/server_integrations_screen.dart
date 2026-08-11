@@ -1,14 +1,19 @@
 import 'package:flutter/material.dart';
 
 import '../../data/api/integrations_client.dart';
+import '../../data/api/sandbox_mirroring_engine_client.dart';
 import '../../state/app_scope.dart';
 import '../../theme/tokens.dart';
 import '../../theme/typography.dart';
 import '../widgets/common.dart';
 import '../widgets/engine_address_sheet.dart';
 
-/// Интеграции thin-клиента. Секреты вводятся на телефоне, но хранятся
-/// только в server-side vault; обратно приложение получает лишь статус.
+/// Интеграции thin-клиента.
+///
+/// Серверные секреты по-прежнему уходят только в server-side vault. Единственное
+/// исключение — T-Invest Sandbox: его токен нужен самому Android-клиенту,
+/// потому что подтверждённый FORTS-план зеркалится в настоящую песочницу с
+/// телефона. Этот токен остаётся в Android Keystore и на VPS не отправляется.
 class ServerIntegrationsScreen extends StatefulWidget {
   const ServerIntegrationsScreen({super.key});
 
@@ -21,6 +26,8 @@ class _ServerIntegrationsScreenState extends State<ServerIntegrationsScreen> {
   List<ServerIntegration>? _items;
   String? _error;
   String? _busySlot;
+  bool? _localSandboxConfigured;
+  bool _localSandboxBusy = false;
 
   @override
   void initState() {
@@ -30,6 +37,16 @@ class _ServerIntegrationsScreenState extends State<ServerIntegrationsScreen> {
 
   Future<void> _reload() async {
     final controller = AppScope.read(context);
+    if (TInvestSandboxAccess.available) {
+      try {
+        final configured = await TInvestSandboxAccess.configured();
+        if (mounted) setState(() => _localSandboxConfigured = configured);
+      } on Object {
+        if (mounted) setState(() => _localSandboxConfigured = false);
+      }
+    }
+    if (!mounted) return;
+
     if (!controller.engineTokenSet || controller.engineBaseUrl.isEmpty) {
       setState(() {
         _items = null;
@@ -46,6 +63,47 @@ class _ServerIntegrationsScreenState extends State<ServerIntegrationsScreen> {
       });
     } catch (error) {
       if (mounted) setState(() => _error = '$error');
+    }
+  }
+
+  Future<void> _editLocalSandbox() async {
+    final configured = _localSandboxConfigured == true;
+    final item = ServerIntegration(
+      slot: 'local_tinvest_sandbox',
+      venue: 'TINVEST',
+      title: 'T-Invest Sandbox · на телефоне',
+      purpose: 'Зеркало подтверждённых FORTS-сделок. Реальных денег нет.',
+      environment: 'sandbox',
+      fields: const ['token'],
+      configured: configured,
+      required: true,
+    );
+    final values = await _showSecretSheet(context, item, localDevice: true);
+    if (values == null || !mounted) return;
+    setState(() => _localSandboxBusy = true);
+    try {
+      final answer = await TInvestSandboxAccess.save(values['token'] ?? '');
+      if (!mounted) return;
+      setState(() => _localSandboxConfigured = true);
+      AppScope.read(context).showToast('T-Invest Sandbox готова · $answer');
+    } catch (error) {
+      if (mounted) AppScope.read(context).showError(error);
+    } finally {
+      if (mounted) setState(() => _localSandboxBusy = false);
+    }
+  }
+
+  Future<void> _removeLocalSandbox() async {
+    setState(() => _localSandboxBusy = true);
+    try {
+      await TInvestSandboxAccess.remove();
+      if (!mounted) return;
+      setState(() => _localSandboxConfigured = false);
+      AppScope.read(context).showToast('Токен T-Invest Sandbox удалён с телефона');
+    } catch (error) {
+      if (mounted) AppScope.read(context).showError(error);
+    } finally {
+      if (mounted) setState(() => _localSandboxBusy = false);
     }
   }
 
@@ -93,6 +151,14 @@ class _ServerIntegrationsScreenState extends State<ServerIntegrationsScreen> {
       children: [
         _EngineConnectionCard(onSaved: _reload),
         const SizedBox(height: S.gap),
+        _LocalTInvestSandboxCard(
+          configured: _localSandboxConfigured == true,
+          loading: _localSandboxConfigured == null,
+          busy: _localSandboxBusy,
+          onEdit: _editLocalSandbox,
+          onRemove: _localSandboxConfigured == true ? _removeLocalSandbox : null,
+        ),
+        const SizedBox(height: S.gap),
         if (_error != null)
           SectionCard(
             child: Column(
@@ -113,10 +179,10 @@ class _ServerIntegrationsScreenState extends State<ServerIntegrationsScreen> {
           ),
         if (items != null) ...[
           _VenueGroup(
-            title: 'Т-Инвестиции',
-            note: 'Песочница используется для проверки исполнения без денег; '
-                'read-only — для портфеля и метаданных; торговый токен — для '
-                'будущего live-контура. Само наличие trade-token live не включает.',
+            title: 'Т-Инвестиции · сервер',
+            note: 'Read-only используется серверным контуром метаданных; '
+                'торговый токен зарезервирован для будущего live-контура. '
+                'Локальная песочница выше отделена от серверных секретов.',
             items: items.where((e) => e.venue == 'TINVEST').toList(),
             busySlot: _busySlot,
             onEdit: _edit,
@@ -138,9 +204,10 @@ class _ServerIntegrationsScreenState extends State<ServerIntegrationsScreen> {
         SectionCard(
           child: Text(
             controller.thinMode
-                ? 'Телефон не хранит брокерские ключи и не исполняет ордера сам. '
-                    'Сервер считает, хранит секреты и сопровождает подтверждённые '
-                    'paper-сделки; live execution открывается отдельным gate.'
+                ? 'Сигналы, риск и paper-lifecycle живут на сервере. Брокерские '
+                    'секреты сервера остаются в server-side vault. T-Invest Sandbox '
+                    '— отдельное исключение: её токен хранится только в Android '
+                    'Keystore и нужен для реальной проверки MOEX-заявок без денег.'
                 : 'Этот экран предназначен для thin-клиента.',
             style: T.body(10.5, color: C.faint, height: 1.5),
           ),
@@ -148,6 +215,76 @@ class _ServerIntegrationsScreenState extends State<ServerIntegrationsScreen> {
       ],
     );
   }
+}
+
+class _LocalTInvestSandboxCard extends StatelessWidget {
+  const _LocalTInvestSandboxCard({
+    required this.configured,
+    required this.loading,
+    required this.busy,
+    required this.onEdit,
+    required this.onRemove,
+  });
+
+  final bool configured;
+  final bool loading;
+  final bool busy;
+  final VoidCallback onEdit;
+  final VoidCallback? onRemove;
+
+  @override
+  Widget build(BuildContext context) => SectionCard(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Expanded(child: SectionLabel('T-Invest Sandbox · устройство')),
+                OutlineBadge(
+                  label: loading ? 'ПРОВЕРКА' : configured ? 'ГОТОВА' : 'НУЖЕН ТОКЕН',
+                  color: configured ? C.green : C.warning,
+                  borderColor: configured ? C.greenBorder : C.warning,
+                ),
+              ],
+            ),
+            const SizedBox(height: 7),
+            Text(
+              'Только для FORTS. После вашего подтверждения серверного сигнала '
+              'тот же план зеркалится в настоящую песочницу Т-Инвестиций. '
+              'Выделенный sandbox-счёт создаётся автоматически и один раз '
+              'пополняется виртуальными 300 000 ₽.',
+              style: T.body(11, color: C.muted, height: 1.5),
+            ),
+            const SizedBox(height: 9),
+            Text(
+              'Токен остаётся на телефоне в Android Keystore и не передаётся SignalAI-серверу.',
+              style: T.body(10.5, color: C.faint, height: 1.45),
+            ),
+            const SizedBox(height: 10),
+            if (busy)
+              const BusyLine(label: 'Проверяем T-Invest Sandbox…')
+            else
+              Row(
+                children: [
+                  Expanded(
+                    child: ActionButton(
+                      label: configured ? 'Заменить токен' : 'Ввести sandbox-токен',
+                      dense: true,
+                      primary: !configured,
+                      onTap: onEdit,
+                    ),
+                  ),
+                  if (onRemove != null) ...[
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: ActionButton(label: 'Удалить', dense: true, onTap: onRemove),
+                    ),
+                  ],
+                ],
+              ),
+          ],
+        ),
+      );
 }
 
 class _EngineConnectionCard extends StatelessWidget {
@@ -309,8 +446,9 @@ class _IntegrationRow extends StatelessWidget {
 
 Future<Map<String, String>?> _showSecretSheet(
   BuildContext context,
-  ServerIntegration item,
-) async {
+  ServerIntegration item, {
+  bool localDevice = false,
+}) async {
   final controllers = {
     for (final field in item.fields) field: TextEditingController(),
   };
@@ -333,8 +471,11 @@ Future<Map<String, String>?> _showSecretSheet(
             Text(item.title, style: T.jost(18)),
             const SizedBox(height: 4),
             Text(
-              'Значение уйдёт по HTTPS в server-side vault. После сохранения '
-              'приложение увидит только статус, а не сам секрет.',
+              localDevice
+                  ? 'Токен сохранится только в Android Keystore этого телефона. '
+                      'SignalAI-сервер его не получает и прочитать обратно не может.'
+                  : 'Значение уйдёт по HTTPS в server-side vault. После сохранения '
+                      'приложение увидит только статус, а не сам секрет.',
               style: T.body(11, color: C.muted, height: 1.45),
             ),
             const SizedBox(height: 12),

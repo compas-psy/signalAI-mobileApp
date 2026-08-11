@@ -1,5 +1,8 @@
+import 'dart:async';
+
 import 'package:flutter/widgets.dart';
 
+import '../../data/api/live_idea_source.dart';
 import '../../domain/idea/evidence.dart';
 import '../../domain/idea/idea.dart';
 import '../../domain/models/signal.dart';
@@ -9,9 +12,12 @@ import 'common.dart';
 import 'trade_chart.dart';
 import 'zoomable_chart.dart';
 
-/// График идеи с панелью управления — единый блок, как в прототипе
-/// (`chart-card`: тулбар сверху, разметка поверх графика, пояснение снизу).
-class IdeaChartCard extends StatelessWidget {
+/// График идеи с двумя слоями времени.
+///
+/// Разметка/уровни остаются снимком исходной идеи, а свечи поверх них
+/// обновляются с сервера. Поэтому через два часа владелец видит не картинку
+/// момента рождения идеи, а то, что рынок сделал с этим планом после сигнала.
+class IdeaChartCard extends StatefulWidget {
   const IdeaChartCard({
     super.key,
     required this.signal,
@@ -42,15 +48,96 @@ class IdeaChartCard extends StatelessWidget {
   final ValueChanged<ChartLayer> onToggle;
 
   @override
+  State<IdeaChartCard> createState() => _IdeaChartCardState();
+}
+
+class _IdeaChartCardState extends State<IdeaChartCard> {
+  final LiveIdeaSource _liveSource = LiveIdeaSource();
+  LiveIdeaData? _live;
+  Timer? _refreshTimer;
+  bool _liveLoading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _scheduleImmediate();
+    _refreshTimer = Timer.periodic(
+      const Duration(minutes: 1),
+      (_) => _refreshLive(),
+    );
+  }
+
+  @override
+  void didUpdateWidget(IdeaChartCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.idea?.id != widget.idea?.id ||
+        oldWidget.timeframe != widget.timeframe) {
+      _live = null;
+      _scheduleImmediate();
+    }
+  }
+
+  void _scheduleImmediate() {
+    if (widget.idea == null) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) => _refreshLive());
+  }
+
+  String _liveTimeframe() => widget.timeframe.isEmpty
+      ? (widget.chart?.timeframeLabel ?? '1h')
+      : widget.timeframe;
+
+  Future<void> _refreshLive() async {
+    final idea = widget.idea;
+    if (idea == null || _liveLoading) return;
+    final requestedTimeframe = _liveTimeframe();
+    _liveLoading = true;
+    try {
+      final result = await _liveSource.load(
+        idea,
+        timeframe: requestedTimeframe,
+      );
+      if (!mounted ||
+          widget.idea?.id != idea.id ||
+          _liveTimeframe() != requestedTimeframe) {
+        return;
+      }
+      setState(() => _live = result);
+    } finally {
+      _liveLoading = false;
+      // A timeframe/idea switch can happen while the previous HTTP request is
+      // in flight. didUpdateWidget already asked for a refresh, but that call
+      // may have returned early because _liveLoading was still true. Queue one
+      // more request for the current key so a late 1h response can never leave
+      // the 4h tab without its own fetch.
+      if (mounted &&
+          (widget.idea?.id != idea.id ||
+              _liveTimeframe() != requestedTimeframe)) {
+        _scheduleImmediate();
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    _refreshTimer?.cancel();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final idea = widget.idea;
     final layers = [
       for (final layer in ChartLayer.values)
-        if (available.contains(layer)) layer,
+        if (widget.available.contains(layer)) layer,
     ];
-    final drawn = chart ?? signal.chart;
+    final liveChart = _live?.chart;
+    final drawn = liveChart ?? widget.chart ?? widget.signal.chart;
     final hasChart = drawn != null;
-    final active = drawn?.timeframeLabel ?? timeframe;
-    final showToolbar = hasChart || loading || failed;
+    final active = drawn?.timeframeLabel ?? widget.timeframe;
+    final loading = widget.loading && !hasChart;
+    final showToolbar = hasChart || loading || widget.failed;
+    final progress = _live?.progress;
+
     return Container(
       clipBehavior: Clip.antiAlias,
       decoration: BoxDecoration(
@@ -65,32 +152,32 @@ class IdeaChartCard extends StatelessWidget {
             _Toolbar(
               timeframes: _timeframes(active),
               active: active,
-              onTimeframe: onTimeframe,
+              onTimeframe: widget.onTimeframe,
               layers: layers,
-              visible: visible,
-              onToggle: onToggle,
+              visible: widget.visible,
+              onToggle: widget.onToggle,
               loading: loading,
             ),
           Stack(
             children: [
               if (loading)
                 _ChartPending('Загружаем свечи $active…')
-              else if (failed && !hasChart)
+              else if (widget.failed && !hasChart)
                 _ChartPending(
                   'Свечей $active источник не дал'
-                  '${failureReason.isEmpty ? '' : ': $failureReason'}. '
+                  '${widget.failureReason.isEmpty ? '' : ': ${widget.failureReason}'}. '
                   'Разметка и уровни ниже считаны на ${_setupLabel()} и от '
                   'таймфрейма картинки не зависят.',
                 )
               else
                 ZoomableChart(
                   child: TradeChart(
-                    signal: signal,
-                    chart: chart,
+                    signal: widget.signal,
+                    chart: drawn,
                     bornAt: idea?.createdAt,
                     annotations: idea?.annotations ?? const [],
-                    visibleLayers: visible,
-                    highlight: highlight,
+                    visibleLayers: widget.visible,
+                    highlight: widget.highlight,
                   ),
                 ),
               Positioned(
@@ -102,7 +189,7 @@ class IdeaChartCard extends StatelessWidget {
                     spacing: 5,
                     runSpacing: 5,
                     children: [
-                      _LegendPill('Оценка ${idea?.score.value ?? signal.score}'),
+                      _LegendPill('Оценка ${idea?.score.value ?? widget.signal.score}'),
                       ?_rrPill(),
                     ],
                   ),
@@ -110,6 +197,7 @@ class IdeaChartCard extends StatelessWidget {
               ),
             ],
           ),
+          if (progress != null) _ProgressStrip(progress: progress, signal: widget.signal),
           if (hasChart)
             Container(
               padding: const EdgeInsets.fromLTRB(12, 9, 12, 11),
@@ -117,9 +205,7 @@ class IdeaChartCard extends StatelessWidget {
                 border: Border(top: BorderSide(color: C.divider)),
               ),
               child: Text(
-                'График: растяните двумя пальцами для масштаба, проведите '
-                'пальцем для сдвига по времени, двойной тап — сброс. '
-                '${layers.length > 1 ? 'Слои разметки показывают только факторы, вошедшие в оценку идеи. ${_lockedNote(layers)}' : ''}',
+                _freshnessNote(layers),
                 style: T.body(10.5, color: C.faint, height: 1.45),
               ),
             ),
@@ -128,18 +214,35 @@ class IdeaChartCard extends StatelessWidget {
     );
   }
 
+  String _freshnessNote(List<ChartLayer> layers) {
+    final at = _live?.generatedAt?.toLocal();
+    final stamp = at == null
+        ? ''
+        : '${at.hour.toString().padLeft(2, '0')}:${at.minute.toString().padLeft(2, '0')}';
+    final live = _live?.liveOverlay == true
+        ? 'Рынок обновлён $stamp; формирующаяся свеча показана только для наблюдения и не участвует в генерации сигнала. '
+        : 'Показан последний доступный серверный ряд. ';
+    return '$live'
+        'Уровни и разметка зафиксированы в момент рождения идеи. '
+        'Растяните двумя пальцами для масштаба, проведите пальцем для сдвига, '
+        'двойной тап — сброс. '
+        '${layers.length > 1 ? 'Слои разметки показывают только факторы, вошедшие в исходную оценку. ${_lockedNote(layers)}' : ''}';
+  }
+
   Widget? _rrPill() {
-    final plan = idea?.plan;
+    final plan = widget.idea?.plan;
     if (plan != null) {
       return _LegendPill(
         'R:R ${plan.rrToSecondTarget.toStringAsFixed(1).replaceAll('.', ',')}',
       );
     }
-    return signal.riskReward.isEmpty ? null : _LegendPill('R:R ${signal.riskReward}');
+    return widget.signal.riskReward.isEmpty
+        ? null
+        : _LegendPill('R:R ${widget.signal.riskReward}');
   }
 
   List<String> _timeframes(String chartTf) {
-    final all = [...?idea?.timeframes];
+    final all = [...?widget.idea?.timeframes];
     if (chartTf.isNotEmpty && !all.contains(chartTf)) all.insert(0, chartTf);
     return all;
   }
@@ -153,9 +256,86 @@ class IdeaChartCard extends StatelessWidget {
   }
 
   String _setupLabel() {
-    final list = idea?.timeframes ?? const <String>[];
+    final list = widget.idea?.timeframes ?? const <String>[];
     if (list.isEmpty) return 'сетапном таймфрейме';
     return list.length >= 2 ? list[1] : list.first;
+  }
+}
+
+class _ProgressStrip extends StatelessWidget {
+  const _ProgressStrip({required this.progress, required this.signal});
+
+  final IdeaMarketProgress progress;
+  final TradingSignal signal;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = progress.blocksNewEntry
+        ? C.red
+        : progress.ambiguous
+            ? C.warning
+            : progress.tpHitCount > 0 || progress.entryWasAvailable == true
+                ? C.green
+                : C.info;
+    final price = progress.currentPrice;
+    final local = progress.asOf.toLocal();
+    final stamp = '${local.hour.toString().padLeft(2, '0')}:'
+        '${local.minute.toString().padLeft(2, '0')}';
+    final current = price == null
+        ? ''
+        : ' · сейчас ${price.toStringAsFixed(signal.priceDecimals).replaceAll('.', ',')}';
+    final badge = progress.blocksNewEntry
+        ? 'ВХОД ПОЗДНИЙ'
+        : progress.entryNowAvailable
+            ? 'В ЗОНЕ ВХОДА'
+            : progress.entryWasAvailable == true
+                ? 'ВХОД БЫЛ'
+                : progress.ambiguous
+                    ? 'НУЖНА ОГОВОРКА'
+                    : 'ЖДЁМ ВХОД';
+
+    return Container(
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 11),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.08),
+        border: const Border(top: BorderSide(color: C.divider)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  'После сигнала · 10m',
+                  style: T.body(10, weight: 700, color: C.faint),
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: color.withValues(alpha: 0.12),
+                  border: Border.all(color: color.withValues(alpha: 0.35)),
+                  borderRadius: BorderRadius.circular(R.pill),
+                ),
+                child: Text(badge, style: T.mono(9.5, weight: 700, color: color)),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            progress.summary,
+            style: T.body(11.5, weight: 650, color: C.text, height: 1.45),
+          ),
+          const SizedBox(height: 5),
+          Text(
+            'проверено $stamp$current'
+            '${progress.currentBarForming ? ' · текущая 10m свеча ещё формируется' : ''}',
+            style: T.mono(9.5, color: C.faint),
+          ),
+        ],
+      ),
+    );
   }
 }
 
