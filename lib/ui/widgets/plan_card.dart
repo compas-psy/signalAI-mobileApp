@@ -5,6 +5,7 @@ import '../../domain/enums.dart';
 import '../../domain/idea/idea.dart';
 import '../../domain/idea/idea_state.dart';
 import '../../domain/idea/trade_plan.dart';
+import '../../domain/idea/trade_plan_money.dart';
 import '../../domain/models/settings.dart';
 import '../../domain/models/signal.dart';
 import '../../domain/position_sizing.dart';
@@ -130,43 +131,17 @@ class PlanCard extends StatelessWidget {
       ),
       MetricTile(
         label: 'Прибыль',
-        // Для серверного плана считаем деньги из движения цены, объёма и
-        // стоимости пункта. У FORTS valuePerPoint восстанавливается из
-        // биржевых MINSTEP/STEPPRICE, у crypto применяется курс к рублю.
-        value: '+${fmt(plan == null ? PositionSizing.potentialProfitRub(signal, risk) : _potentialProfitRubles(plan), 0)} ₽',
+        value: '+${fmt(plan == null ? PositionSizing.potentialProfitRub(signal, risk) : plan.potentialProfitRubles, 0)} ₽',
         color: C.green,
         hint: 'все тейки с долями',
       ),
       MetricTile(
         label: 'Убыток',
-        // Стоп-убыток — фактический risk_amount сервера: именно он уже
-        // учитывает округление количества и модель исполнения.
-        value: '−${fmt(plan?.riskRubles ?? PositionSizing.potentialLossRub(signal, risk), 0)} ₽',
+        value: '−${fmt(plan?.potentialLossRubles ?? PositionSizing.potentialLossRub(signal, risk), 0)} ₽',
         color: C.red,
         hint: 'если сработает стоп',
       ),
     ];
-  }
-
-  /// Gross P/L по всем целям в рублях при рассчитанном количестве.
-  ///
-  /// Никаких таблиц коэффициентов в приложении нет. Сервер уже передал
-  /// `valuePerPoint`: для MOEX это STEPPRICE / MINSTEP; для линейной crypto —
-  /// стоимость пункта в валюте котировки. Поэтому один и тот же расчёт
-  /// корректен и для PXU6, и для RTS, Brent, валютных и crypto-планов.
-  static double _potentialProfitRubles(TradePlan plan) {
-    if (plan.quantity <= 0 || plan.valuePerPoint <= 0) return 0;
-    final rate = plan.quoteCurrency == 'RUB' ? 1.0 : plan.quoteRateRub;
-    if (rate == null || rate <= 0) return 0;
-
-    var total = 0.0;
-    for (final target in plan.targets) {
-      final move = plan.direction.isLong
-          ? target.price - plan.entry
-          : plan.entry - target.price;
-      total += target.fraction * move * plan.valuePerPoint * plan.quantity * rate;
-    }
-    return total > 0 ? total : 0;
   }
 
   /// Объём в номинале инструмента.
