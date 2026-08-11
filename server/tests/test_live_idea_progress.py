@@ -108,6 +108,33 @@ def test_touch_inside_signal_candle_is_not_claimed_as_confirmed_entry():
     assert "нельзя доказать" in result.summary
 
 
+def test_target_inside_signal_candle_is_not_counted_as_post_signal_miss():
+    idea = _pxu6()
+    instrument = SimpleNamespace(symbol="PXU6")
+    candles = [
+        # TP1 lies inside the 05:20 candle, but the signal only appears at
+        # 05:27. With OHLC we cannot know whether TP1 traded before or after
+        # signal birth, so it must not become MISSED_BEFORE_ENTRY.
+        _candle(5, 20, 13660, 13570, 13610),
+        # First complete post-signal candle touches neither entry nor TP1.
+        _candle(5, 30, 13660, 13600, 13620),
+    ]
+
+    result = evaluate_forts_progress(
+        idea,
+        instrument,
+        candles,
+        as_of=datetime(2026, 8, 11, 5, 40, tzinfo=UTC),
+    )
+
+    assert result.entry_was_available is False
+    assert result.tp_hit_count == 0
+    assert result.target_before_entry == ""
+    assert result.status == "SIGNAL_BAR_AMBIGUOUS"
+    assert result.ambiguous is True
+    assert result.late is False
+
+
 def test_target_before_any_entry_is_missed_not_profitable_trade():
     idea = _pxu6()
     instrument = SimpleNamespace(symbol="PXU6")
