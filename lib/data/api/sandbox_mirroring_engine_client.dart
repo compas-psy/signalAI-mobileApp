@@ -42,15 +42,43 @@ abstract final class TInvestSandboxAccess {
     );
   }
 
-  /// Сохранение сразу проверяет токен через T-Invest Sandbox. В актуальном
-  /// broker path это также создаёт выделенный sandbox-счёт и один раз
-  /// пополняет его на 300 000 ₽, если такого счёта ещё нет.
+  /// Сохранить sandbox-токен локально без сетевой проверки.
+  ///
+  /// Запись секрета и доступность T-Invest API — разные факты. Раньше токен
+  /// сначала успешно попадал в Android Keystore, а затем `checkAccess()` мог
+  /// упасть из-за VPN/прокси/чужого сертификата, после чего экран утверждал,
+  /// что «токен не принят». Это было ложным состоянием: секрет уже сохранён.
+  ///
+  /// TLS здесь намеренно не ослабляется. Строгая проверка сертификата остаётся
+  /// в [TInvestBroker] и сработает при реальной sandbox-операции. Сохранение
+  /// credential не должно зависеть от текущего сетевого маршрута телефона.
   static Future<String> save(String token) async {
     final repo = _repository;
     if (repo == null) {
       throw StateError('Локальное защищённое хранилище недоступно');
     }
-    return repo.saveTinvestToken(TInvestRole.sandbox, token);
+    if (!await repo.vault.isAvailable) {
+      throw StateError(
+        'Защищённое хранилище недоступно на этом устройстве: токен '
+        'сохранять некуда, а класть его в открытый файл нельзя.',
+      );
+    }
+
+    final cleaned = token
+        .trim()
+        .replaceFirst(RegExp(r'^Bearer\s+', caseSensitive: false), '')
+        .trim();
+    if (cleaned.isEmpty) {
+      throw ArgumentError.value(token, 'token', 'Sandbox-токен пуст');
+    }
+
+    await repo.vault.saveKeys(
+      exchange: BrokerId.tinvest.name,
+      mode: TInvestRole.sandbox.slot,
+      apiKey: cleaned,
+      apiSecret: '',
+    );
+    return 'токен сохранён на устройстве; проверка связи выполняется отдельно';
   }
 
   static Future<void> remove() async {
