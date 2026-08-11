@@ -52,6 +52,8 @@ class PaperPosition {
     this.lastReconciledAt,
     this.staleHours,
     this.fromServer = false,
+    this.runnerActive = false,
+    this.riskPolicyMode = '',
     PaperPositionStatus? status,
     bool? atBreakeven,
     this.closedAt,
@@ -90,6 +92,14 @@ class PaperPosition {
 
   final List<double> tpPrices;
   final int tpsTaken;
+
+  /// TP3 уже пройден, а последняя подписанная доля позиции остаётся открытой
+  /// и сопровождается единым server-side trailing runner engine.
+  final bool runnerActive;
+
+  /// defensive / balanced / conviction. Нужен только для объяснимости;
+  /// клиент по нему ничего не пересчитывает.
+  final String riskPolicyMode;
 
   /// Когда стоп встал в безубыток. null — ещё не вставал.
   final DateTime? breakevenAt;
@@ -157,8 +167,9 @@ class PaperPosition {
           PaperStatus.closed => PaperPositionStatus.closed,
           PaperStatus.cancelled => PaperPositionStatus.cancelled,
         },
-        // Плавающий: локальная сверка переигрывает сделку целиком и знает,
-        // сколько она стоит сейчас.
+        // Локальный ledger — legacy fallback, runner v2 на устройстве не
+        // запускается и никогда не притворяется серверным сопровождением.
+        runnerActive: false,
         resultR: trade.unrealizedR ?? trade.resultR,
         closedAt: trade.closedAt,
         outcome: trade.outcome ?? '',
