@@ -22,18 +22,6 @@ enum PaperPositionStatus {
 }
 
 /// Открытая бумажная позиция так, как её показывает экран.
-///
-/// Один вид на два источника. Сопровождение сделки переехало на сервер:
-/// устройство брало свечи только у биржи напрямую, Bybit отвечает телефону
-/// владельца `403 — CloudFront блокирует доступ из вашей страны`, свечей нет,
-/// сверка не вызывается ни разу — и позиция замирает навсегда. Именно так
-/// BTCUSDT провисел несколько дней на «взято тейков: 2 из 3». Сервер до
-/// биржи доходит и работает, когда телефон выключен, поэтому источник истины
-/// — он; расчёт на устройстве остаётся резервом на случай, когда движок
-/// недоступен.
-///
-/// Карточке при этом всё равно, откуда сделка: вопрос у владельца один — что
-/// сейчас открыто и чем защищено.
 class PaperPosition {
   const PaperPosition({
     required this.id,
@@ -52,8 +40,6 @@ class PaperPosition {
     this.lastReconciledAt,
     this.staleHours,
     this.fromServer = false,
-    this.runnerActive = false,
-    this.riskPolicyMode = '',
     PaperPositionStatus? status,
     bool? atBreakeven,
     this.closedAt,
@@ -71,85 +57,48 @@ class PaperPosition {
 
   final String symbol;
   final bool long;
-
-  /// Заявка выставлена, но цена до неё не дошла.
   final bool pending;
-
   final PaperPositionStatus status;
 
   final double entry;
-
-  /// Стоп, обещанный в плане. Неизменен: по нему считается R.
   final double initialStop;
 
   /// Стоп, который защищает позицию сейчас.
-  ///
-  /// Отдельно от [initialStop] потому, что на устройстве поле было одно и
-  /// неизменяемое, а перенос в безубыток жил во временной переменной внутри
-  /// пересчёта — то есть не существовал ни в базе, ни на экране. Владелец
-  /// видел исходный стоп даже тогда, когда позиция фактически была защищена.
   final double currentStop;
 
   final List<double> tpPrices;
   final int tpsTaken;
 
-  /// TP3 уже пройден, а последняя подписанная доля позиции остаётся открытой
-  /// и сопровождается единым server-side trailing runner engine.
-  final bool runnerActive;
+  /// TP3 уже пройден, но сервер намеренно оставил сделку OPEN: последняя
+  /// подписанная доля позиции стала runner-ом и ведётся trailing engine.
+  ///
+  /// Это вывод из серверного lifecycle, а не второй расчёт на телефоне.
+  /// Legacy hard-TP3 после третьей цели уже CLOSED и сюда не попадёт.
+  bool get runnerActive =>
+      fromServer &&
+      status == PaperPositionStatus.open &&
+      tpPrices.length >= 3 &&
+      tpsTaken >= tpPrices.length;
 
-  /// defensive / balanced / conviction. Нужен только для объяснимости;
-  /// клиент по нему ничего не пересчитывает.
-  final String riskPolicyMode;
-
-  /// Когда стоп встал в безубыток. null — ещё не вставал.
   final DateTime? breakevenAt;
-
   final bool atBreakeven;
 
-  /// Чем завершилась серверная paper-сделка.
   final DateTime? closedAt;
   final String outcome;
   final String closeReason;
 
-  /// Результат в R.
-  ///
-  /// Что именно он означает, зависит от [resultRealized], и это не педантизм.
-  /// Сервер считает **зафиксированное**: сумму по уже взятым целям, без
-  /// открытого остатка. Устройство считает **плавающее**: сколько сделка
-  /// стоит целиком, если закрыть её сейчас. Числа разные, а подпись «R» у
-  /// них была одна — то есть карточка утверждала одно и то же о двух разных
-  /// величинах, и владелец не мог знать, какую видит.
+  /// Результат в R. Серверный — зафиксированный, локальный — плавающий.
   final double? resultR;
-
-  /// Зафиксированный результат, а не плавающий.
   final bool resultRealized;
 
-  /// Когда сверка последний раз действительно смотрела бары.
   final DateTime? lastReconciledAt;
-
-  /// Сколько часов сделку не с чем было сверить.
-  ///
-  /// Молчание источника обязано быть видно: «сверка не идёт» и «сделка
-  /// спокойно живёт» выглядят на экране одинаково, и владелец справедливо
-  /// считает второе, глядя на первое.
   final int? staleHours;
-
   final bool fromServer;
 
-  /// Сколько тейков всего в плане.
   int get tpsTotal => tpPrices.length;
 
-  /// Сверка молчит достаточно долго, чтобы об этом сказать.
-  ///
-  /// Порог в шесть часов, а не час: рабочий таймфрейм сопровождения — H1, и
-  /// пропуск одного-двух баров это норма выходного дня, а не поломка.
   bool get stale => (staleHours ?? 0) >= 6;
 
-  /// Позиция из локального журнала — резерв, когда движок недоступен.
-  ///
-  /// Текущего стопа у локальной сделки нет: поле объявлено `final` и никогда
-  /// не двигалось. Поэтому [currentStop] равен исходному, а [breakevenAt]
-  /// пуст — врать про защиту, которой нет в данных, нельзя.
   factory PaperPosition.fromLedger(PaperTrade trade) => PaperPosition(
         id: trade.id,
         ideaId: trade.signalId,
@@ -167,9 +116,6 @@ class PaperPosition {
           PaperStatus.closed => PaperPositionStatus.closed,
           PaperStatus.cancelled => PaperPositionStatus.cancelled,
         },
-        // Локальный ledger — legacy fallback, runner v2 на устройстве не
-        // запускается и никогда не притворяется серверным сопровождением.
-        runnerActive: false,
         resultR: trade.unrealizedR ?? trade.resultR,
         closedAt: trade.closedAt,
         outcome: trade.outcome ?? '',
