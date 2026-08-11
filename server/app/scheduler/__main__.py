@@ -18,6 +18,7 @@ from ..db import get_session_factory
 from ..market.review_resilience import install as install_review_resilience
 from ..notification_outbox import emit, materialize
 from ..paper.live_tracker import track_crypto_live
+from ..pipeline.risk_equity_runtime import install as install_risk_equity
 from ..portfolio.equity_ranking_refresh import refresh as refresh_equity_ranking
 from ..version import ENGINE_VERSION
 from .runner import build_default_scheduler, run_forever
@@ -50,6 +51,11 @@ def main() -> int:
     # до build_default_scheduler(), потому что runner захватывает ссылку на
     # review_universe именно при сборке расписания.
     install_review_resilience()
+
+    # Аналогично убираем скрытый 100k fallback scan(): scheduler обязан считать
+    # FORTS + crypto от явно выбранного владельцем risk.equity_rub=300000.
+    # Явный RiskState из теста/бэктеста wrapper не перезаписывает.
+    install_risk_equity()
 
     scheduler = build_default_scheduler(
         universe_every=_minutes("SIGNALAI_UNIVERSE_EVERY_MINUTES", 360),
