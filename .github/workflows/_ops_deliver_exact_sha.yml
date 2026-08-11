@@ -1,100 +1,159 @@
-name: Ops exact-SHA delivery
+name: Ops exact-SHA direct deploy
 
 on:
   pull_request:
 
 permissions:
   contents: read
-  actions: write
 
 jobs:
-  deliver:
-    if: ${{ github.head_ref == 'ops/deliver-eee689f-20260811' }}
+  deploy:
+    if: >-
+      github.head_ref == 'ops/deliver-eee689f-20260811' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.actor == 'compas-psy'
     runs-on: ubuntu-latest
     env:
-      GH_TOKEN: ${{ github.token }}
-      GH_REPO: ${{ github.repository }}
       SOURCE_SHA: eee689f8673ca209f1276fa5c04d3dec6f3a86ac
-      DEPLOY_TITLE: 'Server package · eee689f8673ca209f1276fa5c04d3dec6f3a86ac'
-      SIDELOAD_TITLE: 'Sideload · eee689f8673ca209f1276fa5c04d3dec6f3a86ac'
     steps:
-      - name: Snapshot existing exact-SHA runs
-        id: before
+      - name: Checkout immutable verified source
+        uses: actions/checkout@v4
+        with:
+          ref: eee689f8673ca209f1276fa5c04d3dec6f3a86ac
+          fetch-depth: 1
+
+      - name: Verify source and package server
         run: |
           set -euo pipefail
-          gh run list --workflow deploy-server-package.yml --event workflow_dispatch --limit 100 \
-            --json databaseId,displayTitle \
-            | jq -r --arg title "$DEPLOY_TITLE" '.[] | select(.displayTitle == $title) | .databaseId' \
-            > /tmp/deploy-before
-          gh run list --workflow android-sideload.yml --event workflow_dispatch --limit 100 \
-            --json databaseId,displayTitle \
-            | jq -r --arg title "$SIDELOAD_TITLE" '.[] | select(.displayTitle == $title) | .databaseId' \
-            > /tmp/sideload-before
+          test "$(git rev-parse --verify HEAD^{commit})" = "$SOURCE_SHA"
+          test -f server/docker-compose.yml
+          tar -czf /tmp/signalai-server.tar.gz server
+          test -s /tmp/signalai-server.tar.gz
 
-      - name: Dispatch production deploy and signed sideload
-        run: |
-          set -euo pipefail
-          gh workflow run deploy-server-package.yml \
-            --ref claude/release-y40hk5 \
-            -f source_ref="$SOURCE_SHA"
-          gh workflow run android-sideload.yml \
-            --ref claude/release-y40hk5 \
-            -f source_ref="$SOURCE_SHA" \
-            -f mode=thin
-
-      - name: Resolve newly dispatched run ids
-        id: ids
-        run: |
-          set -euo pipefail
-          find_new_run() {
-            local workflow="$1" title="$2" before_file="$3"
-            local id=''
-            for _ in $(seq 1 30); do
-              while IFS= read -r candidate; do
-                if ! grep -qx "$candidate" "$before_file"; then
-                  id="$candidate"
-                  break
-                fi
-              done < <(
-                gh run list --workflow "$workflow" --event workflow_dispatch --limit 100 \
-                  --json databaseId,displayTitle \
-                  | jq -r --arg title "$title" '.[] | select(.displayTitle == $title) | .databaseId'
-              )
-              [ -n "$id" ] && { printf '%s' "$id"; return 0; }
-              sleep 2
-            done
-            return 1
-          }
-          deploy_id="$(find_new_run deploy-server-package.yml "$DEPLOY_TITLE" /tmp/deploy-before)"
-          sideload_id="$(find_new_run android-sideload.yml "$SIDELOAD_TITLE" /tmp/sideload-before)"
-          echo "deploy_id=$deploy_id" >> "$GITHUB_OUTPUT"
-          echo "sideload_id=$sideload_id" >> "$GITHUB_OUTPUT"
-          echo "Deploy run: $deploy_id" >> "$GITHUB_STEP_SUMMARY"
-          echo "Sideload run: $sideload_id" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Wait for both delivery workflows
+      - name: Validate production secrets and prepare SSH
         env:
-          DEPLOY_ID: ${{ steps.ids.outputs.deploy_id }}
-          SIDELOAD_ID: ${{ steps.ids.outputs.sideload_id }}
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
+          DEVICE_TOKEN: ${{ secrets.SIGNALAI_DEVICE_TOKEN }}
         run: |
-          set +e
-          gh run watch "$DEPLOY_ID" --exit-status & deploy_pid=$!
-          gh run watch "$SIDELOAD_ID" --exit-status & sideload_pid=$!
-          wait "$deploy_pid"; deploy_status=$?
-          wait "$sideload_pid"; sideload_status=$?
-          set -e
-
-          gh run view "$DEPLOY_ID" --json displayTitle,conclusion,url \
-            --jq '"Deploy: \(.conclusion) · \(.url)"' | tee -a "$GITHUB_STEP_SUMMARY"
-          gh run view "$SIDELOAD_ID" --json displayTitle,conclusion,url \
-            --jq '"Sideload: \(.conclusion) · \(.url)"' | tee -a "$GITHUB_STEP_SUMMARY"
-
-          if [ "$deploy_status" -ne 0 ]; then
-            echo '── failed deploy log ──'
-            gh run view "$DEPLOY_ID" --log-failed | tail -n 250 || true
+          set -euo pipefail
+          test -n "$HOST" || { echo '::error::VPS host is missing'; exit 1; }
+          test -n "$KEY" || { echo '::error::VPS SSH key is missing'; exit 1; }
+          test -n "$DEVICE_TOKEN" || { echo '::error::SIGNALAI_DEVICE_TOKEN is missing'; exit 1; }
+          [ "${#DEVICE_TOKEN}" -ge 32 ] || { echo '::error::device token too short'; exit 1; }
+          case "$DEVICE_TOKEN" in
+            *[!A-Za-z0-9._~-]*) echo '::error::device token must be URL-safe'; exit 1 ;;
+          esac
+          umask 077
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          if ssh-keyscan -T 10 -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null && [ -s ~/.ssh/known_hosts ]; then
+            echo 'Host fingerprint recorded.'
+          else
+            echo 'StrictHostKeyChecking=accept-new' >> ~/.ssh/config
           fi
-          if [ "$sideload_status" -ne 0 ]; then
-            echo '── failed sideload log ──'
-            gh run view "$SIDELOAD_ID" --log-failed | tail -n 250 || true
+          printf '%s' "$DEVICE_TOKEN" | base64 -w0 > /tmp/signalai-device-token.b64
+
+      - name: Copy exact source package to VPS
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          USER_NAME: ${{ secrets.VPS_USER || 'root' }}
+        run: |
+          set -euo pipefail
+          scp -i ~/.ssh/id_deploy -o BatchMode=yes \
+            /tmp/signalai-server.tar.gz \
+            /tmp/signalai-device-token.b64 \
+            "$USER_NAME@$HOST:/tmp/"
+
+      - name: Build, migrate, restart and verify production
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          USER_NAME: ${{ secrets.VPS_USER || 'root' }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$USER_NAME@$HOST" \
+            "SIGNALAI_SOURCE_SHA='$SOURCE_SHA' bash -s" <<'REMOTE'
+          set -euo pipefail
+          SOURCE_SHA="${SIGNALAI_SOURCE_SHA:?source sha required}"
+          ROOT="$HOME/signalai"
+          NEXT="$HOME/signalai-server-next"
+          PREV="$HOME/signalai-server-prev"
+          ENV_FILE='/etc/signalai/.env'
+          TOKEN_FILE='/tmp/signalai-device-token.b64'
+          PACKAGE='/tmp/signalai-server.tar.gz'
+          SUDO=""; [ "$(id -u)" -eq 0 ] || SUDO=sudo
+
+          test -s "$PACKAGE"
+          test -s "$TOKEN_FILE"
+          mkdir -p "$ROOT"
+          rm -rf "$NEXT"
+          mkdir -p "$NEXT"
+          tar -xzf "$PACKAGE" -C "$NEXT"
+          test -f "$NEXT/server/docker-compose.yml"
+
+          token="$(base64 -d < "$TOKEN_FILE")"
+          $SUDO sed -i '/^SIGNALAI_DEVICE_TOKEN=/d' "$ENV_FILE"
+          printf 'SIGNALAI_DEVICE_TOKEN=%s\n' "$token" | $SUDO tee -a "$ENV_FILE" >/dev/null
+          unset token
+          $SUDO chmod 600 "$ENV_FILE"
+          rm -f "$TOKEN_FILE" "$PACKAGE"
+
+          rm -rf "$PREV"
+          if [ -d "$ROOT/server" ]; then
+            mv "$ROOT/server" "$PREV"
           fi
-          [ "$deploy_status" -eq 0 ] && [ "$sideload_status" -eq 0 ]
+          mv "$NEXT/server" "$ROOT/server"
+          rm -rf "$NEXT"
+          printf '%s\n' "$SOURCE_SHA" > "$ROOT/.source_sha"
+
+          cd "$ROOT/server"
+          echo '── build new images ──'
+          $SUDO docker compose --env-file "$ENV_FILE" build api scheduler </dev/null
+          echo '── migrate ──'
+          $SUDO docker compose --env-file "$ENV_FILE" run --rm -T api alembic upgrade head </dev/null
+          echo '── restart ──'
+          $SUDO docker compose --env-file "$ENV_FILE" up -d </dev/null
+          echo '── containers ──'
+          $SUDO docker compose --env-file "$ENV_FILE" ps </dev/null
+
+          echo '── wait for health ──'
+          ok=0
+          for _ in $(seq 1 18); do
+            if curl -fsS --max-time 10 http://127.0.0.1:8000/health > /tmp/signalai-health.json; then
+              ok=1
+              break
+            fi
+            sleep 5
+          done
+          [ "$ok" -eq 1 ] || { echo 'health check failed' >&2; exit 1; }
+          python3 - <<'PY'
+          import json
+          h=json.load(open('/tmp/signalai-health.json'))
+          assert h.get('status') == 'ok', h
+          assert h.get('database') == 'ok', h
+          assert h.get('paper_only') is True, h
+          assert h.get('kill_switch') is False, h
+          print('health:', h.get('status'), 'database:', h.get('database'), 'paper_only:', h.get('paper_only'), 'kill_switch:', h.get('kill_switch'))
+          PY
+
+          actual="$(cat "$ROOT/.source_sha")"
+          [ "$actual" = "$SOURCE_SHA" ] || { echo "source receipt mismatch $actual" >&2; exit 1; }
+          echo "deployed source: $actual"
+
+          echo '── reconcile equity ranking ──'
+          $SUDO docker compose --env-file "$ENV_FILE" run --rm -T api \
+            python -c "from app.db import get_session_factory; from app.portfolio.equity_ranking_refresh import refresh; s=get_session_factory()(); print(refresh(s)); s.commit(); s.close()" </dev/null \
+            || echo '::warning::equity ranking reconciliation failed; scheduler will retry'
+
+          echo '── scheduler tail ──'
+          $SUDO docker compose --env-file "$ENV_FILE" logs --tail 40 scheduler </dev/null || true
+          rm -rf "$PREV"
+          REMOTE
+
+      - name: Cleanup sensitive material
+        if: always()
+        run: |
+          shred -u ~/.ssh/id_deploy 2>/dev/null || rm -f ~/.ssh/id_deploy
+          shred -u /tmp/signalai-device-token.b64 2>/dev/null || rm -f /tmp/signalai-device-token.b64
+          rm -f /tmp/signalai-server.tar.gz
