@@ -1,0 +1,24 @@
+name: Dispatch trusted PXU6 probe
+
+on:
+  pull_request_target:
+    branches: [claude/release-y40hk5]
+    types: [opened]
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  dispatch:
+    if: startsWith(github.event.pull_request.head.ref, 'ops/pxu6-probe-')
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Dispatch trusted default-branch probe
+        run: |
+          set -euo pipefail
+          gh workflow run pxu6-runtime-forensics.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref claude/release-y40hk5
