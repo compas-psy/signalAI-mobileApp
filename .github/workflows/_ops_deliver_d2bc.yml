@@ -1,0 +1,198 @@
+name: Ops deliver actionable idea detail fix
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  deliver:
+    if: >-
+      github.head_ref == 'ops/deliver-d2bc-20260811' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.actor == 'compas-psy'
+    runs-on: ubuntu-latest
+    env:
+      SOURCE_SHA: d2bc3489cf55ff6418a13e32f815ded61101d25a
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      SIDELOAD_TITLE: 'Sideload · d2bc3489cf55ff6418a13e32f815ded61101d25a'
+    steps:
+      - name: Checkout immutable product source
+        uses: actions/checkout@v4
+        with:
+          ref: d2bc3489cf55ff6418a13e32f815ded61101d25a
+          fetch-depth: 1
+
+      - name: Verify source and package server
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse --verify HEAD^{commit})" = "$SOURCE_SHA"
+          test -f server/docker-compose.yml
+          tar -czf /tmp/signalai-server.tar.gz server
+          test -s /tmp/signalai-server.tar.gz
+
+      - name: Prepare production SSH
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
+          DEVICE_TOKEN: ${{ secrets.SIGNALAI_DEVICE_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$HOST"; test -n "$KEY"; test -n "$DEVICE_TOKEN"
+          [ "${#DEVICE_TOKEN}" -ge 32 ]
+          umask 077
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -T 10 -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+          printf '%s' "$DEVICE_TOKEN" | base64 -w0 > /tmp/signalai-device-token.b64
+
+      - name: Copy exact server package to VPS
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          USER_NAME: ${{ secrets.VPS_USER || 'root' }}
+        run: |
+          set -euo pipefail
+          scp -i ~/.ssh/id_deploy -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+            /tmp/signalai-server.tar.gz /tmp/signalai-device-token.b64 \
+            "$USER_NAME@$HOST:/tmp/"
+
+      - name: Build migrate restart and verify production
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          USER_NAME: ${{ secrets.VPS_USER || 'root' }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$USER_NAME@$HOST" \
+            "SIGNALAI_SOURCE_SHA='$SOURCE_SHA' bash -s" <<'REMOTE'
+          set -euo pipefail
+          SOURCE_SHA="${SIGNALAI_SOURCE_SHA:?source sha required}"
+          ROOT="$HOME/signalai"
+          NEXT="$HOME/signalai-server-next"
+          PREV="$HOME/signalai-server-prev"
+          ENV_FILE='/etc/signalai/.env'
+          TOKEN_FILE='/tmp/signalai-device-token.b64'
+          PACKAGE='/tmp/signalai-server.tar.gz'
+          SUDO=""; [ "$(id -u)" -eq 0 ] || SUDO=sudo
+
+          test -s "$PACKAGE"; test -s "$TOKEN_FILE"
+          mkdir -p "$ROOT"
+          rm -rf "$NEXT"; mkdir -p "$NEXT"
+          tar -xzf "$PACKAGE" -C "$NEXT"
+          test -f "$NEXT/server/docker-compose.yml"
+
+          token="$(base64 -d < "$TOKEN_FILE")"
+          $SUDO sed -i '/^SIGNALAI_DEVICE_TOKEN=/d' "$ENV_FILE"
+          printf 'SIGNALAI_DEVICE_TOKEN=%s\n' "$token" | $SUDO tee -a "$ENV_FILE" >/dev/null
+          unset token
+          $SUDO chmod 600 "$ENV_FILE"
+          rm -f "$TOKEN_FILE" "$PACKAGE"
+
+          rm -rf "$PREV"
+          if [ -d "$ROOT/server" ]; then mv "$ROOT/server" "$PREV"; fi
+          mv "$NEXT/server" "$ROOT/server"
+          rm -rf "$NEXT"
+          printf '%s\n' "$SOURCE_SHA" > "$ROOT/.source_sha"
+
+          cd "$ROOT/server"
+          $SUDO docker compose --env-file "$ENV_FILE" build api scheduler </dev/null
+          $SUDO docker compose --env-file "$ENV_FILE" run --rm -T api alembic upgrade head </dev/null
+          $SUDO docker compose --env-file "$ENV_FILE" up -d </dev/null
+
+          ok=0
+          for _ in $(seq 1 18); do
+            if curl -fsS --max-time 10 http://127.0.0.1:8000/health > /tmp/signalai-health.json; then ok=1; break; fi
+            sleep 5
+          done
+          [ "$ok" -eq 1 ]
+          python3 - <<'PY'
+          import json
+          h=json.load(open('/tmp/signalai-health.json'))
+          assert h.get('status') == 'ok', h
+          assert h.get('database') == 'ok', h
+          assert h.get('paper_only') is True, h
+          assert h.get('kill_switch') is False, h
+          print('HEALTH', h)
+          PY
+          [ "$(cat "$ROOT/.source_sha")" = "$SOURCE_SHA" ]
+
+          echo '--- CURRENT IDEA DETAIL CONTRACT ---'
+          $SUDO docker compose --env-file "$ENV_FILE" exec -T api python - <<'PY'
+          from sqlalchemy import select
+          from app.db import get_session_factory
+          from app.models import Instrument, TradeIdea
+          from app.api.v1.ideas import get_idea, today
+          symbols=('BTCUSDT','DOGEUSDT','GKU6')
+          db=get_session_factory()()
+          try:
+              daily=today(db)
+              now_ids={str(x.id) for x in daily.trade_now}
+              print('TRADE_NOW', [(x.instrument_id, str(x.id), str(x.status), str(x.quality_status)) for x in daily.trade_now])
+              for symbol in symbols:
+                  row=db.execute(select(TradeIdea,Instrument).join(Instrument,Instrument.instrument_id==TradeIdea.instrument_id).where(Instrument.symbol==symbol).order_by(TradeIdea.signal_time.desc()).limit(1)).first()
+                  assert row is not None, symbol
+                  idea,_=row
+                  detail=get_idea(idea.id,db)
+                  assert str(idea.id) in now_ids, (symbol, idea.status, idea.quality_status)
+                  assert detail.plan.entry_reference is not None
+                  assert detail.plan.stop is not None
+                  assert detail.plan.tp1 is not None and detail.plan.tp2 is not None
+                  assert detail.sizing.quantity > 0
+                  print('DETAIL_OK', symbol, detail.direction, detail.plan.entry_reference, detail.plan.stop, detail.plan.tp1, detail.plan.tp2, detail.plan.tp3, detail.sizing.quantity, len(detail.evidence))
+          finally:
+              db.close()
+          PY
+          rm -rf "$PREV"
+          REMOTE
+
+      - name: Snapshot existing sideload runs
+        run: |
+          set -euo pipefail
+          gh run list --workflow android-sideload.yml --event workflow_dispatch --limit 100 \
+            --json databaseId,displayTitle \
+            | jq -r --arg title "$SIDELOAD_TITLE" '.[] | select(.displayTitle == $title) | .databaseId' \
+            > /tmp/sideload-before
+
+      - name: Dispatch signed sideload for exact source
+        run: |
+          set -euo pipefail
+          gh workflow run android-sideload.yml \
+            --ref claude/release-y40hk5 \
+            -f source_ref="$SOURCE_SHA" \
+            -f mode=thin \
+            -f api_base_url='https://api.ilyamartynov.ru'
+
+      - name: Resolve sideload run
+        id: sideload
+        run: |
+          set -euo pipefail
+          id=''
+          for _ in $(seq 1 30); do
+            while IFS= read -r candidate; do
+              if ! grep -qx "$candidate" /tmp/sideload-before; then id="$candidate"; break; fi
+            done < <(gh run list --workflow android-sideload.yml --event workflow_dispatch --limit 100 --json databaseId,displayTitle | jq -r --arg title "$SIDELOAD_TITLE" '.[] | select(.displayTitle == $title) | .databaseId')
+            [ -n "$id" ] && break
+            sleep 2
+          done
+          test -n "$id"
+          echo "run_id=$id" >> "$GITHUB_OUTPUT"
+          echo "Sideload run: $id" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Wait for signed sideload
+        env:
+          RUN_ID: ${{ steps.sideload.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          gh run watch "$RUN_ID" --exit-status
+          gh run view "$RUN_ID" --json conclusion,url,displayTitle \
+            --jq '"Sideload: \(.conclusion) · \(.url)"' | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Cleanup sensitive material
+        if: always()
+        run: |
+          shred -u ~/.ssh/id_deploy 2>/dev/null || rm -f ~/.ssh/id_deploy
+          shred -u /tmp/signalai-device-token.b64 2>/dev/null || rm -f /tmp/signalai-device-token.b64
+          rm -f /tmp/signalai-server.tar.gz /tmp/sideload-before
