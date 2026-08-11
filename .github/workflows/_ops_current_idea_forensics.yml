@@ -29,7 +29,7 @@ jobs:
           chmod 600 ~/.ssh/id_forensics
           ssh-keyscan -T 10 -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
 
-      - name: Inspect BTCUSDT DOGEUSDT GKU6
+      - name: Inspect latest BTCUSDT DOGEUSDT GKU6
         env:
           HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
           USER_NAME: ${{ secrets.VPS_USER || 'root' }}
@@ -40,9 +40,7 @@ jobs:
           cd "$HOME/signalai/server"
           SUDO=""; [ "$(id -u)" -eq 0 ] || SUDO=sudo
           echo '--- SOURCE RECEIPT ---'
-          for p in "$HOME/signalai/.source_sha" "$HOME/signalai/.deployed_sha" SOURCE_SHA DEPLOYED_SHA .source-sha .deployed-sha; do
-            [ -f "$p" ] && { printf '%s=' "$p"; cat "$p"; echo; }
-          done
+          [ -f "$HOME/signalai/.source_sha" ] && { printf 'source='; cat "$HOME/signalai/.source_sha"; }
           $SUDO docker compose --env-file /etc/signalai/.env exec -T api python - <<'PY'
           from datetime import UTC, datetime
           from sqlalchemy import select
@@ -51,14 +49,11 @@ jobs:
           from app.api.v1.ideas import today, get_idea
 
           SYMBOLS = ('BTCUSDT', 'DOGEUSDT', 'GKU6')
-
-          def val(x):
-              return getattr(x, 'value', str(x)) if x is not None else None
+          def val(x): return getattr(x, 'value', str(x)) if x is not None else None
 
           db = get_session_factory()()
-          now = datetime.now(UTC)
           try:
-              print('NOW', now.isoformat())
+              print('NOW', datetime.now(UTC).isoformat())
               daily = today(db)
               print('TODAY_TRADE_NOW', [
                   {'id': str(x.id), 'instrument_id': x.instrument_id,
@@ -70,62 +65,58 @@ jobs:
                    'status': val(x.status), 'quality': val(x.quality_status), 'score': str(x.score)}
                   for x in daily.wait_for_trigger
               ])
-              print('TODAY_REASON', daily.no_trade_reason)
 
               for symbol in SYMBOLS:
-                  rows = db.execute(
+                  row = db.execute(
                       select(TradeIdea, Instrument)
                       .join(Instrument, Instrument.instrument_id == TradeIdea.instrument_id)
                       .where(Instrument.symbol == symbol)
                       .order_by(TradeIdea.signal_time.desc())
-                      .limit(5)
-                  ).all()
-                  print('=== SYMBOL', symbol, 'COUNT', len(rows), '===')
-                  for idea, inst in rows:
-                      exp = idea.explanation_json or {}
-                      print('RAW', {
-                          'id': str(idea.id), 'instrument_id': idea.instrument_id,
-                          'time': idea.signal_time.isoformat(), 'expires': idea.expires_at.isoformat(),
-                          'status': val(idea.status), 'quality': val(idea.quality_status),
-                          'presented': idea.was_presented, 'rank': idea.presentation_rank,
-                          'score': str(idea.score), 'entry_low': str(idea.entry_low),
-                          'entry_high': str(idea.entry_high), 'entry_reference': str(idea.entry_reference),
-                          'stop': str(idea.stop), 'tp1': str(idea.tp1), 'tp2': str(idea.tp2),
-                          'tp3': str(idea.tp3), 'quantity': str(idea.quantity),
-                          'risk_amount': str(idea.risk_amount), 'risk_per_unit': str(idea.risk_per_unit),
-                          'quote_currency': exp.get('quote_currency'),
-                          'quote_rate_rub': exp.get('quote_rate_rub'),
-                          'sizing_note': exp.get('sizing_note'),
-                          'admission': exp.get('admission'),
-                          'admission_failed': exp.get('admission_failed'),
+                      .limit(1)
+                  ).first()
+                  print('=== SYMBOL', symbol, '===')
+                  if row is None:
+                      print('MISSING')
+                      continue
+                  idea, inst = row
+                  exp = idea.explanation_json or {}
+                  print('RAW', {
+                      'id': str(idea.id), 'instrument_id': idea.instrument_id,
+                      'direction': val(idea.direction), 'time': idea.signal_time.isoformat(),
+                      'expires': idea.expires_at.isoformat(), 'status': val(idea.status),
+                      'quality': val(idea.quality_status), 'presented': idea.was_presented,
+                      'rank': idea.presentation_rank, 'score': str(idea.score),
+                      'entry_low': str(idea.entry_low), 'entry_high': str(idea.entry_high),
+                      'entry_reference': str(idea.entry_reference), 'stop': str(idea.stop),
+                      'tp1': str(idea.tp1), 'tp2': str(idea.tp2), 'tp3': str(idea.tp3),
+                      'quantity': str(idea.quantity), 'risk_amount': str(idea.risk_amount),
+                      'risk_per_unit': str(idea.risk_per_unit),
+                      'quote_currency': exp.get('quote_currency'),
+                      'quote_rate_rub': exp.get('quote_rate_rub'),
+                      'sizing_note': exp.get('sizing_note'),
+                      'admission': exp.get('admission'),
+                      'admission_failed': exp.get('admission_failed'),
+                  })
+                  try:
+                      d = get_idea(idea.id, db).model_dump(mode='json')
+                      print('DETAIL_OK', {
+                          'plan': d.get('plan'), 'sizing': d.get('sizing'),
+                          'evidence_count': len(d.get('evidence') or []),
+                          'annotation_count': len(d.get('annotations') or []),
                       })
-                      try:
-                          d = get_idea(idea.id, db).model_dump(mode='json')
-                          print('DETAIL', {
-                              'id': str(idea.id), 'plan': d.get('plan'), 'sizing': d.get('sizing'),
-                              'evidence_count': len(d.get('evidence') or []),
-                              'annotation_count': len(d.get('annotations') or []),
-                              'closing_reason': d.get('closing_reason'),
-                          })
-                      except Exception as exc:
-                          print('DETAIL_ERROR', {
-                              'id': str(idea.id), 'type': type(exc).__name__, 'message': str(exc)
-                          })
-                      events = db.execute(
-                          select(IdeaEvent).where(IdeaEvent.idea_id == idea.id).order_by(IdeaEvent.sequence)
-                      ).scalars().all()
-                      print('EVENTS', [
-                          {'seq': e.sequence, 'new': val(e.new_status), 'reason': e.reason_code,
-                           'detail': e.reason_detail, 'at': e.occurred_at.isoformat()}
-                          for e in events
-                      ])
-                      papers = db.execute(
-                          select(PaperTrade).where(PaperTrade.idea_id == idea.id)
-                      ).scalars().all()
-                      print('PAPER', [
-                          {'id': str(p.id), 'status': val(p.status), 'entry': str(p.entry),
-                           'quantity': str(p.quantity)} for p in papers
-                      ])
+                  except Exception as exc:
+                      print('DETAIL_ERROR', {'type': type(exc).__name__, 'message': str(exc)})
+                  events = db.execute(
+                      select(IdeaEvent).where(IdeaEvent.idea_id == idea.id).order_by(IdeaEvent.sequence)
+                  ).scalars().all()
+                  print('EVENTS', [
+                      {'seq': e.sequence, 'new': val(e.new_status), 'reason': e.reason_code,
+                       'detail': e.reason_detail, 'at': e.occurred_at.isoformat()} for e in events
+                  ])
+                  papers = db.execute(select(PaperTrade).where(PaperTrade.idea_id == idea.id)).scalars().all()
+                  print('PAPER', [
+                      {'id': str(p.id), 'status': val(p.status), 'entry': str(p.entry)} for p in papers
+                  ])
           finally:
               db.close()
           PY
