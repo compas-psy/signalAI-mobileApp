@@ -1,5 +1,6 @@
 name: Current idea forensics
 
+# One-shot read-only production inspection for the current owner-reported cards.
 on:
   push:
     branches:
@@ -51,7 +52,6 @@ jobs:
           from app.api.v1.ideas import today, get_idea
 
           SYMBOLS = ('BTCUSDT', 'DOGEUSDT', 'GKU6')
-          TERMINAL = {'CLOSED','STOPPED','TARGET_REACHED','CANCELLED','REJECTED','MISSED','EXPIRED','TIMED_OUT','SKIPPED'}
 
           def val(x):
               return getattr(x, 'value', str(x)) if x is not None else None
