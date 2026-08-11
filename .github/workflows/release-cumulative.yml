@@ -23,7 +23,7 @@ jobs:
       source_ref: ${{ github.sha }}
 
   deliver:
-    name: Deploy once, then build APK once
+    name: Deploy server if changed, then build APK once
     needs: quality
     runs-on: ubuntu-latest
     steps:
@@ -31,7 +31,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
-          fetch-depth: 1
+          fetch-depth: 2
 
       - name: Verify provenance before delivery
         env:
@@ -42,7 +42,32 @@ jobs:
           [ "$actual_sha" = "$SOURCE_SHA" ]
           echo "One full QA passed for exact production SHA $SOURCE_SHA"
 
+      - name: Detect whether VPS source changed
+        id: scope
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          zero='0000000000000000000000000000000000000000'
+          changed=true
+          if [ -n "$BEFORE_SHA" ] && [ "$BEFORE_SHA" != "$zero" ] && git cat-file -e "$BEFORE_SHA^{commit}" 2>/dev/null; then
+            git diff --name-only "$BEFORE_SHA" "$SOURCE_SHA" | tee /tmp/release-changed-files
+            if grep -qE '^server/' /tmp/release-changed-files; then
+              changed=true
+            else
+              changed=false
+            fi
+          fi
+          echo "server_changed=$changed" >> "$GITHUB_OUTPUT"
+          if [ "$changed" = true ]; then
+            echo 'VPS source changed: one server deploy is required.'
+          else
+            echo 'No server/** changes: VPS deploy is skipped.'
+          fi
+
       - name: Start exactly one VPS deploy
+        if: steps.scope.outputs.server_changed == 'true'
         id: deploy
         env:
           GH_TOKEN: ${{ github.token }}
@@ -80,6 +105,7 @@ jobs:
             --body "Cumulative release \`$SOURCE_SHA\`: VPS deploy started — $run_id — $run_url"
 
       - name: Wait for VPS deploy success
+        if: steps.scope.outputs.server_changed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_ID: ${{ steps.deploy.outputs.run_id }}
@@ -136,10 +162,11 @@ jobs:
           SOURCE_SHA: ${{ github.sha }}
           DEPLOY_RUN: ${{ steps.deploy.outputs.run_id }}
           APK_RUN: ${{ steps.apk.outputs.run_id }}
+          SERVER_CHANGED: ${{ steps.scope.outputs.server_changed }}
         run: |
-          deploy='not-started'
+          deploy='skipped-no-server-change'
           apk='not-started'
-          if [ -n "$DEPLOY_RUN" ]; then
+          if [ "$SERVER_CHANGED" = true ] && [ -n "$DEPLOY_RUN" ]; then
             deploy="$(gh run view "$DEPLOY_RUN" --repo "$GITHUB_REPOSITORY" --json conclusion --jq '.conclusion // "running"')"
           fi
           if [ -n "$APK_RUN" ]; then
