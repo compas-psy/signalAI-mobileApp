@@ -34,9 +34,15 @@ from .config import get_config
 from .db import get_engine
 from .models.enums import ExecutionMode
 from .operational_guard import OperationalLifecycleMiddleware
+from .paper.management_policy import install as install_paper_management
 from .schemas.common import HealthResponse
 from .security import DeviceTokenMiddleware
 from .version import API_VERSION, ENGINE_VERSION, FEATURE_VERSION
+
+# approve-paper выполняется в API-процессе, поэтому policy ставится здесь, а
+# не только в scheduler. Новый PaperTrade сразу получает подписанные доли
+# 40/40/20; tracker потом читает уже сохранённый snapshot сделки.
+install_paper_management()
 
 app = FastAPI(
     title="SignalAI Engine",
