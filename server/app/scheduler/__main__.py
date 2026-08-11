@@ -18,6 +18,7 @@ from ..db import get_session_factory
 from ..market.review_resilience import install as install_review_resilience
 from ..notification_outbox import emit, materialize
 from ..paper.live_tracker import track_crypto_live
+from ..paper.management_policy import install as install_paper_management
 from ..pipeline.risk_equity_runtime import install as install_risk_equity
 from ..portfolio.equity_ranking_refresh import refresh as refresh_equity_ranking
 from ..version import ENGINE_VERSION
@@ -56,6 +57,11 @@ def main() -> int:
     # FORTS + crypto от явно выбранного владельцем risk.equity_rub=300000.
     # Явный RiskState из теста/бэктеста wrapper не перезаписывает.
     install_risk_equity()
+
+    # Новый PaperTrade должен получить те же доли целей, которые подписывает
+    # владелец на телефоне (40/40/20). Доли копируются в саму сделку, поэтому
+    # дальнейшее сопровождение не зависит от будущих изменений конфига.
+    install_paper_management()
 
     scheduler = build_default_scheduler(
         universe_every=_minutes("SIGNALAI_UNIVERSE_EVERY_MINUTES", 360),
