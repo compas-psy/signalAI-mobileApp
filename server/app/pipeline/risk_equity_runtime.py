@@ -1,13 +1,10 @@
-"""Явный risk equity для scheduler-скана.
+"""Единственная точка включения runtime risk engine в scheduler.
 
-Сам `scan()` исторически имел скрытый fallback 100 000 ₽, если вызывающий не
-передал RiskState. Scheduler именно так его и вызывает. Для личного приложения
-капитал риск-контура уже выбран владельцем и лежит в конфиге; молчаливая
-константа в коде больше не должна влиять на число контрактов.
-
-Wrapper ставится до сборки scheduler и касается только default-вызова без
-явного RiskState. Тесты/бэктесты, которые передают собственное состояние,
-получают прежнее поведение.
+API-процесс риск не пересчитывает: он только подписывает уже выпущенный план.
+Scheduler получает явный risk equity владельца и затем устанавливает Risk &
+Exit Engine v2, который перехватывает единственный active compute_budget path.
+Это специально сделано здесь, а не в ``app.main``: два процесса не должны
+независимо считать размер одной и той же сделки.
 """
 
 from __future__ import annotations
@@ -40,3 +37,11 @@ def scan_with_configured_equity(
 def install() -> None:
     if scan_module.scan is not scan_with_configured_equity:
         scan_module.scan = scan_with_configured_equity
+
+    # Ставится только в scheduler. Внутри install есть fail-fast проверка:
+    # compute_budget, probability/confidence и оба paper execution sensor-а
+    # обязаны ссылаться ровно на один v2 runtime.
+    from ..risk.engine_v2 import assert_single_runtime, install as install_risk_v2
+
+    install_risk_v2()
+    assert_single_runtime()
