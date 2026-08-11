@@ -1,0 +1,354 @@
+name: PXU6 Bybit and T-Invest sandbox forensics
+
+on:
+  pull_request:
+    branches:
+      - claude/release-y40hk5
+    types: [opened, reopened, synchronize]
+    paths:
+      - .github/workflows/pxu6-bybit-forensics.yml
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare SSH
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
+        run: |
+          set -euo pipefail
+          test -n "$HOST"
+          test -n "$KEY"
+          umask 077
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_forensics
+          chmod 600 ~/.ssh/id_forensics
+          ssh-keyscan -T 10 -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Inspect production signal flow and PXU6
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          USER_NAME: ${{ secrets.VPS_USER || 'root' }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/id_forensics -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+            "$USER_NAME@$HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          cd "$HOME/signalai/server"
+          SUDO=""; [ "$(id -u)" -eq 0 ] || SUDO=sudo
+          $SUDO docker compose --env-file /etc/signalai/.env exec -T api python - <<'PY'
+          from collections import Counter, defaultdict
+          from datetime import UTC, datetime, timedelta
+          from sqlalchemy import select, func
+          from app.db import get_session_factory
+          from app.integration_secrets import configured_slots
+          from app.models import Bar, DataQualityEvent, IdeaEvent, Instrument, PaperTrade, TradeIdea
+          from app.models.enums import Timeframe
+
+          def val(x):
+              return getattr(x, 'value', str(x)) if x is not None else None
+
+          now = datetime.now(UTC)
+          session = get_session_factory()()
+          try:
+              print('NOW', now.isoformat())
+              print('INTEGRATION_SLOTS', sorted(configured_slots(session)))
+
+              # PXU6 exact live snapshot.
+              px_rows = session.execute(
+                  select(TradeIdea, Instrument)
+                  .join(Instrument, Instrument.instrument_id == TradeIdea.instrument_id)
+                  .where(Instrument.symbol == 'PXU6')
+                  .order_by(TradeIdea.signal_time.desc())
+                  .limit(5)
+              ).all()
+              print('PXU6_IDEAS', len(px_rows))
+              for idea, inst in px_rows:
+                  exp = idea.explanation_json or {}
+                  print('PXU6', {
+                      'id': str(idea.id), 'signal_time': idea.signal_time.isoformat(),
+                      'status': val(idea.status), 'quality': val(idea.quality_status),
+                      'presented': idea.was_presented, 'rank': idea.presentation_rank,
+                      'score': str(idea.score), 'direction': val(idea.direction),
+                      'entry': str(idea.entry_reference), 'stop': str(idea.stop),
+                      'tp1': str(idea.tp1), 'tp2': str(idea.tp2), 'tp3': str(idea.tp3),
+                      'quantity': str(idea.quantity), 'risk_amount': str(idea.risk_amount),
+                      'risk_pct': str(idea.risk_pct), 'risk_per_unit': str(idea.risk_per_unit),
+                      'sizing_note': exp.get('sizing_note'),
+                      'admission': exp.get('admission'),
+                      'admission_failed': exp.get('admission_failed'),
+                      'tick_size': str(inst.tick_size), 'tick_value': str(inst.tick_value),
+                      'qty_step': str(inst.quantity_step), 'min_qty': str(inst.min_quantity),
+                      'tradable': inst.is_tradable, 'universe_note': inst.universe_note,
+                  })
+                  events = session.execute(
+                      select(IdeaEvent).where(IdeaEvent.idea_id == idea.id).order_by(IdeaEvent.sequence)
+                  ).scalars().all()
+                  print('PXU6_EVENTS', [
+                      {'seq': e.sequence, 'new': val(e.new_status), 'reason': e.reason_code,
+                       'detail': e.reason_detail, 'at': e.occurred_at.isoformat()}
+                      for e in events
+                  ])
+                  paper = session.execute(
+                      select(PaperTrade).where(PaperTrade.idea_id == idea.id)
+                  ).scalars().all()
+                  print('PXU6_PAPER', [
+                      {'id': str(p.id), 'status': val(p.status), 'entry': str(p.entry),
+                       'opened_at': p.opened_at.isoformat() if p.opened_at else None}
+                      for p in paper
+                  ])
+
+              since = now - timedelta(hours=36)
+              rows = session.execute(
+                  select(TradeIdea, Instrument)
+                  .join(Instrument, Instrument.instrument_id == TradeIdea.instrument_id)
+                  .where(TradeIdea.signal_time >= since)
+                  .order_by(TradeIdea.signal_time.desc())
+              ).all()
+              print('IDEAS_36H', len(rows))
+              venue_counts = Counter()
+              presented_counts = Counter()
+              actionable_counts = Counter()
+              by_hour = defaultdict(Counter)
+              for idea, inst in rows:
+                  venue = val(inst.venue)
+                  key = 'BYBIT' if idea.instrument_id.startswith('CRYPTO:') else 'FORTS' if 'FUT' in idea.instrument_id else venue
+                  venue_counts[key] += 1
+                  if idea.was_presented:
+                      presented_counts[key] += 1
+                  if val(idea.quality_status) == 'ACTIVE' and val(idea.status) == 'TRIGGERED':
+                      actionable_counts[key] += 1
+                  bucket = idea.signal_time.replace(minute=0, second=0, microsecond=0).isoformat()
+                  by_hour[bucket][key] += 1
+                  print('IDEA36', {
+                      'time': idea.signal_time.isoformat(), 'symbol': inst.symbol, 'kind': key,
+                      'status': val(idea.status), 'quality': val(idea.quality_status),
+                      'presented': idea.was_presented, 'rank': idea.presentation_rank,
+                      'score': str(idea.score), 'quantity': str(idea.quantity),
+                      'sizing_note': (idea.explanation_json or {}).get('sizing_note'),
+                  })
+              print('COUNTS_ALL', dict(venue_counts))
+              print('COUNTS_PRESENTED', dict(presented_counts))
+              print('COUNTS_ACTIONABLE', dict(actionable_counts))
+              print('COUNTS_BY_HOUR', {k: dict(v) for k, v in sorted(by_hour.items())})
+
+              # Current live/presented inventory: hidden live ideas can suppress new ones by dedup.
+              live = session.execute(
+                  select(TradeIdea, Instrument)
+                  .join(Instrument, Instrument.instrument_id == TradeIdea.instrument_id)
+                  .where(TradeIdea.expires_at > now)
+                  .order_by(TradeIdea.signal_time.desc())
+              ).all()
+              print('LIVE_NOT_TERMINAL_CANDIDATES')
+              for idea, inst in live:
+                  if val(idea.status) in {'CLOSED','STOPPED','TARGET_REACHED','CANCELLED','REJECTED','MISSED','EXPIRED','TIMED_OUT','SKIPPED'}:
+                      continue
+                  kind = 'BYBIT' if idea.instrument_id.startswith('CRYPTO:') else 'FORTS' if 'FUT' in idea.instrument_id else val(inst.venue)
+                  print('LIVE', {'symbol': inst.symbol, 'kind': kind, 'status': val(idea.status),
+                                 'quality': val(idea.quality_status), 'presented': idea.was_presented,
+                                 'time': idea.signal_time.isoformat(), 'expires': idea.expires_at.isoformat()})
+
+              # Freshness per venue for the exact H1 feed used by discovery.
+              for prefix, label in [('CRYPTO:%', 'BYBIT'), ('MOEX:FUT:%', 'FORTS')]:
+                  latest = session.execute(
+                      select(func.max(Bar.open_time)).where(
+                          Bar.instrument_id.like(prefix), Bar.timeframe == Timeframe.H1, Bar.is_closed.is_(True)
+                      )
+                  ).scalar_one_or_none()
+                  count6 = session.execute(
+                      select(func.count()).select_from(Bar).where(
+                          Bar.instrument_id.like(prefix), Bar.timeframe == Timeframe.H1,
+                          Bar.is_closed.is_(True), Bar.open_time >= now - timedelta(hours=6)
+                      )
+                  ).scalar_one()
+                  print('H1_FRESHNESS', label, latest.isoformat() if latest else None, 'bars6h', count6)
+
+              dq = session.execute(
+                  select(DataQualityEvent)
+                  .where(DataQualityEvent.created_at >= now - timedelta(hours=12))
+                  .order_by(DataQualityEvent.created_at.desc()).limit(80)
+              ).scalars().all()
+              print('DATA_QUALITY_12H', [
+                  {'at': d.created_at.isoformat(), 'source': d.source, 'flag': val(d.flag), 'detail': d.detail}
+                  for d in dq
+              ])
+          finally:
+              session.close()
+          PY
+
+          echo '--- scheduler logs last 8h (filtered) ---'
+          $SUDO docker compose --env-file /etc/signalai/.env logs --since 8h scheduler 2>&1 \
+            | grep -Ei 'scan|ingest|crypto|bybit|moex|forts|ошиб|error|failed|bars|идей|пропущ' \
+            | tail -n 500 || true
+          REMOTE
+
+      - name: T-Invest sandbox round-trip on PXU6
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          USER_NAME: ${{ secrets.VPS_USER || 'root' }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/id_forensics -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+            "$USER_NAME@$HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          cd "$HOME/signalai/server"
+          SUDO=""; [ "$(id -u)" -eq 0 ] || SUDO=sudo
+          $SUDO docker compose --env-file /etc/signalai/.env exec -T api python - <<'PY'
+          import json, uuid
+          from decimal import Decimal
+          from urllib.request import Request, urlopen
+          from urllib.error import HTTPError
+          from sqlalchemy import select
+          from app.db import get_session_factory
+          from app.integration_secrets import load_secret
+          from app.models import Instrument, TradeIdea
+
+          HOST = 'https://sandbox-invest-public-api.tbank.ru/rest'
+          session = get_session_factory()()
+          created_account = False
+
+          def post(path, token, body):
+              data = json.dumps(body).encode()
+              req = Request(HOST + path, data=data, method='POST', headers={
+                  'Authorization': 'Bearer ' + token,
+                  'Content-Type': 'application/json',
+                  'Accept': 'application/json',
+                  'x-app-name': 'signalai-personal',
+              })
+              try:
+                  with urlopen(req, timeout=25) as r:
+                      return json.loads(r.read().decode() or '{}')
+              except HTTPError as exc:
+                  text = exc.read().decode(errors='replace')[:2000]
+                  raise RuntimeError(f'TBANK_HTTP_{exc.code} {path}: {text}') from None
+
+          def quotation(value):
+              d = Decimal(str(value))
+              units = int(d)
+              nano = int((d - Decimal(units)) * Decimal(1_000_000_000))
+              return {'units': str(units), 'nano': nano}
+
+          try:
+              secret = load_secret(session, 'tinvest_sandbox')
+              if not secret:
+                  print('SANDBOX_RESULT NOT_CONFIGURED tinvest_sandbox')
+                  raise SystemExit(0)
+              token = secret['token']
+              idea, inst = session.execute(
+                  select(TradeIdea, Instrument)
+                  .join(Instrument, Instrument.instrument_id == TradeIdea.instrument_id)
+                  .where(Instrument.symbol == 'PXU6')
+                  .order_by(TradeIdea.signal_time.desc()).limit(1)
+              ).one()
+              print('SANDBOX_SOURCE', {'idea_id': str(idea.id), 'status': str(idea.status),
+                    'quality': str(idea.quality_status), 'entry': str(idea.entry_reference),
+                    'quantity': str(idea.quantity), 'tick_size': str(inst.tick_size),
+                    'tick_value': str(inst.tick_value)})
+
+              found = post('/tinkoff.public.invest.api.contract.v1.InstrumentsService/FindInstrument', token, {
+                  'query': 'PXU6',
+                  'instrumentKind': 'INSTRUMENT_TYPE_FUTURES',
+                  'apiTradeAvailableFlag': True,
+              })
+              matches = [x for x in found.get('instruments', []) if x.get('ticker') == 'PXU6']
+              if not matches:
+                  print('SANDBOX_RESULT PXU6_NOT_FOUND', [
+                      {k: x.get(k) for k in ('ticker','classCode','uid','name','apiTradeAvailableFlag')}
+                      for x in found.get('instruments', [])[:10]
+                  ])
+                  raise SystemExit(0)
+              instrument = matches[0]
+              instrument_id = instrument.get('uid') or f"{instrument.get('ticker')}_{instrument.get('classCode')}"
+              print('SANDBOX_INSTRUMENT', {k: instrument.get(k) for k in ('ticker','classCode','uid','name','apiTradeAvailableFlag')})
+
+              accounts = post('/tinkoff.public.invest.api.contract.v1.SandboxService/GetSandboxAccounts', token, {
+                  'status': 'ACCOUNT_STATUS_OPEN'
+              }).get('accounts', [])
+              account = next((a for a in accounts if (a.get('name') or '').startswith('SignalAI PXU6')), None)
+              if account is None:
+                  opened = post('/tinkoff.public.invest.api.contract.v1.SandboxService/OpenSandboxAccount', token, {
+                      'name': 'SignalAI PXU6 tech-test'
+                  })
+                  account_id = opened.get('accountId') or opened.get('account_id')
+                  created_account = True
+              else:
+                  account_id = account.get('id') or account.get('accountId')
+              if not account_id:
+                  raise RuntimeError('sandbox account id not returned')
+              print('SANDBOX_ACCOUNT', {'id_suffix': account_id[-6:], 'created': created_account})
+
+              if created_account:
+                  balance = post('/tinkoff.public.invest.api.contract.v1.SandboxService/SandboxPayIn', token, {
+                      'accountId': account_id,
+                      'amount': {'currency': 'rub', 'units': '1000000', 'nano': 0},
+                  })
+                  print('SANDBOX_PAYIN_OK', bool(balance))
+
+              # Technical order: exact PXU6 instrument, 1 contract, signal direction SHORT,
+              # but isolated from SignalAI lifecycle. Sandbox only; never touches live token.
+              order_id = str(uuid.uuid4())
+              body = {
+                  'instrumentId': instrument_id,
+                  'quantity': '1',
+                  'price': quotation(idea.entry_reference),
+                  'direction': 'ORDER_DIRECTION_SELL',
+                  'accountId': account_id,
+                  'orderType': 'ORDER_TYPE_LIMIT',
+                  'orderId': order_id,
+                  'timeInForce': 'TIME_IN_FORCE_DAY',
+                  'priceType': 'PRICE_TYPE_POINT',
+                  'confirmMarginTrade': True,
+              }
+              quote = post('/tinkoff.public.invest.api.contract.v1.SandboxService/GetSandboxOrderPrice', token, {
+                  'accountId': account_id, 'instrumentId': instrument_id,
+                  'price': quotation(idea.entry_reference), 'direction': 'ORDER_DIRECTION_SELL', 'quantity': '1'
+              })
+              print('SANDBOX_PRICE_CHECK_OK', bool(quote))
+              placed = post('/tinkoff.public.invest.api.contract.v1.SandboxService/PostSandboxOrder', token, body)
+              exchange_order_id = placed.get('orderId') or placed.get('order_id') or order_id
+              print('SANDBOX_POST_OK', {
+                  'executionReportStatus': placed.get('executionReportStatus'),
+                  'lotsRequested': placed.get('lotsRequested'),
+                  'lotsExecuted': placed.get('lotsExecuted'),
+                  'order_id_suffix': str(exchange_order_id)[-8:],
+              })
+
+              state = post('/tinkoff.public.invest.api.contract.v1.SandboxService/GetSandboxOrderState', token, {
+                  'accountId': account_id, 'orderId': exchange_order_id,
+                  'priceType': 'PRICE_TYPE_POINT',
+                  'orderIdType': 'ORDER_ID_TYPE_EXCHANGE',
+              })
+              status = state.get('executionReportStatus')
+              print('SANDBOX_STATE', {'status': status, 'lotsExecuted': state.get('lotsExecuted')})
+
+              if status in {'EXECUTION_REPORT_STATUS_NEW', 'EXECUTION_REPORT_STATUS_PARTIALLYFILL'}:
+                  post('/tinkoff.public.invest.api.contract.v1.SandboxService/CancelSandboxOrder', token, {
+                      'accountId': account_id, 'orderId': exchange_order_id,
+                      'orderIdType': 'ORDER_ID_TYPE_EXCHANGE',
+                  })
+                  print('SANDBOX_CANCEL_OK', True)
+              elif status == 'EXECUTION_REPORT_STATUS_FILL':
+                  # Neutralise the technical test position immediately in sandbox.
+                  close_id = str(uuid.uuid4())
+                  closed = post('/tinkoff.public.invest.api.contract.v1.SandboxService/PostSandboxOrder', token, {
+                      'instrumentId': instrument_id, 'quantity': '1',
+                      'direction': 'ORDER_DIRECTION_BUY', 'accountId': account_id,
+                      'orderType': 'ORDER_TYPE_MARKET', 'orderId': close_id,
+                      'priceType': 'PRICE_TYPE_POINT', 'confirmMarginTrade': True,
+                  })
+                  print('SANDBOX_NEUTRALIZE_OK', {'status': closed.get('executionReportStatus')})
+              print('SANDBOX_RESULT PASS')
+          finally:
+              session.close()
+          PY
+          REMOTE
+
+      - name: Cleanup SSH key
+        if: always()
+        run: shred -u ~/.ssh/id_forensics 2>/dev/null || rm -f ~/.ssh/id_forensics
