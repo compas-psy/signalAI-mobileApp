@@ -145,11 +145,9 @@ class LiveIdeaSource {
 
   static String _canonical(String raw) => switch (raw.trim().toLowerCase()) {
         'h1' || '1h' => '1h',
+        'h4' || '4h' => '4h',
         'd1' || '1d' => '1d',
         '10m' || 'm10' => '10m',
-        // MOEX ISS has no direct 4h live candle. The persisted chart remains
-        // 4h and the live source degrades to 1h rather than mislabelling H1 as H4.
-        'h4' || '4h' => '1h',
         _ => '1h',
       };
 }
