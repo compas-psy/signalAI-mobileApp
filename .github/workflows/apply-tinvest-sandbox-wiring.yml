@@ -1,0 +1,69 @@
+name: Apply T-Invest sandbox wiring
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  patch:
+    if: github.event.issue.pull_request && github.event.issue.number == 26 && github.event.comment.body == '/wire-tinvest-sandbox'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Resolve PR head
+        id: pr
+        run: |
+          set -euo pipefail
+          ref="$(gh api "repos/$GITHUB_REPOSITORY/pulls/26" --jq '.head.ref')"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.pr.outputs.ref }}
+          fetch-depth: 0
+
+      - name: Wire server-approved FORTS to on-device sandbox mirror
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('lib/state/app_controller.dart')
+          text = path.read_text()
+
+          import_anchor = "import '../domain/idea/idea_state.dart';\n"
+          if "import '../domain/idea/trade_plan.dart';" not in text:
+              text = text.replace(
+                  import_anchor,
+                  import_anchor + "import '../domain/idea/trade_plan.dart';\n",
+                  1,
+              )
+
+          old = """        final decision = await _engine.approvePaper(server.id);\n        final trade = decision.trade;\n        if (trade != null) _upsertServerPaperTrade(trade);\n        // Ответ approve уже достаточен для мгновенного экрана, а перечитка\n        // синхронизирует состояние после идемпотентного replay и серверного\n        // сопровождения.\n        final trades = await _engine.paperTrades();\n        if (trades != null) _serverPaperTrades = trades;\n        _engineIdeas = EngineIdeas(\n          ideas: [\n            for (final item in _engineIdeas.ideas)\n              item.id == server.id\n                  ? item.copyWith(\n                      state: IdeaState.active,\n                      actionable: false,\n                    )\n                  : item,\n          ],\n          unavailableReason: _engineIdeas.unavailableReason,\n          noSetupsReason: _engineIdeas.noSetupsReason,\n        );\n        _sheetOpen = false;\n        showToast(\n          decision.idempotentReplay\n              ? 'Paper-сделка уже принята · сопровождение на сервере'\n              : 'Paper-сделка принята · сопровождение на сервере',\n        );\n"""
+          new = """        final decision = await _engine.approvePaper(server.id);\n        final trade = decision.trade;\n        if (trade != null) _upsertServerPaperTrade(trade);\n\n        // FORTS в production-thin остаётся server-paper источником истины,\n        // но после серверного допуска зеркалится в настоящую T-Invest\n        // Sandbox с телефона. Токен не покидает Android Keystore. Повтор\n        // идемпотентного approve не создаёт второй sandbox-ордер.\n        ({String message, ToastTone tone})? sandboxMirror;\n        if (!decision.idempotentReplay &&\n            server.instrumentId.startsWith('MOEX:FUT:')) {\n          sandboxMirror = await _mirrorFortsToTInvestSandbox(server);\n        }\n\n        // Ответ approve уже достаточен для мгновенного экрана, а перечитка\n        // синхронизирует состояние после идемпотентного replay и серверного\n        // сопровождения.\n        final trades = await _engine.paperTrades();\n        if (trades != null) _serverPaperTrades = trades;\n        _engineIdeas = EngineIdeas(\n          ideas: [\n            for (final item in _engineIdeas.ideas)\n              item.id == server.id\n                  ? item.copyWith(\n                      state: IdeaState.active,\n                      actionable: false,\n                    )\n                  : item,\n          ],\n          unavailableReason: _engineIdeas.unavailableReason,\n          noSetupsReason: _engineIdeas.noSetupsReason,\n        );\n        _sheetOpen = false;\n        if (sandboxMirror != null) {\n          showToast(sandboxMirror.message, tone: sandboxMirror.tone);\n        } else {\n          showToast(\n            decision.idempotentReplay\n                ? 'Paper-сделка уже принята · сопровождение на сервере'\n                : 'Paper-сделка принята · сопровождение на сервере',\n          );\n        }\n"""
+          if old not in text:
+              raise SystemExit('confirmCurrentSignal anchor not found')
+          text = text.replace(old, new, 1)
+
+          helper_anchor = """  /// Системное подтверждение — дополнительный рубеж после явного sheet.\n"""
+          helper = """  /// Зеркало подтверждённой FORTS-идеи в T-Invest Sandbox.\n  ///\n  /// Сервер уже сделал окончательный lifecycle/risk gate. Здесь ничего не\n  /// пересчитывается: телефон берёт тот же TradePlan и только доказывает,\n  /// что брокерский контур способен принять вход и защитный стоп. Sandbox\n  /// остаётся зеркалом server-paper, а не вторым источником торговой логики.\n  Future<({String message, ToastTone tone})?> _mirrorFortsToTInvestSandbox(\n    Idea idea,\n  ) async {\n    final repository = _repository;\n    final plan = idea.plan;\n    if (repository is! LocalAnalysisRepository || plan == null) {\n      return (\n        message: 'Paper-сделка принята · T-Invest sandbox недоступен на устройстве',\n        tone: ToastTone.warning,\n      );\n    }\n    if (plan.quantity <= 0 || plan.targets.isEmpty) {\n      return (\n        message: 'Paper-сделка принята · sandbox не отправлен: объём/цель не рассчитаны',\n        tone: ToastTone.failure,\n      );\n    }\n\n    final token = await repository.vault.apiKey(\n      exchange: BrokerId.tinvest.name,\n      mode: TInvestRole.sandbox.slot,\n    );\n    if (token == null || token.trim().isEmpty) {\n      return (\n        message: 'Paper-сделка принята · задайте токен T-Invest Sandbox в интеграциях',\n        tone: ToastTone.warning,\n      );\n    }\n\n    final broker = TInvestBroker(\n      mode: TradingMode.testnet,\n      role: TInvestRole.sandbox,\n      token: () async => token,\n      instrumentCache: StoredInstrumentCache(_prefs),\n    );\n    try {\n      final result = await broker.placeOrder(\n        OrderRequest(\n          symbol: EngineContract.symbolOf(idea.instrumentId),\n          long: idea.direction.isLong,\n          quantity: plan.quantity,\n          entry: plan.entry,\n          stopLoss: plan.stop,\n          takeProfit: plan.targets.first.price,\n          stopEntry: plan.orderType == PlanOrderType.stopLimit,\n        ),\n      );\n      if (!result.accepted) {\n        return (\n          message: 'Paper-сделка принята · T-Invest sandbox отказал: ${result.message}',\n          tone: ToastTone.failure,\n        );\n      }\n      return (\n        message: 'Paper-сделка принята · T-Invest sandbox: вход и стоп приняты',\n        tone: ToastTone.success,\n      );\n    } on Object catch (error) {\n      return (\n        message: 'Paper-сделка принята · T-Invest sandbox: ${_errorText(error)}',\n        tone: ToastTone.failure,\n      );\n    } finally {\n      broker.close();\n    }\n  }\n\n"""
+          if helper_anchor not in text:
+              raise SystemExit('helper anchor not found')
+          text = text.replace(helper_anchor, helper + helper_anchor, 1)
+          path.write_text(text)
+          PY
+
+      - name: Commit patch to PR branch
+        run: |
+          set -euo pipefail
+          git config user.name 'signalai-ci'
+          git config user.email 'actions@users.noreply.github.com'
+          git add lib/state/app_controller.dart
+          git diff --cached --quiet && exit 0
+          git commit -m 'feat: mirror confirmed FORTS into T-Invest sandbox'
+          git push origin HEAD:${{ steps.pr.outputs.ref }}
