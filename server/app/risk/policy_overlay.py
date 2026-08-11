@@ -3,21 +3,43 @@
 Никакого второго sizing engine здесь нет. Overlay может менять только exit
 geometry (shares/trailing/time stop). ``risk_multiplier`` всегда остаётся у
 confidence profile и дополнительно запрещён в optimizer config validator.
+
+До 20 релевантных исходов статистическая уверенность считается *неизвестной*,
+а не плохой. Сама сделка всё равно получает defensive risk profile. Это важно:
+иначе отсутствие истории одновременно уменьшало размер и делало порог
+confidence недостижимым, то есть консервативность превращалась в полный ban.
 """
 
 from __future__ import annotations
 
+from dataclasses import replace
 from decimal import Decimal
 from typing import Any
 
 from ..config import get_config
 
 _BASE_PROFILE = None
+_BASE_EDGE = None
 _INSTALLED = False
 
 
 def _d(value: Any) -> Decimal:
     return Decimal(str(value))
+
+
+def _edge_unknown_not_bad(session, instrument):
+    edge = _BASE_EDGE(session, instrument)
+    if edge.sample_size >= 20:
+        return edge
+    # probability остаётся shrunk/capped, а sizing mode всё равно defensive
+    # по sample_size. Для confidence же «не измерено» эквивалентно нейтральной
+    # UNKNOWN=0.5 семантике существующего probability.barrier.confidence.
+    return replace(
+        edge,
+        sample_adequacy=Decimal("0.5"),
+        calibration=None,
+        stability=Decimal("0.5"),
+    )
 
 
 def _profile_with_champion(cfg, mode: str) -> dict[str, Any]:
@@ -90,13 +112,15 @@ def _trade_profile_with_candidates(trade) -> dict[str, Any] | None:
 
 
 def install() -> None:
-    global _BASE_PROFILE, _INSTALLED
+    global _BASE_PROFILE, _BASE_EDGE, _INSTALLED
     if _INSTALLED:
         return
     from . import dynamic_exit, engine_v2
 
     _BASE_PROFILE = engine_v2._profile
+    _BASE_EDGE = engine_v2._edge_snapshot
     engine_v2._profile = _profile_with_champion
+    engine_v2._edge_snapshot = _edge_unknown_not_bad
     dynamic_exit._profile_for = _trade_profile_with_candidates
     _INSTALLED = True
 
