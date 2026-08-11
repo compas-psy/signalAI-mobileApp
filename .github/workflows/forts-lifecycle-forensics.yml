@@ -6,11 +6,6 @@ on:
       - agent/forts-lifecycle-forensics
     paths:
       - .github/workflows/forts-lifecycle-forensics.yml
-  pull_request:
-    branches:
-      - claude/release-y40hk5
-    paths:
-      - .github/workflows/forts-lifecycle-forensics.yml
 
 permissions:
   contents: read
@@ -19,16 +14,6 @@ jobs:
   inspect:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Locate journal and lifecycle filters in source
-        run: |
-          set -euo pipefail
-          echo '── source references ──'
-          grep -RInE --include='*.py' --include='*.dart' \
-            'was_presented|IdeaStatus\.(TIMED_OUT|MISSED|CANCELLED)|is_terminal|journal|history\(' \
-            server/app lib | head -n 350 || true
-
       - name: Prepare read-only SSH access
         env:
           HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
@@ -43,7 +28,7 @@ jobs:
           chmod 600 ~/.ssh/id_forensics
           ssh-keyscan -T 10 -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
 
-      - name: Read recent production FORTS lifecycle
+      - name: Inspect PXU6 and production risk source
         env:
           HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
           USER_NAME: ${{ secrets.VPS_USER || 'root' }}
@@ -52,76 +37,113 @@ jobs:
           ssh -i ~/.ssh/id_forensics -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
             "$USER_NAME@$HOST" 'bash -s' <<'REMOTE'
           set -euo pipefail
+          echo "PRODUCTION_SOURCE_SHA=$(cat "$HOME/signalai/.source_sha" 2>/dev/null || echo missing)"
           cd "$HOME/signalai/server"
           SUDO=""; [ "$(id -u)" -eq 0 ] || SUDO=sudo
           $SUDO docker compose --env-file /etc/signalai/.env exec -T api python - <<'PY'
           from datetime import UTC, datetime, timedelta
           from sqlalchemy import select
           from app.db import get_session_factory
-          from app.models import IdeaEvent, Instrument, PaperTrade, TradeIdea
-          from app.models.enums import AssetClass
+          from app.models import Account, Bar, IdeaEvent, Instrument, PaperTrade, RiskSnapshot, TradeIdea
+          from app.models.enums import Timeframe
 
           def val(x):
               return getattr(x, 'value', str(x)) if x is not None else None
 
           session = get_session_factory()()
           try:
-              since = datetime.now(UTC) - timedelta(days=3)
-              rows = session.execute(
+              print('NOW_UTC', datetime.now(UTC).isoformat())
+              risk_accounts = list(session.execute(
+                  select(Account).where(Account.circuit == 'risk').order_by(Account.synced_at.desc())
+              ).scalars())
+              print('RISK_ACCOUNTS', [
+                  {
+                      'id': str(a.id), 'broker': a.broker, 'external_id': a.external_id,
+                      'title': a.title, 'currency': a.currency, 'equity': str(a.equity),
+                      'free_margin': None if a.free_margin is None else str(a.free_margin),
+                      'synced_at': a.synced_at.isoformat() if a.synced_at else None,
+                  }
+                  for a in risk_accounts
+              ])
+              snapshots = list(session.execute(
+                  select(RiskSnapshot).order_by(RiskSnapshot.taken_at.desc()).limit(5)
+              ).scalars())
+              print('RISK_SNAPSHOTS', [
+                  {
+                      'taken_at': r.taken_at.isoformat() if r.taken_at else None,
+                      'risk_equity': str(r.risk_equity), 'open_risk': str(r.open_risk),
+                      'day_pnl_pct': str(r.day_pnl_pct), 'week_pnl_pct': str(r.week_pnl_pct),
+                      'month_pnl_pct': str(r.month_pnl_pct), 'binding': r.binding_limit,
+                  }
+                  for r in snapshots
+              ])
+
+              row = session.execute(
                   select(TradeIdea, Instrument)
                   .join(Instrument, Instrument.instrument_id == TradeIdea.instrument_id)
-                  .where(
-                      Instrument.asset_class == AssetClass.FUTURES,
-                      TradeIdea.signal_time >= since,
-                  )
+                  .where(Instrument.symbol == 'PXU6')
                   .order_by(TradeIdea.signal_time.desc())
-              ).all()
-              print(f'FORTS_IDEAS_LAST_3D={len(rows)} since={since.isoformat()}')
-              for idea, instrument in rows:
-                  print('IDEA', {
-                      'id': str(idea.id),
-                      'instrument_id': idea.instrument_id,
-                      'symbol': getattr(instrument, 'symbol', None),
-                      'title': getattr(instrument, 'title', None),
-                      'status': val(idea.status),
-                      'quality_status': val(idea.quality_status),
-                      'was_presented': idea.was_presented,
-                      'presentation_rank': idea.presentation_rank,
+                  .limit(1)
+              ).first()
+              if row is None:
+                  print('PXU6_NOT_FOUND')
+              else:
+                  idea, instrument = row
+                  exp = idea.explanation_json or {}
+                  print('PXU6_IDEA', {
+                      'id': str(idea.id), 'instrument_id': idea.instrument_id,
+                      'symbol': instrument.symbol, 'title': instrument.title,
+                      'status': val(idea.status), 'quality_status': val(idea.quality_status),
+                      'was_presented': idea.was_presented, 'presentation_rank': idea.presentation_rank,
                       'signal_time': idea.signal_time.isoformat() if idea.signal_time else None,
                       'expires_at': idea.expires_at.isoformat() if idea.expires_at else None,
-                      'entry_low': str(idea.entry_low),
-                      'entry_high': str(idea.entry_high),
-                      'stop': str(idea.stop),
-                      'tp1': str(idea.tp1),
-                      'tp2': str(idea.tp2),
+                      'score': str(idea.score), 'risk_pct': str(idea.risk_pct),
+                      'risk_amount': str(idea.risk_amount), 'quantity': str(idea.quantity),
+                      'risk_per_unit': str(idea.risk_per_unit),
+                      'entry_low': str(idea.entry_low), 'entry_high': str(idea.entry_high),
+                      'entry_reference': str(idea.entry_reference), 'stop': str(idea.stop),
+                      'tp1': str(idea.tp1), 'tp2': str(idea.tp2), 'tp3': str(idea.tp3),
+                      'admission': exp.get('admission'),
+                      'admission_failed': exp.get('admission_failed'),
+                      'sizing_note': exp.get('sizing_note'),
+                      'binding_limit': exp.get('binding_limit'),
+                      'trigger_note': next((x.get('summary') for x in exp.get('timeframes', []) if x.get('role') == 'trigger'), None),
                   })
                   events = list(session.execute(
-                      select(IdeaEvent)
-                      .where(IdeaEvent.idea_id == idea.id)
-                      .order_by(IdeaEvent.sequence)
+                      select(IdeaEvent).where(IdeaEvent.idea_id == idea.id).order_by(IdeaEvent.sequence)
                   ).scalars())
-                  print('EVENTS', [
+                  print('PXU6_EVENTS', [
                       {
-                          'seq': e.sequence,
-                          'old': val(e.old_status),
-                          'new': val(e.new_status),
-                          'reason': e.reason_code,
-                          'detail': e.reason_detail,
+                          'seq': e.sequence, 'old': val(e.old_status), 'new': val(e.new_status),
+                          'reason': e.reason_code, 'detail': e.reason_detail,
                           'at': e.occurred_at.isoformat() if e.occurred_at else None,
+                          'snapshot': e.market_snapshot,
                       }
                       for e in events
                   ])
                   papers = list(session.execute(
                       select(PaperTrade).where(PaperTrade.idea_id == idea.id)
                   ).scalars())
-                  print('PAPER', [
+                  print('PXU6_PAPER_COUNT', len(papers))
+                  since = idea.signal_time - timedelta(hours=2)
+                  bars = list(session.execute(
+                      select(Bar)
+                      .where(
+                          Bar.instrument_id == idea.instrument_id,
+                          Bar.timeframe == Timeframe.H1,
+                          Bar.is_closed.is_(True),
+                          Bar.open_time >= since,
+                      )
+                      .order_by(Bar.open_time.desc())
+                      .limit(12)
+                  ).scalars())
+                  bars.reverse()
+                  print('PXU6_H1', [
                       {
-                          'status': val(getattr(p, 'status', None)),
-                          'opened_at': getattr(p, 'opened_at', None).isoformat() if getattr(p, 'opened_at', None) else None,
-                          'closed_at': getattr(p, 'closed_at', None).isoformat() if getattr(p, 'closed_at', None) else None,
-                          'exit_reason': getattr(p, 'exit_reason', None),
+                          't': b.open_time.isoformat(), 'o': str(b.open), 'h': str(b.high),
+                          'l': str(b.low), 'c': str(b.close)
                       }
-                      for p in papers
+                      for b in bars
                   ])
           finally:
               session.close()
