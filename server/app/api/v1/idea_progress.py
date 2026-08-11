@@ -49,9 +49,9 @@ class IdeaMarketProgress(ApiModel):
     current_price: Money | None = None
     current_bar_forming: bool = False
 
-    # null means the only observed touch was in the 10m candle already forming
-    # when the signal was created; OHLC cannot prove whether it happened after
-    # the signal. False means no entry touch at all, True is confirmed later.
+    # null means the only observed exact entry touch was in the 10m candle
+    # already forming when the signal was created; OHLC cannot prove whether
+    # it happened after the signal. False = no confirmed post-signal touch.
     entry_was_available: bool | None = False
     entry_at: datetime | None = None
     entry_zone_seen: bool = False
@@ -125,27 +125,38 @@ def evaluate_forts_progress(
     stop_hit = False
     stop_at: datetime | None = None
     ambiguous = False
+    signal_bar_ambiguous = False
 
     for candle in relevant:
         signal_bar = candle.open_time < idea.signal_time
         forming = not candle.is_closed
         zone = _zone_touch(candle, idea.entry_low, idea.entry_high)
         exact_entry = _touch(candle, idea.entry_reference)
+        candle_targets = [
+            (name, price)
+            for name, price in targets
+            if _target_touched(candle, price, idea.direction)
+        ]
+        candle_stop = _stop_touched(candle, idea.stop, idea.direction)
+
+        # The signal was born *inside* this candle. None of its high/low
+        # touches can be ordered against the signal timestamp. Do not let
+        # pre-signal price action answer a post-signal question.
+        if signal_bar:
+            if zone or candle_targets or candle_stop:
+                signal_bar_ambiguous = True
+                ambiguous = True
+            if exact_entry:
+                entry = None
+            continue
+
         entry_zone_seen = entry_zone_seen or zone
 
         if entry is not True:
-            # A touch in the candle that already existed at signal birth is not
-            # proof of post-signal availability. Preserve that uncertainty
-            # instead of answering "yes" from pre-signal price action.
-            if signal_bar and exact_entry:
-                entry = None
-                ambiguous = True
-                continue
-
             touched_before = [
                 (name, price)
-                for name, price in targets
-                if name not in hit_names and _target_touched(candle, price, idea.direction)
+                for name, price in candle_targets
+                if name not in hit_names
             ]
             if not exact_entry:
                 if touched_before and not target_before_entry:
@@ -167,10 +178,10 @@ def evaluate_forts_progress(
             entry_at = candle.open_time
             same_targets = [
                 (name, price)
-                for name, price in targets
-                if name not in hit_names and _target_touched(candle, price, idea.direction)
+                for name, price in candle_targets
+                if name not in hit_names
             ]
-            same_stop = _stop_touched(candle, idea.stop, idea.direction)
+            same_stop = candle_stop
             if same_targets or same_stop:
                 # Within one OHLC candle ordering is unknowable. We can say all
                 # levels traded, but not pretend to know their sequence.
@@ -194,10 +205,10 @@ def evaluate_forts_progress(
 
         new_targets = [
             (name, price)
-            for name, price in targets
-            if name not in hit_names and _target_touched(candle, price, idea.direction)
+            for name, price in candle_targets
+            if name not in hit_names
         ]
-        same_stop = _stop_touched(candle, idea.stop, idea.direction)
+        same_stop = candle_stop
         if new_targets and same_stop:
             ambiguous = True
         for name, price in new_targets:
@@ -249,6 +260,12 @@ def evaluate_forts_progress(
         summary = (
             "Цена входа была внутри 10m свечи, в которой появился сигнал. "
             "По OHLC нельзя доказать, было ли касание уже после сигнала."
+        )
+    elif signal_bar_ambiguous:
+        status = "SIGNAL_BAR_AMBIGUOUS"
+        summary = (
+            "Один или несколько уровней торговались в 10m свече, внутри которой "
+            "появился сигнал. Их нельзя честно отнести к периоду после сигнала."
         )
     else:
         status = "WAITING_ENTRY"
