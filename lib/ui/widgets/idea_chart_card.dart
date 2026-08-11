@@ -82,21 +82,38 @@ class _IdeaChartCardState extends State<IdeaChartCard> {
     WidgetsBinding.instance.addPostFrameCallback((_) => _refreshLive());
   }
 
+  String _liveTimeframe() => widget.timeframe.isEmpty
+      ? (widget.chart?.timeframeLabel ?? '1h')
+      : widget.timeframe;
+
   Future<void> _refreshLive() async {
     final idea = widget.idea;
     if (idea == null || _liveLoading) return;
+    final requestedTimeframe = _liveTimeframe();
     _liveLoading = true;
     try {
       final result = await _liveSource.load(
         idea,
-        timeframe: widget.timeframe.isEmpty
-            ? (widget.chart?.timeframeLabel ?? '1h')
-            : widget.timeframe,
+        timeframe: requestedTimeframe,
       );
-      if (!mounted || widget.idea?.id != idea.id) return;
+      if (!mounted ||
+          widget.idea?.id != idea.id ||
+          _liveTimeframe() != requestedTimeframe) {
+        return;
+      }
       setState(() => _live = result);
     } finally {
       _liveLoading = false;
+      // A timeframe/idea switch can happen while the previous HTTP request is
+      // in flight. didUpdateWidget already asked for a refresh, but that call
+      // may have returned early because _liveLoading was still true. Queue one
+      // more request for the current key so a late 1h response can never leave
+      // the 4h tab without its own fetch.
+      if (mounted &&
+          (widget.idea?.id != idea.id ||
+              _liveTimeframe() != requestedTimeframe)) {
+        _scheduleImmediate();
+      }
     }
   }
 
