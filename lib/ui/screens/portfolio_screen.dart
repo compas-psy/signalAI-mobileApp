@@ -6,14 +6,13 @@ import '../../state/navigation.dart';
 import '../../theme/tokens.dart';
 import '../widgets/segmented.dart';
 import 'capital_screen.dart';
-import 'signals_screen.dart';
+import 'investment_signals_screen.dart';
 
 /// Раздел «Портфель» (ТЗ §7).
 ///
-/// Пакеты, черновик ребалансировки и счета. Содержимое пока берётся из
-/// прежнего раздела «Капитал»: он читает те же книгу, счета и цены, и
-/// выбрасывать рабочий код ради переименования было бы вредительством.
-/// Экраны переводятся на модель ТЗ §7.1 по одному, а не разом.
+/// Пакеты, инвестиционные сигналы, черновик ребалансировки и счета. Пакеты и
+/// книга капитала продолжают использовать рабочий CapitalScreen; сигналы —
+/// отдельный серверный контур с фундаменталом + D1 timing + катализаторами.
 class PortfolioScreen extends StatelessWidget {
   const PortfolioScreen({super.key, required this.pill});
 
@@ -24,11 +23,8 @@ class PortfolioScreen extends StatelessWidget {
     final controller = AppScope.of(context);
     final section =
         PortfolioPill.values[pill.clamp(0, PortfolioPill.values.length - 1)];
-    // Сигналы — не подраздел «Капитала»: у них своя модель, свой запрос и
-    // своя причина пустоты. Пропускать их через переходник, написанный для
-    // книги операций, значило бы притворяться, что это одно и то же.
     if (section == PortfolioPill.signals) {
-      return SignalsScreen(controller: controller);
+      return const InvestmentSignalsScreen();
     }
 
     final body = CapitalScreen(
