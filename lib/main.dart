@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'core/app_mode.dart';
+import 'data/api/sandbox_mirroring_engine_client.dart';
 import 'data/local_analysis_repository.dart';
+import 'data/local_store.dart';
 import 'data/mock/demo_repository.dart';
 import 'data/repository.dart';
 import 'state/app_controller.dart';
@@ -67,10 +69,8 @@ class SignalAiApp extends StatefulWidget {
 }
 
 class _SignalAiAppState extends State<SignalAiApp> with WidgetsBindingObserver {
-  late final AppController _controller = AppController(
-    widget.repository,
-    thinMode: widget.thinMode,
-  );
+  late final AppController _controller;
+  late final LocalStore _runtimeStore;
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
@@ -89,6 +89,31 @@ class _SignalAiAppState extends State<SignalAiApp> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
+    _runtimeStore = LocalStore();
+
+    final repository = widget.repository;
+    final engine = widget.thinMode && repository is LocalAnalysisRepository
+        ? SandboxMirroringEngineClient(
+            repository: repository,
+            instrumentStore: _runtimeStore,
+            onResult: (result) {
+              final tone = switch (result.tone) {
+                SandboxMirrorTone.success => ToastTone.success,
+                SandboxMirrorTone.warning => ToastTone.warning,
+                SandboxMirrorTone.failure => ToastTone.failure,
+              };
+              _controller.showToast(result.message, tone: tone);
+            },
+          )
+        : null;
+
+    _controller = AppController(
+      repository,
+      thinMode: widget.thinMode,
+      prefs: _runtimeStore,
+      engine: engine,
+    );
+
     WidgetsBinding.instance.addObserver(this);
     _controller.load();
   }
