@@ -8,7 +8,7 @@
 # сохраняется в каждой идее и в каждом прогоне бэктеста (§27), поэтому любую
 # выдачу можно связать с параметрами, при которых она получена.
 
-version: "1.1-recovery"
+version: "2.0-risk-exit"
 
 capital:
   investment_share: 0.80
@@ -19,8 +19,9 @@ capital:
     active: {investment: 0.70, risk: 0.30}
 
 risk:
-  # Выбранный владельцем капитал риск-контура FORTS + crypto. Пока нет
-  # синхронизированного risk-account у брокера, это явный источник risk equity.
+  # Выбранный владельцем капитал риск-контура FORTS + crypto. Абсолютные
+  # ограничения ниже Risk Engine v2 НЕ увеличивает: он умеет только урезать
+  # разрешённый бюджет внутри этих потолков.
   equity_rub: 300000
   base_risk_per_trade: 0.005
   max_risk_per_trade: 0.0075
@@ -47,11 +48,75 @@ risk:
   dynamic_correlation_window_days: 60
   high_correlation_threshold: 0.70
   management:
-    # Подписываемая политика выхода. И телефон, и server-paper используют
-    # один и тот же снимок 40/40/20; уже созданная сделка хранит свои доли.
+    # Legacy fallback для уже выпущенных до v2 идей. Новая идея подписывает
+    # один из профилей ниже, и PaperTrade хранит именно его доли.
     tp_shares: [0.40, 0.40, 0.20]
     tp1_close_fraction: 0.40
     max_reentries: 1
+    policy_version: "risk-exit-v2.0"
+
+    # Low-confidence/нестабильный WinRate → defensive. Доказанный устойчивый
+    # edge → conviction. Ни один risk_multiplier не может быть > 1.0.
+    profiles:
+      defensive:
+        risk_multiplier: 0.65
+        tp_shares: [0.50, 0.35, 0.15]
+        runner_enabled: true
+        runner_activation_r: 3.0
+        atr_multiplier: 1.8
+        min_trail_r: 0.70
+        mfe_giveback: 0.25
+        tp1_stop_lock_r: 0.00
+        tp2_stop_lock_r: 1.00
+        time_stop_hours: 36
+      balanced:
+        risk_multiplier: 0.90
+        tp_shares: [0.35, 0.30, 0.35]
+        runner_enabled: true
+        runner_activation_r: 3.0
+        atr_multiplier: 2.4
+        min_trail_r: 0.90
+        mfe_giveback: 0.35
+        tp1_stop_lock_r: -0.15
+        tp2_stop_lock_r: 0.50
+        time_stop_hours: 48
+      conviction:
+        risk_multiplier: 1.00
+        tp_shares: [0.20, 0.25, 0.55]
+        runner_enabled: true
+        runner_activation_r: 3.0
+        atr_multiplier: 3.0
+        min_trail_r: 1.20
+        mfe_giveback: 0.45
+        tp1_stop_lock_r: -0.25
+        tp2_stop_lock_r: 0.25
+        time_stop_hours: 72
+
+    optimizer:
+      # Запускается внутри того же последовательного scheduler, а не вторым
+      # daemon/process. При малой выборке только пишет «данных мало».
+      cadence_days: 7
+      min_samples: 80
+      min_oos_expectancy_improvement_r: 0.03
+      # Bounded candidate set: optimizer не сочиняет неограниченные числа.
+      # baseline совпадает с profiles. Остальные меняют только exit geometry;
+      # абсолютный риск сделки остаётся profile risk_multiplier + hard caps.
+      candidates:
+        - id: baseline
+          profiles:
+            defensive: {tp_shares: [0.50, 0.35, 0.15], runner_enabled: true, runner_activation_r: 3.0, atr_multiplier: 1.8, min_trail_r: 0.70, mfe_giveback: 0.25, tp1_stop_lock_r: 0.00, tp2_stop_lock_r: 1.00, time_stop_hours: 36}
+            balanced: {tp_shares: [0.35, 0.30, 0.35], runner_enabled: true, runner_activation_r: 3.0, atr_multiplier: 2.4, min_trail_r: 0.90, mfe_giveback: 0.35, tp1_stop_lock_r: -0.15, tp2_stop_lock_r: 0.50, time_stop_hours: 48}
+            conviction: {tp_shares: [0.20, 0.25, 0.55], runner_enabled: true, runner_activation_r: 3.0, atr_multiplier: 3.0, min_trail_r: 1.20, mfe_giveback: 0.45, tp1_stop_lock_r: -0.25, tp2_stop_lock_r: 0.25, time_stop_hours: 72}
+        - id: runner_wide
+          profiles:
+            defensive: {tp_shares: [0.48, 0.32, 0.20], runner_enabled: true, runner_activation_r: 3.0, atr_multiplier: 2.2, min_trail_r: 0.85, mfe_giveback: 0.32, tp1_stop_lock_r: 0.00, tp2_stop_lock_r: 0.85, time_stop_hours: 40}
+            balanced: {tp_shares: [0.30, 0.25, 0.45], runner_enabled: true, runner_activation_r: 3.0, atr_multiplier: 2.8, min_trail_r: 1.10, mfe_giveback: 0.42, tp1_stop_lock_r: -0.15, tp2_stop_lock_r: 0.40, time_stop_hours: 54}
+            conviction: {tp_shares: [0.15, 0.20, 0.65], runner_enabled: true, runner_activation_r: 3.0, atr_multiplier: 3.4, min_trail_r: 1.35, mfe_giveback: 0.50, tp1_stop_lock_r: -0.25, tp2_stop_lock_r: 0.20, time_stop_hours: 84}
+        - id: harvest_early
+          profiles:
+            defensive: {tp_shares: [0.55, 0.30, 0.15], runner_enabled: true, runner_activation_r: 3.0, atr_multiplier: 1.6, min_trail_r: 0.65, mfe_giveback: 0.22, tp1_stop_lock_r: 0.00, tp2_stop_lock_r: 1.00, time_stop_hours: 32}
+            balanced: {tp_shares: [0.40, 0.30, 0.30], runner_enabled: true, runner_activation_r: 3.0, atr_multiplier: 2.1, min_trail_r: 0.80, mfe_giveback: 0.30, tp1_stop_lock_r: -0.10, tp2_stop_lock_r: 0.60, time_stop_hours: 44}
+            conviction: {tp_shares: [0.25, 0.25, 0.50], runner_enabled: true, runner_activation_r: 3.0, atr_multiplier: 2.7, min_trail_r: 1.00, mfe_giveback: 0.38, tp1_stop_lock_r: -0.20, tp2_stop_lock_r: 0.35, time_stop_hours: 64}
 
 ideas:
   max_daily_cards: 5
