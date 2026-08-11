@@ -248,9 +248,16 @@ class TInvestBroker implements Broker {
     );
   }
 
-  String get _base => baseUrl ?? 'https://invest-public-api.tinkoff.ru/rest';
+  /// T‑Bank рекомендует отдельный host песочницы. Сервис SandboxService
+  /// доступен и через prod proxy, но смешивать host prod и sandbox методы —
+  /// отличный способ однажды отправить не тот запрос не в тот контур.
+  String get _base => baseUrl ?? (_sandbox
+      ? 'https://sandbox-invest-public-api.tbank.ru/rest'
+      : 'https://invest-public-api.tbank.ru/rest');
 
   static const _ns = 'tinkoff.public.invest.api.contract.v1';
+  static const _sandboxAccountName = 'SignalAI risk sandbox';
+  static const _sandboxRiskCapitalRub = 300000;
 
   /// Все счета токена. Кэшируется список, а не один счёт: раньше здесь
   /// хранился `accounts.first`, и основной капитал владельца приложение
@@ -293,8 +300,10 @@ class TInvestBroker implements Broker {
   /// Все счета токена. Закрытые отбрасываются: торговать на них нельзя, а в
   /// капитале они дали бы нули.
   ///
-  /// В песочнице при отсутствии счёта открывается новый — иначе тренировочный
-  /// режим невозможно начать.
+  /// В песочнице SignalAI использует отдельный именованный счёт. Если его
+  /// ещё нет, он создаётся и **один раз** пополняется на выбранный владельцем
+  /// риск-капитал 300 000 ₽. Существующий счёт повторно не пополняем: иначе
+  /// каждый запуск приложения искусственно раздувал бы тренировочный капитал.
   Future<List<TInvestAccount>> accounts({bool force = false}) async {
     final known = _accounts;
     if (known != null && !force) return known;
@@ -306,31 +315,51 @@ class TInvestBroker implements Broker {
       for (final item in json['accounts'] as List<dynamic>? ?? const [])
         TInvestAccount.fromJson(item as Map<String, dynamic>),
     ]
-        // Закрытые счета в выдаче есть; счёт без доступа токен видит, но
-        // прочитать не может — оба в капитале дали бы пустые строки.
         .where((a) =>
             a.id.isNotEmpty && !a.closed && !a.accessLevel.endsWith('NO_ACCESS'))
-        // Список разрешённых применяется здесь, а не на экране: счёт, не
-        // попавший в него, не должен доехать ни до капитала, ни до выбора
-        // торгового — фильтрация в интерфейсе оставила бы его в данных.
         .where((a) => allowedAccountIds.isEmpty || allowedAccountIds.contains(a.id))
         .toList();
 
-    if (list.isEmpty) {
-      if (!_sandbox) {
-        throw const BrokerException('У токена нет доступных счетов');
-      }
-      final opened = await _call('SandboxService', 'OpenSandboxAccount', const {});
+    if (_sandbox) {
+      final dedicated = list
+          .where((a) => a.name.trim() == _sandboxAccountName)
+          .firstOrNull;
+      if (dedicated != null) return _accounts = [dedicated];
+
+      final opened = await _call(
+        'SandboxService',
+        'OpenSandboxAccount',
+        const {'name': _sandboxAccountName},
+      );
       final id = opened['accountId'] as String?;
-      if (id == null) throw const BrokerException('Не удалось открыть счёт песочницы');
+      if (id == null || id.isEmpty) {
+        throw const BrokerException('Не удалось открыть счёт песочницы');
+      }
+      await _call(
+        'SandboxService',
+        'SandboxPayIn',
+        {
+          'accountId': id,
+          'amount': {
+            'currency': 'rub',
+            'units': _sandboxRiskCapitalRub.toString(),
+            'nano': 0,
+          },
+        },
+      );
       return _accounts = [
         TInvestAccount(
           id: id,
-          name: 'Песочница',
+          name: _sandboxAccountName,
           type: 'ACCOUNT_TYPE_TINKOFF',
           accessLevel: 'ACCOUNT_ACCESS_LEVEL_FULL_ACCESS',
+          status: 'ACCOUNT_STATUS_OPEN',
         ),
       ];
+    }
+
+    if (list.isEmpty) {
+      throw const BrokerException('У токена нет доступных счетов');
     }
     return _accounts = list;
   }
@@ -418,20 +447,24 @@ class TInvestBroker implements Broker {
           'price': doubleToQuotation(_align(request.entry, instrument.priceStep)),
           'direction': request.long ? 'ORDER_DIRECTION_BUY' : 'ORDER_DIRECTION_SELL',
           'orderType': 'ORDER_TYPE_LIMIT',
-          // Ключ идемпотентности: повтор при обрыве связи не создаст вторую
-          // заявку. Секунды в ключе достаточно — чаще мы не отправляем.
           'orderId': _idempotencyKey(request),
+          if (_sandbox) ...{
+            'timeInForce': 'TIME_IN_FORCE_DAY',
+            'priceType': 'PRICE_TYPE_POINT',
+            'confirmMarginTrade': true,
+          },
         },
       );
       final orderId = entry['orderId'] as String? ?? '';
 
-      // Защита ставится отдельным запросом: Т-Инвестиции, в отличие от Bybit,
-      // не принимают стоп внутри заявки. Если он не встал — вход снимается.
-      // Позиция без стопа хуже, чем отсутствие позиции.
+      // Защита обязана остаться в том же контуре, что и вход. Раньше
+      // PostSandboxOrder сразу после себя вызывал production StopOrdersService:
+      // тестовая заявка была принята, а защита уходила вообще другим API.
       try {
+        final stopId = _stopIdempotencyKey(request);
         await _call(
-          'StopOrdersService',
-          'PostStopOrder',
+          _sandbox ? 'SandboxService' : 'StopOrdersService',
+          _sandbox ? 'PostSandboxStopOrder' : 'PostStopOrder',
           {
             'accountId': account,
             'instrumentId': instrument.uid,
@@ -442,6 +475,11 @@ class TInvestBroker implements Broker {
                 : 'STOP_ORDER_DIRECTION_BUY',
             'stopOrderType': 'STOP_ORDER_TYPE_STOP_LOSS',
             'expirationType': 'STOP_ORDER_EXPIRATION_TYPE_GOOD_TILL_CANCEL',
+            if (_sandbox) ...{
+              'orderId': stopId,
+              'priceType': 'PRICE_TYPE_POINT',
+              'confirmMarginTrade': true,
+            },
           },
         );
       } on BrokerException catch (e) {
@@ -456,7 +494,7 @@ class TInvestBroker implements Broker {
         accepted: orderId.isNotEmpty,
         orderId: orderId,
         message: orderId.isNotEmpty
-            ? 'Заявка и стоп приняты'
+            ? 'Заявка и стоп приняты${_sandbox ? ' в песочнице' : ''}'
             : 'Брокер не вернул номер заявки',
       );
     } on BrokerException catch (e) {
@@ -490,27 +528,12 @@ class TInvestBroker implements Broker {
         quantity: quantity.abs(),
         entryPrice: quotationToDouble(row['averagePositionPrice']),
         unrealizedPnl: quotationToDouble(row['expectedYield']),
-        // Стоп у брокера живёт отдельной заявкой, поэтому «защищена» здесь
-        // означает «нашлась стоп-заявка по этому инструменту». Цену стопа
-        // подставлять нельзя: единица вместо неё выглядела на экране как
-        // уровень защиты в один пункт.
         protected: uid != null && protectedUids.contains(uid),
       ));
     }
     return result;
   }
 
-  /// Бумаги инвестиционного счёта: что лежит и сколько это стоит.
-  ///
-  /// Отдельно от [positions] намеренно. Тот метод обслуживает торговый
-  /// контур и оставляет только фьючерсы: остальное там не торгуется, и
-  /// показывать его в блоке «На бирже» значило бы мешать два разных счёта.
-  /// Здесь наоборот — фьючерсов нет, а есть акции, фонды и облигации, то
-  /// есть ровно то, из чего собирается пакет капитала.
-  ///
-  /// Деньги в список не попадают: свободный остаток — это не позиция, и
-  /// доля «рубли» в целевом составе не считается. Ребаланс работает с тем,
-  /// что куплено.
   Future<List<TInvestHolding>> holdings(String accountId) async {
     final json = await _call(
       _sandbox ? 'SandboxService' : 'OperationsService',
@@ -534,24 +557,12 @@ class TInvestBroker implements Broker {
         quantity: quantity,
         averagePrice: quotationToDouble(row['averagePositionPrice']),
         marketPrice: price,
-        // Стоимость считается ценой на количество: отдельного поля со
-        // стоимостью позиции у брокера нет. Цена приходит суммой в валюте
-        // (MoneyValue), а не процентом номинала, поэтому умножение верно и
-        // для облигаций.
-        //
-        // Накопленный купонный доход сюда не входит — его брокер отдаёт
-        // отдельно. Для долей это правильно: НКД не часть цены бумаги, а
-        // деньги, которые придут отдельно.
         marketValue: price * quantity,
       ));
     }
     return result;
   }
 
-  /// Денежные остатки счёта по валютам.
-  ///
-  /// Нужны книге отдельно от позиций: капитал — это не только бумаги, и
-  /// свободный рубль на счёте владельца ничем не хуже акции.
   Future<Map<String, double>> cashBalances(String accountId) async {
     final json = await _call(
       _sandbox ? 'SandboxService' : 'OperationsService',
@@ -559,9 +570,6 @@ class TInvestBroker implements Broker {
       {'accountId': accountId},
     );
     final result = <String, double>{};
-    // Т-Инвестиции отдают деньги двумя способами: агрегатом totalAmountCurrencies
-    // и позициями типа currency. Берём позиции — в них видно каждую валюту
-    // отдельно, а агрегат уже пересчитан в рубли по своему курсу.
     for (final item in json['positions'] as List<dynamic>? ?? const []) {
       final row = item as Map<String, dynamic>;
       if ((row['instrumentType'] as String? ?? '') != 'currency') continue;
@@ -581,12 +589,6 @@ class TInvestBroker implements Broker {
     return result;
   }
 
-  /// Операции счёта за период — сырьё для книги капитала.
-  ///
-  /// Берётся `GetOperations`, а не портфель: портфель показывает, что есть
-  /// сейчас, а книге нужно, как оно возникло — каждая покупка, комиссия,
-  /// дивиденд и налог с их временем и суммой. Иначе восстановить, откуда
-  /// взялся текущий капитал, невозможно.
   Future<List<BrokerOperation>> operations({
     required DateTime from,
     DateTime? to,
@@ -629,12 +631,6 @@ class TInvestBroker implements Broker {
     return result;
   }
 
-  /// Тикер инструмента по его идентификатору.
-  ///
-  /// Сначала кэш: соответствие уже известно, если заявку ставило приложение.
-  /// Позиция могла быть открыта и не им — тогда спрашиваем брокера, потому что
-  /// показывать вместо тикера идентификатор (а при его отсутствии — пустоту)
-  /// значит показывать мусор там, где владелец сверяет свои позиции.
   Future<String> _tickerOf(String? uid, String? figi) async {
     final known = await instrumentCache.tickerFor(uid);
     if (known != null) return known;
@@ -666,7 +662,6 @@ class TInvestBroker implements Broker {
     return fallback.isEmpty ? (uid ?? '—') : fallback;
   }
 
-  /// Инструменты, по которым на бирже есть стоп-заявка.
   Future<Set<String>> _protectedInstruments(String account) async {
     try {
       final json = await _call(
@@ -679,8 +674,6 @@ class TInvestBroker implements Broker {
           ?(item as Map<String, dynamic>)['instrumentUid'] as String?,
       };
     } on BrokerException {
-      // Список стопов не получен. Считать позиции защищёнными в этом случае
-      // нельзя: молчаливое «наверное, стоп есть» — худший из ответов.
       return const {};
     }
   }
@@ -702,16 +695,25 @@ class TInvestBroker implements Broker {
       final instrument = await _instrument(symbol);
       final lots = _lots(quantity, instrument);
       if (lots < 1) return false;
-      await _call('StopOrdersService', 'PostStopOrder', {
-        'accountId': account,
-        'instrumentId': instrument.uid,
-        'quantity': lots.toString(),
-        'stopPrice': doubleToQuotation(_align(stopPrice, instrument.priceStep)),
-        'direction':
-            long ? 'STOP_ORDER_DIRECTION_SELL' : 'STOP_ORDER_DIRECTION_BUY',
-        'stopOrderType': 'STOP_ORDER_TYPE_STOP_LOSS',
-        'expirationType': 'STOP_ORDER_EXPIRATION_TYPE_GOOD_TILL_CANCEL',
-      });
+      await _call(
+        _sandbox ? 'SandboxService' : 'StopOrdersService',
+        _sandbox ? 'PostSandboxStopOrder' : 'PostStopOrder',
+        {
+          'accountId': account,
+          'instrumentId': instrument.uid,
+          'quantity': lots.toString(),
+          'stopPrice': doubleToQuotation(_align(stopPrice, instrument.priceStep)),
+          'direction':
+              long ? 'STOP_ORDER_DIRECTION_SELL' : 'STOP_ORDER_DIRECTION_BUY',
+          'stopOrderType': 'STOP_ORDER_TYPE_STOP_LOSS',
+          'expirationType': 'STOP_ORDER_EXPIRATION_TYPE_GOOD_TILL_CANCEL',
+          if (_sandbox) ...{
+            'orderId': _protectiveStopId(symbol, long),
+            'priceType': 'PRICE_TYPE_POINT',
+            'confirmMarginTrade': true,
+          },
+        },
+      );
       return true;
     } on BrokerException {
       return false;
@@ -769,13 +771,11 @@ class TInvestBroker implements Broker {
     }
   }
 
-  /// Объём заявки в лотах.
   int _lots(double quantity, TInvestInstrument instrument) {
     final lot = instrument.lot <= 0 ? 1 : instrument.lot;
     return (quantity / lot).floor();
   }
 
-  /// Цена, кратная шагу контракта: иначе брокер отклонит заявку.
   static double _align(double price, double step) {
     if (step <= 0) return price;
     return (price / step).round() * step;
@@ -784,6 +784,18 @@ class TInvestBroker implements Broker {
   static String _idempotencyKey(OrderRequest request) {
     final seconds = DateTime.now().toUtc().millisecondsSinceEpoch ~/ 1000;
     final key = '${request.symbol}-${request.long ? 'B' : 'S'}-$seconds';
+    return key.length <= 36 ? key : key.substring(key.length - 36);
+  }
+
+  static String _stopIdempotencyKey(OrderRequest request) {
+    final micros = DateTime.now().toUtc().microsecondsSinceEpoch;
+    final key = 'SL-${request.symbol}-${request.long ? 'L' : 'S'}-$micros';
+    return key.length <= 36 ? key : key.substring(key.length - 36);
+  }
+
+  static String _protectiveStopId(String symbol, bool long) {
+    final micros = DateTime.now().toUtc().microsecondsSinceEpoch;
+    final key = 'SL-$symbol-${long ? 'L' : 'S'}-$micros';
     return key.length <= 36 ? key : key.substring(key.length - 36);
   }
 
@@ -828,17 +840,10 @@ class TInvestBroker implements Broker {
     } on BrokerException {
       rethrow;
     } on Object catch (e) {
-      // Именно здесь владелец получал в журнал сырой `HandshakeException`
-      // с `CERTIFICATE_VERIFY_FAILED` под подписью «нет связи». Связь есть —
-      // TLS до брокера перехвачен, и это разные починки.
       throw BrokerException(brokerFailureText(e, uri.host));
     }
   }
 
-  /// Причина отказа человеческими словами.
-  ///
-  /// Брокер кладёт описание в `message`; код 401 означает ровно одно, и
-  /// показывать вместо этого «ошибка 401» — заставлять гадать.
   static String _errorText(int status, String body) {
     if (status == 401) return 'Токен не принят: проверьте, что он не отозван';
     if (status == 403) return 'У токена нет прав на эту операцию';
@@ -863,15 +868,9 @@ abstract interface class TInvestInstrumentCache {
   Future<TInvestInstrument?> get(String ticker);
   Future<void> put(String ticker, TInvestInstrument instrument);
 
-  /// Обратный поиск: по идентификатору инструмента вернуть тикер.
   Future<String?> tickerFor(String? uid);
 }
 
-/// Кэш инструментов на диске.
-///
-/// Соответствие «тикер → uid» живёт столько же, сколько сам контракт, поэтому
-/// спрашивать брокера при каждой заявке незачем: лишний запрос в момент
-/// отправки — лишняя точка отказа там, где она дороже всего.
 class StoredInstrumentCache implements TInvestInstrumentCache {
   StoredInstrumentCache(this._store);
 
