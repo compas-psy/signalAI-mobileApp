@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 from ...db import get_db
 from ...models import PaperTrade, TradeIdea
 from ...models.enums import PaperStatus
+from ...paper.management_policy import signed_policy_for_shares
 from ...schemas.common import ApiModel, Money
 
 router = APIRouter(prefix="/paper", tags=["paper"])
@@ -51,6 +52,10 @@ class PaperTradeOut(ApiModel):
     tp_prices: list[str] = Field(default_factory=list)
     tps_taken: int = 0
     tps_total: int = 0
+    #: TP3 в v2 — не закрытие, а активация trailing runner-а. Без этого поля
+    #: открытая позиция после TP3 выглядела как противоречие «3 из 3, но OPEN».
+    runner_active: bool = False
+    risk_policy_mode: str = ""
     realized_r: Money = Decimal(0)
 
     opened_at: datetime
@@ -74,6 +79,15 @@ def _out(row: PaperTrade, *, now: datetime) -> PaperTradeOut:
         if base.tzinfo is None:
             base = base.replace(tzinfo=UTC)
         stale = int((now - base).total_seconds() // 3600)
+
+    policy = signed_policy_for_shares(list(row.tp_shares or []))
+    runner_active = bool(
+        policy
+        and policy.get("runner_enabled", True)
+        and row.status == PaperStatus.OPEN
+        and len(row.tp_prices or []) >= 3
+        and row.tps_taken >= len(row.tp_prices or [])
+    )
     return PaperTradeOut(
         id=str(row.id),
         idea_id=str(row.idea_id),
@@ -89,6 +103,8 @@ def _out(row: PaperTrade, *, now: datetime) -> PaperTradeOut:
         tp_prices=[str(p) for p in (row.tp_prices or [])],
         tps_taken=row.tps_taken,
         tps_total=len(row.tp_prices or []),
+        runner_active=runner_active,
+        risk_policy_mode=str(policy.get("mode", "")) if policy else "",
         realized_r=row.realized_r,
         opened_at=row.opened_at,
         expires_at=row.expires_at,
