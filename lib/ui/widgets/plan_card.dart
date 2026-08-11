@@ -14,14 +14,6 @@ import 'common.dart';
 import 'segmented.dart';
 
 /// Параметры сделки одним блоком: уровни, риск, сопровождение.
-///
-/// Прототип (`plan-card`) держит их вместе не для экономии места. Решение
-/// «входить или нет» принимается по всем трём сразу: цена входа без объёма и
-/// объём без правила переноса стопа — это не план, а фрагменты плана.
-///
-/// Раньше то же самое было разложено по трём карточкам внутри сегмента
-/// «План»: тейк-профиты, смарт-риск и план ведения — три прокрутки вместо
-/// одного взгляда.
 class PlanCard extends StatelessWidget {
   const PlanCard({
     super.key,
@@ -125,9 +117,6 @@ class PlanCard extends StatelessWidget {
       ),
       MetricTile(
         label: 'Размер',
-        // Объём в номинале инструмента и с его знаками. «28» под эфиром
-        // читалось как двадцать восемь монет — позиция на два миллиона
-        // рублей при депозите в один; ноль знаков превращал 0,348 в «0».
         value: plan == null
             ? PositionSizing.quantityLabel(signal, risk)
             : _quantityLabel(plan),
@@ -139,27 +128,45 @@ class PlanCard extends StatelessWidget {
         value: plan == null ? signal.riskReward : _r(plan.rrToSecondTarget),
         hint: 'до TP2',
       ),
-      // Потенциал сделки в деньгах: сколько принесут все тейки с их долями и
-      // сколько заберёт стоп — при рассчитанном объёме.
-      //
-      // Когда план есть, обе цифры считаются по нему, а не по профилю риска.
-      // Иначе на одной карточке стояло «риск 2 920 ₽» и «убыток по стопу
-      // 17 600 ₽»: первое — из плана движка, второе — из процента депозита,
-      // и они относятся к разным объёмам. Одна карточка, два ответа на один
-      // вопрос — это не мелочь оформления, это потеря доверия к числам.
       MetricTile(
         label: 'Прибыль',
-        value: '+${fmt(plan == null ? PositionSizing.potentialProfitRub(signal, risk) : plan.weightedR * plan.riskRubles, 0)} ₽',
+        // Для серверного плана считаем деньги из движения цены, объёма и
+        // стоимости пункта. У FORTS valuePerPoint восстанавливается из
+        // биржевых MINSTEP/STEPPRICE, у crypto применяется курс к рублю.
+        value: '+${fmt(plan == null ? PositionSizing.potentialProfitRub(signal, risk) : _potentialProfitRubles(plan), 0)} ₽',
         color: C.green,
         hint: 'все тейки с долями',
       ),
       MetricTile(
         label: 'Убыток',
+        // Стоп-убыток — фактический risk_amount сервера: именно он уже
+        // учитывает округление количества и модель исполнения.
         value: '−${fmt(plan?.riskRubles ?? PositionSizing.potentialLossRub(signal, risk), 0)} ₽',
         color: C.red,
         hint: 'если сработает стоп',
       ),
     ];
+  }
+
+  /// Gross P/L по всем целям в рублях при рассчитанном количестве.
+  ///
+  /// Никаких таблиц коэффициентов в приложении нет. Сервер уже передал
+  /// `valuePerPoint`: для MOEX это STEPPRICE / MINSTEP; для линейной crypto —
+  /// стоимость пункта в валюте котировки. Поэтому один и тот же расчёт
+  /// корректен и для PXU6, и для RTS, Brent, валютных и crypto-планов.
+  static double _potentialProfitRubles(TradePlan plan) {
+    if (plan.quantity <= 0 || plan.valuePerPoint <= 0) return 0;
+    final rate = plan.quoteCurrency == 'RUB' ? 1.0 : plan.quoteRateRub;
+    if (rate == null || rate <= 0) return 0;
+
+    var total = 0.0;
+    for (final target in plan.targets) {
+      final move = plan.direction.isLong
+          ? target.price - plan.entry
+          : plan.entry - target.price;
+      total += target.fraction * move * plan.valuePerPoint * plan.quantity * rate;
+    }
+    return total > 0 ? total : 0;
   }
 
   /// Объём в номинале инструмента.
@@ -169,10 +176,7 @@ class PlanCard extends StatelessWidget {
     return unit.isEmpty ? value : '$value $unit';
   }
 
-  /// Подпись под объёмом: во сколько обходится движение на один пункт.
-  ///
-  /// Валюта названа. Цены плана в USDT, а риск и убыток — в рублях, и без
-  /// подписи это выглядит как одна валюта с разными числами.
+  /// Подпись под объёмом: денежный риск до стопа на одну единицу позиции.
   static String _perUnitHint(TradePlan plan) {
     final perUnit = plan.riskPerUnit;
     if (perUnit <= 0) return '';
@@ -182,10 +186,6 @@ class PlanCard extends StatelessWidget {
   }
 
   /// Курс, по которому получены рубли.
-  ///
-  /// Показывается только у инструмента с чужой валютой — у рублёвого
-  /// строка «по курсу 1» была бы шумом. Без неё же владелец не может
-  /// проверить рублёвые числа: цены на экране в USDT, а риск в рублях.
   Widget _rateNote() {
     final plan = _plan;
     final note = plan?.quoteNote ?? '';
@@ -200,9 +200,6 @@ class PlanCard extends StatelessWidget {
   }
 
   /// Сопровождение — правила, которые подписываются вместе с входом.
-  ///
-  /// Берутся из плана движка, если он есть: «перенести стоп в безубыток» без
-  /// записанного правила остаётся обещанием на словах.
   Widget _management() {
     final rules = _plan?.stopManagement ?? const <String>[];
     final fallback = _tail(signal.note);
@@ -237,16 +234,13 @@ class PlanCard extends StatelessWidget {
 
   static String _r(double v) => v.toStringAsFixed(1).replaceAll('.', ',');
 
-  /// Хвост обоснования: всё, кроме первого предложения. Первое — вывод, оно
-  /// стоит в тезисе.
   static String _tail(String note) {
     final end = note.indexOf('. ');
     return end < 0 ? '' : note.substring(end + 2);
   }
 }
 
-/// Можно ли исполнять этот план прямо сейчас (прототип: чип «можно
-/// подтвердить» / «не исполнять» в шапке карточки).
+/// Можно ли исполнять этот план прямо сейчас.
 class _ReadinessChip extends StatelessWidget {
   const _ReadinessChip({required this.state, required this.status});
 
