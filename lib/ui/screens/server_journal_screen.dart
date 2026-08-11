@@ -209,8 +209,9 @@ class _TradeCard extends StatelessWidget {
               switch (trade.status) {
                 PaperPositionStatus.pending =>
                   'Заявка ждёт вход ${_price(trade.entry)}. Сервер продолжает наблюдение.',
-                PaperPositionStatus.open =>
-                  'Позиция открыта. Взято целей ${trade.tpsTaken} из ${trade.tpsTotal}.',
+                PaperPositionStatus.open => trade.runnerActive
+                    ? 'TP3 пройден. Остаток позиции ведёт trailing runner.'
+                    : 'Позиция открыта. Взято целей ${trade.tpsTaken} из ${trade.tpsTotal}.',
                 PaperPositionStatus.closed =>
                   trade.closeReason.isEmpty ? 'Сделка закрыта.' : trade.closeReason,
                 PaperPositionStatus.cancelled =>
@@ -226,6 +227,7 @@ class _TradeCard extends StatelessWidget {
                 TagChip('вход ${_price(trade.entry)}'),
                 TagChip('стоп ${_price(trade.currentStop)}'),
                 if (trade.atBreakeven) const TagChip('стоп в БУ'),
+                if (trade.runnerActive) const TagChip('RUNNER · TRAILING'),
                 if (trade.resultR != null)
                   TagChip(
                     '${trade.resultRealized ? 'зафикс.' : 'результат'} ${_r(trade.resultR!)}',
