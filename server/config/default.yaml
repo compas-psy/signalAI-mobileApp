@@ -19,6 +19,9 @@ capital:
     active: {investment: 0.70, risk: 0.30}
 
 risk:
+  # Выбранный владельцем капитал риск-контура FORTS + crypto. Пока нет
+  # синхронизированного risk-account у брокера, это явный источник risk equity.
+  equity_rub: 300000
   base_risk_per_trade: 0.005
   max_risk_per_trade: 0.0075
   max_total_open_risk: 0.02
