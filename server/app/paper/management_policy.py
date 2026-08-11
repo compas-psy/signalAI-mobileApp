@@ -11,6 +11,7 @@ policy задним числом.
 from __future__ import annotations
 
 from decimal import Decimal
+from typing import Any
 
 from ..config import EngineConfig, get_config
 from ..models import TradeIdea
@@ -57,10 +58,59 @@ def targets_with_policy(idea: TradeIdea) -> tuple[list[Decimal], list[Decimal]]:
     return prices, shares
 
 
+def signed_policy_for_shares(
+    raw_shares: list[Any] | tuple[Any, ...], *, cfg: EngineConfig | None = None
+) -> dict[str, Any] | None:
+    """Узнать подписанную v2 policy по сохранённым долям PaperTrade.
+
+    Это read-only helper для API/диагностики. Он не выбирает новый профиль и
+    не считает риск. Совпадение ищется среди базовых профилей и bounded
+    optimizer candidates, чтобы после рестарта/API-запроса можно было честно
+    показать владельцу, что TP3 уже стал runner-ом.
+    """
+    if len(raw_shares) < 3:
+        return None
+    try:
+        values = [Decimal(str(value)) for value in raw_shares]
+        normalized = _normalized(values, len(values))
+    except (ArithmeticError, ValueError):
+        return None
+
+    config = cfg or get_config()
+    candidates: list[tuple[str, str, dict[str, Any]]] = []
+    for mode in ("defensive", "balanced", "conviction"):
+        candidates.append(
+            ("base", mode, dict(config.get(f"risk.management.profiles.{mode}")))
+        )
+    for candidate in config.get("risk.management.optimizer.candidates"):
+        candidate_id = str(candidate.get("id", ""))
+        for mode, profile in (candidate.get("profiles") or {}).items():
+            candidates.append((candidate_id, str(mode), dict(profile)))
+
+    for candidate_id, mode, profile in candidates:
+        expected_raw = profile.get("tp_shares")
+        if not isinstance(expected_raw, list) or len(expected_raw) != len(normalized):
+            continue
+        expected = _normalized(
+            [Decimal(str(value)) for value in expected_raw], len(expected_raw)
+        )
+        if all(
+            abs(left - right) <= Decimal("0.00000001")
+            for left, right in zip(expected, normalized, strict=True)
+        ):
+            base = dict(config.get(f"risk.management.profiles.{mode}"))
+            base.update(profile)
+            base["mode"] = mode
+            base["candidate_id"] = candidate_id
+            base["version"] = str(config.get("risk.management.policy_version"))
+            return base
+    return None
+
+
 def install() -> None:
     """Подменить legacy equal-share builder до создания новых PaperTrade."""
     if tracker._targets is not targets_with_policy:
         tracker._targets = targets_with_policy
 
 
-__all__ = ["install", "targets_with_policy"]
+__all__ = ["install", "signed_policy_for_shares", "targets_with_policy"]
