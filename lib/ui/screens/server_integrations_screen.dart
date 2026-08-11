@@ -36,6 +36,7 @@ class _ServerIntegrationsScreenState extends State<ServerIntegrationsScreen> {
   }
 
   Future<void> _reload() async {
+    final controller = AppScope.read(context);
     if (TInvestSandboxAccess.available) {
       try {
         final configured = await TInvestSandboxAccess.configured();
@@ -44,8 +45,8 @@ class _ServerIntegrationsScreenState extends State<ServerIntegrationsScreen> {
         if (mounted) setState(() => _localSandboxConfigured = false);
       }
     }
+    if (!mounted) return;
 
-    final controller = AppScope.read(context);
     if (!controller.engineTokenSet || controller.engineBaseUrl.isEmpty) {
       setState(() {
         _items = null;
