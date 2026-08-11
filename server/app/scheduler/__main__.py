@@ -15,6 +15,10 @@ import sys
 from datetime import timedelta
 
 from ..db import get_session_factory
+from ..market.moex_bar_guard import (
+    install as install_moex_bar_guard,
+    purge_premature_moex_bars,
+)
 from ..notification_outbox import emit, materialize
 from ..paper.live_tracker import track_crypto_live
 from ..portfolio.equity_ranking_refresh import refresh as refresh_equity_ranking
@@ -42,6 +46,14 @@ def main() -> int:
         level=os.environ.get("SIGNALAI_LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
+
+    # MOEX ISS includes the currently forming intraday candle in the same
+    # response as history. The legacy adapter labelled every returned row as
+    # closed, so scanner inputs could include a partial H1 bar. Install the
+    # closure guard before build_default_scheduler imports ingest callbacks.
+    # Signal rules are unchanged; the guard only restores the documented
+    # contract "features use closed bars".
+    install_moex_bar_guard()
 
     scheduler = build_default_scheduler(
         universe_every=_minutes("SIGNALAI_UNIVERSE_EVERY_MINUTES", 360),
@@ -97,6 +109,20 @@ def main() -> int:
     scheduler.jobs.insert(paper_index, live_job)
 
     session_factory = get_session_factory()
+
+    # Repair only the current tail that older versions could have persisted as
+    # closed while it was still forming. Historical audited bars are untouched.
+    startup_session = session_factory()
+    try:
+        removed = purge_premature_moex_bars(startup_session)
+        startup_session.commit()
+        if removed:
+            log.warning("removed %d prematurely-closed MOEX bar(s)", removed)
+    except Exception:
+        startup_session.rollback()
+        log.exception("MOEX forming-bar startup reconciliation failed")
+    finally:
+        startup_session.close()
 
     # This is deliberately server-originated. On every deployment/restart the
     # VPS reconciles owner-facing lifecycle before any phone connects. The v2
