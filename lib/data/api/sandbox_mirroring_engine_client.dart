@@ -17,6 +17,52 @@ class SandboxMirrorResult {
   final SandboxMirrorTone tone;
 }
 
+/// Узкая точка доступа к sandbox-токену в thin-клиенте.
+///
+/// Серверные интеграции и локальный T-Invest sandbox сознательно разделены:
+/// sandbox-token остаётся в Android Keystore и никогда не отправляется на VPS.
+/// Этот фасад позволяет экрану «Подключения» показать/заменить **только факт**
+/// наличия токена и сохранить новый, не раскрывая сохранённое значение.
+abstract final class TInvestSandboxAccess {
+  static LocalAnalysisRepository? _repository;
+
+  static void attach(LocalAnalysisRepository repository) {
+    _repository = repository;
+  }
+
+  static bool get available => _repository != null;
+
+  static Future<bool> configured() async {
+    final repo = _repository;
+    if (repo == null) return false;
+    return repo.vault.hasKeys(
+      exchange: BrokerId.tinvest.name,
+      mode: TInvestRole.sandbox.slot,
+      needsSecret: false,
+    );
+  }
+
+  /// Сохранение сразу проверяет токен через T-Invest Sandbox. В актуальном
+  /// broker path это также создаёт выделенный sandbox-счёт и один раз
+  /// пополняет его на 300 000 ₽, если такого счёта ещё нет.
+  static Future<String> save(String token) async {
+    final repo = _repository;
+    if (repo == null) {
+      throw StateError('Локальное защищённое хранилище недоступно');
+    }
+    return repo.saveTinvestToken(TInvestRole.sandbox, token);
+  }
+
+  static Future<void> remove() async {
+    final repo = _repository;
+    if (repo == null) return;
+    await repo.vault.deleteKeys(
+      exchange: BrokerId.tinvest.name,
+      mode: TInvestRole.sandbox.slot,
+    );
+  }
+}
+
 /// EngineClient с одним дополнительным действием: после **успешного**
 /// server approve зеркалит подтверждённый FORTS-план в T-Invest Sandbox.
 ///
@@ -33,7 +79,9 @@ class SandboxMirroringEngineClient extends EngineClient {
     required this.repository,
     required this.onResult,
     LocalStore? instrumentStore,
-  }) : _instrumentStore = instrumentStore ?? LocalStore();
+  }) : _instrumentStore = instrumentStore ?? LocalStore() {
+    TInvestSandboxAccess.attach(repository);
+  }
 
   final LocalAnalysisRepository repository;
   final LocalStore _instrumentStore;
@@ -67,7 +115,7 @@ class SandboxMirroringEngineClient extends EngineClient {
     );
     if (token == null || token.trim().isEmpty) {
       _report(const SandboxMirrorResult(
-        'Paper-сделка принята · для проверки MOEX задайте токен T-Invest Sandbox',
+        'Paper-сделка принята · для проверки MOEX задайте токен T-Invest Sandbox в Подключениях',
         SandboxMirrorTone.warning,
       ));
       return decision;
