@@ -24,8 +24,6 @@ import yaml
 
 CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
 DEFAULT_CONFIG = CONFIG_DIR / "default.yaml"
-
-# Отличает «значение по умолчанию не задано» от «задано None».
 _MISSING = object()
 
 
@@ -34,18 +32,11 @@ class ConfigError(RuntimeError):
 
 
 def _canonical(value: Any) -> str:
-    """Стабильное представление для хэша.
-
-    Ключи сортируются, пробелы фиксированы: перестановка строк в YAML не
-    должна менять отпечаток, иначе он перестанет означать «те же числа».
-    """
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
 @dataclass(frozen=True)
 class EngineConfig:
-    """Прочитанная конфигурация вместе с её отпечатком."""
-
     data: dict[str, Any]
     config_hash: str
     source: str
@@ -53,18 +44,13 @@ class EngineConfig:
     def section(self, name: str) -> dict[str, Any]:
         try:
             value = self.data[name]
-        except KeyError as exc:  # pragma: no cover - защита от опечатки в yaml
+        except KeyError as exc:
             raise ConfigError(f"в конфигурации нет раздела {name!r}") from exc
         if not isinstance(value, dict):
             raise ConfigError(f"раздел {name!r} должен быть словарём")
         return value
 
     def get(self, path: str, default: Any = _MISSING) -> Any:
-        """Достать значение по пути вида ``risk.daily_loss_limit``.
-
-        Отсутствие значения — ошибка, а не тихий ``None``: параметр, которого
-        нет, означает, что торговая логика посчитает не то, что задумано.
-        """
         node: Any = self.data
         for part in path.split("."):
             if not isinstance(node, dict) or part not in node:
@@ -75,16 +61,76 @@ class EngineConfig:
         return node
 
     def decimal(self, path: str) -> Decimal:
-        """Денежная или долевая величина как ``Decimal``.
-
-        UX-ТЗ §17.1: «Все суммы сохраняются decimal, не float». Через строку —
-        иначе ``Decimal(0.005)`` даст двоичный хвост.
-        """
         return Decimal(str(self.get(path)))
 
 
+def _validate_shares(raw: Any, *, label: str) -> None:
+    if not isinstance(raw, list) or len(raw) < 3:
+        raise ConfigError(f"{label}: нужны как минимум три доли")
+    values = [Decimal(str(value)) for value in raw]
+    if any(value <= 0 for value in values):
+        raise ConfigError(f"{label}: все доли должны быть > 0")
+    if sum(values, Decimal(0)) != Decimal(1):
+        raise ConfigError(f"{label}: сумма долей должна быть ровно 1")
+
+
+def _validate_risk_management(risk: dict[str, Any]) -> None:
+    management = risk.get("management", {})
+    profiles = management.get("profiles", {})
+    required = {"defensive", "balanced", "conviction"}
+    if set(profiles) != required:
+        raise ConfigError(
+            "risk.management.profiles должен содержать ровно defensive/balanced/conviction"
+        )
+    for mode, profile in profiles.items():
+        multiplier = Decimal(str(profile.get("risk_multiplier", 0)))
+        if not (Decimal(0) < multiplier <= Decimal(1)):
+            raise ConfigError(
+                f"risk.management.profiles.{mode}.risk_multiplier обязан быть в (0,1]"
+            )
+        _validate_shares(profile.get("tp_shares"), label=f"profiles.{mode}.tp_shares")
+        giveback = Decimal(str(profile.get("mfe_giveback", -1)))
+        if not (Decimal(0) < giveback < Decimal(1)):
+            raise ConfigError(f"profiles.{mode}.mfe_giveback обязан быть между 0 и 1")
+        if Decimal(str(profile.get("atr_multiplier", 0))) <= 0:
+            raise ConfigError(f"profiles.{mode}.atr_multiplier обязан быть > 0")
+        if Decimal(str(profile.get("min_trail_r", 0))) <= 0:
+            raise ConfigError(f"profiles.{mode}.min_trail_r обязан быть > 0")
+        if int(profile.get("time_stop_hours", 0)) <= 0:
+            raise ConfigError(f"profiles.{mode}.time_stop_hours обязан быть > 0")
+
+    optimizer = management.get("optimizer", {})
+    if int(optimizer.get("cadence_days", 0)) < 1:
+        raise ConfigError("risk.management.optimizer.cadence_days должен быть >= 1")
+    if int(optimizer.get("min_samples", 0)) < 20:
+        raise ConfigError("risk.management.optimizer.min_samples должен быть >= 20")
+    candidates = optimizer.get("candidates", [])
+    ids: set[str] = set()
+    for candidate in candidates:
+        cid = str(candidate.get("id", ""))
+        if not cid or cid in ids:
+            raise ConfigError("optimizer candidate id пуст или повторяется")
+        ids.add(cid)
+        candidate_profiles = candidate.get("profiles", {})
+        if set(candidate_profiles) != required:
+            raise ConfigError(f"optimizer.{cid}: нужны все три профиля")
+        for mode, profile in candidate_profiles.items():
+            # Optimizer принципиально не получает risk_multiplier: иначе exit
+            # search незаметно превратится в поиск большего риска.
+            if "risk_multiplier" in profile:
+                raise ConfigError(f"optimizer.{cid}.{mode}: risk_multiplier запрещён")
+            _validate_shares(
+                profile.get("tp_shares"),
+                label=f"optimizer.{cid}.{mode}.tp_shares",
+            )
+            giveback = Decimal(str(profile.get("mfe_giveback", -1)))
+            if not (Decimal(0) < giveback < Decimal(1)):
+                raise ConfigError(f"optimizer.{cid}.{mode}.mfe_giveback вне (0,1)")
+    if "baseline" not in ids:
+        raise ConfigError("optimizer обязан содержать candidate baseline")
+
+
 def _validate(data: dict[str, Any]) -> None:
-    """Проверки, которые дешевле сделать при загрузке, чем при сделке."""
     weights = data.get("scoring", {}).get("weights", {})
     if not weights:
         raise ConfigError("scoring.weights пуст — оценка не сможет посчитаться")
@@ -125,9 +171,10 @@ def _validate(data: dict[str, Any]) -> None:
             "торговлю (multiplier: 0) — engine-ТЗ §17"
         )
 
+    _validate_risk_management(risk)
+
 
 def load_config(path: str | os.PathLike[str] | None = None) -> EngineConfig:
-    """Прочитать конфигурацию и посчитать её отпечаток."""
     source = Path(path or os.environ.get("SIGNALAI_CONFIG") or DEFAULT_CONFIG)
     if not source.is_file():
         raise ConfigError(f"файл конфигурации не найден: {source}")
@@ -137,7 +184,6 @@ def load_config(path: str | os.PathLike[str] | None = None) -> EngineConfig:
         raise ConfigError(f"{source}: не разбирается как YAML: {exc}") from exc
     if not isinstance(data, dict):
         raise ConfigError(f"{source}: ожидался словарь на верхнем уровне")
-
     _validate(data)
     digest = hashlib.sha256(_canonical(data).encode("utf-8")).hexdigest()
     return EngineConfig(data=data, config_hash=digest, source=str(source))
@@ -145,5 +191,4 @@ def load_config(path: str | os.PathLike[str] | None = None) -> EngineConfig:
 
 @lru_cache(maxsize=4)
 def get_config(path: str | None = None) -> EngineConfig:
-    """Кэшированная конфигурация процесса."""
     return load_config(path)
