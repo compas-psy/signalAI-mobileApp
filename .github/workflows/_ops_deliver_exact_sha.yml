@@ -13,6 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
       SOURCE_SHA: eee689f8673ca209f1276fa5c04d3dec6f3a86ac
       DEPLOY_TITLE: 'Server package · eee689f8673ca209f1276fa5c04d3dec6f3a86ac'
       SIDELOAD_TITLE: 'Sideload · eee689f8673ca209f1276fa5c04d3dec6f3a86ac'
