@@ -8,7 +8,7 @@ on:
 
 permissions:
   actions: write
-  contents: write
+  contents: read
 
 jobs:
   dispatch:
@@ -16,15 +16,16 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Dispatch and record result
+      - name: Try dispatch
         run: |
           set +e
           output="$(gh workflow run pxu6-runtime-forensics.yml --repo "$GITHUB_REPOSITORY" --ref claude/release-y40hk5 2>&1)"
           code=$?
-          printf 'exit=%s\n%s\n' "$code" "$output" > /tmp/dispatch.txt
-          encoded="$(base64 -w0 /tmp/dispatch.txt)"
-          current="$(gh api "repos/$GITHUB_REPOSITORY/contents/.github/pxu6-dispatch-result.txt?ref=agent/pxu6-bybit-forensics" --jq '.sha' 2>/dev/null || true)"
-          args=(--method PUT "repos/$GITHUB_REPOSITORY/contents/.github/pxu6-dispatch-result.txt" -f message='ops: record PXU6 dispatch result' -f content="$encoded" -f branch='agent/pxu6-bybit-forensics')
-          [ -z "$current" ] || args+=(-f sha="$current")
-          gh api "${args[@]}" >/dev/null
+          printf 'exit=%s\n%s\n' "$code" "$output" > dispatch.txt
           exit 0
+      - name: Upload dispatch result
+        uses: actions/upload-artifact@v4
+        with:
+          name: pxu6-dispatch-result
+          path: dispatch.txt
+          if-no-files-found: error
