@@ -21,9 +21,12 @@ from sqlalchemy import text
 
 from .api.v1 import control as control_routes
 from .api.v1 import equity_rankings as equity_ranking_routes
+from .api.v1 import idea_progress as idea_progress_routes
 from .api.v1 import ideas as ideas_routes
 from .api.v1 import integrations as integrations_routes
+from .api.v1 import investment_signals as investment_signal_routes
 from .api.v1 import journal as journal_routes
+from .api.v1 import live_market as live_market_routes
 from .api.v1 import market as market_routes
 from .api.v1 import notifications as notification_routes
 from .api.v1 import paper as paper_routes
@@ -57,11 +60,14 @@ app.add_middleware(DeviceTokenMiddleware)
 
 v1 = APIRouter(prefix="/api/v1")
 v1.include_router(market_routes.router)
+v1.include_router(live_market_routes.router)
 v1.include_router(ideas_routes.router)
+v1.include_router(idea_progress_routes.router)
 v1.include_router(risk_routes.router)
 v1.include_router(portfolio_routes.router)
 v1.include_router(research_routes.router)
 v1.include_router(equity_ranking_routes.router)
+v1.include_router(investment_signal_routes.router)
 v1.include_router(paper_routes.router)
 v1.include_router(integrations_routes.router)
 v1.include_router(journal_routes.router)
