@@ -684,8 +684,8 @@ class TInvestBroker implements Broker {
   Future<Set<String>> _protectedInstruments(String account) async {
     try {
       final json = await _call(
-        _managedSandbox ? 'SandboxService' : 'StopOrdersService',
-        _managedSandbox ? 'GetSandboxStopOrders' : 'GetStopOrders',
+        _sandbox ? 'SandboxService' : 'StopOrdersService',
+        _sandbox ? 'GetSandboxStopOrders' : 'GetStopOrders',
         {'accountId': account},
       );
       return {
