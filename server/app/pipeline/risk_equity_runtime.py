@@ -42,6 +42,10 @@ def install() -> None:
     # compute_budget, probability/confidence и оба paper execution sensor-а
     # обязаны ссылаться ровно на один v2 runtime.
     from ..risk.engine_v2 import assert_single_runtime, install as install_risk_v2
+    from ..risk.policy_overlay import install as install_policy_overlay
 
     install_risk_v2()
+    # Champion overlay не создаёт второго risk calculator: он разрешён только
+    # для exit geometry новых идей и восстановления уже подписанной policy.
+    install_policy_overlay()
     assert_single_runtime()
