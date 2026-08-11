@@ -1,11 +1,11 @@
-"""Единая политика долей TP для server-paper.
+"""Подписываемая политика долей выхода для server-paper.
 
-Клиент подписывает план с 40% / 40% / 20%, а legacy tracker до сих пор делил
-любой набор целей поровну. В результате цифра потенциальной прибыли на экране
-и фактический realized R сопровождения описывали разные сделки.
+Risk Engine v2 сохраняет выбранный профиль прямо в immutable TradeIdea.
+Approve копирует его доли в PaperTrade. Поэтому еженедельный optimizer может
+улучшить только будущие сделки: уже подтверждённая никогда не меняет exit
+policy задним числом.
 
-Доли хранятся в конфиге и копируются в PaperTrade в момент approve. Поэтому
-уже созданная сделка не изменится задним числом при будущей смене политики.
+Для идей старой версии без ``risk_policy`` сохраняется legacy 40/40/20.
 """
 
 from __future__ import annotations
@@ -17,27 +17,44 @@ from ..models import TradeIdea
 from . import tracker
 
 
-def _configured_shares(count: int, *, cfg: EngineConfig | None = None) -> list[Decimal]:
+def _normalized(values: list[Decimal], count: int) -> list[Decimal]:
     if count <= 0:
         return []
-    config = cfg or get_config()
-    raw = config.get("risk.management.tp_shares")
-    values = [Decimal(str(value)) for value in raw]
     if len(values) < count or any(value <= 0 for value in values[:count]):
-        raise ValueError("risk.management.tp_shares не покрывает все цели")
-
+        raise ValueError("policy shares не покрывают все цели")
     selected = values[:count]
     total = sum(selected, Decimal(0))
     if total <= 0:
         raise ValueError("сумма долей TP должна быть положительной")
-    # Если у конкретной идеи только 1–2 цели, оставшиеся доли не пропадают:
-    # выбранные цели получают 100% позиции пропорционально политике.
     return [value / total for value in selected]
+
+
+def _configured_shares(count: int, *, cfg: EngineConfig | None = None) -> list[Decimal]:
+    config = cfg or get_config()
+    raw = config.get("risk.management.tp_shares")
+    return _normalized([Decimal(str(value)) for value in raw], count)
+
+
+def _idea_policy_shares(idea: TradeIdea, count: int) -> list[Decimal] | None:
+    policy = (idea.explanation_json or {}).get("risk_policy") or {}
+    raw = policy.get("tp_shares")
+    if not isinstance(raw, list) or not raw:
+        return None
+    try:
+        values = [Decimal(str(value)) for value in raw]
+        return _normalized(values, count)
+    except (ArithmeticError, ValueError):
+        # Невалидный snapshot не подменяем догадкой: fallback — прежняя
+        # подписанная глобальная policy, а не equal thirds.
+        return None
 
 
 def targets_with_policy(idea: TradeIdea) -> tuple[list[Decimal], list[Decimal]]:
     prices = [price for price in (idea.tp1, idea.tp2, idea.tp3) if price is not None]
-    return prices, _configured_shares(len(prices))
+    shares = _idea_policy_shares(idea, len(prices))
+    if shares is None:
+        shares = _configured_shares(len(prices))
+    return prices, shares
 
 
 def install() -> None:
