@@ -47,7 +47,10 @@ risk:
   dynamic_correlation_window_days: 60
   high_correlation_threshold: 0.70
   management:
-    tp1_close_fraction: 0.50
+    # Подписываемая политика выхода. И телефон, и server-paper используют
+    # один и тот же снимок 40/40/20; уже созданная сделка хранит свои доли.
+    tp_shares: [0.40, 0.40, 0.20]
+    tp1_close_fraction: 0.40
     max_reentries: 1
 
 ideas:
