@@ -1,0 +1,97 @@
+name: Apply risk capital and FORTS PnL patch
+
+on:
+  pull_request:
+    branches:
+      - claude/release-y40hk5
+    types: [opened, reopened]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.head_ref == 'agent/risk-capital-forts-pnl'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+
+      - name: Apply deterministic patch
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace(path, old, new):
+              p = Path(path)
+              text = p.read_text()
+              if old not in text:
+                  raise SystemExit(f'pattern not found in {path}: {old[:80]!r}')
+              p.write_text(text.replace(old, new, 1))
+
+          # Explicit owner-approved risk capital; remove hidden 100k fallback.
+          replace(
+              'server/config/default.yaml',
+              'risk:\n  base_risk_per_trade: 0.005',
+              'risk:\n  # Капитал личного риск-контура FORTS + crypto. Пока broker risk-account\n'
+              '  # не синхронизирован, это явный источник risk equity, а не скрытый fallback.\n'
+              '  equity_rub: 300000\n  base_risk_per_trade: 0.005',
+          )
+          replace(
+              'server/app/pipeline/scan.py',
+              '    state = risk_state or RiskState(risk_equity=Decimal(100_000))',
+              '    state = risk_state or RiskState(risk_equity=config.decimal("risk.equity_rub"))',
+          )
+
+          # Make money potential explicit and derived from exchange point value.
+          replace(
+              'lib/domain/idea/trade_plan.dart',
+              '''  /// Взвешенный по долям результат при исполнении всех целей, R.\n  double get weightedR {\n    var sum = 0.0;\n    for (final t in targets) {\n      sum += t.fraction * rrTo(t);\n    }\n    return sum;\n  }''',
+              '''  /// Взвешенный по долям результат при исполнении всех целей, R.\n  double get weightedR {\n    var sum = 0.0;\n    for (final t in targets) {\n      sum += t.fraction * rrTo(t);\n    }\n    return sum;\n  }\n\n  /// Денежный результат движения цены до [price] для рассчитанного объёма.\n  ///\n  /// Для FORTS [valuePerPoint] = STEPPRICE / MINSTEP, то есть ровно биржевая\n  /// стоимость одного пункта на контракт. Для crypto это стоимость пункта\n  /// в валюте котировки; [quoteRateRub] переводит её в рубли. Клиент не\n  /// хранит таблицу коэффициентов и не угадывает размер контракта.\n  double pnlRublesAt(double price) {\n    if (quantity <= 0 || valuePerPoint <= 0) return 0;\n    final move = direction.isLong ? price - entry : entry - price;\n    final rate = quoteCurrency == 'RUB' ? 1.0 : quoteRateRub;\n    if (rate == null || rate <= 0) return 0;\n    return move * valuePerPoint * quantity * rate;\n  }\n\n  /// Потенциальная прибыль при последовательном исполнении всех целей.\n  /// Доли применяются к денежному P/L каждой цели, а не к riskRubles: риск\n  /// может включать комиссии/проскальзывание и поэтому не является ценой\n  /// одного R для расчёта gross-profit.\n  double get potentialProfitRubles {\n    var sum = 0.0;\n    for (final t in targets) {\n      sum += t.fraction * pnlRublesAt(t.price);\n    }\n    return sum > 0 ? sum : 0;\n  }\n\n  /// Фактический плановый убыток по стопу уже рассчитан сервером в рублях\n  /// и включает его модель исполнения.\n  double get potentialLossRubles => riskRubles > 0 ? riskRubles : 0;''',
+          )
+
+          replace(
+              'lib/ui/widgets/plan_card.dart',
+              '''        value: '+${fmt(plan == null ? PositionSizing.potentialProfitRub(signal, risk) : plan.weightedR * plan.riskRubles, 0)} ₽',''',
+              '''        value: '+${fmt(plan == null ? PositionSizing.potentialProfitRub(signal, risk) : plan.potentialProfitRubles, 0)} ₽',''',
+          )
+          replace(
+              'lib/ui/widgets/plan_card.dart',
+              '''        value: '−${fmt(plan?.riskRubles ?? PositionSizing.potentialLossRub(signal, risk), 0)} ₽',''',
+              '''        value: '−${fmt(plan?.potentialLossRubles ?? PositionSizing.potentialLossRub(signal, risk), 0)} ₽',''',
+          )
+
+          # Regression: scheduler default must use configured 300k, never hidden 100k.
+          p = Path('server/tests/test_signal_execution_separation.py')
+          text = p.read_text()
+          marker = '''def test_active_market_signal_is_not_demoted_by_zero_sizing():'''
+          insert = '''def test_default_risk_equity_is_explicit_config_not_hidden_100k():\n    source = getsource(scan_module.scan)\n    assert 'config.decimal("risk.equity_rub")' in source\n    assert 'Decimal(100_000)' not in source\n\n\n'''
+          if insert not in text:
+              if marker not in text:
+                  raise SystemExit('server test insertion marker missing')
+              p.write_text(text.replace(marker, insert + marker, 1))
+
+          # Regression on the actual PXU6 contract economics: MINSTEP=1,\n          # STEPPRICE=1 => 105 price points = 105 RUB per contract. With\n          # 14 contracts and 40/40/20 targets at 1R/2R/3R, gross potential\n          # profit is 2646 RUB; stop risk is the server-provided 1470 RUB.\n          p = Path('test/engine_contract_test.dart')
+          text = p.read_text()
+          marker = "    test('рублёвый инструмент курса не требует', () {"
+          insert = '''    test('FORTS potential P/L uses MOEX point value in rubles', () {\n      final json = ideaJson();\n      json['direction'] = 'SHORT';\n      json['plan'] = {\n        'order_intent': 'LIMIT_RETEST',\n        'entry_low': '13675',\n        'entry_high': '13695',\n        'entry_reference': '13685',\n        'stop': '13790',\n        'tp1': '13580',\n        'tp2': '13475',\n        'tp3': '13370',\n        'rr_tp1': '1.0',\n        'rr_tp2': '2.0',\n        'invalidation': 'stop',\n      };\n      json['sizing'] = {\n        'risk_pct': '0.005',\n        'risk_amount': '1470',\n        'quantity': '14',\n        'quantity_step': '1',\n        'quantity_unit': 'контр.',\n        // PXU6: 105 points to stop and 105 RUB risk per contract, therefore\n        // valuePerPoint restored by the contract is 1 RUB/point/contract.\n        'risk_per_unit': '105',\n        'quote_currency': 'RUB',\n      };\n      final plan = EngineContract.idea(json).plan!;\n      expect(plan.valuePerPoint, closeTo(1, 1e-9));\n      expect(plan.pnlRublesAt(13580), closeTo(1470, 1e-9));\n      expect(plan.pnlRublesAt(13475), closeTo(2940, 1e-9));\n      expect(plan.pnlRublesAt(13370), closeTo(4410, 1e-9));\n      expect(plan.potentialProfitRubles, closeTo(2646, 1e-9));\n      expect(plan.potentialLossRubles, closeTo(1470, 1e-9));\n    });\n\n'''
+          if insert not in text:
+              if marker not in text:
+                  raise SystemExit('flutter test insertion marker missing')
+              p.write_text(text.replace(marker, insert + marker, 1))
+          PY
+
+      - name: Commit patch to head branch
+        run: |
+          set -euo pipefail
+          git config user.name 'signalai-release-bot'
+          git config user.email 'actions@users.noreply.github.com'
+          git add server/config/default.yaml server/app/pipeline/scan.py \
+            server/tests/test_signal_execution_separation.py \
+            lib/domain/idea/trade_plan.dart lib/ui/widgets/plan_card.dart \
+            test/engine_contract_test.dart
+          git diff --cached --check
+          git commit -m 'Fix risk capital and FORTS ruble PnL'
+          git push origin HEAD:${{ github.head_ref }}
