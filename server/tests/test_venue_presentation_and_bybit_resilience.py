@@ -27,6 +27,9 @@ def _ranked(
     *,
     quality: QualityStatus = QualityStatus.ACTIVE,
     score: str = "75",
+    expected_r: str = "0.40",
+    probability: str = "0.58",
+    confidence: str = "0.60",
     cluster: str | None = None,
 ) -> RankedIdea:
     return RankedIdea(
@@ -34,9 +37,9 @@ def _ranked(
         instrument_id=instrument_id,
         cluster=cluster,
         quality_status=quality,
-        expected_r=Decimal("0.40"),
-        probability=Decimal("0.58"),
-        confidence=Decimal("0.60"),
+        expected_r=Decimal(expected_r),
+        probability=Decimal(probability),
+        confidence=Decimal(confidence),
         score=Decimal(score),
         liquidity=LiquidityRegime.GOOD,
     )
@@ -61,6 +64,37 @@ def test_forts_and_crypto_do_not_compete_for_same_presentation_slot():
 
     assert {row.idea.idea_id for row in selection.trade_now} == {"crypto", "forts"}
     assert selection.dropped == ()
+
+
+def test_forts_cannot_reorder_crypto_via_global_normalisation():
+    # В crypto-пуле BTC выигрывает по EV, ETH — по score. Без отдельной
+    # нормализации экстремальный FORTS EV сжимал разницу EV crypto почти до
+    # нуля и мог перевернуть их порядок, хотя в Bybit ничего не изменилось.
+    crypto_only = [
+        _ranked("eth", "CRYPTO:PERP:ETHUSDT", score="80", expected_r="0.5"),
+        _ranked("btc", "CRYPTO:PERP:BTCUSDT", score="60", expected_r="1.0"),
+    ]
+    before = select_daily(crypto_only, max_cards=1)
+    with_extreme_forts = select_daily(
+        [
+            *crypto_only,
+            _ranked("forts", "MOEX:FUT:PXU6", score="70", expected_r="100"),
+        ],
+        max_cards=1,
+    )
+
+    before_crypto = [
+        row.idea.idea_id
+        for row in before.trade_now
+        if row.idea.instrument_id.startswith("CRYPTO:")
+    ]
+    after_crypto = [
+        row.idea.idea_id
+        for row in with_extreme_forts.trade_now
+        if row.idea.instrument_id.startswith("CRYPTO:")
+    ]
+    assert before_crypto == ["btc"]
+    assert after_crypto == before_crypto
 
 
 def test_same_venue_still_obeys_its_presentation_cap():
