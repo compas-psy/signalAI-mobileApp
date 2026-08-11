@@ -1,8 +1,10 @@
 from datetime import UTC, datetime
 from decimal import Decimal
+from inspect import getsource
 
 from sqlalchemy import select
 
+from app.config import get_config
 from app.market.http import FetchError
 from app.market.review_resilience import review_universe_resilient
 from app.models import DataQualityEvent, Instrument
@@ -12,6 +14,7 @@ from app.models.enums import (
     QualityStatus,
     Venue,
 )
+from app.pipeline import risk_equity_runtime
 from app.scoring.selection import RankedIdea, select_daily
 
 
@@ -37,6 +40,14 @@ def _ranked(
         score=Decimal(score),
         liquidity=LiquidityRegime.GOOD,
     )
+
+
+def test_scheduler_risk_equity_is_explicit_owner_approved_300k():
+    cfg = get_config()
+    assert cfg.decimal("risk.equity_rub") == Decimal("300000")
+    source = getsource(risk_equity_runtime.scan_with_configured_equity)
+    assert 'config.decimal("risk.equity_rub")' in source
+    assert "100_000" not in source
 
 
 def test_forts_and_crypto_do_not_compete_for_same_presentation_slot():
