@@ -1,0 +1,99 @@
+name: Ops exact-SHA delivery
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  deliver:
+    if: ${{ github.head_ref == 'ops/deliver-eee689f-20260811' }}
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_SHA: eee689f8673ca209f1276fa5c04d3dec6f3a86ac
+      DEPLOY_TITLE: 'Server package · eee689f8673ca209f1276fa5c04d3dec6f3a86ac'
+      SIDELOAD_TITLE: 'Sideload · eee689f8673ca209f1276fa5c04d3dec6f3a86ac'
+    steps:
+      - name: Snapshot existing exact-SHA runs
+        id: before
+        run: |
+          set -euo pipefail
+          gh run list --workflow deploy-server-package.yml --event workflow_dispatch --limit 100 \
+            --json databaseId,displayTitle \
+            | jq -r --arg title "$DEPLOY_TITLE" '.[] | select(.displayTitle == $title) | .databaseId' \
+            > /tmp/deploy-before
+          gh run list --workflow android-sideload.yml --event workflow_dispatch --limit 100 \
+            --json databaseId,displayTitle \
+            | jq -r --arg title "$SIDELOAD_TITLE" '.[] | select(.displayTitle == $title) | .databaseId' \
+            > /tmp/sideload-before
+
+      - name: Dispatch production deploy and signed sideload
+        run: |
+          set -euo pipefail
+          gh workflow run deploy-server-package.yml \
+            --ref claude/release-y40hk5 \
+            -f source_ref="$SOURCE_SHA"
+          gh workflow run android-sideload.yml \
+            --ref claude/release-y40hk5 \
+            -f source_ref="$SOURCE_SHA" \
+            -f mode=thin
+
+      - name: Resolve newly dispatched run ids
+        id: ids
+        run: |
+          set -euo pipefail
+          find_new_run() {
+            local workflow="$1" title="$2" before_file="$3"
+            local id=''
+            for _ in $(seq 1 30); do
+              while IFS= read -r candidate; do
+                if ! grep -qx "$candidate" "$before_file"; then
+                  id="$candidate"
+                  break
+                fi
+              done < <(
+                gh run list --workflow "$workflow" --event workflow_dispatch --limit 100 \
+                  --json databaseId,displayTitle \
+                  | jq -r --arg title "$title" '.[] | select(.displayTitle == $title) | .databaseId'
+              )
+              [ -n "$id" ] && { printf '%s' "$id"; return 0; }
+              sleep 2
+            done
+            return 1
+          }
+          deploy_id="$(find_new_run deploy-server-package.yml "$DEPLOY_TITLE" /tmp/deploy-before)"
+          sideload_id="$(find_new_run android-sideload.yml "$SIDELOAD_TITLE" /tmp/sideload-before)"
+          echo "deploy_id=$deploy_id" >> "$GITHUB_OUTPUT"
+          echo "sideload_id=$sideload_id" >> "$GITHUB_OUTPUT"
+          echo "Deploy run: $deploy_id" >> "$GITHUB_STEP_SUMMARY"
+          echo "Sideload run: $sideload_id" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Wait for both delivery workflows
+        env:
+          DEPLOY_ID: ${{ steps.ids.outputs.deploy_id }}
+          SIDELOAD_ID: ${{ steps.ids.outputs.sideload_id }}
+        run: |
+          set +e
+          gh run watch "$DEPLOY_ID" --exit-status & deploy_pid=$!
+          gh run watch "$SIDELOAD_ID" --exit-status & sideload_pid=$!
+          wait "$deploy_pid"; deploy_status=$?
+          wait "$sideload_pid"; sideload_status=$?
+          set -e
+
+          gh run view "$DEPLOY_ID" --json displayTitle,conclusion,url \
+            --jq '"Deploy: \(.conclusion) · \(.url)"' | tee -a "$GITHUB_STEP_SUMMARY"
+          gh run view "$SIDELOAD_ID" --json displayTitle,conclusion,url \
+            --jq '"Sideload: \(.conclusion) · \(.url)"' | tee -a "$GITHUB_STEP_SUMMARY"
+
+          if [ "$deploy_status" -ne 0 ]; then
+            echo '── failed deploy log ──'
+            gh run view "$DEPLOY_ID" --log-failed | tail -n 250 || true
+          fi
+          if [ "$sideload_status" -ne 0 ]; then
+            echo '── failed sideload log ──'
+            gh run view "$SIDELOAD_ID" --log-failed | tail -n 250 || true
+          fi
+          [ "$deploy_status" -eq 0 ] && [ "$sideload_status" -eq 0 ]
