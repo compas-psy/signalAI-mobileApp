@@ -1,0 +1,56 @@
+name: Temporary T-Invest repair
+
+on:
+  push:
+    branches:
+      - agent/integrated-20260811
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/integrated-20260811
+          fetch-depth: 1
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.8'
+          channel: stable
+          cache: true
+      - name: Apply exact two-line compatibility fix
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('lib/data/broker/tinvest_broker.dart')
+          text = path.read_text()
+          old = """      final json = await _call(
+                  _managedSandbox ? 'SandboxService' : 'StopOrdersService',
+                  _managedSandbox ? 'GetSandboxStopOrders' : 'GetStopOrders',
+                  {'accountId': account},
+                );"""
+          new = """      final json = await _call(
+                  _sandbox ? 'SandboxService' : 'StopOrdersService',
+                  _sandbox ? 'GetSandboxStopOrders' : 'GetStopOrders',
+                  {'accountId': account},
+                );"""
+          if text.count(old) != 1:
+              raise SystemExit(f'expected exactly one target block, found {text.count(old)}')
+          path.write_text(text.replace(old, new))
+          PY
+          git diff --check
+          git diff --exit-code -- . ':!.github/workflows/_tmp_fix_tinvest.yml' && exit 1 || true
+      - name: Verify T-Invest regression suite
+        run: |
+          flutter pub get --enforce-lockfile
+          flutter test test/tinvest_broker_test.dart test/tinvest_sandbox_execution_test.dart
+      - name: Commit repaired source
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add lib/data/broker/tinvest_broker.dart
+          git commit -m 'fix: read sandbox protection in generic testnet'
+          git push origin HEAD:agent/integrated-20260811
