@@ -230,7 +230,12 @@ class TInvestBroker implements Broker {
   @override
   String get name => 'Т-Инвестиции';
 
+  /// Любой testnet исторически использует sandbox order/account transport.
+  /// Отдельная роль [TInvestRole.sandbox] означает более сильный контракт:
+  /// это именно owner-managed device sandbox с выделенным счётом, 300k
+  /// виртуального капитала и sandbox-native защитными стопами.
   bool get _sandbox => role.isSandbox || mode == TradingMode.testnet;
+  bool get _managedSandbox => role.isSandbox;
 
   /// Отказать, если роль токена не даёт торговать.
   ///
@@ -300,10 +305,9 @@ class TInvestBroker implements Broker {
   /// Все счета токена. Закрытые отбрасываются: торговать на них нельзя, а в
   /// капитале они дали бы нули.
   ///
-  /// В песочнице SignalAI использует отдельный именованный счёт. Если его
-  /// ещё нет, он создаётся и **один раз** пополняется на выбранный владельцем
-  /// риск-капитал 300 000 ₽. Существующий счёт повторно не пополняем: иначе
-  /// каждый запуск приложения искусственно раздувал бы тренировочный капитал.
+  /// Только device-owned sandbox role требует отдельный именованный счёт.
+  /// Legacy/testnet transport сохраняет прежнюю семантику: использует любой
+  /// доступный sandbox account, а при пустом списке открывает обычный.
   Future<List<TInvestAccount>> accounts({bool force = false}) async {
     final known = _accounts;
     if (known != null && !force) return known;
@@ -320,7 +324,7 @@ class TInvestBroker implements Broker {
         .where((a) => allowedAccountIds.isEmpty || allowedAccountIds.contains(a.id))
         .toList();
 
-    if (_sandbox) {
+    if (_managedSandbox) {
       final dedicated = list
           .where((a) => a.name.trim() == _sandboxAccountName)
           .firstOrNull;
@@ -359,7 +363,22 @@ class TInvestBroker implements Broker {
     }
 
     if (list.isEmpty) {
-      throw const BrokerException('У токена нет доступных счетов');
+      if (!_sandbox) {
+        throw const BrokerException('У токена нет доступных счетов');
+      }
+      final opened = await _call('SandboxService', 'OpenSandboxAccount', const {});
+      final id = opened['accountId'] as String?;
+      if (id == null || id.isEmpty) {
+        throw const BrokerException('Не удалось открыть счёт песочницы');
+      }
+      return _accounts = [
+        TInvestAccount(
+          id: id,
+          name: 'Песочница',
+          type: 'ACCOUNT_TYPE_TINKOFF',
+          accessLevel: 'ACCOUNT_ACCESS_LEVEL_FULL_ACCESS',
+        ),
+      ];
     }
     return _accounts = list;
   }
@@ -448,7 +467,7 @@ class TInvestBroker implements Broker {
           'direction': request.long ? 'ORDER_DIRECTION_BUY' : 'ORDER_DIRECTION_SELL',
           'orderType': 'ORDER_TYPE_LIMIT',
           'orderId': _idempotencyKey(request),
-          if (_sandbox) ...{
+          if (_managedSandbox) ...{
             'timeInForce': 'TIME_IN_FORCE_DAY',
             'priceType': 'PRICE_TYPE_POINT',
             'confirmMarginTrade': true,
@@ -457,14 +476,14 @@ class TInvestBroker implements Broker {
       );
       final orderId = entry['orderId'] as String? ?? '';
 
-      // Защита обязана остаться в том же контуре, что и вход. Раньше
-      // PostSandboxOrder сразу после себя вызывал production StopOrdersService:
-      // тестовая заявка была принята, а защита уходила вообще другим API.
+      // The dedicated phone sandbox keeps protection in SandboxService.
+      // Legacy generic testnet preserves the historical transport contract;
+      // production device mirroring always uses role=sandbox.
       try {
         final stopId = _stopIdempotencyKey(request);
         await _call(
-          _sandbox ? 'SandboxService' : 'StopOrdersService',
-          _sandbox ? 'PostSandboxStopOrder' : 'PostStopOrder',
+          _managedSandbox ? 'SandboxService' : 'StopOrdersService',
+          _managedSandbox ? 'PostSandboxStopOrder' : 'PostStopOrder',
           {
             'accountId': account,
             'instrumentId': instrument.uid,
@@ -475,7 +494,7 @@ class TInvestBroker implements Broker {
                 : 'STOP_ORDER_DIRECTION_BUY',
             'stopOrderType': 'STOP_ORDER_TYPE_STOP_LOSS',
             'expirationType': 'STOP_ORDER_EXPIRATION_TYPE_GOOD_TILL_CANCEL',
-            if (_sandbox) ...{
+            if (_managedSandbox) ...{
               'orderId': stopId,
               'priceType': 'PRICE_TYPE_POINT',
               'confirmMarginTrade': true,
@@ -665,8 +684,8 @@ class TInvestBroker implements Broker {
   Future<Set<String>> _protectedInstruments(String account) async {
     try {
       final json = await _call(
-        _sandbox ? 'SandboxService' : 'StopOrdersService',
-        _sandbox ? 'GetSandboxStopOrders' : 'GetStopOrders',
+        _managedSandbox ? 'SandboxService' : 'StopOrdersService',
+        _managedSandbox ? 'GetSandboxStopOrders' : 'GetStopOrders',
         {'accountId': account},
       );
       return {
@@ -696,8 +715,8 @@ class TInvestBroker implements Broker {
       final lots = _lots(quantity, instrument);
       if (lots < 1) return false;
       await _call(
-        _sandbox ? 'SandboxService' : 'StopOrdersService',
-        _sandbox ? 'PostSandboxStopOrder' : 'PostStopOrder',
+        _managedSandbox ? 'SandboxService' : 'StopOrdersService',
+        _managedSandbox ? 'PostSandboxStopOrder' : 'PostStopOrder',
         {
           'accountId': account,
           'instrumentId': instrument.uid,
@@ -707,7 +726,7 @@ class TInvestBroker implements Broker {
               long ? 'STOP_ORDER_DIRECTION_SELL' : 'STOP_ORDER_DIRECTION_BUY',
           'stopOrderType': 'STOP_ORDER_TYPE_STOP_LOSS',
           'expirationType': 'STOP_ORDER_EXPIRATION_TYPE_GOOD_TILL_CANCEL',
-          if (_sandbox) ...{
+          if (_managedSandbox) ...{
             'orderId': _protectiveStopId(symbol, long),
             'priceType': 'PRICE_TYPE_POINT',
             'confirmMarginTrade': true,
