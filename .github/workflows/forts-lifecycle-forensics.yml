@@ -1,9 +1,10 @@
 name: FORTS lifecycle forensics
 
 on:
-  push:
+  pull_request:
     branches:
-      - agent/forts-lifecycle-forensics
+      - claude/release-y40hk5
+    types: [opened, reopened, synchronize]
     paths:
       - .github/workflows/forts-lifecycle-forensics.yml
 
@@ -90,6 +91,14 @@ jobs:
               else:
                   idea, instrument = row
                   exp = idea.explanation_json or {}
+                  print('PXU6_SPEC', {
+                      'tick_size': str(instrument.tick_size),
+                      'tick_value': str(instrument.tick_value),
+                      'quantity_step': str(instrument.quantity_step),
+                      'min_quantity': str(instrument.min_quantity),
+                      'contract_multiplier': str(instrument.contract_multiplier),
+                      'currency': instrument.currency,
+                  })
                   print('PXU6_IDEA', {
                       'id': str(idea.id), 'instrument_id': idea.instrument_id,
                       'symbol': instrument.symbol, 'title': instrument.title,
