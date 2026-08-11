@@ -2,10 +2,10 @@
 
 Три правила, которые здесь важнее кода:
 
-1. **Квота внимания независима по торговым контурам.** FORTS и crypto не
-   должны вытеснять друг друга только потому, что в одном скане одновременно
-   нашлось много кандидатов. Риск между ними всё равно остаётся общим на
-   этапе исполнения; здесь решается только, увидит ли владелец найденную идею.
+1. **Квота и нормализация внимания независимы по торговым контурам.** FORTS
+   и crypto не должны вытеснять или переранжировать друг друга только потому,
+   что в одном скане одновременно нашлось много кандидатов. Общий риск между
+   ними остаётся общим на этапе исполнения.
 2. **Не более одной идеи из кластера при превышении риска кластера.**
    Три лонга по нефти — это одна сделка тройного размера.
 3. **«Сделок нет» — валидный результат** (§32). Он оформляется как результат
@@ -87,19 +87,12 @@ def _normalise(value: Decimal, low: Decimal, high: Decimal) -> Decimal:
 
 
 def _presentation_lane(instrument_id: str) -> str:
-    """Контур, который получает собственную квоту карточек.
+    """Контур, который получает собственную квоту и шкалу ранжирования.
 
-    Это **не** риск-кластер и не новый торговый фильтр. Один общий лимит
-    карточек создавал нежелательную связь двух независимых источников:
-    после ремонта FORTS его идеи начали занимать места, которые до этого
-    фактически целиком доставались Bybit. В результате crypto-кандидат мог
-    быть найден движком, остаться живым в БД и при этом никогда не попасть
-    владельцу на экран. Затем живая невидимая идея ещё и блокировала новый
-    кандидат по тому же инструменту до своего истечения.
-
-    Поэтому FORTS и crypto получают независимый бюджет **показа**. Все
-    ограничения общего open-risk/cluster-risk остаются на исполнении.
-    Остальные классы сохраняют прежнее поведение в общей lane ``other``.
+    Это **не** риск-кластер и не новый торговый фильтр. Один общий пул создавал
+    две нежелательные связи: FORTS занимал места Bybit, а его экстремальные
+    score/EV меняли min/max нормализации и могли переставить местами уже сами
+    crypto-идеи. Оба эффекта относятся к presentation, не к стратегии.
     """
     if instrument_id.startswith("CRYPTO:"):
         return "crypto"
@@ -111,11 +104,7 @@ def _presentation_lane(instrument_id: str) -> str:
 def rank(
     ideas: list[RankedIdea], weights: RankingWeights | None = None
 ) -> list[RankedResult]:
-    """Ранжирование §16.7 с разложением по слагаемым.
-
-    Слагаемые сохраняются: «эта идея выше той» должно объясняться, иначе
-    порядок карточек выглядит произволом.
-    """
+    """Ранжирование §16.7 с разложением по слагаемым."""
     w = weights or RankingWeights()
     if w.total() != Decimal(1):
         raise ValueError(f"сумма весов ранжирования = {w.total()}, должна быть 1")
@@ -127,7 +116,6 @@ def rank(
     score_low = min(i.score for i in ideas)
     score_high = max(i.score for i in ideas)
 
-    # Разнообразие: идея из кластера, который уже представлен, ценится ниже.
     seen: dict[str, int] = {}
     for item in ideas:
         key = item.cluster or item.instrument_id
@@ -155,6 +143,25 @@ def rank(
     return sorted(results, key=lambda r: r.rank_value, reverse=True)
 
 
+def _rank_for_presentation(
+    ideas: list[RankedIdea], weights: RankingWeights | None
+) -> list[RankedResult]:
+    """Нормализовать каждую площадку только относительно её кандидатов.
+
+    Затем результаты можно слить для одного экрана: квота всё равно считается
+    на lane. Абсолютное rank_value между площадками не является сравнением
+    «FORTS лучше BTC» — это лишь порядок отрисовки двух независимых списков.
+    """
+    lanes: dict[str, list[RankedIdea]] = defaultdict(list)
+    for idea in ideas:
+        lanes[_presentation_lane(idea.instrument_id)].append(idea)
+
+    ranked: list[RankedResult] = []
+    for lane_ideas in lanes.values():
+        ranked.extend(rank(lane_ideas, weights))
+    return sorted(ranked, key=lambda result: result.rank_value, reverse=True)
+
+
 def select_daily(
     ideas: list[RankedIdea],
     *,
@@ -164,13 +171,11 @@ def select_daily(
 ) -> DailySelection:
     """Собрать выдачу дня (§16).
 
-    Порядок внутри каждой торговой lane прежний: сначала готовые к
-    исполнению, затем наблюдение — до ``max_cards`` **на lane**. FORTS и
-    crypto не вытесняют друг друга на этапе представления, но общий
-    риск-кластер по-прежнему может ограничить реально исполняемые сделки.
+    FORTS и crypto имеют независимые ``max_cards`` и независимую нормализацию.
+    Общий cluster/open risk остаётся общим и применяется при исполнении.
     """
     exceeded = cluster_risk_exceeded or set()
-    ranked = rank(ideas, weights)
+    ranked = _rank_for_presentation(ideas, weights)
 
     taken_clusters: set[str] = set()
     trade_now: list[RankedResult] = []
@@ -186,7 +191,9 @@ def select_daily(
         if cluster and cluster in exceeded and cluster in taken_clusters:
             dropped.append(
                 RankedResult(
-                    item, result.rank_value, result.parts,
+                    item,
+                    result.rank_value,
+                    result.parts,
                     dropped_reason=(
                         f"кластер {cluster} уже представлен, а риск кластера "
                         "превышен — три сделки одного кластера это одна сделка "
@@ -209,16 +216,18 @@ def select_daily(
         elif item.quality_status is QualityStatus.ACTIVE:
             dropped.append(
                 RankedResult(
-                    item, result.rank_value, result.parts,
-                    dropped_reason=(
-                        f"не поместилась в {max_cards} карточки lane {lane}"
-                    ),
+                    item,
+                    result.rank_value,
+                    result.parts,
+                    dropped_reason=f"не поместилась в {max_cards} карточки lane {lane}",
                 )
             )
         else:
             dropped.append(
                 RankedResult(
-                    item, result.rank_value, result.parts,
+                    item,
+                    result.rank_value,
+                    result.parts,
                     dropped_reason="статус REJECTED",
                 )
             )
@@ -236,9 +245,7 @@ def select_daily(
                     result.idea,
                     result.rank_value,
                     result.parts,
-                    dropped_reason=(
-                        f"не поместилась в {max_cards} карточки lane {lane}"
-                    ),
+                    dropped_reason=f"не поместилась в {max_cards} карточки lane {lane}",
                 )
             )
 
