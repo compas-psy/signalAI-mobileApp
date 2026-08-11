@@ -1,4 +1,4 @@
-name: PXU6 Bybit and T-Invest sandbox forensics
+name: Dispatch PXU6 runtime forensics
 
 on:
   pull_request:
@@ -7,173 +7,19 @@ on:
     paths: [.github/workflows/pxu6-bybit-forensics.yml]
 
 permissions:
+  actions: write
   contents: read
 
 jobs:
-  inspect:
+  dispatch:
     runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Prepare SSH
-        env:
-          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
-          KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
+      - name: Dispatch trusted default-branch forensic workflow
         run: |
           set -euo pipefail
-          test -n "$HOST"; test -n "$KEY"
-          umask 077
-          install -d -m 700 ~/.ssh
-          printf '%s\n' "$KEY" > ~/.ssh/id_forensics
-          chmod 600 ~/.ssh/id_forensics
-          ssh-keyscan -T 10 -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
-
-      - name: Production signal snapshot
-        continue-on-error: true
-        env:
-          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
-          USER_NAME: ${{ secrets.VPS_USER || 'root' }}
-        run: |
-          set +e
-          ssh -i ~/.ssh/id_forensics -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$USER_NAME@$HOST" 'bash -s' > production.txt 2>&1 <<'REMOTE'
-          set -euo pipefail
-          cd "$HOME/signalai/server"
-          SUDO=""; [ "$(id -u)" -eq 0 ] || SUDO=sudo
-          $SUDO docker compose --env-file /etc/signalai/.env exec -T api python - <<'PY'
-          from collections import Counter
-          from datetime import UTC, datetime, timedelta
-          from sqlalchemy import select, func
-          from app.db import get_session_factory
-          from app.integration_secrets import configured_slots
-          from app.models import Bar, IdeaEvent, Instrument, PaperTrade, TradeIdea
-          from app.models.enums import Timeframe
-
-          def val(x): return getattr(x, 'value', str(x)) if x is not None else None
-          now = datetime.now(UTC)
-          db = get_session_factory()()
-          try:
-              print('NOW', now.isoformat())
-              print('INTEGRATION_SLOTS', sorted(configured_slots(db)))
-              px = db.execute(select(TradeIdea, Instrument).join(Instrument, Instrument.instrument_id==TradeIdea.instrument_id).where(Instrument.symbol=='PXU6').order_by(TradeIdea.signal_time.desc()).limit(5)).all()
-              for idea, inst in px:
-                  exp=idea.explanation_json or {}
-                  print('PXU6', {'id':str(idea.id),'time':idea.signal_time.isoformat(),'status':val(idea.status),'quality':val(idea.quality_status),'presented':idea.was_presented,'rank':idea.presentation_rank,'score':str(idea.score),'entry':str(idea.entry_reference),'stop':str(idea.stop),'tp1':str(idea.tp1),'tp2':str(idea.tp2),'tp3':str(idea.tp3),'quantity':str(idea.quantity),'risk_amount':str(idea.risk_amount),'risk_pct':str(idea.risk_pct),'risk_per_unit':str(idea.risk_per_unit),'sizing_note':exp.get('sizing_note'),'admission':exp.get('admission'),'admission_failed':exp.get('admission_failed'),'tick_size':str(inst.tick_size),'tick_value':str(inst.tick_value),'qty_step':str(inst.quantity_step),'min_qty':str(inst.min_quantity)})
-                  ev=db.execute(select(IdeaEvent).where(IdeaEvent.idea_id==idea.id).order_by(IdeaEvent.sequence)).scalars().all()
-                  print('PXU6_EVENTS',[{'seq':e.sequence,'new':val(e.new_status),'reason':e.reason_code,'detail':e.reason_detail,'at':e.occurred_at.isoformat()} for e in ev])
-                  pp=db.execute(select(PaperTrade).where(PaperTrade.idea_id==idea.id)).scalars().all()
-                  print('PXU6_PAPER',[{'id':str(p.id),'status':val(p.status),'entry':str(p.entry)} for p in pp])
-
-              since=now-timedelta(hours=48)
-              rows=db.execute(select(TradeIdea,Instrument).join(Instrument,Instrument.instrument_id==TradeIdea.instrument_id).where(TradeIdea.signal_time>=since).order_by(TradeIdea.signal_time.desc())).all()
-              allc=Counter(); pres=Counter(); active=Counter()
-              for idea,inst in rows:
-                  kind='BYBIT' if idea.instrument_id.startswith('CRYPTO:') else ('FORTS' if idea.instrument_id.startswith('MOEX:FUT:') else val(inst.venue))
-                  allc[kind]+=1
-                  if idea.was_presented: pres[kind]+=1
-                  if val(idea.quality_status)=='ACTIVE' and val(idea.status)=='TRIGGERED': active[kind]+=1
-                  print('IDEA48',{'time':idea.signal_time.isoformat(),'symbol':inst.symbol,'kind':kind,'status':val(idea.status),'quality':val(idea.quality_status),'presented':idea.was_presented,'rank':idea.presentation_rank,'score':str(idea.score),'quantity':str(idea.quantity),'sizing_note':(idea.explanation_json or {}).get('sizing_note')})
-              print('COUNTS_ALL',dict(allc)); print('COUNTS_PRESENTED',dict(pres)); print('COUNTS_ACTIONABLE',dict(active))
-
-              terminal={'CLOSED','STOPPED','TARGET_REACHED','CANCELLED','REJECTED','MISSED','EXPIRED','TIMED_OUT','SKIPPED'}
-              live=db.execute(select(TradeIdea,Instrument).join(Instrument,Instrument.instrument_id==TradeIdea.instrument_id).where(TradeIdea.expires_at>now).order_by(TradeIdea.signal_time.desc())).all()
-              for idea,inst in live:
-                  if val(idea.status) in terminal: continue
-                  kind='BYBIT' if idea.instrument_id.startswith('CRYPTO:') else ('FORTS' if idea.instrument_id.startswith('MOEX:FUT:') else val(inst.venue))
-                  print('LIVE',{'symbol':inst.symbol,'kind':kind,'status':val(idea.status),'quality':val(idea.quality_status),'presented':idea.was_presented,'time':idea.signal_time.isoformat(),'expires':idea.expires_at.isoformat()})
-
-              for prefix,label in [('CRYPTO:%','BYBIT'),('MOEX:FUT:%','FORTS')]:
-                  latest=db.execute(select(func.max(Bar.open_time)).where(Bar.instrument_id.like(prefix),Bar.timeframe==Timeframe.H1,Bar.is_closed.is_(True))).scalar_one_or_none()
-                  n=db.execute(select(func.count()).select_from(Bar).where(Bar.instrument_id.like(prefix),Bar.timeframe==Timeframe.H1,Bar.is_closed.is_(True),Bar.open_time>=now-timedelta(hours=6))).scalar_one()
-                  print('H1_FRESHNESS',label,latest.isoformat() if latest else None,'bars6h',n)
-          finally: db.close()
-          PY
-          echo '--- SCHEDULER ---'
-          $SUDO docker compose --env-file /etc/signalai/.env logs --since 8h scheduler 2>&1 | grep -Ei 'scan|ingest|crypto|bybit|moex|forts|error|failed|ошиб|идей|бар' | tail -n 500 || true
-          REMOTE
-          echo "production_exit=$?" >> production.txt
-          exit 0
-
-      - name: T-Invest sandbox PXU6 round-trip
-        continue-on-error: true
-        env:
-          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
-          USER_NAME: ${{ secrets.VPS_USER || 'root' }}
-        run: |
-          set +e
-          ssh -i ~/.ssh/id_forensics -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$USER_NAME@$HOST" 'bash -s' > sandbox.txt 2>&1 <<'REMOTE'
-          set -euo pipefail
-          cd "$HOME/signalai/server"
-          SUDO=""; [ "$(id -u)" -eq 0 ] || SUDO=sudo
-          $SUDO docker compose --env-file /etc/signalai/.env exec -T api python - <<'PY'
-          import json, uuid
-          from decimal import Decimal
-          from urllib.request import Request,urlopen
-          from urllib.error import HTTPError
-          from sqlalchemy import select
-          from app.db import get_session_factory
-          from app.integration_secrets import load_secret
-          from app.models import Instrument, TradeIdea
-
-          BASE='https://sandbox-invest-public-api.tbank.ru/rest'
-          def q(v):
-              d=Decimal(str(v)); u=int(d); return {'units':str(u),'nano':int((d-Decimal(u))*Decimal(1000000000))}
-          def post(path,token,body):
-              req=Request(BASE+path,data=json.dumps(body).encode(),method='POST',headers={'Authorization':'Bearer '+token,'Content-Type':'application/json','Accept':'application/json','x-app-name':'signalai-personal'})
-              try:
-                  with urlopen(req,timeout=25) as r: return json.loads(r.read().decode() or '{}')
-              except HTTPError as e: raise RuntimeError(f'HTTP {e.code} {path}: '+e.read().decode(errors='replace')[:1600])
-          db=get_session_factory()()
-          try:
-              secret=load_secret(db,'tinvest_sandbox')
-              if not secret:
-                  print('SANDBOX_RESULT NOT_CONFIGURED'); raise SystemExit(0)
-              token=secret['token']
-              idea,mi=db.execute(select(TradeIdea,Instrument).join(Instrument,Instrument.instrument_id==TradeIdea.instrument_id).where(Instrument.symbol=='PXU6').order_by(TradeIdea.signal_time.desc()).limit(1)).one()
-              print('SOURCE',{'idea_id':str(idea.id),'status':str(idea.status),'quality':str(idea.quality_status),'entry':str(idea.entry_reference),'quantity':str(idea.quantity)})
-              found=post('/tinkoff.public.invest.api.contract.v1.InstrumentsService/FindInstrument',token,{'query':'PXU6','instrumentKind':'INSTRUMENT_TYPE_FUTURES','apiTradeAvailableFlag':True})
-              matches=[x for x in found.get('instruments',[]) if x.get('ticker')=='PXU6']
-              print('FOUND',[{k:x.get(k) for k in ('ticker','classCode','uid','name','apiTradeAvailableFlag')} for x in matches])
-              if not matches: print('SANDBOX_RESULT PXU6_NOT_FOUND'); raise SystemExit(0)
-              ins=matches[0]; iid=ins.get('uid') or f"{ins.get('ticker')}_{ins.get('classCode')}"
-              accounts=post('/tinkoff.public.invest.api.contract.v1.SandboxService/GetSandboxAccounts',token,{'status':'ACCOUNT_STATUS_OPEN'}).get('accounts',[])
-              account=next((a for a in accounts if (a.get('name') or '').startswith('SignalAI PXU6')),None)
-              created=False
-              if account is None:
-                  o=post('/tinkoff.public.invest.api.contract.v1.SandboxService/OpenSandboxAccount',token,{'name':'SignalAI PXU6 tech-test'}); aid=o.get('accountId') or o.get('account_id'); created=True
-              else: aid=account.get('id') or account.get('accountId')
-              print('ACCOUNT',{'suffix':aid[-6:] if aid else None,'created':created})
-              if not aid: raise RuntimeError('no sandbox account id')
-              if created:
-                  post('/tinkoff.public.invest.api.contract.v1.SandboxService/SandboxPayIn',token,{'accountId':aid,'amount':{'currency':'rub','units':'1000000','nano':0}}); print('PAYIN PASS')
-              preview=post('/tinkoff.public.invest.api.contract.v1.SandboxService/GetSandboxOrderPrice',token,{'accountId':aid,'instrumentId':iid,'price':q(idea.entry_reference),'direction':'ORDER_DIRECTION_SELL','quantity':'1'})
-              print('PRICE_CHECK PASS',bool(preview))
-              rid=str(uuid.uuid4())
-              placed=post('/tinkoff.public.invest.api.contract.v1.SandboxService/PostSandboxOrder',token,{'instrumentId':iid,'quantity':'1','price':q(idea.entry_reference),'direction':'ORDER_DIRECTION_SELL','accountId':aid,'orderType':'ORDER_TYPE_LIMIT','orderId':rid,'timeInForce':'TIME_IN_FORCE_DAY','priceType':'PRICE_TYPE_POINT','confirmMarginTrade':True})
-              oid=placed.get('orderId') or placed.get('order_id') or rid
-              print('POST',{'status':placed.get('executionReportStatus'),'requested':placed.get('lotsRequested'),'executed':placed.get('lotsExecuted'),'oid_suffix':str(oid)[-8:]})
-              state=post('/tinkoff.public.invest.api.contract.v1.SandboxService/GetSandboxOrderState',token,{'accountId':aid,'orderId':oid,'priceType':'PRICE_TYPE_POINT','orderIdType':'ORDER_ID_TYPE_EXCHANGE'})
-              st=state.get('executionReportStatus'); print('STATE',{'status':st,'executed':state.get('lotsExecuted')})
-              if st in {'EXECUTION_REPORT_STATUS_NEW','EXECUTION_REPORT_STATUS_PARTIALLYFILL'}:
-                  post('/tinkoff.public.invest.api.contract.v1.SandboxService/CancelSandboxOrder',token,{'accountId':aid,'orderId':oid,'orderIdType':'ORDER_ID_TYPE_EXCHANGE'}); print('CANCEL PASS')
-              elif st=='EXECUTION_REPORT_STATUS_FILL':
-                  close=post('/tinkoff.public.invest.api.contract.v1.SandboxService/PostSandboxOrder',token,{'instrumentId':iid,'quantity':'1','direction':'ORDER_DIRECTION_BUY','accountId':aid,'orderType':'ORDER_TYPE_MARKET','orderId':str(uuid.uuid4()),'priceType':'PRICE_TYPE_POINT','confirmMarginTrade':True}); print('NEUTRALIZE',close.get('executionReportStatus'))
-              print('SANDBOX_RESULT PASS')
-          finally: db.close()
-          PY
-          REMOTE
-          echo "sandbox_exit=$?" >> sandbox.txt
-          exit 0
-
-      - name: Upload forensic outputs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: pxu6-bybit-forensics
-          path: |
-            production.txt
-            sandbox.txt
-          if-no-files-found: warn
-
-      - name: Cleanup SSH key
-        if: always()
-        run: rm -f ~/.ssh/id_forensics
+          gh workflow run pxu6-runtime-forensics.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref claude/release-y40hk5
+          echo 'runtime forensics dispatched'
