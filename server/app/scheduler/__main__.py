@@ -22,6 +22,7 @@ from ..market.moex_bar_guard import (
 from ..notification_outbox import emit, materialize
 from ..paper.live_tracker import track_crypto_live
 from ..portfolio.equity_ranking_refresh import refresh as refresh_equity_ranking
+from ..portfolio.equity_warmup import warm_equity_history
 from ..version import ENGINE_VERSION
 from .runner import build_default_scheduler, run_forever
 
@@ -62,6 +63,24 @@ def main() -> int:
         scan_every=_minutes("SIGNALAI_SCAN_EVERY_MINUTES", 15),
         portfolio_every=_minutes("SIGNALAI_PORTFOLIO_EVERY_MINUTES", 60),
     )
+
+    # The generic first-load budget is shared by all venues/classes. Give
+    # Portfolio → Signals a bounded equity-only warm-up so an empty D1 history
+    # cannot leave this product surface blank for many scheduler cycles.
+    def equity_warmup(session):
+        return warm_equity_history(session)
+
+    scheduler.add(
+        "equity-warmup",
+        _minutes("SIGNALAI_EQUITY_WARMUP_EVERY_MINUTES", 15),
+        equity_warmup,
+    )
+    warmup_job = scheduler.jobs.pop()
+    portfolio_index = next(
+        (i for i, job in enumerate(scheduler.jobs) if job.name == "portfolio"),
+        len(scheduler.jobs),
+    )
+    scheduler.jobs.insert(portfolio_index, warmup_job)
 
     # Portfolio → Signals is a daily market snapshot, not a trading scanner.
     # Check hourly so restarts cannot make us miss a refresh. The refresh
