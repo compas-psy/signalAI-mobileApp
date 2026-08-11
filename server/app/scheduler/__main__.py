@@ -19,8 +19,11 @@ from ..market.moex_bar_guard import (
     install as install_moex_bar_guard,
     purge_premature_moex_bars,
 )
+from ..market.review_resilience import install as install_review_resilience
 from ..notification_outbox import emit, materialize
 from ..paper.live_tracker import track_crypto_live
+from ..paper.management_policy import install as install_paper_management
+from ..pipeline.risk_equity_runtime import install as install_risk_equity
 from ..portfolio.equity_ranking_refresh import refresh as refresh_equity_ranking
 from ..portfolio.equity_warmup import warm_equity_history
 from ..version import ENGINE_VERSION
@@ -47,6 +50,23 @@ def main() -> int:
         level=os.environ.get("SIGNALAI_LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
+
+    # Universe review должен различать «Bybit измерил и тикер не прошёл» и
+    # «Bybit вообще не удалось измерить». Один временный отказ snapshot раньше
+    # делал все crypto is_tradable=false на шесть часов. Устанавливаем wrapper
+    # до build_default_scheduler(), потому что runner захватывает ссылку на
+    # review_universe именно при сборке расписания.
+    install_review_resilience()
+
+    # Аналогично убираем скрытый 100k fallback scan(): scheduler обязан считать
+    # FORTS + crypto от явно выбранного владельцем risk.equity_rub=300000.
+    # Явный RiskState из теста/бэктеста wrapper не перезаписывает.
+    install_risk_equity()
+
+    # Новый PaperTrade должен получить те же доли целей, которые подписывает
+    # владелец на телефоне (40/40/20). Доли копируются в саму сделку, поэтому
+    # дальнейшее сопровождение не зависит от будущих изменений конфига.
+    install_paper_management()
 
     # MOEX ISS includes the currently forming intraday candle in the same
     # response as history. The legacy adapter labelled every returned row as
