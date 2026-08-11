@@ -7,7 +7,7 @@ on:
     paths: [.github/workflows/pxu6-bybit-forensics.yml]
 
 permissions:
-  actions: write
+  actions: read
   contents: read
 
 jobs:
@@ -16,7 +16,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Try dispatch
+      - name: Try dispatch with PR token
         run: |
           set +e
           output="$(gh workflow run pxu6-runtime-forensics.yml --repo "$GITHUB_REPOSITORY" --ref claude/release-y40hk5 2>&1)"
