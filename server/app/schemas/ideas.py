@@ -137,14 +137,45 @@ class ExplanationBlock(ApiModel):
     data_warnings: list[str] = Field(default_factory=list)
 
 
+class EvidenceMeasureOut(ApiModel):
+    """Одно измерение внутри доказательства детектора.
+
+    Это ровно тот JSON, который сохраняет ``pipeline.presentation``. Он
+    намеренно остаётся рядом с Evidence: measured/not_applicable/missing —
+    разные факты, и API не вправе потерять эту разницу при сериализации.
+    """
+
+    name: str
+    label: str
+    value: float | None = None
+    status: str = "measured"
+    note: str = ""
+
+
 class EvidenceOut(ApiModel):
+    """Доказательство в фактически подписанном формате §9.1.
+
+    ``TradeIdea.evidence_json`` заполняется ``build_evidence`` и с самого
+    начала хранит ``kind/title/detail/confidence/detector_version``. Мобильный
+    клиент читает тот же контракт. Предыдущая API-схема ошибочно требовала
+    другой, нигде не создаваемый набор ``detector/timeframe/role/...`` и
+    поэтому ``GET /ideas/{id}`` падал на каждой живой идее. Summary оставался
+    на экране без TradePlan — отсюда пустые Entry/SL/TP и пропавшая кнопка
+    подтверждения у уже TRIGGERED+ACTIVE идей.
+    """
+
     id: str
-    detector: str
-    timeframe: str
-    role: str
-    observed_at: datetime
-    facts: list[str]
-    source_bars: list[datetime]
+    kind: str
+    title: str = ""
+    detail: str = ""
+    summary: str = ""
+    confidence: float
+    detector_version: str = ""
+    measured: bool = True
+    missing_terms: list[str] = Field(default_factory=list)
+    measures: list[EvidenceMeasureOut] = Field(default_factory=list)
+    conflicts_with: list[str] = Field(default_factory=list)
+    # Связь с графиком может быть обогащена API поверх сохранённого evidence.
     annotation_ids: list[str] = Field(default_factory=list)
 
 
