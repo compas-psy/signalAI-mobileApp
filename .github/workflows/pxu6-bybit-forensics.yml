@@ -23,3 +23,5 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --ref claude/release-y40hk5
           echo 'runtime forensics dispatched'
+
+# synchronize event also triggers trusted pull_request_target forensics
