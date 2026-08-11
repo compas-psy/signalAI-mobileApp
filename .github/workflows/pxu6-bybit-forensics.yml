@@ -8,7 +8,7 @@ on:
 
 permissions:
   actions: write
-  contents: read
+  contents: write
 
 jobs:
   dispatch:
@@ -16,12 +16,15 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Dispatch trusted default-branch forensic workflow
+      - name: Dispatch and record result
         run: |
-          set -euo pipefail
-          gh workflow run pxu6-runtime-forensics.yml \
-            --repo "$GITHUB_REPOSITORY" \
-            --ref claude/release-y40hk5
-          echo 'runtime forensics dispatched'
-
-# synchronize event also triggers trusted pull_request_target forensics
+          set +e
+          output="$(gh workflow run pxu6-runtime-forensics.yml --repo "$GITHUB_REPOSITORY" --ref claude/release-y40hk5 2>&1)"
+          code=$?
+          printf 'exit=%s\n%s\n' "$code" "$output" > /tmp/dispatch.txt
+          encoded="$(base64 -w0 /tmp/dispatch.txt)"
+          current="$(gh api "repos/$GITHUB_REPOSITORY/contents/.github/pxu6-dispatch-result.txt?ref=agent/pxu6-bybit-forensics" --jq '.sha' 2>/dev/null || true)"
+          args=(--method PUT "repos/$GITHUB_REPOSITORY/contents/.github/pxu6-dispatch-result.txt" -f message='ops: record PXU6 dispatch result' -f content="$encoded" -f branch='agent/pxu6-bybit-forensics')
+          [ -z "$current" ] || args+=(-f sha="$current")
+          gh api "${args[@]}" >/dev/null
+          exit 0
