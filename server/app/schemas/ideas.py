@@ -52,7 +52,12 @@ class ProbabilityBlock(ApiModel):
 
 
 class PlanBlock(ApiModel):
-    """План сделки. Всё, чем он исполняется, и ничего сверх того."""
+    """План сделки. Всё, чем он исполняется, и ничего сверх того.
+
+    `tp_shares` — такой же подписываемый параметр, как цены целей. Клиент не
+    имеет права придумывать 40/40/20 сам: иначе server-paper и экран снова
+    разойдутся при первой смене management policy.
+    """
 
     order_intent: OrderIntent
     entry_low: Money
@@ -62,6 +67,7 @@ class PlanBlock(ApiModel):
     tp1: Money
     tp2: Money
     tp3: Money | None = None
+    tp_shares: list[Money] = Field(default_factory=list)
     rr_tp1: Money
     rr_tp2: Money
     invalidation: str
@@ -131,9 +137,33 @@ class ExplanationBlock(ApiModel):
     data_warnings: list[str] = Field(default_factory=list)
 
 
-class IdeaSummary(ApiModel):
-    """Карточка в ленте (§25 Ideas)."""
+class EvidenceOut(ApiModel):
+    id: str
+    detector: str
+    timeframe: str
+    role: str
+    observed_at: datetime
+    facts: list[str]
+    source_bars: list[datetime]
+    annotation_ids: list[str] = Field(default_factory=list)
 
+
+class AnnotationOut(ApiModel):
+    id: str
+    type: str
+    timeframe: str
+    start_time: datetime | None = None
+    end_time: datetime | None = None
+    price_low: Money | None = None
+    price_high: Money | None = None
+    confidence: Money
+    evidence_id: str
+    detector_version: str
+    label: str
+    display_priority: int = 50
+
+
+class IdeaSummary(ApiModel):
     id: UUID
     instrument_id: str
     symbol: str = ""
@@ -152,113 +182,41 @@ class IdeaSummary(ApiModel):
     expires_at: datetime
 
 
-class EvidenceOut(ApiModel):
-    """Доказательство, на которое ссылаются оценка и разметка (§9.1).
-
-    ``conflicts_with`` не украшение: ТЗ требует **показывать** конфликт
-    детекторов, а не сглаживать его. Поле существовало в модели приложения
-    с самого начала и никогда не заполнялось — панель конфликтов была пуста,
-    чем бы ни противоречили друг другу показания.
-    """
-
-    id: str
-    kind: str
-    title: str
-    detail: str = ""
-    summary: str = ""
-    confidence: float = 0.0
-    detector_version: str = ""
-    measured: bool = True
-    missing_terms: list[str] = Field(default_factory=list)
-    measures: list[dict] = Field(default_factory=list)
-    conflicts_with: list[str] = Field(default_factory=list)
-
-
-class AnnotationOut(ApiModel):
-    """Метка на графике (§10.6).
-
-    Имена полей — snake_case, как во всём остальном API. А вот **значение**
-    ``type`` остаётся из словаря §10.6 (``smcOrderBlock``, ``wyckoffSpring``):
-    это не имя поля, а термин интерфейса, и переименовывать его вслед за
-    внутренними именами движка значит связать несвязанное.
-    """
-
-    id: str
-    type: str
-    timeframe: str
-    start_time: datetime
-    end_time: datetime
-    price_low: float | None = None
-    price_high: float | None = None
-    confidence: float = 1.0
-    evidence_id: str
-    detector_version: str = ""
-    label: str = ""
-    display_priority: int = 50
-
-
 class IdeaDetail(IdeaSummary):
-    """Полная карточка (§25 Idea detail)."""
-
     context_timeframe: str
     setup_timeframe: str
     trigger_timeframe: str
     plan: PlanBlock
     probability: ProbabilityBlock
     sizing: SizingBlock
+    evidence: list[EvidenceOut]
+    annotations: list[AnnotationOut]
     score_breakdown: ScoreBlock
     explanation: ExplanationBlock
-    # §9.1: тезис, оценка и график ссылаются на одни и те же объекты.
-    evidence: list[EvidenceOut] = Field(default_factory=list)
-    annotations: list[AnnotationOut] = Field(default_factory=list)
     config_hash: str
     engine_version: str
     feature_version: str
     was_presented: bool
-
-    # Почему идея закончилась. Пустая строка — идея ещё живая.
-    #
-    # Состояние отвечает «что», а не «почему»: «MISSED» на экране читается
-    # как отметка, а владельцу нужно понимать, что цена дошла до третьей
-    # цели, ни разу не зайдя в зону входа. Причина берётся из журнала
-    # переходов — того самого, который нельзя переписать.
     closing_reason: str = ""
+
+
+class DailyCards(ApiModel):
+    generated_at: datetime
+    trade_now: list[IdeaSummary]
+    wait_for_trigger: list[IdeaSummary]
+    no_trade_reason: str = ""
 
 
 class IdeaEventOut(ApiModel):
     sequence: int
-    occurred_at: datetime
     old_status: IdeaStatus | None
     new_status: IdeaStatus
     reason_code: str
     reason_detail: str
-    probability_before: Money | None = None
-    probability_after: Money | None = None
-    user_action: bool
-    engine_version: str
-    config_hash: str
-
-
-class DailyCards(ApiModel):
-    """Выдача дня (§16).
-
-    Три списка, а не один: «нет сделки» — валидный результат (§32), и он
-    обязан выглядеть как результат, а не как пустой экран.
-    """
-
-    generated_at: datetime
-    trade_now: list[IdeaSummary] = Field(default_factory=list)
-    wait_for_trigger: list[IdeaSummary] = Field(default_factory=list)
-    no_trade_reason: str = ""
-    scanned_instruments: int = 0
-    rejected_count: int = 0
+    occurred_at: datetime
+    market_snapshot: dict = Field(default_factory=dict)
 
 
 class SkipRequest(ApiModel):
     reason: SkipReason
-    comment: str = ""
-
-
-class RejectRequest(ApiModel):
-    reason: str
     comment: str = ""
