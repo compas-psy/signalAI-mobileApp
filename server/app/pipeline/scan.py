@@ -616,7 +616,7 @@ def scan(
     """Просканировать вселенную и записать найденное."""
     config = cfg or get_config()
     moment = now or datetime.now(UTC)
-    state = risk_state or RiskState(risk_equity=Decimal(100_000))
+    state = risk_state or RiskState(risk_equity=config.decimal("risk.equity_rub"))
     result = ScanResult(started_at=moment)
 
     from ..journal.lifecycle import record_initial
