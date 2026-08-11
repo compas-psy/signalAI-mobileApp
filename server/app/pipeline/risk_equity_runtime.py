@@ -9,6 +9,7 @@ Exit Engine v2, который перехватывает единственны
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 
 from sqlalchemy.orm import Session
@@ -17,7 +18,9 @@ from ..config import EngineConfig, get_config
 from ..risk.sizing import RiskState
 from . import scan as scan_module
 
+log = logging.getLogger("signalai.risk")
 _ORIGINAL_SCAN = scan_module.scan
+_ATTESTED = False
 
 
 def scan_with_configured_equity(
@@ -35,13 +38,18 @@ def scan_with_configured_equity(
 
 
 def install() -> None:
+    global _ATTESTED
     if scan_module.scan is not scan_with_configured_equity:
         scan_module.scan = scan_with_configured_equity
 
-    # Ставится только в scheduler. Внутри install есть fail-fast проверка:
-    # compute_budget, probability/confidence и оба paper execution sensor-а
-    # обязаны ссылаться ровно на один v2 runtime.
-    from ..risk.engine_v2 import assert_single_runtime, install as install_risk_v2
+    # Ставится только в scheduler. Signal confidence наружу остаётся прежним;
+    # отдельный sensor нужен только risk sizing. Оба execution sensor-а
+    # обязаны ссылаться ровно на один v2 exit runtime.
+    from ..risk.engine_v2 import (
+        assert_single_runtime,
+        install as install_risk_v2,
+        runtime_report,
+    )
     from ..risk.policy_overlay import install as install_policy_overlay
 
     install_risk_v2()
@@ -49,3 +57,19 @@ def install() -> None:
     # для exit geometry новых идей и восстановления уже подписанной policy.
     install_policy_overlay()
     assert_single_runtime()
+
+    # Один раз на жизнь scheduler-процесса. Это production-attestation, которую
+    # после deploy можно проверить прямо в его логах, не запуская второй
+    # диагностический Python-процесс рядом с торговым контуром.
+    if not _ATTESTED:
+        report = runtime_report()
+        log.info(
+            "RISK_RUNTIME_ATTESTATION risk_calculators=%s exit_engines=%s "
+            "paper_crypto_shared=%s signal_admission_changed=%s caps_changed=%s",
+            report["risk_calculators"],
+            report["exit_engines"],
+            report["paper_and_crypto_share_exit_engine"],
+            report["signal_admission_changed"],
+            report["absolute_risk_caps_changed"],
+        )
+        _ATTESTED = True
