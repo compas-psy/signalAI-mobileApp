@@ -1,4 +1,4 @@
-name: OPS · sync Telegram after 0484a46
+name: OPS · send historical Telegram idea
 
 on:
   pull_request:
@@ -12,128 +12,82 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  sync:
+  send-example:
     if: github.head_ref == 'ops/sync-telegram-20260812'
     runs-on: ubuntu-latest
     steps:
-      - name: Validate secrets
+      - name: Prepare SSH
         env:
           HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
           KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-          TELEGRAM_CHATID: ${{ secrets.TELEGRAM_CHATID }}
         run: |
           set -euo pipefail
-          [ -n "$HOST" ] && [ -n "$KEY" ] && [ -n "$TELEGRAM_TOKEN" ] && [ -n "$TELEGRAM_CHATID" ] || {
-            echo '::error::VPS/Telegram secrets are incomplete'
-            exit 1
-          }
-
-      - name: Prepare private files
-        env:
-          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
-          KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-          TELEGRAM_CHATID: ${{ secrets.TELEGRAM_CHATID }}
-        run: |
-          set -euo pipefail
+          [ -n "$HOST" ] && [ -n "$KEY" ]
           umask 077
           install -d -m 700 ~/.ssh
           printf '%s\n' "$KEY" > ~/.ssh/id_deploy
           chmod 600 ~/.ssh/id_deploy
           ssh-keyscan -T 10 -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null
-          printf '%s' "$TELEGRAM_TOKEN" | base64 -w0 > /tmp/telegram-token.b64
-          printf '%s' "$TELEGRAM_CHATID" | base64 -w0 > /tmp/telegram-chatid.b64
 
-          cat > /tmp/sync-telegram.sh <<'REMOTE'
+      - name: Send one expired idea through production Telegram formatter
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          USER_NAME: ${{ secrets.VPS_USER || 'root' }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$USER_NAME@$HOST" 'bash -s' <<'REMOTE'
           set -euo pipefail
           EXPECTED_SHA='0484a46efe92877bbb8e16abf68bb12b16af0c42'
           DIR="$HOME/signalai"
           ENV_FILE='/etc/signalai/.env'
           SUDO=''
           [ "$(id -u)" -eq 0 ] || SUDO='sudo'
-          cleanup() {
-            rm -f /tmp/telegram-token.b64 /tmp/telegram-chatid.b64
-            unset token chat_id 2>/dev/null || true
-          }
-          trap cleanup EXIT
-
-          [ "$(cat "$DIR/.signalai-source-sha")" = "$EXPECTED_SHA" ] || {
-            echo 'production is not on the expected product SHA' >&2
-            exit 1
-          }
-          token="$(base64 -d < /tmp/telegram-token.b64)"
-          chat_id="$(base64 -d < /tmp/telegram-chatid.b64)"
-          [ -n "$token" ] && [ -n "$chat_id" ]
-
-          tmp_env="$(mktemp /tmp/signalai-env.XXXXXX)"
-          $SUDO awk '!/^TELEGRAM_TOKEN=/ && !/^TELEGRAM_CHATID=/' "$ENV_FILE" > "$tmp_env"
-          printf 'TELEGRAM_TOKEN=%s\nTELEGRAM_CHATID=%s\n' "$token" "$chat_id" >> "$tmp_env"
-          $SUDO cp "$tmp_env" "$ENV_FILE"
-          rm -f "$tmp_env"
-          unset token chat_id
-          $SUDO chmod 600 "$ENV_FILE"
-
+          [ "$(cat "$DIR/.signalai-source-sha")" = "$EXPECTED_SHA" ]
           cd "$DIR/server"
-          $SUDO docker compose --env-file "$ENV_FILE" config >/dev/null
-          $SUDO docker compose --env-file "$ENV_FILE" up -d --force-recreate api scheduler >/dev/null
-
-          ok=''
-          for _ in $(seq 1 30); do
-            if curl --fail --silent http://127.0.0.1:8000/health >/dev/null; then
-              ok=1
-              break
-            fi
-            sleep 2
-          done
-          [ -n "$ok" ]
-
           $SUDO docker compose --env-file "$ENV_FILE" exec -T scheduler python - <<'PY'
+          from datetime import UTC, datetime
           from sqlalchemy import select
           from app.db import get_session_factory
           from app.models import TradeIdea
+          from app.notification_outbox import NotificationEvent
           from app.telegram_chart import render_idea_chart
+          from app.telegram_notifications import _send_idea
 
           session = get_session_factory()()
           try:
-              for idea in session.execute(
-                  select(TradeIdea).order_by(TradeIdea.signal_time.desc()).limit(20)
-              ).scalars():
+              ideas = session.execute(
+                  select(TradeIdea)
+                  .where(TradeIdea.expires_at <= datetime.now(UTC))
+                  .order_by(TradeIdea.signal_time.desc())
+                  .limit(100)
+              ).scalars()
+              for idea in ideas:
                   try:
-                      image = render_idea_chart(session, idea)
+                      render_idea_chart(session, idea)
                   except RuntimeError:
                       continue
-                  assert image.startswith(b'\x89PNG\r\n\x1a\n')
-                  assert len(image) > 1000
-                  print(f'TELEGRAM_CHART_OK idea={idea.id} bytes={len(image)}')
+                  event = NotificationEvent(
+                      id=0,
+                      created_at=datetime.now(UTC),
+                      key=f'test:historical:{idea.id}',
+                      kind='IDEA',
+                      title='Historical idea test',
+                      body='',
+                      payload=f'idea:{idea.id}',
+                  )
+                  _send_idea(session, event)
+                  print(
+                      'TELEGRAM_HISTORICAL_IDEA_SENT '
+                      f'idea={idea.id} status={idea.status} signal_time={idea.signal_time.isoformat()}'
+                  )
                   break
               else:
-                  raise RuntimeError('no recent idea with H1 bars')
+                  raise RuntimeError('no expired idea with H1 chart found')
           finally:
               session.close()
           PY
-
-          $SUDO docker compose --env-file "$ENV_FILE" exec -T scheduler python -c \
-            'from app.telegram_notifications import send_test_message; send_test_message()'
-          echo 'TELEGRAM_BOT_API_OK'
           REMOTE
-
-      - name: Sync and verify on VPS
-        env:
-          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
-          USER_NAME: ${{ secrets.VPS_USER || 'root' }}
-        run: |
-          set -euo pipefail
-          scp -i ~/.ssh/id_deploy -o BatchMode=yes \
-            /tmp/sync-telegram.sh /tmp/telegram-token.b64 /tmp/telegram-chatid.b64 \
-            "$USER_NAME@$HOST:/tmp/"
-          ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$USER_NAME@$HOST" \
-            'bash /tmp/sync-telegram.sh'
 
       - name: Cleanup
         if: always()
-        run: |
-          shred -u ~/.ssh/id_deploy 2>/dev/null || rm -f ~/.ssh/id_deploy
-          shred -u /tmp/telegram-token.b64 2>/dev/null || rm -f /tmp/telegram-token.b64
-          shred -u /tmp/telegram-chatid.b64 2>/dev/null || rm -f /tmp/telegram-chatid.b64
-          rm -f /tmp/sync-telegram.sh
+        run: shred -u ~/.ssh/id_deploy 2>/dev/null || rm -f ~/.ssh/id_deploy
