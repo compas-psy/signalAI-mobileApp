@@ -117,9 +117,11 @@ class _TelegramNotificationsToggleState
                   ),
                   const SizedBox(width: 11),
                   if (_enabled == null || _saving)
-                    const SizedBox(
+                    SizedBox(
                       width: 34,
-                      child: Center(child: BusyDot()),
+                      child: Center(
+                        child: Text('…', style: T.body(16, color: C.muted)),
+                      ),
                     )
                   else
                     AppToggle(
