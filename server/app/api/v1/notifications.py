@@ -12,14 +12,22 @@ import asyncio
 import json
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from ...db import get_db, session_scope
 from ...notification_outbox import emit, list_after, materialize
+from ...schemas.common import ApiModel
+from ...telegram_notifications import configured as telegram_configured
+from ...telegram_notifications import set_enabled as set_telegram_enabled
+from ...telegram_notifications import status as telegram_status
 
 router = APIRouter(prefix="/notifications", tags=["notifications"])
+
+
+class TelegramSettingIn(ApiModel):
+    enabled: bool
 
 
 def _batch(after: int) -> list[dict]:
@@ -40,6 +48,21 @@ def notifications(
         "events": events,
         "cursor": events[-1]["id"] if events else after,
     }
+
+
+@router.get("/telegram")
+def get_telegram_setting(db: Session = Depends(get_db)) -> dict:
+    return telegram_status(db)
+
+
+@router.put("/telegram")
+def update_telegram_setting(
+    value: TelegramSettingIn,
+    db: Session = Depends(get_db),
+) -> dict:
+    if value.enabled and not telegram_configured():
+        raise HTTPException(409, "Telegram не настроен на сервере")
+    return set_telegram_enabled(db, value.enabled)
 
 
 @router.post("/test")
