@@ -53,7 +53,15 @@ class MainActivity : FlutterActivity() {
 
     private fun readPayload(intent: Intent?) {
         val payload = intent?.getStringExtra(Notifications.PAYLOAD)
-        if (!payload.isNullOrEmpty()) pendingPayload = payload
+        if (!payload.isNullOrEmpty()) {
+            pendingPayload = payload
+            return
+        }
+        val uri = intent?.data ?: return
+        if (uri.scheme == "signalai" && uri.host == "idea") {
+            val ideaId = uri.pathSegments.firstOrNull().orEmpty()
+            if (ideaId.isNotEmpty()) pendingPayload = "idea:$ideaId"
+        }
     }
 
     private fun ensureSignalPermissions() {
