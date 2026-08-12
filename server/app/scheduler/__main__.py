@@ -26,6 +26,7 @@ from ..paper.management_policy import install as install_paper_management
 from ..pipeline.risk_equity_runtime import install as install_risk_equity
 from ..portfolio.equity_ranking_refresh import refresh as refresh_equity_ranking
 from ..portfolio.equity_warmup import warm_equity_history
+from ..telegram_notifications import deliver as deliver_telegram
 from ..version import ENGINE_VERSION
 from .runner import build_default_scheduler, run_forever
 
@@ -131,7 +132,18 @@ def main() -> int:
     def paper_live(session):
         report = track_crypto_live(session)
         queued = materialize(session, include_smoke=False)
-        return f"{report.summary()}, уведомлений в outbox {queued}"
+        telegram = 0
+        try:
+            telegram = deliver_telegram(session)
+        except Exception:
+            # Telegram is a parallel delivery channel. A transient Bot API
+            # failure must not roll back market/paper tracking; its cursor stays
+            # before the failed event and the next minute retries it.
+            log.exception("Telegram notification delivery failed")
+        return (
+            f"{report.summary()}, уведомлений в outbox {queued}, "
+            f"Telegram {telegram}"
+        )
 
     scheduler.add(
         "paper-live",
