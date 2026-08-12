@@ -15,8 +15,10 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from uuid import UUID
 
 from fastapi import APIRouter, FastAPI
+from fastapi.responses import HTMLResponse
 from sqlalchemy import text
 
 from .api.v1 import control as control_routes
@@ -80,6 +82,24 @@ v1.include_router(journal_routes.router)
 v1.include_router(notification_routes.router)
 v1.include_router(control_routes.router)
 app.include_router(v1)
+
+
+@app.get("/open/idea/{idea_id}", response_class=HTMLResponse, include_in_schema=False)
+def open_idea(idea_id: UUID) -> HTMLResponse:
+    """HTTPS bridge for Telegram buttons into the Android app."""
+    target = f"signalai://idea/{idea_id}"
+    return HTMLResponse(
+        "<!doctype html><html><head>"
+        f'<meta http-equiv="refresh" content="0;url={target}">'
+        "<meta name="
+        '"viewport" content="width=device-width,initial-scale=1">'
+        "</head><body style=\"font-family:sans-serif;background:#111318;"
+        "color:#f4f5f7;padding:32px\">"
+        f'<a href="{target}" style="color:#ffd400;font-size:20px">'
+        "Открыть идею в SignalAI</a>"
+        f'<script>location.replace("{target}")</script>'
+        "</body></html>"
+    )
 
 
 @app.get("/health", response_model=HealthResponse, tags=["service"])
