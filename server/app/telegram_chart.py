@@ -5,7 +5,6 @@ from __future__ import annotations
 from io import BytesIO
 from typing import Any
 
-from PIL import Image, ImageDraw, ImageFont
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -15,10 +14,6 @@ from .models.enums import Timeframe
 _WIDTH = 1200
 _HEIGHT = 675
 _PLOT = (72, 54, 1110, 610)
-
-
-def _font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
-    return ImageFont.load_default(size=size)
 
 
 def _price(value: float) -> str:
@@ -42,6 +37,8 @@ def _smc_label(annotation: dict[str, Any]) -> str:
 
 def render_idea_chart(session: Session, idea: TradeIdea, *, limit: int = 96) -> bytes:
     """Render audited H1 bars plus the idea's immutable SMC/trade-plan marks."""
+    from PIL import Image, ImageDraw, ImageFont
+
     rows = list(
         reversed(
             list(
@@ -92,9 +89,9 @@ def render_idea_chart(session: Session, idea: TradeIdea, *, limit: int = 96) -> 
     left, top, right, bottom = _PLOT
     image = Image.new("RGB", (_WIDTH, _HEIGHT), "#111318")
     draw = ImageDraw.Draw(image, "RGBA")
-    title_font = _font(24)
-    label_font = _font(18)
-    small_font = _font(15)
+    title_font = ImageFont.load_default(size=24)
+    label_font = ImageFont.load_default(size=18)
+    small_font = ImageFont.load_default(size=15)
 
     draw.text(
         (left, 16),
