@@ -42,6 +42,8 @@ services:
       # Тот же токен зашивается в sideload APK. Без него внешний API должен
       # закрыться, а не работать публично.
       SIGNALAI_DEVICE_TOKEN: ${SIGNALAI_DEVICE_TOKEN:?нужен SIGNALAI_DEVICE_TOKEN}
+      TELEGRAM_TOKEN: ${TELEGRAM_TOKEN:-}
+      TELEGRAM_CHATID: ${TELEGRAM_CHATID:-}
       # api модель не опрашивает — он только показывает её состояние в
       # диагностике. Настройки те же, чтобы «настроено» и «работает»
       # проверялись по одному источнику правды.
@@ -134,6 +136,8 @@ services:
     environment:
       SIGNALAI_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-signalai}
       SIGNALAI_REDIS_URL: redis://redis:6379/0
+      TELEGRAM_TOKEN: ${TELEGRAM_TOKEN:-}
+      TELEGRAM_CHATID: ${TELEGRAM_CHATID:-}
       SIGNALAI_UNIVERSE_EVERY_MINUTES: ${SIGNALAI_UNIVERSE_EVERY_MINUTES:-360}
       SIGNALAI_INGEST_EVERY_MINUTES: ${SIGNALAI_INGEST_EVERY_MINUTES:-15}
       SIGNALAI_REVIEW_EVERY_MINUTES: ${SIGNALAI_REVIEW_EVERY_MINUTES:-360}
