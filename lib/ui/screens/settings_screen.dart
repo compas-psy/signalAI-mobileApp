@@ -15,6 +15,7 @@ import '../widgets/engine_address_sheet.dart';
 import '../widgets/broker_keys_sheet.dart';
 import '../widgets/common.dart';
 import '../widgets/risk_edit_sheet.dart';
+import '../widgets/telegram_notifications_toggle.dart';
 import '../widgets/vector_icon.dart';
 import 'diagnostics_screen.dart';
 import 'trading_diagnostics_screen.dart';
@@ -123,11 +124,12 @@ class SettingsScreen extends StatelessWidget {
               ],
 
               // Уведомления: расписание и доставка.
+              if (_show(SettingsPill.notifications) && controller.thinMode)
+                const TelegramNotificationsToggle(),
               if (_show(SettingsPill.notifications) &&
-                  (controller.thinMode
-                      ? snapshot.notifications.isEmpty
-                      : snapshot.channels.isEmpty &&
-                          snapshot.notifications.isEmpty))
+                  !controller.thinMode &&
+                  snapshot.channels.isEmpty &&
+                  snapshot.notifications.isEmpty)
                 const _NothingHere(
                   title: 'Каналы доставки не заданы',
                   note: 'Список появится, когда приложение узнает, куда '
