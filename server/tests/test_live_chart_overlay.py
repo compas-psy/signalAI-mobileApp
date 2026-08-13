@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
+from app.api.v1.live_market import display_bars
 from app.api.v1.market import get_bars
 from app.market.candles import Candle
 from app.models import Bar, Instrument
@@ -81,3 +82,56 @@ def test_crypto_chart_contains_current_display_candle_without_polluting_db(
     # The overlay is a UI fact, not a canonical calculation input.
     persisted = session.query(Bar).filter_by(instrument_id=instrument.instrument_id).all()
     assert len(persisted) == 1
+
+
+def test_empty_moex_h4_display_chart_falls_back_to_h1_without_mislabeling(
+    session, monkeypatch
+):
+    instrument = Instrument(
+        instrument_id="MOEX:FUT:TESTU6",
+        venue=Venue.MOEX,
+        asset_class=AssetClass.FUTURES,
+        symbol="TESTU6",
+        title="Test future",
+        currency="RUB",
+        tick_size=Decimal("1"),
+        tick_value=Decimal("1"),
+        lot_size=1,
+        quantity_step=Decimal("1"),
+        min_quantity=Decimal("1"),
+        contract_multiplier=Decimal("1"),
+        in_universe=True,
+    )
+    session.add(instrument)
+    session.flush()
+
+    h1 = Candle(
+        open_time=NOW.replace(minute=0, second=0, microsecond=0),
+        open=Decimal("100"),
+        high=Decimal("103"),
+        low=Decimal("99"),
+        close=Decimal("102"),
+        is_closed=False,
+        source="moex",
+    )
+
+    def fake_live(_instrument, timeframe, *, limit, now):
+        assert limit == 200
+        assert now.tzinfo is not None
+        return [h1] if timeframe is Timeframe.H1 else []
+
+    monkeypatch.setattr("app.api.v1.live_market._moex_live", fake_live)
+
+    result = display_bars(
+        instrument.instrument_id,
+        timeframe=Timeframe.H4,
+        limit=200,
+        db=session,
+    )
+
+    assert result.timeframe is Timeframe.H1
+    assert result.live_overlay is True
+    assert len(result.bars) == 1
+    assert result.bars[0].open_time == h1.open_time
+    assert result.bars[0].close == h1.close
+    assert "DISPLAY_ONLY" in result.bars[0].quality_flags
