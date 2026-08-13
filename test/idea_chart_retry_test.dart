@@ -9,7 +9,7 @@ import 'package:signalai/ui/widgets/idea_chart_card.dart';
 import 'package:signalai/ui/widgets/trade_chart.dart';
 
 class _FlakyLiveSource extends LiveIdeaSource {
-  int attempts = 0;
+  static int attempts = 0;
 
   @override
   Future<LiveIdeaData> load(Idea idea, {required String timeframe}) async {
@@ -32,6 +32,7 @@ class _FlakyLiveSource extends LiveIdeaSource {
 void main() {
   testWidgets('ошибочный график можно повторно запросить из карточки',
       (tester) async {
+    _FlakyLiveSource.attempts = 0;
     final idea = DemoIdeas.all(DateTime.utc(2026, 8, 13)).first;
     final signal = EngineContract.signalFrom(idea);
     final layers = idea.availableLayers;
@@ -47,7 +48,7 @@ void main() {
             timeframe: '4h',
             failed: true,
             failureReason: 'временный сбой',
-            liveSource: source,
+            liveSource: _FlakyLiveSource(),
             available: layers,
             visible: layers,
             highlight: const {},
@@ -59,7 +60,7 @@ void main() {
     await tester.pump();
     await tester.pump();
 
-    expect(source.attempts, 1);
+    expect(_FlakyLiveSource.attempts, 1);
     expect(find.text('Повторить'), findsOneWidget);
     expect(find.textContaining('временный сбой'), findsOneWidget);
 
@@ -67,7 +68,7 @@ void main() {
     await tester.pump();
     await tester.pump();
 
-    expect(source.attempts, 2);
+    expect(_FlakyLiveSource.attempts, 2);
     expect(find.text('Повторить'), findsNothing);
     expect(find.byType(TradeChart), findsOneWidget);
   });
