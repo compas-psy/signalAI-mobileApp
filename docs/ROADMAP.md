@@ -6,7 +6,7 @@
 
 SignalAI должен максимизировать долгосрочный риск-скорректированный рост Equity на Bybit и в контуре Т‑Инвестиций/российского рынка после комиссий, проскальзывания и налогов при контролируемой просадке, risk of ruin, ликвидности и информационной безопасности.
 
-Постоянный рост Equity не гарантируется. Любое изменение trading logic должно иметь проверяемый edge и не оцениваться только по in-sample backtest.
+Постоянный рост Equity не гарантируется. Изменения trading logic не оцениваются только по in-sample backtest.
 
 ## Текущее production-состояние
 
@@ -17,59 +17,53 @@ SignalAI должен максимизировать долгосрочный р
 
 ## NOW — P−1 · Project Operating System
 
-Цель: сделать развитие SignalAI управляемым и воспроизводимым до следующей продуктовой итерации.
+Foundation реализуется PR #38.
 
-DoD:
-
-- [ ] `AGENTS.md` фиксирует product objective, money/security invariants, Context7/skills policy и cumulative delivery;
-- [ ] ADR-процесс и первый ADR promotion gates добавлены;
-- [ ] этот roadmap становится текущей точкой правды, а `HANDOFF.md` остаётся историей;
-- [ ] `Cumulative production release` запускается только вручную, а не на каждый push;
-- [ ] один explicit release запускает канонические VPS/APK delivery не более одного раза каждый;
-- [ ] stale issues #4/#6 актуализированы;
-- [ ] отдельная CI-задача фиксирует следующий шаг: один общий QA и selective runtime delivery без повторных проверок;
-- [ ] foundation PR проходит Quality Gate и не запускает production release автоматически.
+- [x] `AGENTS.md` фиксирует product objective, engineering/security invariants, Context7/skills policy и cumulative delivery.
+- [x] Добавлены ADR-процесс, шаблон и ADR-0001 promotion gates.
+- [x] `ROADMAP.md` — текущая точка правды; `HANDOFF.md` остаётся историей.
+- [x] `Cumulative production release` больше не запускается на каждый push; trigger manual-only.
+- [x] Один explicit release dispatch запускает не более одного canonical VPS и одного canonical APK workflow.
+- [x] Issue #6 обновлён под текущий device acceptance.
+- [x] Issue #4 очищен от зависимости на закрытый PR #3.
+- [x] `SECRETS.md` приведён к фактическому device-only T‑Invest Sandbox boundary.
+- [ ] Runtime enforcement immutable current-default SHA — issue #41.
+- [ ] PR #38 должен быть слит только после exact-head green Quality Gate; merge сам по себе production release не запускает.
 
 ## NEXT — P0 · Production reliability & observability
+
+Backlog: issue #6 и issue #39.
 
 Канонический цикл:
 
 `signal → notification → idea detail → owner decision → execution/paper/sandbox → management → exit → journal → metrics`.
 
-Нужны crash/error telemetry с redaction, data-quality telemetry, execution/reconciliation telemetry, runtime health для scheduler/outbox/adapters и Samsung smoke/soak tests. Каждый пользовательский дефект должен превращаться в reproducible regression test.
+Нужны crash/error telemetry с redaction, data-quality telemetry, reconciliation telemetry, runtime health для scheduler/outbox/adapters и Samsung smoke/soak tests. Каждый пользовательский дефект превращается в reproducible regression test.
 
 Gate выхода: нет известных blocker/crash в основном end-to-end сценарии, а сбой диагностируется без временной forensic-ветки.
 
-## P0.5 · Trading performance measurement
+## P0.5 · Strategy measurement
 
-Единый performance layer должен считать минимум:
+Backlog: issue #40.
 
-- net realized PnL и realized R;
-- expectancy после fees/slippage;
-- sample-aware win rate;
-- drawdown/recovery;
-- MFE/MAE и exit efficiency;
-- slippage и execution error rate;
-- score/probability calibration;
-- contribution по strategy / asset / venue / market regime;
-- concentration и correlation clusters.
+Measurement layer разделяет backtest / paper / sandbox / live и считает outcome по strategy / instrument / venue / regime, MFE/MAE, drawdown/recovery, execution deviation, confidence calibration и operational failure rates. Малые выборки маркируются как недостаточные.
 
-Эти метрики должны управлять champion/challenger и promotion gates, а не быть только dashboard.
+Эти измерения используются для champion/challenger и promotion gates, а не только для dashboard.
 
 ## P1 · Alpha / Early Equity Radar
 
+Backlog: issue #4.
+
 Ближайшие независимые фундаментальные каналы:
 
-1. `HIRING` — структурные изменения вакансий через официальный источник «Работа России»;
+1. `HIRING` — структурные изменения вакансий через официальный источник;
 2. `SPREAD` — отраслевой margin spread на официальных рядах с lag/coverage controls.
-
-Дальше research engines добавляются только при измеримом incremental predictive value вне выборки.
 
 Принцип:
 
 `raw source → Observation(tradable_at/provenance) → engine → fusion → hypothesis → D1 technical overlay → owner-facing action`.
 
-LLM не является источником факта и не создаёт сигнал без измеряемых данных.
+Новые research engines добавляются только при измеримом incremental predictive value вне выборки. LLM не является источником факта.
 
 ## P2 · Portfolio allocator
 
@@ -81,7 +75,7 @@ LLM не является источником факта и не создаёт
 
 `Research → Backtest → OOS/Walk-forward → Shadow → Paper → Broker Sandbox/Testnet → Canary Live → Scaled Live`.
 
-Canary Live требует operational correctness, подтверждённый net edge, acceptable drawdown/tail risk, security gate, kill switch и явное решение владельца о размере canary capital. Деградация edge/execution возвращает стратегию в paper/sandbox.
+Canary Live требует operational correctness, подтверждённый edge, acceptable drawdown/tail risk, security gate, kill switch и явное решение владельца. Деградация возвращает стратегию в paper/sandbox.
 
 ## Источник истины
 
@@ -91,8 +85,8 @@ Canary Live требует operational correctness, подтверждённый
 4. open issues/PR — исполнимые задачи;
 5. default-branch code и актуальные docs.
 
-`HANDOFF.md` хранит историю ранних итераций и не определяет текущие следующие шаги.
+`HANDOFF.md` хранит историю ранних итераций и не определяет следующие шаги.
 
 ## Release policy
 
-Merge в default branch не является production release. Нормальная поставка: завершённый logical batch → explicit `Cumulative production release` → exact accepted `source_ref` → канонические delivery workflows. Прямые deploy/sideload workflows — исключение для hotfix/rollback/ops.
+Merge в default branch не является production release. Нормальная поставка: завершённый logical batch → explicit `Cumulative production release` → exact accepted immutable `source_ref` → канонические delivery workflows. Прямые deploy/sideload workflows — исключение для hotfix/rollback/ops.
