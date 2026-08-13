@@ -1,0 +1,15 @@
+name: P0 RED contract check
+
+on:
+  push:
+    branches:
+      - 'agent/p0-runtime-diagnostics'
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    uses: ./.github/workflows/quality.yml
+    with:
+      source_ref: ${{ github.sha }}
