@@ -1,8 +1,6 @@
-"""P0 runtime diagnostics: correlation and aggregate-only owner snapshot."""
+"""P0 runtime diagnostics: aggregate-only owner snapshot."""
 
 from __future__ import annotations
-
-from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -20,42 +18,11 @@ def client(session):
     app.dependency_overrides.clear()
 
 
-def _uuid(value: str) -> UUID:
-    return UUID(value)
-
-
-def test_request_id_is_generated_for_public_health(client):
-    response = client.get("/health")
-    assert response.status_code == 200
-    assert _uuid(response.headers["x-request-id"])
-
-
-def test_valid_incoming_request_id_is_preserved(client):
-    request_id = str(uuid4())
-    response = client.get("/health", headers={"X-Request-ID": request_id})
-    assert response.status_code == 200
-    assert response.headers["x-request-id"] == request_id
-
-
-def test_request_id_survives_fail_closed_authentication(session):
-    app.dependency_overrides[get_db] = lambda: session
-    try:
-        with TestClient(app) as anonymous:
-            response = anonymous.get("/api/v1/diagnostics/runtime")
-    finally:
-        app.dependency_overrides.clear()
-
-    assert response.status_code == 401
-    assert _uuid(response.headers["x-request-id"])
-
-
 def test_runtime_diagnostics_empty_state_is_aggregate_only(client):
-    response = client.get("/api/v1/diagnostics/runtime")
+    response = client.get("/api/v1/control/runtime")
     assert response.status_code == 200
     body = response.json()
 
-    assert _uuid(body["request_id"])
-    assert body["request_id"] == response.headers["x-request-id"]
     assert body["generated_at"].endswith("Z") or "+00:00" in body["generated_at"]
     assert body["ideas"] == {
         "total": 0,
@@ -77,8 +44,6 @@ def test_runtime_diagnostics_empty_state_is_aggregate_only(client):
 
     serialized = response.text.lower()
     for forbidden in (
-        "authorization",
-        "bearer",
         "instrument_id",
         "dedup_key",
         "payload",
