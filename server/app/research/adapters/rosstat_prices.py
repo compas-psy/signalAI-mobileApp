@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from html.parser import HTMLParser
 from urllib.parse import urljoin, urlparse
 
+from ..codes import observation_code
+
 SOURCE_ID = "rosstat"
 CATALOG_URL = "https://rosstat.gov.ru/statistics/price"
 DATASET_TITLE = "Средние цены производителей промышленных товаров (услуг) с 1998 г."
@@ -58,6 +60,21 @@ class ProductIdentity:
     @property
     def key(self) -> tuple[str, str]:
         return (self.okpd2, self.okei)
+
+
+def observation_type(product: ProductIdentity) -> str:
+    """Stable machine key for one producer-price series.
+
+    Human-readable labels may be revised between source vintages. Classifier
+    identifiers are the identity, so a label change must not create a second
+    logical observation series.
+    """
+    return observation_code(
+        SOURCE_ID,
+        "producer_price",
+        product.okpd2.replace(".", "_"),
+        product.okei,
+    )
 
 
 class _Links(HTMLParser):
@@ -127,4 +144,5 @@ __all__ = [
     "ProductIdentity",
     "SOURCE_ID",
     "discover_workbook",
+    "observation_type",
 ]
