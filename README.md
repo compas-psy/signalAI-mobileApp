@@ -1,158 +1,160 @@
-# SignalAI — мобильный клиент
+# SignalAI
 
-Android-приложение личного терминала торговых идей: утренний дайджест, карточка
-идеи с графиком в стиле TradingView, подтверждение сделки, журнал, стратегии и
-настройки.
+Персональная система торговых идей, сопровождения и инвестиционного анализа: серверный источник истины + тонкий Android-клиент.
 
-Реализация макета из Claude Design (`design/SignalAI App.dc.html`) на Flutter,
-по ТЗ «SignalAI — персональная система торговых сигналов и исполнения» v1.0.
+## Главная цель
 
-## Что это и чего это не делает
+Максимизировать долгосрочный риск-скорректированный рост Equity после комиссий, проскальзывания и налогов при контролируемой просадке, risk of ruin, ликвидности и информационной безопасности.
 
-Приложение — **тонкий клиент** (ТЗ §2). Оно:
+Постоянный рост не гарантируется. Изменения торговой логики должны проходить измеримую проверку и promotion gates из `docs/adr/0001-live-promotion-gates.md`.
 
-* показывает готовые сигналы, позиции, журнал и статистику;
-* даёт подтвердить сделку одним касанием;
-* переключает стратегии, каналы доставки и параметры риска.
+## Где находится актуальная правда
 
-Оно **не**:
+Читать в таком порядке:
 
-* хранит ключи бирж и брокеров — их нет на устройстве вообще (ТЗ §11);
-* считает аналитику — Wyckoff/SMC/RSI/объём/OI и SignalScore считает сервер;
-* торгует само — любой ордер только после явного подтверждения (ТЗ §7).
+1. `AGENTS.md` — правила работы над проектом;
+2. `docs/ROADMAP.md` — что сделано и что идёт следующим;
+3. `docs/adr/` — принятые архитектурные решения;
+4. open GitHub issues/PR — исполнимый backlog;
+5. default-branch code и актуальные docs.
 
-Аналитика по биржевым API (MOEX ISS + Т-Инвестиции, Bybit) и доставка в
-Telegram/MAX живут на сервере. Какие ключи где прописать — `docs/SECRETS.md`.
+`HANDOFF.md` — архив ранних итераций и **не** определяет текущую архитектуру или следующие шаги.
 
-## Запуск
+## Архитектура сейчас
+
+В рабочем режиме `thin`:
+
+- сервер считает идеи, risk/sizing, ведёт paper lifecycle, research, фоновые задачи и durable notification outbox;
+- Android показывает состояние, графики и объяснения, принимает решение владельца и работает с локальным Keystore;
+- неподтверждённая идея не становится сделкой;
+- server-side lifecycle продолжает работать после закрытия приложения;
+- Telegram notifications идут из того же durable server outbox и ведут deep link в конкретную идею.
+
+### T-Invest Sandbox — явное исключение thin-client
+
+Для проверки реального broker transport T‑Invest Sandbox token вводится владельцем на телефоне и хранится только в Android Keystore. После owner approval мобильный sandbox adapter может отправить подтверждённый FORTS plan в T‑Invest Sandbox.
+
+Этот token:
+
+- не встраивается в APK;
+- не хранится в git/GitHub Secrets/VPS `.env`;
+- не копируется на сервер «для удобства»;
+- используется только в sandbox-контуре.
+
+Подробности: `docs/SECRETS.md`.
+
+Live broker credentials и live execution не включаются только фактом наличия кода или токена — для них действует отдельный promotion gate.
+
+## Что уже есть
+
+- thin client / server source of truth;
+- owner `approve/reject` с server-side idempotency;
+- server-side paper tracking;
+- FORTS и crypto presentation lanes;
+- живые графики и post-signal progress;
+- T‑Invest Sandbox mirror;
+- Risk & Exit Engine v2;
+- Portfolio Signals (`ACCUMULATE / EARLY / WATCH`);
+- ранние equity hypotheses;
+- Telegram notifications с H1-графиком и deep link;
+- permanent sideload signing;
+- единый Quality Gate и provenance-aware delivery.
+
+Текущие приоритеты и незакрытые gaps всегда смотрите в `docs/ROADMAP.md` и open issues.
+
+## Режимы приложения
+
+| Режим | Назначение |
+|---|---|
+| `thin` | рабочий персональный клиент; server source of truth |
+| `demo` | UI на фикстурах, без рыночного смысла |
+
+Legacy `local` не является рабочим режимом персональной поставки и не должен использоваться как fallback при ошибке сервера.
+
+## Локальный запуск
 
 ```bash
 flutter pub get
 
-# демо-режим на данных макета, без сервера
+# UI demo
 flutter run --dart-define=SIGNALAI_MODE=demo
 
-# боевой тонкий клиент
+# thin client
 flutter run \
   --dart-define=SIGNALAI_MODE=thin \
-  --dart-define=SIGNALAI_API_BASE_URL=https://ваш-гейтвей
+  --dart-define=SIGNALAI_API_BASE_URL=https://your-gateway
 ```
 
-`demo` включается только явно: фикстуры не должны маскировать ошибку
-подключения к серверу.
+`SIGNALAI_DEVICE_TOKEN` не передаётся через `--dart-define`: владелец вводит его в приложении, после чего он хранится в Android Keystore.
 
-Проверки:
+## Проверки
+
+Канонический PR gate — `.github/workflows/quality.yml`:
+
+- tracked-secret scan и security invariants;
+- server import/compile;
+- Alembic graph/model parity;
+- PostgreSQL server tests;
+- Flutter analyze;
+- Flutter tests.
+
+Локально для мобильного слоя:
 
 ```bash
 flutter analyze
 flutter test
 ```
 
-## Сборка для телефона
+## Поставка
 
-```bash
-bash tool/build_apk.sh
-```
+Merge в default branch **не является production release**.
 
-Скрипт проверит, чего не хватает, прогонит анализатор и тесты и соберёт APK.
-Сборка не выдаётся, если что-то красное.
+Нормальный путь:
 
-Три способа получить приложение — своя машина, CI по требованию, браузер —
-описаны в `docs/BUILD.md`. Подпись и выкладка в Play — `docs/ANDROID_SIGNING.md`.
+`logical batch → green PR → merge → explicit Cumulative production release → exact accepted source SHA → canonical VPS/APK workflows`
 
-Основные CI-контуры:
+Основные workflows:
 
-| Workflow | Когда идёт | Что гарантирует |
-|---|---|---|
-| `quality.yml` | PR, вручную, из delivery-workflows | PostgreSQL pytest, миграции/импорты, Flutter analyze/test, secret scan |
-| `android-sideload.yml` | вручную с обязательным `source_ref` или по тегу `sideload-*` | тот же SHA проходит QA и сборку, постоянная подпись из Secrets, provenance рядом с APK |
-| `android-release.yml` | тег `v*`, плюс кнопка | AAB/APK для Play, подписанный release-key из GitHub Secrets |
+| Workflow | Назначение |
+|---|---|
+| `quality.yml` | обязательный Quality Gate |
+| `release-cumulative.yml` | явный cumulative release логического этапа |
+| `deploy-release.yml` | канонический VPS deploy exact source ref |
+| `android-sideload.yml` | permanent-signed sideload APK exact source ref |
+| `android-release.yml` | release/Play build |
 
-Sideload и release без постоянного ключа падают намеренно: временная подпись
-ломает обновление поверх уже установленного APK. Для sideload можно использовать
-отдельный комплект `SIDELOAD_*` или существующий полный `ANDROID_*`. Общий
-bearer-token в APK не компилируется. Стабильная ссылка sideload сохраняется, а
-точные ref, commit SHA, хеш APK и сертификат записываются в metadata.
+Промежуточные коммиты не требуют APK/VPS deploy. Hotfix/rollback/ops — явные исключения.
+
+Подробности: `docs/DEVELOPMENT_PROCESS.md`, `docs/BUILD.md`, `docs/ANDROID_SIGNING.md`.
 
 ## Структура
 
-```
-lib/
-  main.dart              точка входа, выбор репозитория (сервер или демо)
-  theme/                 токены макета: цвета, радиусы, типографика
-  core/format.dart       форматирование чисел (узкий пробел, запятая, U+2212)
-  domain/                модели и перечисления предметной области
-    enums.dart           направление, горизонт, рынок, статус-машина сигнала
-    models/              сигнал, позиции, журнал, стратегии, настройки
-    position_sizing.dart расчёт объёма для отображения
-  data/
-    repository.dart      контракт данных
-    api/                 HTTP-клиент и REST-реализация (docs/API.md)
-    mock/                данные макета для демо-режима
-  state/                 контроллер приложения и доступ к нему
-  ui/
-    app_shell.dart       каркас: экран, навигация, шит, тост
-    screens/             пять экранов макета
-    widgets/             график, спарклайн, кольцо скора, иконки, шит, тост
-design/                  исходный экспорт макета (ТЗ §9)
-docs/                    API, секреты, подпись Android
+```text
+lib/                    Flutter thin client
+  data/api/             server API clients and owner decisions
+  data/broker/          device broker/sandbox adapters
+  domain/               domain contracts
+  ui/                   screens/widgets
+android/                native Android/Keystore boundary
+server/                 source-of-truth backend, scheduler, research, lifecycle
+.github/workflows/      QA, signing and delivery
+docs/                   roadmap, API, process, secrets, ADR
 ```
 
-Внешних зависимостей нет — только Flutter SDK. В приложении, которое подтверждает
-сделки, чем меньше стороннего кода, тем лучше.
+## Безопасность
 
-## Соответствие макету
+Базовые инварианты:
 
-Перенесено дословно, а не «на глаз»:
+- секреты не коммитятся, не логируются и не встраиваются в APK;
+- HMAC secret values не экспортируются из native vault в Dart и используются через native signing boundary;
+- withdrawal permission не требуется и не должна выдаваться;
+- analytics/read и execution credentials разделяются, если провайдер это позволяет;
+- auth, reconciliation, source validation и protection fail closed;
+- повтор/рестарт не должен создавать второе внешнее действие;
+- backtest, paper, sandbox и live не смешиваются.
 
-* график сделки (`ui/widgets/trade_chart.dart`) сохраняет визуальный язык
-  макета — зоны риска и профита, пунктиры входа/SL/TP, ценовые чипы на шкале,
-  пульсирующий маркер цены — но рисует **реальные свечи**, которые сервер
-  связал с идеей, с тегом таймфрейма в углу. Разметка (BOS/CHoCH, FVG)
-  наносится только из серверных доказательств; синтетических
-  свечей из опорных точек макета больше нет;
-* иконки — разбор тех же SVG-путей (`ui/widgets/svg_path.dart`), без перерисовки;
-* цвета, радиусы, отступы и размеры шрифтов — из `theme/tokens.dart`;
-* шрифты Jost / Manrope / JetBrains Mono вшиты в сборку.
-
-Что сознательно отличается от прототипа:
-
-* панель Tweaks стала редактируемыми полями «Депозит» и «Риск на сделку» в
-  разделе «Риск-профиль» — объёмы позиций пересчитываются во всём приложении;
-* статус идеи (`Новая` / `В работе`) считается по статус-машине сигнала из ТЗ,
-  а не по локальному флагу;
-* доли фиксации по тейкам приходят с сервера. В макете и демо-данных 50/30/20,
-  в ТЗ §6.5 как дефолт указано 40/40/20 — значение задаётся конфигом стратегии.
-
-## Что ещё не сделано
-
-Из ТЗ §9 в этой версии нет экранов Watchlist (сигналы 60–74) и «Отчёт дня», нет
-биометрии на подтверждение, пушей FCM и красной кнопки kill switch. Каркас под
-них есть: статусы, репозиторий и модели это учитывают.
+Детали credential boundaries: `docs/SECRETS.md`.
 
 ## Дисклеймер
 
-Аналитика, а не индивидуальная инвестиционная рекомендация. Торговля фьючерсами
-и криптовалютой с плечом несёт риск потери всех средств. Система действует
-только по подтверждению владельца счетов.
-
-## Режимы работы
-
-Персональная поставка разрешает только `thin` и `demo`; по умолчанию
-собирается `thin`. Старый `local` оставлен только как legacy-код на время
-миграции: в workflow и `tool/build_apk.sh` его выбрать нельзя.
-
-| Режим | Откуда данные и логика | Что делает телефон |
-|---|---|---|
-| `thin` | сервер: идеи, графики, риск, paper lifecycle и фоновое сопровождение | показывает состояние и передаёт решение владельца |
-| `demo` | фикстуры макета | показывает UI; цифры нерыночные |
-
-В `thin` телефон не запускает локальный скринер и не обращается к биржам
-в обход гейтвея. Поэтому идеи и paper-сделки продолжают жить, когда
-приложение закрыто; при недоступном сервере клиент показывает ошибку, а не
-переключается молча на другую логику.
-
-Первая привязка пока ручная: владелец вводит один раз заранее сохранённый
-`SIGNALAI_DEVICE_TOKEN`, который deploy workflow записывает на VPS. Клиент
-этой итерации хранит его в Android Keystore. Автоматического pairing endpoint
-ещё нет — это отдельный следующий контракт.
+Система предназначена для личного использования владельцем счетов. Торговля фьючерсами и криптовалютой может привести к значительным убыткам; наличие сигнала или автоматизированного контура не является гарантией результата.
