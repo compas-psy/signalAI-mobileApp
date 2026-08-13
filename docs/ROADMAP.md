@@ -8,39 +8,54 @@ SignalAI должен максимизировать долгосрочный р
 
 Постоянный рост Equity не гарантируется. Изменения trading logic не оцениваются только по in-sample backtest.
 
-## Текущее production-состояние
+## Где мы находимся
 
-Последний подтверждённый production source SHA перед foundation-настройкой:
+**Production runtime** пока остаётся на source SHA:
 `0484a46efe92877bbb8e16abf68bb12b16af0c42`.
 
-Уже есть thin-client/server source of truth, owner approve/reject, server-side paper lifecycle, FORTS/crypto live progress, T‑Invest Sandbox mirror, Risk & Exit Engine v2, portfolio signals и Telegram notifications с deep links.
+**Текущий default-branch HEAD** после foundation и Android vault hardening:
+`c7c0d9a011734c0b793b7709b2d7478f5721df3c`.
 
-## NOW — P−1 · Project Operating System
+Эти SHA различаются намеренно: merge в default branch больше не является production release. Foundation/docs/security changes не требовали немедленного APK/VPS deploy.
 
-Foundation реализуется PR #38.
+Уже есть thin-client/server source of truth, owner approve/reject, server-side paper lifecycle, FORTS/crypto live progress, T‑Invest Sandbox mirror, Risk & Exit Engine v2, Portfolio Signals и Telegram notifications с deep links.
+
+## P−1 · Project Operating System — практически завершён
+
+PR #38 слит после exact-head Quality Gate #168. PR #44 с Android native vault boundary слит после exact-head Quality Gate #170.
 
 - [x] `AGENTS.md` фиксирует product objective, engineering/security invariants, Context7/skills policy и cumulative delivery.
 - [x] Добавлены ADR-процесс, шаблон и ADR-0001 promotion gates.
-- [x] `ROADMAP.md` — текущая точка правды; `HANDOFF.md` остаётся историей.
+- [x] `ROADMAP.md` — текущая точка правды; `HANDOFF.md` считается историческим материалом.
 - [x] `Cumulative production release` больше не запускается на каждый push; trigger manual-only.
 - [x] Один explicit release dispatch запускает не более одного canonical VPS и одного canonical APK workflow.
 - [x] Issue #6 обновлён под текущий device acceptance.
 - [x] Issue #4 очищен от зависимости на закрытый PR #3.
 - [x] `SECRETS.md` приведён к фактическому device-only T‑Invest Sandbox boundary.
-- [ ] Runtime enforcement immutable current-default SHA — issue #41.
-- [ ] PR #38 должен быть слит только после exact-head green Quality Gate; merge сам по себе production release не запускает.
+- [x] HMAC `*.secret` больше нельзя экспортировать из Android native vault через generic `vaultGet`; CI проверяет этот инвариант.
+- [ ] Runtime enforcement immutable current-default release SHA — issue #41.
 
-## NEXT — P0 · Production reliability & observability
-
-Backlog: issue #6 и issue #39.
+## NOW — P0 · Production reliability, execution correctness, observability
 
 Канонический цикл:
 
-`signal → notification → idea detail → owner decision → execution/paper/sandbox → management → exit → journal → metrics`.
+`signal → notification → idea detail → owner decision → paper/sandbox delivery → management → exit → journal → metrics`.
 
-Нужны crash/error telemetry с redaction, data-quality telemetry, reconciliation telemetry, runtime health для scheduler/outbox/adapters и Samsung smoke/soak tests. Каждый пользовательский дефект превращается в reproducible regression test.
+### P0 backlog
 
-Gate выхода: нет известных blocker/crash в основном end-to-end сценарии, а сбой диагностируется без временной forensic-ветки.
+- **#6 Device acceptance & runtime stability** — реальный Samsung smoke/soak test.
+- **#39 Runtime observability and end-to-end health** — crash/error/data-quality/reconciliation diagnostics без утечки секретов.
+- **#45 Replay-safe and durable sandbox mirror** — server decision и provider delivery должны быть двумя отдельными идемпотентными состояниями; retry/restart обязан сходиться к одной доставке.
+- **#43 VPS SSH host identity** — production SSH delivery не должен строить доверие только на live `ssh-keyscan`.
+- **#41 Immutable cumulative release source** — QA/VPS/APK должны использовать один уже зафиксированный SHA.
+
+### Главный новый blocker перед controlled live
+
+В `SandboxMirroringEngineClient` повторный owner decision с `idempotentReplay=true` сейчас прекращает broker mirror. Если первый server response потерян или процесс умер между decision и provider delivery, server decision уже существует, а sandbox delivery может так и не быть восстановлена.
+
+Дополнительно T‑Invest adapter сейчас генерирует provider `orderId` от времени. Поэтому слепой retry может стать новой заявкой. Для #45 нужен стабильный provider identity от immutable `TradeIdea.id` + durable delivery state + reconciliation перед повторной отправкой.
+
+Gate выхода P0: нет известных blocker/crash в основном end-to-end сценарии; ambiguous retry/restart не создаёт дубль и не теряет delivery; сбой диагностируется без временной forensic-ветки.
 
 ## P0.5 · Strategy measurement
 
