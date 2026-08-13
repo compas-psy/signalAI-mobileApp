@@ -54,3 +54,23 @@ def test_non_xlsx_target_is_rejected():
     """
     with pytest.raises(rosstat_prices.DatasetNotFound):
         rosstat_prices.discover_workbook(html)
+
+
+def test_external_host_is_rejected_even_with_exact_title():
+    html = """
+    <a href="https://example.org/producer-prices.xlsx">
+      Средние цены производителей промышленных товаров (услуг) с 1998 г.
+    </a>
+    """
+    with pytest.raises(rosstat_prices.DatasetNotFound):
+        rosstat_prices.discover_workbook(html)
+
+
+def test_plain_http_is_rejected_even_on_official_host():
+    html = """
+    <a href="http://rosstat.gov.ru/storage/mediabank/producer-prices.xlsx">
+      Средние цены производителей промышленных товаров (услуг) с 1998 г.
+    </a>
+    """
+    with pytest.raises(rosstat_prices.DatasetNotFound):
+        rosstat_prices.discover_workbook(html)
