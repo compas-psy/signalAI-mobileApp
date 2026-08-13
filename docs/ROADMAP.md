@@ -8,39 +8,47 @@ SignalAI должен максимизировать долгосрочный р
 
 Постоянный рост Equity не гарантируется. Изменения trading logic не оцениваются только по in-sample backtest.
 
-## Текущее production-состояние
+## Текущее состояние
 
-Последний подтверждённый production source SHA перед foundation-настройкой:
+Последний подтверждённый **production source SHA**:
 `0484a46efe92877bbb8e16abf68bb12b16af0c42`.
+
+Текущий **default-branch SHA** после foundation/security/research merges:
+`755a72ed35b19c358a9c281e4562b498ff1d97a6`.
+
+Merge в default не является production release, поэтому эти два SHA сейчас намеренно различаются.
 
 Уже есть thin-client/server source of truth, owner approve/reject, server-side paper lifecycle, FORTS/crypto live progress, T‑Invest Sandbox mirror, Risk & Exit Engine v2, portfolio signals и Telegram notifications с deep links.
 
-## NOW — P−1 · Project Operating System
+## DONE · Project Operating System foundation
 
-Foundation реализуется PR #38.
+Foundation PR #38 слит после exact-head green Quality Gate. Security follow-up PR #44 также слит.
 
 - [x] `AGENTS.md` фиксирует product objective, engineering/security invariants, Context7/skills policy и cumulative delivery.
 - [x] Добавлены ADR-процесс, шаблон и ADR-0001 promotion gates.
 - [x] `ROADMAP.md` — текущая точка правды; `HANDOFF.md` остаётся историей.
-- [x] `Cumulative production release` больше не запускается на каждый push; trigger manual-only.
+- [x] `Cumulative production release` manual-only; merge сам production delivery не запускает.
 - [x] Один explicit release dispatch запускает не более одного canonical VPS и одного canonical APK workflow.
 - [x] Issue #6 обновлён под текущий device acceptance.
-- [x] Issue #4 очищен от зависимости на закрытый PR #3.
-- [x] `SECRETS.md` приведён к фактическому device-only T‑Invest Sandbox boundary.
+- [x] Issue #4 больше не зависит от закрытого PR #3.
+- [x] `SECRETS.md` соответствует device-only T‑Invest Sandbox boundary.
+- [x] Android native boundary не экспортирует `*.secret` через generic `vaultGet` (PR #44).
 - [ ] Runtime enforcement immutable current-default SHA — issue #41.
-- [ ] PR #38 должен быть слит только после exact-head green Quality Gate; merge сам по себе production release не запускает.
+- [ ] Pin VPS SSH host authenticity вместо live TOFU — issue #43.
 
-## NEXT — P0 · Production reliability & observability
+## NOW — P0 · Execution reliability & observability
 
-Backlog: issue #6 и issue #39.
+Backlog: issue #45, issue #39 и issue #6.
 
 Канонический цикл:
 
 `signal → notification → idea detail → owner decision → execution/paper/sandbox → management → exit → journal → metrics`.
 
-Нужны crash/error telemetry с redaction, data-quality telemetry, reconciliation telemetry, runtime health для scheduler/outbox/adapters и Samsung smoke/soak tests. Каждый пользовательский дефект превращается в reproducible regression test.
+Главный execution blocker — #45: decision idempotency уже есть, но T‑Invest Sandbox mirror должен стать отдельной durable/replay-safe delivery state machine со стабильным provider order id и repair после restart/ambiguous response.
 
-Gate выхода: нет известных blocker/crash в основном end-to-end сценарии, а сбой диагностируется без временной forensic-ветки.
+По observability серверный `/health` уже показывает version/config hash, execution mode, paper-only, kill switch и DB status. Следующий минимальный mobile slice — bounded redacted local crash/error history поверх существующего `LocalStore`, затем wiring глобальных Flutter/async error boundaries. Нужны также data-quality/reconciliation counters и Samsung smoke/soak из #6.
+
+Gate выхода: нет известных blocker/crash в основном end-to-end сценарии, а сбой диагностируется и после перезапуска приложения.
 
 ## P0.5 · Strategy measurement
 
@@ -54,12 +62,29 @@ Measurement layer разделяет backtest / paper / sandbox / live и счи
 
 Backlog: issue #4.
 
-Ближайшие независимые фундаментальные каналы:
+### HIRING
 
-1. `HIRING` — структурные изменения вакансий через официальный источник;
-2. `SPREAD` — отраслевой margin spread на официальных рядах с lag/coverage controls.
+HIRING уже не нужно строить с нуля: в default есть официальный `trudvsem` adapter, `hiring.py`, `hiring_runtime.py`, scheduler wiring, tests/legal checks, `modifiedFrom`, pagination и выход в common research pipeline.
 
-Принцип:
+Оставшиеся correctness gaps:
+
+1. employer → issuer fallback должен быть fail-closed: strong INN выигрывает, но substring brand match без strong identifier недопустим;
+2. runtime должен применять/persist first-seen availability / `tradable_at`, а не только publication/modification timestamp;
+3. проверить durable first-seen и republishing dedupe на live coverage.
+
+### SPREAD
+
+Deterministic `engines/spread.py` уже реализован: period averages, product/input coefficients, revenue/cost coverage, contract lag, hedging, vertical integration, outage/capturability. Не хватает production runtime/ingestion.
+
+PR #48 слит: появился fail-closed discovery актуального официального Rosstat XLSX «Средние цены производителей промышленных товаров (услуг) с 1998 г.» по стабильной странице-каталогу, только HTTPS + Rosstat host + exact dataset title. Неполный XLSX-reader эксперимент #49 закрыт и в default не попадал.
+
+Следующий SPREAD chain:
+
+`official Rosstat/EIA/CBR series → fixed sector basket → period-average Period[] → spread.evaluate() → SignalInput → fusion/pipeline`.
+
+Workbook schema не угадывать: сначала получить и зафиксировать реальную структуру официального vintage-файла/fixture, затем parser. Недостаточные/пропавшие серии должны давать explicit no-signal reason.
+
+Общий принцип research:
 
 `raw source → Observation(tradable_at/provenance) → engine → fusion → hypothesis → D1 technical overlay → owner-facing action`.
 
