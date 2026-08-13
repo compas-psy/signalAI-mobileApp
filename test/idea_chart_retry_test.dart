@@ -1,77 +1,75 @@
+import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:signalai/data/market/idea_chart_source.dart';
-import 'package:signalai/data/mock/demo_repository.dart';
-import 'package:signalai/domain/enums.dart';
+import 'package:signalai/data/api/engine_contract.dart';
+import 'package:signalai/data/api/live_idea_source.dart';
+import 'package:signalai/data/mock/demo_ideas.dart';
 import 'package:signalai/domain/idea/idea.dart';
-import 'package:signalai/domain/idea/idea_state.dart';
-import 'package:signalai/domain/idea/quality_score.dart';
 import 'package:signalai/domain/models/signal.dart';
-import 'package:signalai/state/app_controller.dart';
+import 'package:signalai/ui/widgets/idea_chart_card.dart';
+import 'package:signalai/ui/widgets/trade_chart.dart';
 
-class _FlakyChartSource extends IdeaChartSource {
+class _FlakyLiveSource extends LiveIdeaSource {
   int attempts = 0;
 
   @override
-  Future<SignalChart?> load(
-    Idea idea, {
-    String timeframe = '',
-    void Function(String reason)? onFailure,
-  }) async {
+  Future<LiveIdeaData> load(Idea idea, {required String timeframe}) async {
     attempts += 1;
-    if (attempts == 1) {
-      onFailure?.call('временный сетевой сбой');
-      return null;
-    }
-    return SignalChart(
-      timeframeLabel: timeframe,
-      candles: [
-        ChartCandle(100, 102, 99, 101, DateTime.utc(2026, 8, 13, 10)),
-        ChartCandle(101, 103, 100, 102, DateTime.utc(2026, 8, 13, 14)),
-      ],
+    if (attempts == 1) return const LiveIdeaData();
+    return LiveIdeaData(
+      generatedAt: DateTime.utc(2026, 8, 13, 12),
+      liveOverlay: true,
+      chart: SignalChart(
+        timeframeLabel: '1h',
+        candles: [
+          ChartCandle(100, 102, 99, 101, DateTime.utc(2026, 8, 13, 10)),
+          ChartCandle(101, 103, 100, 102, DateTime.utc(2026, 8, 13, 11)),
+        ],
+      ),
     );
   }
 }
 
-Idea _idea() => Idea(
-      id: 'chart-retry',
-      instrumentId: 'MOEX:FUT:TEST',
-      instrumentName: 'Test',
-      market: Market.forts,
-      direction: Direction.long,
-      strategy: SetupStrategy.trendPullback,
-      strategyVersion: 'test',
-      state: IdeaState.watch,
-      score: const QualityScore.empty(),
-      createdAt: DateTime.utc(2026, 8, 13, 9),
-      validUntil: DateTime.utc(2026, 8, 14, 9),
-      thesis: '',
-      plan: null,
-      timeframes: const ['1d', '4h', '1h'],
-    );
-
 void main() {
-  TestWidgetsFlutterBinding.ensureInitialized();
+  testWidgets('ошибочный график можно повторно запросить из карточки',
+      (tester) async {
+    final idea = DemoIdeas.all(DateTime.utc(2026, 8, 13)).first;
+    final signal = EngineContract.signalFrom(idea);
+    final source = _FlakyLiveSource();
+    final layers = <ChartLayer>{ChartLayer.candles};
 
-  test('повторная загрузка после временного отказа снова спрашивает источник',
-      () async {
-    final source = _FlakyChartSource();
-    final controller = AppController(
-      DemoRepository(),
-      chartSource: source,
+    await tester.pumpWidget(
+      Directionality(
+        textDirection: TextDirection.ltr,
+        child: SizedBox(
+          width: 420,
+          child: IdeaChartCard(
+            signal: signal,
+            idea: idea,
+            timeframe: '4h',
+            failed: true,
+            failureReason: 'временный сбой',
+            liveSource: source,
+            available: layers,
+            visible: layers,
+            highlight: const {},
+            onToggle: (_) {},
+          ),
+        ),
+      ),
     );
-    addTearDown(controller.dispose);
-    final idea = _idea();
+    await tester.pump();
+    await tester.pump();
 
-    await controller.loadIdeaChart(idea);
     expect(source.attempts, 1);
-    expect(controller.ideaChartFailed(idea), isTrue);
-    expect(controller.ideaChartFailureReason(idea), contains('временный сетевой сбой'));
+    expect(find.text('Повторить'), findsOneWidget);
+    expect(find.textContaining('временный сбой'), findsOneWidget);
 
-    await controller.loadIdeaChart(idea);
+    await tester.tap(find.text('Повторить'));
+    await tester.pump();
+    await tester.pump();
 
     expect(source.attempts, 2);
-    expect(controller.ideaChartFailed(idea), isFalse);
-    expect(controller.ideaChartFailureReason(idea), isEmpty);
-    expect(controller.ideaChart(idea.id, timeframe: '4h'), isNotNull);
+    expect(find.text('Повторить'), findsNothing);
+    expect(find.byType(TradeChart), findsOneWidget);
   });
 }
