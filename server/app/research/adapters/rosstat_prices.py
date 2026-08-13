@@ -7,6 +7,8 @@ instead of pinning a dated media-bank URL. Workbook parsing is a separate slice.
 
 from __future__ import annotations
 
+import re
+from dataclasses import dataclass
 from html.parser import HTMLParser
 from urllib.parse import urljoin, urlparse
 
@@ -14,6 +16,8 @@ SOURCE_ID = "rosstat"
 CATALOG_URL = "https://rosstat.gov.ru/statistics/price"
 DATASET_TITLE = "Средние цены производителей промышленных товаров (услуг) с 1998 г."
 _ALLOWED_HOSTS = {"rosstat.gov.ru", "www.rosstat.gov.ru"}
+_OKPD2 = re.compile(r"^\d{2}(?:\.\d{1,3}){1,4}$")
+_OKEI = re.compile(r"^\d{3}$")
 
 
 class DatasetNotFound(LookupError):
@@ -22,6 +26,38 @@ class DatasetNotFound(LookupError):
 
 class AmbiguousDataset(LookupError):
     """The catalogue contains more than one exact usable dataset link."""
+
+
+class InvalidProductIdentity(ValueError):
+    """The row has no usable OKPD2/OKEI identity."""
+
+
+@dataclass(frozen=True, slots=True)
+class ProductIdentity:
+    okpd2: str
+    okei: str
+    name: str
+
+    @classmethod
+    def create(cls, *, okpd2: str, okei: str, name: str) -> "ProductIdentity":
+        normalized_okpd2 = okpd2.strip()
+        normalized_okei = okei.strip()
+        normalized_name = " ".join(name.split())
+        if not _OKPD2.fullmatch(normalized_okpd2):
+            raise InvalidProductIdentity("invalid OKPD2")
+        if not _OKEI.fullmatch(normalized_okei):
+            raise InvalidProductIdentity("invalid OKEI")
+        if not normalized_name:
+            raise InvalidProductIdentity("empty product name")
+        return cls(
+            okpd2=normalized_okpd2,
+            okei=normalized_okei,
+            name=normalized_name,
+        )
+
+    @property
+    def key(self) -> tuple[str, str]:
+        return (self.okpd2, self.okei)
 
 
 class _Links(HTMLParser):
@@ -87,6 +123,8 @@ __all__ = [
     "CATALOG_URL",
     "DATASET_TITLE",
     "DatasetNotFound",
+    "InvalidProductIdentity",
+    "ProductIdentity",
     "SOURCE_ID",
     "discover_workbook",
 ]
