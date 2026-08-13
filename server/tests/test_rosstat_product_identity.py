@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import pytest
 
-from app.research.rosstat_product import InvalidProductIdentity, ProductIdentity
+from app.research.adapters import rosstat_prices
 
 
 def test_product_identity_uses_okpd2_and_okei_as_semantic_key():
-    product = ProductIdentity.create(
+    product = rosstat_prices.ProductIdentity.create(
         okpd2=" 02.20.11.110 ",
         okei="121",
         name="  Лесоматериалы   круглые хвойных пород  ",
@@ -28,17 +28,17 @@ def test_product_identity_uses_okpd2_and_okei_as_semantic_key():
     ],
 )
 def test_invalid_semantic_identity_fails_closed(okpd2: str, okei: str, name: str):
-    with pytest.raises(InvalidProductIdentity):
-        ProductIdentity.create(okpd2=okpd2, okei=okei, name=name)
+    with pytest.raises(rosstat_prices.InvalidProductIdentity):
+        rosstat_prices.ProductIdentity.create(okpd2=okpd2, okei=okei, name=name)
 
 
 def test_name_does_not_change_identity_key():
-    left = ProductIdentity.create(
+    left = rosstat_prices.ProductIdentity.create(
         okpd2="02.20.11.110",
         okei="121",
         name="Лесоматериалы",
     )
-    right = ProductIdentity.create(
+    right = rosstat_prices.ProductIdentity.create(
         okpd2="02.20.11.110",
         okei="121",
         name="Уточнённое наименование",
