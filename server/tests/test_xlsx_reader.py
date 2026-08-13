@@ -5,7 +5,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
 
-from app.research.adapters import rosstat_prices
+from app.research import xlsx_reader
 
 
 def workbook() -> bytes:
@@ -31,11 +31,11 @@ def workbook() -> bytes:
 
 
 def test_reads_sheet_cells_and_preserves_missing_columns():
-    assert rosstat_prices.read_xlsx(workbook()) == {
+    assert xlsx_reader.read_xlsx(workbook()) == {
         "Data": [["Item", "Unit", "Period"], ["Item A", "", "123.45"]]
     }
 
 
 def test_invalid_xlsx_fails_closed():
-    with pytest.raises(rosstat_prices.WorkbookFormatError):
-        rosstat_prices.read_xlsx(b"not-a-workbook")
+    with pytest.raises(xlsx_reader.WorkbookFormatError):
+        xlsx_reader.read_xlsx(b"not-a-workbook")
