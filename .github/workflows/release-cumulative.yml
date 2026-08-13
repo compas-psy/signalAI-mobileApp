@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       source_ref:
-        description: 'Accepted source ref to release'
+        description: 'Accepted immutable 40-char commit SHA to release'
         required: true
         type: string
 
