@@ -24,13 +24,6 @@ class NativeChannel(private val context: Context) {
 
     private val vault by lazy { Vault(context) }
 
-    /**
-     * Заряд, питание и режим энергосбережения.
-     *
-     * Читается через sticky-broadcast: подписка на изменения здесь не нужна
-     * и вредна — bounded poll запускается примерно раз в 15 минут, а живой
-     * приёмник будил бы процесс на каждый процент заряда.
-     */
     private fun powerState(): Map<String, Any> {
         val status = context.registerReceiver(
             null, IntentFilter(Intent.ACTION_BATTERY_CHANGED),
@@ -40,26 +33,27 @@ class NativeChannel(private val context: Context) {
         val plugged = status?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0
         val power = context.getSystemService(Context.POWER_SERVICE) as PowerManager
         return mapOf(
-            // −1 значит «неизвестно»: подставлять сюда сотню значит решить,
-            // что заряд полный, и разрядить телефон на этом допущении.
             "percent" to if (level >= 0 && scale > 0) level * 100 / scale else -1,
             "charging" to (plugged != 0),
             "saver" to (Build.VERSION.SDK_INT >= 21 && power.isPowerSaveMode),
         )
     }
 
+    /**
+     * Только значения, которые по протоколу обязаны попасть в Dart, можно
+     * читать из Keystore через MethodChannel. Биржевой HMAC-secret всегда
+     * хранится как `*.secret` и используется только через vaultSign.
+     */
+    private fun readableVaultName(name: String): Boolean =
+        name.isNotBlank() && !name.endsWith(".secret")
+
     /** true — метод обработан. */
     fun handle(call: MethodCall, result: MethodChannel.Result): Boolean {
         when (call.method) {
             "filesDir" -> result.success(context.filesDir.absolutePath)
 
-            // Версия берётся у системы, а не хардкодится в интерфейсе: в
-            // карточке «О приложении» должно стоять то, что реально стоит на
-            // устройстве, иначе она бесполезна при разборе «что за сборка».
             "appVersion" -> {
                 val info = context.packageManager.getPackageInfo(context.packageName, 0)
-                // versionCode, а не longVersionCode: последний появился в API 28,
-                // а минимальная версия приложения — 24.
                 @Suppress("DEPRECATION")
                 val code = info.versionCode
                 result.success("${info.versionName} ($code)")
@@ -75,17 +69,10 @@ class NativeChannel(private val context: Context) {
                 ),
             )
 
-            // Снятие уведомления. Отдельная команда, а не побочный эффект
-            // показа: отработавшая идея должна исчезать из шторки, даже
-            // если нового уведомления вместо неё не будет.
             "cancelNotification" -> result.success(
                 Notifications.cancel(context, call.argument<Int>("id") ?: 0),
             )
 
-            // Состояние питания. Фоновый контур решает по нему, как часто
-            // просыпаться: круглосуточный часовой пересчёт на телефоне с
-            // 15% заряда — это не «постоянное наблюдение», а разряженный к
-            // вечеру телефон.
             "powerState" -> result.success(powerState())
 
             "vaultAvailable" -> result.success(vault.isAvailable())
@@ -103,7 +90,14 @@ class NativeChannel(private val context: Context) {
 
             "vaultHas" -> result.success(vault.has(call.argument<String>("name") ?: ""))
 
-            "vaultGet" -> result.success(vault.get(call.argument<String>("name") ?: ""))
+            "vaultGet" -> {
+                val name = call.argument<String>("name") ?: ""
+                if (!readableVaultName(name)) {
+                    result.error("forbidden", "значение этого секрета не экспортируется", null)
+                } else {
+                    result.success(vault.get(name))
+                }
+            }
 
             "vaultDelete" -> {
                 vault.delete(call.argument<String>("name") ?: "")
