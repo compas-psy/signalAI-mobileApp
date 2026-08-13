@@ -34,8 +34,7 @@ void main() {
       (tester) async {
     final idea = DemoIdeas.all(DateTime.utc(2026, 8, 13)).first;
     final signal = EngineContract.signalFrom(idea);
-    final source = _FlakyLiveSource();
-    final layers = <ChartLayer>{ChartLayer.candles};
+    final layers = idea.availableLayers;
 
     await tester.pumpWidget(
       Directionality(
