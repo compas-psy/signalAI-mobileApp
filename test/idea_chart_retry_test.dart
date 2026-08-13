@@ -65,11 +65,13 @@ void main() {
     await controller.loadIdeaChart(idea);
     expect(source.attempts, 1);
     expect(controller.ideaChartFailed(idea), isTrue);
+    expect(controller.ideaChartFailureReason(idea), contains('временный сетевой сбой'));
 
     await controller.loadIdeaChart(idea);
 
     expect(source.attempts, 2);
     expect(controller.ideaChartFailed(idea), isFalse);
+    expect(controller.ideaChartFailureReason(idea), isEmpty);
     expect(controller.ideaChart(idea.id, timeframe: '4h'), isNotNull);
   });
 }
