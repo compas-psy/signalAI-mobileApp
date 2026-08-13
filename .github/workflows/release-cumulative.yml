@@ -1,15 +1,17 @@
 name: Cumulative production release
-run-name: Release · ${{ github.sha }}
+run-name: Release · ${{ inputs.source_ref }}
 
 on:
-  push:
-    branches:
-      - 'claude/release-y40hk5'
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: 'Accepted immutable 40-char commit SHA to release'
+        required: true
+        type: string
 
 permissions:
   contents: read
   actions: write
-  issues: write
 
 concurrency:
   group: signalai-cumulative-production-release
@@ -20,157 +22,37 @@ jobs:
     name: One full quality gate
     uses: ./.github/workflows/quality.yml
     with:
-      source_ref: ${{ github.sha }}
+      source_ref: ${{ inputs.source_ref }}
 
-  deliver:
-    name: Deploy server if changed, then build APK once
+  dispatch:
+    name: Dispatch one server and one APK delivery
     needs: quality
     runs-on: ubuntu-latest
     steps:
-      - name: Verify exact green default SHA
-        uses: actions/checkout@v4
+      - name: Dispatch exact source to canonical delivery workflows
+        uses: actions/github-script@v7
+        env:
+          SOURCE_REF: ${{ inputs.source_ref }}
         with:
-          ref: ${{ github.sha }}
-          fetch-depth: 2
-
-      - name: Verify provenance before delivery
-        env:
-          SOURCE_SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          actual_sha="$(git rev-parse HEAD)"
-          [ "$actual_sha" = "$SOURCE_SHA" ]
-          echo "One full QA passed for exact production SHA $SOURCE_SHA"
-
-      - name: Detect whether VPS source changed
-        id: scope
-        env:
-          BEFORE_SHA: ${{ github.event.before }}
-          SOURCE_SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          zero='0000000000000000000000000000000000000000'
-          changed=true
-          if [ -n "$BEFORE_SHA" ] && [ "$BEFORE_SHA" != "$zero" ] && git cat-file -e "$BEFORE_SHA^{commit}" 2>/dev/null; then
-            git diff --name-only "$BEFORE_SHA" "$SOURCE_SHA" | tee /tmp/release-changed-files
-            if grep -qE '^server/' /tmp/release-changed-files; then
-              changed=true
-            else
-              changed=false
-            fi
-          fi
-          echo "server_changed=$changed" >> "$GITHUB_OUTPUT"
-          if [ "$changed" = true ]; then
-            echo 'VPS source changed: one server deploy is required.'
-          else
-            echo 'No server/** changes: VPS deploy is skipped.'
-          fi
-
-      - name: Start exactly one VPS deploy
-        if: steps.scope.outputs.server_changed == 'true'
-        id: deploy
-        env:
-          GH_TOKEN: ${{ github.token }}
-          SOURCE_SHA: ${{ github.sha }}
-          WORKFLOW_REF: ${{ github.ref_name }}
-        run: |
-          set -euo pipefail
-          before="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          jq -n --arg ref "$WORKFLOW_REF" --arg sha "$SOURCE_SHA" \
-            '{ref:$ref, inputs:{source_ref:$sha}}' > /tmp/deploy.json
-          gh api --method POST \
-            "repos/$GITHUB_REPOSITORY/actions/workflows/deploy-release.yml/dispatches" \
-            --input /tmp/deploy.json
-
-          run_id=''
-          run_url=''
-          for _ in $(seq 1 30); do
-            row="$(gh run list --repo "$GITHUB_REPOSITORY" \
-              --workflow deploy-release.yml --event workflow_dispatch \
-              --branch "$WORKFLOW_REF" --limit 20 \
-              --json databaseId,headSha,createdAt,url \
-              --jq ".[] | select(.headSha == \"$SOURCE_SHA\" and .createdAt >= \"$before\") | @json" \
-              | head -1)"
-            if [ -n "$row" ]; then
-              run_id="$(printf '%s' "$row" | jq -r .databaseId)"
-              run_url="$(printf '%s' "$row" | jq -r .url)"
-              break
-            fi
-            sleep 2
-          done
-          [ -n "$run_id" ] || { echo '::error::VPS deploy run was not observed'; exit 1; }
-          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
-          echo "run_url=$run_url" >> "$GITHUB_OUTPUT"
-          gh issue comment 6 --repo "$GITHUB_REPOSITORY" \
-            --body "Cumulative release \`$SOURCE_SHA\`: VPS deploy started — $run_id — $run_url"
-
-      - name: Wait for VPS deploy success
-        if: steps.scope.outputs.server_changed == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RUN_ID: ${{ steps.deploy.outputs.run_id }}
-        run: gh run watch "$RUN_ID" --repo "$GITHUB_REPOSITORY" --exit-status
-
-      - name: Start exactly one permanent-signed APK build
-        id: apk
-        env:
-          GH_TOKEN: ${{ github.token }}
-          SOURCE_SHA: ${{ github.sha }}
-          WORKFLOW_REF: ${{ github.ref_name }}
-        run: |
-          set -euo pipefail
-          before="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          jq -n --arg ref "$WORKFLOW_REF" --arg sha "$SOURCE_SHA" \
-            '{ref:$ref, inputs:{source_ref:$sha, mode:"thin", api_base_url:"", backup_api_base_url:""}}' \
-            > /tmp/apk.json
-          gh api --method POST \
-            "repos/$GITHUB_REPOSITORY/actions/workflows/android-sideload.yml/dispatches" \
-            --input /tmp/apk.json
-
-          run_id=''
-          run_url=''
-          for _ in $(seq 1 30); do
-            row="$(gh run list --repo "$GITHUB_REPOSITORY" \
-              --workflow android-sideload.yml --event workflow_dispatch \
-              --branch "$WORKFLOW_REF" --limit 20 \
-              --json databaseId,headSha,createdAt,url \
-              --jq ".[] | select(.headSha == \"$SOURCE_SHA\" and .createdAt >= \"$before\") | @json" \
-              | head -1)"
-            if [ -n "$row" ]; then
-              run_id="$(printf '%s' "$row" | jq -r .databaseId)"
-              run_url="$(printf '%s' "$row" | jq -r .url)"
-              break
-            fi
-            sleep 2
-          done
-          [ -n "$run_id" ] || { echo '::error::signed APK run was not observed'; exit 1; }
-          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
-          echo "run_url=$run_url" >> "$GITHUB_OUTPUT"
-          gh issue comment 6 --repo "$GITHUB_REPOSITORY" \
-            --body "Cumulative release \`$SOURCE_SHA\`: signed APK started — $run_id — $run_url"
-
-      - name: Wait for signed APK publication
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RUN_ID: ${{ steps.apk.outputs.run_id }}
-        run: gh run watch "$RUN_ID" --repo "$GITHUB_REPOSITORY" --exit-status
-
-      - name: Record final delivery
-        if: always()
-        env:
-          GH_TOKEN: ${{ github.token }}
-          SOURCE_SHA: ${{ github.sha }}
-          DEPLOY_RUN: ${{ steps.deploy.outputs.run_id }}
-          APK_RUN: ${{ steps.apk.outputs.run_id }}
-          SERVER_CHANGED: ${{ steps.scope.outputs.server_changed }}
-        run: |
-          deploy='skipped-no-server-change'
-          apk='not-started'
-          if [ "$SERVER_CHANGED" = true ] && [ -n "$DEPLOY_RUN" ]; then
-            deploy="$(gh run view "$DEPLOY_RUN" --repo "$GITHUB_REPOSITORY" --json conclusion --jq '.conclusion // "running"')"
-          fi
-          if [ -n "$APK_RUN" ]; then
-            apk="$(gh run view "$APK_RUN" --repo "$GITHUB_REPOSITORY" --json conclusion --jq '.conclusion // "running"')"
-          fi
-          gh issue comment 6 --repo "$GITHUB_REPOSITORY" \
-            --body "Cumulative release \`$SOURCE_SHA\` finished. VPS: **$deploy**. Signed APK: **$apk**."
+          script: |
+            const ref = context.ref.replace('refs/heads/', '');
+            const sourceRef = process.env.SOURCE_REF;
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'deploy-release.yml',
+              ref,
+              inputs: { source_ref: sourceRef },
+            });
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'android-sideload.yml',
+              ref,
+              inputs: {
+                source_ref: sourceRef,
+                mode: 'thin',
+                api_base_url: '',
+                backup_api_base_url: '',
+              },
+            });
