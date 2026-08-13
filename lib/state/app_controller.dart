@@ -729,9 +729,9 @@ class AppController extends ChangeNotifier {
     loadIdeaChart(idea);
   }
 
-  /// Загрузить свечи для идеи на текущем таймфрейме. Повторный вызов ничего
-  /// не делает: разбор перестраивается на каждом кадре анимации, и запрос на
-  /// кадр положил бы и сервер, и батарею.
+  /// Загрузить свечи для идеи на текущем таймфрейме.
+  /// Успешный или уже идущий запрос дедуплицируется; после зафиксированного
+  /// отказа явный повтор разрешён и очищает старое сообщение об ошибке.
   Future<void> loadIdeaChart(Idea idea) async {
     // Пока таймфреймы неизвестны, грузить нечего.
     //
@@ -743,8 +743,14 @@ class AppController extends ChangeNotifier {
     if (idea.timeframes.isEmpty) return;
     final timeframe = ideaTimeframe(idea);
     final key = _chartKey(idea.id, timeframe);
-    if (_ideaChartsAsked.contains(key)) return;
+    final failed = _ideaChartsFailed.contains(key);
+    if (_ideaChartsAsked.contains(key) && !failed) return;
     _ideaChartsAsked.add(key);
+    if (failed) {
+      _ideaChartsFailed.remove(key);
+      _chartFailureReason.remove(key);
+      notifyListeners();
+    }
     // Уступаем микрозадачу перед любой работой. Вызов приходит из `build`
     // разбора, а демо-режим отвечает без единого `await` — и
     // `notifyListeners` попадал внутрь построения дерева: «setState() called
