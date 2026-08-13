@@ -45,3 +45,34 @@ def test_name_does_not_change_identity_key():
     )
 
     assert left.key == right.key
+
+
+def test_observation_code_is_stable_across_label_revisions():
+    left = rosstat_prices.ProductIdentity.create(
+        okpd2="02.20.11.110",
+        okei="121",
+        name="Лесоматериалы",
+    )
+    right = rosstat_prices.ProductIdentity.create(
+        okpd2="02.20.11.110",
+        okei="121",
+        name="Новое наименование того же товара",
+    )
+
+    assert rosstat_prices.observation_type(left) == rosstat_prices.observation_type(right)
+    assert rosstat_prices.observation_type(left) == "rosstat:producer_price:02_20_11_110:121"
+
+
+def test_different_classifier_pair_cannot_share_observation_code():
+    left = rosstat_prices.ProductIdentity.create(
+        okpd2="02.20.11.110",
+        okei="121",
+        name="Лесоматериалы",
+    )
+    right = rosstat_prices.ProductIdentity.create(
+        okpd2="02.20.11.110",
+        okei="796",
+        name="Лесоматериалы",
+    )
+
+    assert rosstat_prices.observation_type(left) != rosstat_prices.observation_type(right)
