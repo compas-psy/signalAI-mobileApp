@@ -22,26 +22,26 @@ def datum(*, modified: datetime) -> VacancyDatum:
         region_name="Москва",
         published_at=datetime(2026, 8, 10, 9, tzinfo=UTC),
         modified_at=modified,
-        salary_from=120000,
-        salary_to=160000,
-        url="https://example.invalid/vacancy-42",
     )
 
 
 def test_same_revision_keeps_original_first_seen_and_deduplicates(session):
     sync_registry(session)
-    issuer = hiring_runtime._issuer(datum(modified=datetime(2026, 8, 12, 10, tzinfo=UTC)))
+    row = datum(modified=datetime(2026, 8, 12, 10, tzinfo=UTC))
+    issuer = hiring_runtime._issuer(row)
     assert issuer is not None
     first_seen = datetime(2026, 8, 13, 10, tzinfo=UTC)
-    later = first_seen + timedelta(days=2)
-    row = datum(modified=datetime(2026, 8, 12, 10, tzinfo=UTC))
 
     assert hiring_runtime._persist_vacancy_observation(
         session, row=row, issuer=issuer, first_seen_at=first_seen, raw_sha256="a" * 64
     )
     session.flush()
     assert not hiring_runtime._persist_vacancy_observation(
-        session, row=row, issuer=issuer, first_seen_at=later, raw_sha256="b" * 64
+        session,
+        row=row,
+        issuer=issuer,
+        first_seen_at=first_seen + timedelta(days=2),
+        raw_sha256="b" * 64,
     )
     session.flush()
 
