@@ -91,18 +91,22 @@ ALIASES: dict[str, tuple[str, ...]] = {
 
 
 def _issuer(row: trudvsem.VacancyDatum) -> Issuer | None:
-    # ИНН сильнее имени и всегда выигрывает.
+    # Если источник дал сильный идентификатор, он либо совпадает точно, либо
+    # строка не сопоставляется вообще. Откат к бренду после чужого ИНН
+    # превращал доказанное другое юрлицо в ложное совпадение.
     if row.employer_inn:
         for issuer in REGISTRY:
             if issuer.inn and issuer.inn == row.employer_inn:
                 return issuer
+        return None
+
     company = _norm(row.employer_name)
     if not company:
         return None
     matches: list[Issuer] = []
     for issuer in REGISTRY:
         aliases = ALIASES.get(issuer.secid, (_norm(issuer.name),))
-        if any(alias and _norm(alias) in company for alias in aliases):
+        if any(alias and _norm(alias) == company for alias in aliases):
             matches.append(issuer)
     # Не выбираем из неоднозначности. Ложная привязка опаснее пропуска.
     return matches[0] if len(matches) == 1 else None
