@@ -1,11 +1,5 @@
 #!/usr/bin/env python3
-"""Fail CI on high-confidence secrets committed to the repository.
-
-The scanner intentionally uses only Python and git so it is available on a
-clean GitHub runner.  It is deliberately conservative: false positives make
-people bypass security checks, so only private-key material, well-known token
-formats and forbidden secret files are rejected.
-"""
+"""Fail CI on high-confidence secrets and broken native secret boundaries."""
 
 from __future__ import annotations
 
@@ -89,6 +83,32 @@ def annotation(path: Path, line: int, message: str) -> None:
     print(f"::error file={relative},line={line}::{message}")
 
 
+def check_native_vault_boundary(root: Path) -> int:
+    relative = Path("android/app/src/main/kotlin/ru/signalai/app/NativeChannel.kt")
+    path = root / relative
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (FileNotFoundError, OSError):
+        annotation(relative, 1, "native channel is missing; secret export boundary cannot be verified")
+        return 1
+
+    required = (
+        'name.endsWith(".secret")',
+        "!readableVaultName(name)",
+        'result.error("forbidden"',
+    )
+    missing = [fragment for fragment in required if fragment not in text]
+    if not missing:
+        return 0
+
+    annotation(
+        relative,
+        1,
+        "native vaultGet must reject non-exportable *.secret values",
+    )
+    return 1
+
+
 def main() -> int:
     root = Path(__file__).resolve().parents[1]
     findings = 0
@@ -121,9 +141,6 @@ def main() -> int:
                     annotation(relative, line_number, f"possible {signature.name}")
                     findings += 1
 
-        # A Dart define is compiled into the APK and can be extracted in
-        # minutes.  The first release uses manual runtime token entry; the
-        # mobile client then stores it in Keystore. Pairing is a later API.
         if relative.as_posix() in {
             ".github/workflows/android-release.yml",
             ".github/workflows/android-sideload.yml",
@@ -138,10 +155,12 @@ def main() -> int:
             )
             findings += 1
 
+    findings += check_native_vault_boundary(root)
+
     if findings:
         print(f"Secret scan failed: {findings} finding(s).", file=sys.stderr)
         return 1
-    print("Secret scan passed: no tracked secret material found.")
+    print("Secret scan passed: no tracked secret material found and native vault boundary holds.")
     return 0
 
 

@@ -48,6 +48,14 @@ class NativeChannel(private val context: Context) {
         )
     }
 
+    /**
+     * Только значения, которые по протоколу обязаны попасть в Dart, можно
+     * читать через MethodChannel. HMAC-значения `*.secret` используются
+     * только через vaultSign и наружу не возвращаются.
+     */
+    private fun readableVaultName(name: String): Boolean =
+        name.isNotBlank() && !name.endsWith(".secret")
+
     /** true — метод обработан. */
     fun handle(call: MethodCall, result: MethodChannel.Result): Boolean {
         when (call.method) {
@@ -103,7 +111,14 @@ class NativeChannel(private val context: Context) {
 
             "vaultHas" -> result.success(vault.has(call.argument<String>("name") ?: ""))
 
-            "vaultGet" -> result.success(vault.get(call.argument<String>("name") ?: ""))
+            "vaultGet" -> {
+                val name = call.argument<String>("name") ?: ""
+                if (!readableVaultName(name)) {
+                    result.error("forbidden", "значение этого секрета не экспортируется", null)
+                } else {
+                    result.success(vault.get(name))
+                }
+            }
 
             "vaultDelete" -> {
                 vault.delete(call.argument<String>("name") ?: "")
