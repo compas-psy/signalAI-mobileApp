@@ -1,0 +1,70 @@
+name: Debug chart retry failures
+
+on:
+  push:
+    branches:
+      - fix/chart-retry-current-20260814
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.8'
+          channel: stable
+          cache: true
+      - name: Resolve locked dependencies
+        run: flutter pub get --enforce-lockfile
+      - name: Targeted controller retry test
+        run: flutter test test/idea_chart_controller_retry_test.dart
+      - name: Targeted widget retry test
+        run: flutter test test/idea_chart_retry_test.dart
+      - name: Full suite with failing-test annotations
+        shell: bash
+        run: |
+          set +e
+          flutter test --machine > /tmp/flutter-tests.jsonl 2>/tmp/flutter-tests.stderr
+          status=$?
+          set -e
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          tests = {}
+          failures = []
+          for raw in Path('/tmp/flutter-tests.jsonl').read_text(errors='replace').splitlines():
+              try:
+                  event = json.loads(raw)
+              except Exception:
+                  continue
+              kind = event.get('type')
+              if kind == 'testStart':
+                  test = event.get('test') or {}
+                  tests[test.get('id')] = {
+                      'name': test.get('name', '<unnamed>'),
+                      'url': test.get('url', ''),
+                  }
+              elif kind == 'testDone' and event.get('result') not in ('success', None):
+                  info = tests.get(event.get('testID'), {})
+                  failures.append((info.get('url', ''), info.get('name', '<unnamed>'), event.get('result')))
+          print(f'FAIL_COUNT={len(failures)}')
+          for url, name, result in failures:
+              path = url.replace('file://', '') if url else '.github'
+              safe = f'{result}: {name}'.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+              print(f'::error file={path},title=Flutter test failed::{safe}')
+          if not failures:
+              stderr = Path('/tmp/flutter-tests.stderr').read_text(errors='replace')[-2000:]
+              if stderr:
+                  safe = stderr.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+                  print(f'::error file=.github,title=Flutter runner failed::{safe}')
+          PY
+          exit "$status"
