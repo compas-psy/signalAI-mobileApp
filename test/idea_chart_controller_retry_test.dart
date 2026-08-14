@@ -70,8 +70,8 @@ void main() {
     controller.addListener(() => notifications += 1);
     final retry = controller.loadIdeaChart(idea);
 
-    // loadIdeaChart вызывается из build карточки. До первого await он не
-    // должен синхронно уведомлять дерево, иначе Flutter получает
+    // loadIdeaChart вызывается из build карточки. До первого асинхронного
+    // yield он не должен уведомлять дерево, иначе Flutter получает
     // «setState/markNeedsBuild during build».
     expect(notifications, 0);
     await retry;
