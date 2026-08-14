@@ -31,9 +31,10 @@ jobs:
           ssh -i ~/.ssh/id_verify -o BatchMode=yes "$USER_NAME@$HOST" 'bash -s' <<'REMOTE'
           set -euo pipefail
           cd "$HOME/signalai/server"
+          ENV_FILE=/etc/signalai/.env
           echo "SOURCE_SHA=$(cat "$HOME/signalai/.signalai-source-sha")"
           echo '--- short-term universe ---'
-          docker compose exec -T postgres sh -lc 'psql -At -U "$POSTGRES_USER" -d "$POSTGRES_DB" <<"SQL"
+          docker compose --env-file "$ENV_FILE" exec -T postgres sh -lc 'psql -At -U "$POSTGRES_USER" -d "$POSTGRES_DB" <<"SQL"
           SELECT venue::text || E'\t' || asset_class::text || E'\t' || count(*)
           FROM instruments
           WHERE in_universe = true
@@ -52,7 +53,7 @@ jobs:
           ORDER BY symbol;
           SQL'
           echo '--- latest scheduler cycle ---'
-          docker compose logs --tail=160 --no-color scheduler | grep -E 'universe:|ingest:|review:|supervise:|scan:' | tail -15
+          docker compose --env-file "$ENV_FILE" logs --tail=160 --no-color scheduler | grep -E 'universe:|ingest:|review:|supervise:|scan:' | tail -15
           REMOTE
       - name: Remove SSH key
         if: always()
