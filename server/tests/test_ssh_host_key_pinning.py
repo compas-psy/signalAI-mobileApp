@@ -25,7 +25,7 @@ def _fake_tool(bin_dir: Path, name: str, body: str) -> None:
 
 def _run_prepare(tmp_path: Path, fingerprint: str) -> subprocess.CompletedProcess[str]:
     bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
+    bin_dir.mkdir(parents=True)
     _fake_tool(
         bin_dir,
         "ssh-keyscan",
