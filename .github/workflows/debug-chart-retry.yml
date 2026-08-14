@@ -1,0 +1,23 @@
+name: Debug chart retry regression
+
+on:
+  push:
+    branches:
+      - fix/chart-retry-current-20260814
+
+permissions:
+  contents: read
+
+jobs:
+  targeted:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.38.5'
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - name: Run chart retry regressions expanded
+        run: flutter test test/idea_chart_controller_retry_test.dart test/idea_chart_retry_test.dart -r expanded
