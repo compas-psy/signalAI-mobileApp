@@ -10,10 +10,11 @@ enum TInvestSandboxMirrorProbeStatus {
   /// The entry exists, but no matching protective stop is visible.
   entryWithoutProtection,
 
-  /// Entry and exactly one matching protective stop are visible.
+  /// Entry and exactly one active/executed matching protective stop are visible.
   protected,
 
-  /// Provider state is internally ambiguous (for example duplicate stops).
+  /// Provider state is internally ambiguous or terminal in a way that cannot
+  /// be repaired by silently placing another order.
   ambiguous,
 
   /// Provider state could not be read safely; do not submit anything.
@@ -66,6 +67,7 @@ class TInvestSandboxMirrorReconciler {
     required String symbol,
     required bool long,
     required double stopPrice,
+    DateTime? stopNotBefore,
   }) async {
     final entry = await _post(
       'GetSandboxOrderState',
@@ -93,6 +95,17 @@ class TInvestSandboxMirrorReconciler {
     final instrumentUid = entry.body['instrumentUid'] as String? ?? '';
     final entryTicker = entry.body['ticker'] as String? ?? symbol;
     final lots = _int(entry.body['lotsRequested']);
+    final entryStatus = entry.body['executionReportStatus'] as String? ?? '';
+    if (entryStatus == 'EXECUTION_REPORT_STATUS_CANCELLED' ||
+        entryStatus == 'EXECUTION_REPORT_STATUS_REJECTED') {
+      return TInvestSandboxMirrorProbe(
+        status: TInvestSandboxMirrorProbeStatus.ambiguous,
+        exchangeOrderId: exchangeOrderId,
+        instrumentUid: instrumentUid,
+        lotsRequested: lots,
+        message: 'Стабильный entry уже имеет терминальный статус $entryStatus',
+      );
+    }
 
     final stops = await _post(
       'GetSandboxStopOrders',
@@ -113,7 +126,8 @@ class TInvestSandboxMirrorReconciler {
 
     final expectedDirection =
         long ? 'STOP_ORDER_DIRECTION_SELL' : 'STOP_ORDER_DIRECTION_BUY';
-    final matches = <Map<String, dynamic>>[];
+    final liveMatches = <Map<String, dynamic>>[];
+    final terminalMatches = <Map<String, dynamic>>[];
     for (final raw in stops.body['stopOrders'] as List<dynamic>? ?? const []) {
       if (raw is! Map<String, dynamic>) continue;
       final ticker = raw['ticker'] as String? ?? '';
@@ -126,19 +140,36 @@ class TInvestSandboxMirrorReconciler {
       if (lots > 0 && rawLots > 0 && rawLots != lots) continue;
       final actualStop = quotationToDouble(raw['stopPrice']);
       if (!_samePrice(actualStop, stopPrice)) continue;
-      matches.add(raw);
+
+      final created = DateTime.tryParse(raw['createDate'] as String? ?? '');
+      if (stopNotBefore != null &&
+          created != null &&
+          created.isBefore(stopNotBefore.toUtc().subtract(const Duration(minutes: 1)))) {
+        continue;
+      }
+
+      final status = raw['status'] as String? ?? '';
+      if (status == 'STOP_ORDER_STATUS_ACTIVE' ||
+          status == 'STOP_ORDER_STATUS_EXECUTED') {
+        liveMatches.add(raw);
+      } else {
+        terminalMatches.add(raw);
+      }
     }
 
-    if (matches.length > 1) {
+    if (liveMatches.length > 1 || terminalMatches.isNotEmpty) {
+      final reason = liveMatches.length > 1
+          ? 'T-Invest Sandbox вернула несколько подходящих защитных стопов'
+          : 'Подходящий защитный стоп найден, но он уже снят/истёк';
       return TInvestSandboxMirrorProbe(
         status: TInvestSandboxMirrorProbeStatus.ambiguous,
         exchangeOrderId: exchangeOrderId,
         instrumentUid: instrumentUid,
         lotsRequested: lots,
-        message: 'T-Invest Sandbox вернула несколько подходящих защитных стопов',
+        message: reason,
       );
     }
-    if (matches.isEmpty) {
+    if (liveMatches.isEmpty) {
       return TInvestSandboxMirrorProbe(
         status: TInvestSandboxMirrorProbeStatus.entryWithoutProtection,
         exchangeOrderId: exchangeOrderId,
