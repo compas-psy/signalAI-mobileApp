@@ -45,8 +45,9 @@ def test_rejects_valid_historical_sha() -> None:
 
 def test_workflow_routes_only_validated_output_downstream() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
-    assert "needs.validate.outputs.source_sha" in workflow
-    assert "source_ref: ${{ needs.validate.outputs.source_sha }}" in workflow
-    assert "SOURCE_REF: ${{ needs.validate.outputs.source_sha }}" in workflow
-    # Raw manual input is allowed only at the validation boundary.
-    assert workflow.count("inputs.source_ref") == 1
+    quality_and_dispatch = workflow.split("  quality:\n", 1)[1]
+
+    assert "needs.validate.outputs.source_sha" in quality_and_dispatch
+    assert "source_ref: ${{ needs.validate.outputs.source_sha }}" in quality_and_dispatch
+    assert "SOURCE_REF: ${{ needs.validate.outputs.source_sha }}" in quality_and_dispatch
+    assert "inputs.source_ref" not in quality_and_dispatch
