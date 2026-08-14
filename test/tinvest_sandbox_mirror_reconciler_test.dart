@@ -13,6 +13,7 @@ class _FakeGateway {
     'instrumentUid': 'UID-SI',
     'ticker': 'SiZ6',
     'lotsRequested': '3',
+    'executionReportStatus': 'EXECUTION_REPORT_STATUS_NEW',
   };
   List<Map<String, dynamic>> stopOrders = [];
   final List<({String method, Map<String, dynamic> body})> calls = [];
@@ -82,10 +83,7 @@ void main() {
     );
 
     expect(result.status, TInvestSandboxMirrorProbeStatus.absent);
-    expect(
-      gateway.calls.first.body['orderIdType'],
-      'ORDER_ID_TYPE_REQUEST',
-    );
+    expect(gateway.calls.first.body['orderIdType'], 'ORDER_ID_TYPE_REQUEST');
     expect(gateway.calls.first.body['orderId'], entryId);
   });
 
@@ -160,5 +158,52 @@ void main() {
       gateway.calls.where((call) => call.method.startsWith('PostSandbox')),
       isEmpty,
     );
+  });
+
+  test('cancelled entry becomes explicit repair state, never a new post', () async {
+    gateway.entryState = {
+      ...gateway.entryState,
+      'executionReportStatus': 'EXECUTION_REPORT_STATUS_CANCELLED',
+    };
+
+    final result = await reconciler.probe(
+      accountId: 'ACC-1',
+      entryRequestId: entryId,
+      symbol: 'SiZ6',
+      long: true,
+      stopPrice: 89500,
+    );
+
+    expect(result.status, TInvestSandboxMirrorProbeStatus.ambiguous);
+    expect(result.message, contains('CANCELLED'));
+    expect(
+      gateway.calls.where((call) => call.method.startsWith('PostSandbox')),
+      isEmpty,
+    );
+  });
+
+  test('cancelled matching stop is not mistaken for active protection', () async {
+    gateway.stopOrders = [
+      {
+        'stopOrderId': 'STOP-OLD',
+        'instrumentUid': 'UID-SI',
+        'ticker': 'SiZ6',
+        'lotsRequested': '3',
+        'direction': 'STOP_ORDER_DIRECTION_SELL',
+        'stopPrice': {'units': '89500', 'nano': 0},
+        'status': 'STOP_ORDER_STATUS_CANCELED',
+      },
+    ];
+
+    final result = await reconciler.probe(
+      accountId: 'ACC-1',
+      entryRequestId: entryId,
+      symbol: 'SiZ6',
+      long: true,
+      stopPrice: 89500,
+    );
+
+    expect(result.status, TInvestSandboxMirrorProbeStatus.ambiguous);
+    expect(result.message, contains('снят'));
   });
 }
