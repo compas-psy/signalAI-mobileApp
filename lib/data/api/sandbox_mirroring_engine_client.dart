@@ -6,6 +6,7 @@ import '../broker/tinvest_broker.dart';
 import '../broker/tinvest_sandbox_mirror_reconciler.dart';
 import '../local_analysis_repository.dart';
 import '../local_store.dart';
+import 'api_client.dart';
 import 'engine_client.dart';
 import 'sandbox_mirror_delivery.dart';
 
@@ -112,7 +113,10 @@ class SandboxMirroringEngineClient extends EngineClient {
     required this.repository,
     required this.onResult,
     LocalStore? instrumentStore,
-  }) : _instrumentStore = instrumentStore ?? LocalStore() {
+    ApiClient? client,
+    EngineFailureReporter? onHandledFailure,
+  })  : _instrumentStore = instrumentStore ?? LocalStore(),
+        super(client: client, onHandledFailure: onHandledFailure) {
     TInvestSandboxAccess.attach(repository);
   }
 
@@ -341,6 +345,13 @@ class SandboxMirroringEngineClient extends EngineClient {
   /// sandbox ставим в event queue, чтобы он пришёл следом и не был затёрт
   /// общим сообщением.
   void _report(SandboxMirrorResult result) {
+    if (result.tone == SandboxMirrorTone.failure) {
+      reportHandledFailure(
+        EngineFailureStage.sandboxReconciliation,
+        StateError(result.message),
+        StackTrace.current,
+      );
+    }
     Timer.run(() => onResult(result));
   }
 
