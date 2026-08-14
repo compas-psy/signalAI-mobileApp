@@ -1,5 +1,3 @@
-import 'dart:convert';
-
 import '../local_store.dart';
 
 /// Durable lifecycle of one server-approved idea mirrored to T-Invest Sandbox.
@@ -10,7 +8,8 @@ enum SandboxMirrorDeliveryStatus {
   /// Entry and protective stop were both accepted by the provider.
   completed,
 
-  /// Provider outcome is unknown/rejected and the same stable ids may be retried.
+  /// State cannot be repaired automatically without a dedicated reconciliation
+  /// decision. Automatic order submission is blocked while this state holds.
   repairRequired,
 
   /// The server-approved idea does not require a T-Invest Sandbox mirror.
@@ -109,42 +108,29 @@ class SandboxMirrorDeliveryStore {
       _store.writeDurably(_name(delivery.ideaId), delivery.toJson());
 
   static String _name(String ideaId) =>
-      'sandbox_mirror_${stableTInvestRequestId(ideaId, 'delivery').replaceAll('-', '')}';
+      'sandbox_mirror_${_compactIdeaUuid(ideaId)}';
 }
 
-/// Deterministic RFC-4122-layout UUIDv8 for provider idempotency.
+/// Stable provider-side identity frozen by #45:
+/// - entry: `e-<idea UUID without hyphens>`
+/// - protection: `s-<idea UUID without hyphens>`
 ///
-/// T-Invest keeps caller-provided order ids as idempotency keys. A custom
-/// UUIDv8 lets the same logical SignalAI idea reproduce exactly the same ids
-/// after process death without a package dependency or random state.
+/// Both are 34 characters, below T-Invest's 36-character limit, and derive
+/// only from the immutable idea identity. A replay after process death
+/// therefore reproduces exactly the same provider keys without random state.
 String stableTInvestRequestId(String ideaId, String leg) {
-  final left = _fnv64('signalai|a|$ideaId|$leg');
-  final right = _fnv64('signalai|b|$ideaId|$leg');
-  final raw = '${_hex64(left)}${_hex64(right)}'.split('');
-
-  // Version 8 = application-defined UUID payload; keep RFC variant 10xx.
-  raw[12] = '8';
-  final variant = int.parse(raw[16], radix: 16);
-  raw[16] = ((variant & 0x3) | 0x8).toRadixString(16);
-
-  final hex = raw.join();
-  return '${hex.substring(0, 8)}-'
-      '${hex.substring(8, 12)}-'
-      '${hex.substring(12, 16)}-'
-      '${hex.substring(16, 20)}-'
-      '${hex.substring(20, 32)}';
+  final prefix = switch (leg) {
+    'entry' => 'e-',
+    'protective-stop' => 's-',
+    _ => throw ArgumentError.value(leg, 'leg', 'Unknown sandbox delivery leg'),
+  };
+  return '$prefix${_compactIdeaUuid(ideaId)}';
 }
 
-int _fnv64(String value) {
-  const offset = 0xcbf29ce484222325;
-  const prime = 0x100000001b3;
-  const mask = 0xffffffffffffffff;
-  var hash = offset;
-  for (final byte in utf8.encode(value)) {
-    hash ^= byte;
-    hash = (hash * prime) & mask;
+String _compactIdeaUuid(String ideaId) {
+  final compact = ideaId.trim().toLowerCase().replaceAll('-', '');
+  if (!RegExp(r'^[0-9a-f]{32}$').hasMatch(compact)) {
+    throw FormatException('Idea id is not a UUID: $ideaId');
   }
-  return hash;
+  return compact;
 }
-
-String _hex64(int value) => value.toRadixString(16).padLeft(16, '0');
