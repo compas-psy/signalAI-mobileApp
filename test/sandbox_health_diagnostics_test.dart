@@ -45,7 +45,6 @@ void main() {
     final failures = <EngineHandledFailure>[];
     final results = <SandboxMirrorResult>[];
     final repository = LocalAnalysisRepository(store: LocalStore.inMemory());
-    addTearDown(repository.dispose);
 
     final client = SandboxMirroringEngineClient(
       repository: repository,
