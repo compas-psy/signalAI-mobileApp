@@ -1,0 +1,78 @@
+name: Diagnose universe latency
+on:
+  push:
+    branches: [ops/verify-milestone-db012078]
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prepare SSH
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -T 10 -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null
+      - name: Trace public market adapters without DB writes
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/id_deploy -o BatchMode=yes "root@$HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          cd "$HOME/signalai/server"
+          ENV_FILE=/etc/signalai/.env
+          timeout 75 docker compose --env-file "$ENV_FILE" exec -T scheduler python -u - <<'PY'
+          import time
+          from app.market import moex, crypto
+          from app.market.http import http_json
+
+          calls = []
+          def traced(url):
+              started = time.monotonic()
+              try:
+                  result = http_json(url, timeout=4.0, retries=0)
+                  ok = True
+                  return result
+              except Exception as exc:
+                  ok = False
+                  print(f"HTTP_FAIL {time.monotonic()-started:.3f}s {type(exc).__name__} {url}", flush=True)
+                  raise
+              finally:
+                  elapsed = time.monotonic() - started
+                  calls.append((url, elapsed, ok))
+                  if ok:
+                      print(f"HTTP_OK {elapsed:.3f}s {url}", flush=True)
+
+          probes = [
+              ("forts_board", lambda: moex.forts_board(fetch=traced)),
+              ("crypto_tickers", lambda: crypto.tickers(fetch=traced)),
+              ("crypto_specs", lambda: crypto.instruments_info(fetch=traced)),
+              ("stock_TQBR", lambda: moex.stock_board("shares", "TQBR", fetch=traced)),
+              ("stock_TQTF", lambda: moex.stock_board("shares", "TQTF", fetch=traced)),
+              ("stock_TQIF", lambda: moex.stock_board("shares", "TQIF", fetch=traced)),
+              ("stock_TQOB", lambda: moex.stock_board("bonds", "TQOB", fetch=traced)),
+          ]
+          for name, probe in probes:
+              before = len(calls)
+              started = time.monotonic()
+              print(f"PROBE_START {name}", flush=True)
+              try:
+                  value = probe()
+                  rows = value[0]
+                  print(f"PROBE_DONE {name} {time.monotonic()-started:.3f}s rows={len(rows)} calls={len(calls)-before}", flush=True)
+              except Exception as exc:
+                  print(f"PROBE_ERROR {name} {time.monotonic()-started:.3f}s {type(exc).__name__}: {exc} calls={len(calls)-before}", flush=True)
+          PY
+          REMOTE
+      - name: Remove SSH key
+        if: always()
+        shell: bash
+        run: shred -u ~/.ssh/id_deploy 2>/dev/null || rm -f ~/.ssh/id_deploy
