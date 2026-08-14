@@ -22,6 +22,7 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy import text
 
 from .api.v1 import control as control_routes
+from .api.v1 import diagnostics as diagnostics_routes
 from .api.v1 import equity_rankings as equity_ranking_routes
 from .api.v1 import idea_progress as idea_progress_routes
 from .api.v1 import ideas as ideas_routes
@@ -40,6 +41,7 @@ from .db import get_engine
 from .models.enums import ExecutionMode
 from .operational_guard import OperationalLifecycleMiddleware
 from .paper.management_policy import install as install_paper_management
+from .request_context import RequestIdMiddleware
 from .schemas.common import HealthResponse
 from .security import DeviceTokenMiddleware
 from .version import API_VERSION, ENGINE_VERSION, FEATURE_VERSION
@@ -60,11 +62,14 @@ app = FastAPI(
     ),
 )
 # add_middleware inserts the newest middleware outside the previous one.
-# DeviceToken therefore remains the outer fail-closed boundary; lifecycle
-# repair only sees authenticated owner calls.  The guard also checks auth on
+# RequestId is deliberately outermost so even fail-closed auth 401/503
+# responses carry a correlation id. It never reads body or credentials.
+# DeviceToken remains the business-API authorization boundary; lifecycle
+# repair only sees authenticated owner calls. The guard also checks auth on
 # its own so this invariant stays safe if middleware order changes later.
 app.add_middleware(OperationalLifecycleMiddleware)
 app.add_middleware(DeviceTokenMiddleware)
+app.add_middleware(RequestIdMiddleware)
 
 v1 = APIRouter(prefix="/api/v1")
 v1.include_router(market_routes.router)
@@ -81,6 +86,7 @@ v1.include_router(integrations_routes.router)
 v1.include_router(journal_routes.router)
 v1.include_router(notification_routes.router)
 v1.include_router(control_routes.router)
+v1.include_router(diagnostics_routes.router)
 app.include_router(v1)
 
 
