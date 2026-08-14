@@ -40,21 +40,23 @@ void main() {
     await tester.pumpWidget(
       Directionality(
         textDirection: TextDirection.ltr,
-        child: Align(
-          alignment: Alignment.topLeft,
-          child: SizedBox(
-            width: 420,
-            child: IdeaChartCard(
-              signal: signal,
-              idea: idea,
-              timeframe: '4h',
-              failed: true,
-              failureReason: 'временный сбой',
-              liveSource: _FlakyLiveSource(),
-              available: layers,
-              visible: layers,
-              highlight: const {},
-              onToggle: (_) {},
+        child: SingleChildScrollView(
+          child: Align(
+            alignment: Alignment.topLeft,
+            child: SizedBox(
+              width: 420,
+              child: IdeaChartCard(
+                signal: signal,
+                idea: idea,
+                timeframe: '4h',
+                failed: true,
+                failureReason: 'временный сбой',
+                liveSource: _FlakyLiveSource(),
+                available: layers,
+                visible: layers,
+                highlight: const {},
+                onToggle: (_) {},
+              ),
             ),
           ),
         ),
