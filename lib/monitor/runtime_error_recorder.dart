@@ -2,7 +2,13 @@ import 'dart:async';
 
 import '../data/local_store.dart';
 
-enum RuntimeErrorKind { flutter, async, ideaHydration, chartLoad }
+enum RuntimeErrorKind {
+  flutter,
+  async,
+  ideaHydration,
+  chartLoad,
+  sandboxReconciliation,
+}
 
 class RuntimeBuildIdentity {
   const RuntimeBuildIdentity({
@@ -69,6 +75,18 @@ class RuntimeErrorEvent {
       return null;
     }
   }
+}
+
+class RuntimeErrorSummary {
+  const RuntimeErrorSummary({
+    required this.total,
+    required this.byKind,
+    required this.latestAt,
+  });
+
+  final int total;
+  final Map<RuntimeErrorKind, int> byKind;
+  final DateTime? latestAt;
 }
 
 class RuntimeErrorRecorder {
@@ -154,6 +172,19 @@ class RuntimeErrorRecorder {
     } on Object {
       return const <RuntimeErrorEvent>[];
     }
+  }
+
+  Future<RuntimeErrorSummary> summary() async {
+    final retained = await events();
+    final byKind = <RuntimeErrorKind, int>{};
+    for (final event in retained) {
+      byKind.update(event.kind, (value) => value + 1, ifAbsent: () => 1);
+    }
+    return RuntimeErrorSummary(
+      total: retained.length,
+      byKind: Map.unmodifiable(byKind),
+      latestAt: retained.isEmpty ? null : retained.last.timestamp,
+    );
   }
 }
 
