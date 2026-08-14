@@ -37,16 +37,18 @@ jobs:
           [ "$(id -u)" -eq 0 ] || SUDO='sudo'
 
           echo '=== provenance ==='
+          date -u '+utc=%Y-%m-%dT%H:%M:%SZ'
           printf 'source_sha='; cat "$HOME/signalai/.signalai-source-sha"
           curl -fsS --max-time 10 http://127.0.0.1:8000/health
           echo
 
-          echo '=== scheduler since restart ==='
-          $SUDO docker compose --env-file "$ENV_FILE" logs --since=12m --no-color scheduler 2>&1 \
-            | grep -E 'universe:|ingest:|review:|supervise:|scan:|portfolio:|Traceback|Exception|ERROR|failed' \
-            | tail -n 180 || true
+          echo '=== containers ==='
+          $SUDO docker compose --env-file "$ENV_FILE" ps
 
-          echo '=== current scanner universe ==='
+          echo '=== scheduler full tail ==='
+          $SUDO docker compose --env-file "$ENV_FILE" logs --since=20m --no-color scheduler 2>&1 | tail -n 260 || true
+
+          echo '=== current universe state ==='
           $SUDO docker compose --env-file "$ENV_FILE" exec -T scheduler python - <<'PY'
           from collections import Counter
           from sqlalchemy import select
@@ -56,14 +58,15 @@ jobs:
           session = get_session_factory()()
           try:
               rows = list(session.execute(select(Instrument)).scalars())
-              active = [x for x in rows if x.in_universe and x.is_tradable]
-              counts = Counter((x.venue.value, x.asset_class.value) for x in active)
-              print(f'tradable_total={len(active)}')
-              for (venue, asset), count in sorted(counts.items()):
-                  print(f'{venue}|{asset}|{count}')
-              print('FORTS=' + ','.join(sorted(
-                  x.instrument_id for x in active if x.asset_class.value == 'FUTURES'
-              )))
+              print(f'total_rows={len(rows)}')
+              counts = Counter((x.venue.value, x.asset_class.value, bool(x.in_universe), bool(x.is_tradable)) for x in rows)
+              for key, count in sorted(counts.items()):
+                  print(f'{count:4d} | ' + ' | '.join(map(str, key)))
+              futures = [x for x in rows if x.asset_class.value == 'FUTURES']
+              print('=== FORTS rows ===')
+              for x in sorted(futures, key=lambda row: row.instrument_id):
+                  admission = (x.metadata_json or {}).get('admission') or {}
+                  print(f'{x.instrument_id} | universe={x.in_universe} | tradable={x.is_tradable} | note={x.universe_note} | source={admission.get("measured", {}).get("turnover_source")}')
           finally:
               session.rollback()
               session.close()
