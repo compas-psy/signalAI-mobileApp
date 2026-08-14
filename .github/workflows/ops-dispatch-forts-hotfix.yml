@@ -1,0 +1,26 @@
+name: Dispatch FORTS hotfix production deploy
+
+on:
+  push:
+    branches:
+      - ops/deploy-forts-hotfix-20260814
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch canonical exact-SHA deployment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'deploy-release.yml',
+              ref: 'claude/release-y40hk5',
+              inputs: { source_ref: '0a6d1059cb1fea6b578840ffaf607845d265d2e7' },
+            });
