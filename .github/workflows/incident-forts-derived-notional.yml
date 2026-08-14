@@ -1,0 +1,87 @@
+name: Incident FORTS derived turnover validation
+
+on:
+  push:
+    branches:
+      - incident/signal-gap-20260814
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prepare SSH
+        env:
+          KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_diag
+          chmod 600 ~/.ssh/id_diag
+          ssh-keyscan -T 10 -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Derive completed-day FORTS turnover from H1 contracts read-only
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          USER_NAME: ${{ secrets.VPS_USER || 'root' }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/id_diag -o BatchMode=yes "$USER_NAME@$HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          cd "$HOME/signalai/server"
+          ENV_FILE='/etc/signalai/.env'
+          SUDO=''
+          [ "$(id -u)" -eq 0 ] || SUDO='sudo'
+          $SUDO docker compose --env-file "$ENV_FILE" exec -T scheduler python - <<'PY'
+          from collections import defaultdict
+          from datetime import UTC, datetime, timedelta
+          from decimal import Decimal
+          from statistics import median
+          from sqlalchemy import select
+          from app.db import get_session_factory
+          from app.models import Bar, Instrument
+          from app.models.enums import AssetClass, Timeframe, Venue
+
+          session = get_session_factory()()
+          try:
+              now = datetime.now(UTC)
+              today = now.date()
+              instruments = list(session.execute(select(Instrument).where(
+                  Instrument.venue == Venue.MOEX,
+                  Instrument.asset_class == AssetClass.FUTURES,
+                  Instrument.in_universe.is_(True),
+              )).scalars())
+              rows_out = []
+              for instrument in instruments:
+                  if not instrument.tick_size or instrument.tick_size <= 0:
+                      continue
+                  rubles_per_point = instrument.tick_value / instrument.tick_size
+                  rows = session.execute(select(Bar.open_time, Bar.volume_units, Bar.close).where(
+                      Bar.instrument_id == instrument.instrument_id,
+                      Bar.timeframe == Timeframe.H1,
+                      Bar.is_closed.is_(True),
+                      Bar.open_time >= now - timedelta(days=35),
+                  )).all()
+                  daily = defaultdict(lambda: Decimal(0))
+                  bars = defaultdict(int)
+                  for ts, volume, close in rows:
+                      if volume is not None and close is not None and volume > 0 and close > 0:
+                          daily[ts.date()] += volume * close * rubles_per_point
+                          bars[ts.date()] += 1
+                  completed = [value for day, value in daily.items() if day < today and bars[day] >= 3 and value > 0]
+                  med = Decimal(median(completed)) if completed else None
+                  current = daily.get(today)
+                  snap = Decimal(str((instrument.metadata_json or {}).get('snapshot_turnover_rub') or 0))
+                  ratio = (current / snap) if current is not None and snap > 0 else None
+                  rows_out.append((instrument.instrument_id, instrument.is_tradable, len(completed), med, current, snap, ratio))
+              print('instrument | state | completed_days | derived_median | derived_today | board_snapshot | today/board')
+              for row in sorted(rows_out):
+                  print(' | '.join(str(v) for v in row))
+          finally:
+              session.rollback()
+              session.close()
+          PY
+          REMOTE
