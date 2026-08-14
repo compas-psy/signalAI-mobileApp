@@ -1,0 +1,67 @@
+name: Incident universe admission summary
+
+on:
+  push:
+    branches:
+      - incident/signal-gap-20260814
+
+permissions:
+  contents: read
+
+jobs:
+  summarize:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prepare SSH
+        env:
+          KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_diag
+          chmod 600 ~/.ssh/id_diag
+          ssh-keyscan -T 10 -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Summarize stored universe state without writes
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          USER_NAME: ${{ secrets.VPS_USER || 'root' }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/id_diag -o BatchMode=yes "$USER_NAME@$HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          cd "$HOME/signalai/server"
+          ENV_FILE='/etc/signalai/.env'
+          SUDO=''
+          [ "$(id -u)" -eq 0 ] || SUDO='sudo'
+          $SUDO docker compose --env-file "$ENV_FILE" exec -T scheduler python - <<'PY'
+          from collections import Counter
+          from sqlalchemy import select
+          from app.db import get_session_factory
+          from app.models import Instrument
+
+          session = get_session_factory()()
+          try:
+              rows = list(session.execute(select(Instrument)).scalars())
+              print(f'total={len(rows)}')
+              counts = Counter((i.venue.value, i.asset_class.value, bool(i.in_universe), bool(i.is_tradable)) for i in rows)
+              print('=== counts venue | class | in_universe | tradable ===')
+              for key, count in sorted(counts.items()):
+                  print(f'{count:4d} | ' + ' | '.join(map(str, key)))
+
+              active = [i for i in rows if i.in_universe]
+              print('=== current in-universe notes ===')
+              notes = Counter((i.venue.value, i.asset_class.value, i.universe_note or '') for i in active)
+              for (venue, asset, note), count in notes.most_common(60):
+                  print(f'{count:4d} | {venue} | {asset} | {note}')
+
+              print('=== tradable instruments ===')
+              for i in sorted((x for x in active if x.is_tradable), key=lambda x: x.instrument_id):
+                  admission = (i.metadata_json or {}).get('admission') or {}
+                  print(f'{i.instrument_id} | {i.asset_class.value} | {i.universe_note} | admission={admission}')
+          finally:
+              session.rollback()
+              session.close()
+          PY
+          REMOTE
