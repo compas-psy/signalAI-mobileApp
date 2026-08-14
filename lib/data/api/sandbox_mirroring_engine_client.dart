@@ -6,6 +6,7 @@ import '../broker/tinvest_broker.dart';
 import '../local_analysis_repository.dart';
 import '../local_store.dart';
 import 'engine_client.dart';
+import 'sandbox_mirror_delivery.dart';
 
 /// Результат зеркала server-paper плана в настоящую T-Invest Sandbox.
 enum SandboxMirrorTone { success, warning, failure }
@@ -96,8 +97,9 @@ abstract final class TInvestSandboxAccess {
 ///
 /// Порядок принципиален:
 /// 1) сервер проверяет lifecycle/risk и создаёт server-paper;
-/// 2) только затем телефон читает тот же TradePlan и отправляет его в sandbox;
-/// 3) Bybit и любые WATCH-идеи сюда не попадают.
+/// 2) телефон **до broker call** сохраняет долговечный delivery intent;
+/// 3) только затем тот же TradePlan уходит в sandbox со стабильными provider ids;
+/// 4) Bybit и любые WATCH-идеи сюда не попадают.
 ///
 /// Токен брокера остаётся на устройстве в защищённом хранилище. Сервер его не
 /// получает и не знает. Sandbox — проверка брокерской механики, а не второй
@@ -115,21 +117,82 @@ class SandboxMirroringEngineClient extends EngineClient {
   final LocalStore _instrumentStore;
   final void Function(SandboxMirrorResult result) onResult;
 
+  SandboxMirrorDeliveryStore get _deliveries =>
+      SandboxMirrorDeliveryStore(_instrumentStore);
+
   @override
   Future<IdeaDecision> approvePaper(String ideaId) async {
     final decision = await super.approvePaper(ideaId);
 
-    // Повтор server approve идемпотентен. Зеркало обязано быть таким же:
-    // повторное нажатие/сетевой retry не выставляет второй брокерский ордер.
-    if (decision.idempotentReplay) return decision;
+    var delivery = await _deliveries.load(ideaId);
+    if (delivery?.terminal ?? false) return decision;
+
+    // Миграционный/межсистемный разрыв: сервер уже видел это решение, но на
+    // устройстве нет delivery history. Автоматически повторять broker side
+    // effect здесь опасно: старая версия приложения могла уже зеркалить эту
+    // идею со случайным id. Явное repair-state безопаснее потенциального
+    // удвоения позиции.
+    if (delivery == null && decision.idempotentReplay) {
+      final uncertain = SandboxMirrorDelivery.pending(ideaId).copyWith(
+        status: SandboxMirrorDeliveryStatus.repairRequired,
+        lastError: 'Сервер вернул повторное решение, а локальной истории '
+            'sandbox-зеркала нет',
+      );
+      final persisted = await _deliveries.save(uncertain);
+      _report(SandboxMirrorResult(
+        persisted
+            ? 'Paper-сделка уже существует · T-Invest Sandbox не повторена: '
+                'локальной истории зеркала нет, поэтому автоповтор заблокирован от дубля'
+            : 'Paper-сделка уже существует · T-Invest Sandbox не повторена: '
+                'не удалось надёжно сохранить состояние сверки',
+        SandboxMirrorTone.failure,
+      ));
+      return decision;
+    }
+
+    // Известный provider rejection не гоняем по кругу тем же действием.
+    // Неоднозначный network outcome остаётся pending и может безопасно
+    // переиграться с теми же provider ids; repairRequired требует отдельной
+    // сверки/ремонта, а не ещё одного ордера.
+    if (delivery?.status == SandboxMirrorDeliveryStatus.repairRequired) {
+      _report(SandboxMirrorResult(
+        'Paper-сделка уже существует · T-Invest Sandbox требует сверки: '
+        '${delivery!.lastError.isEmpty ? 'предыдущая доставка не завершена' : delivery.lastError}',
+        SandboxMirrorTone.failure,
+      ));
+      return decision;
+    }
+
+    delivery ??= SandboxMirrorDelivery.pending(ideaId);
+    if (!await _deliveries.save(delivery)) {
+      _report(const SandboxMirrorResult(
+        'Paper-сделка принята · T-Invest Sandbox не отправлена: '
+        'не удалось надёжно записать состояние доставки на устройство',
+        SandboxMirrorTone.failure,
+      ));
+      return decision;
+    }
 
     final idea = await detail(ideaId);
-    if (idea == null || !idea.instrumentId.startsWith('MOEX:FUT:')) {
+    if (idea == null) {
+      await _markRepair(delivery, 'Не удалось получить полный TradePlan идеи');
+      _report(const SandboxMirrorResult(
+        'Paper-сделка принята · T-Invest Sandbox не отправлена: '
+        'полный TradePlan недоступен, требуется сверка',
+        SandboxMirrorTone.failure,
+      ));
+      return decision;
+    }
+    if (!idea.instrumentId.startsWith('MOEX:FUT:')) {
+      await _deliveries.save(delivery.copyWith(
+        status: SandboxMirrorDeliveryStatus.notApplicable,
+      ));
       return decision;
     }
 
     final plan = idea.plan;
     if (plan == null || plan.quantity <= 0 || plan.targets.isEmpty) {
+      await _markRepair(delivery, 'Объём или TradePlan не рассчитан');
       _report(const SandboxMirrorResult(
         'Paper-сделка принята · T-Invest Sandbox не отправлена: объём или план не рассчитан',
         SandboxMirrorTone.failure,
@@ -165,23 +228,55 @@ class SandboxMirroringEngineClient extends EngineClient {
           stopLoss: plan.stop,
           takeProfit: plan.targets.first.price,
           stopEntry: plan.orderType.name == 'stopLimit',
+          requestId: delivery.entryRequestId,
+          protectiveStopRequestId: delivery.protectiveStopRequestId,
         ),
       );
-      _report(SandboxMirrorResult(
-        result.accepted
-            ? 'Paper-сделка принята · T-Invest Sandbox: вход и защитный стоп приняты'
-            : 'Paper-сделка принята · T-Invest Sandbox отказала: ${result.message}',
-        result.accepted ? SandboxMirrorTone.success : SandboxMirrorTone.failure,
-      ));
+
+      if (result.accepted) {
+        final persisted = await _deliveries.save(delivery.copyWith(
+          status: SandboxMirrorDeliveryStatus.completed,
+          exchangeOrderId: result.orderId,
+          lastError: '',
+        ));
+        _report(SandboxMirrorResult(
+          persisted
+              ? 'Paper-сделка принята · T-Invest Sandbox: вход и защитный стоп приняты'
+              : 'Paper-сделка принята · T-Invest Sandbox приняла вход и стоп, '
+                  'но отметка завершения не записалась; следующий retry использует те же IDs',
+          persisted ? SandboxMirrorTone.success : SandboxMirrorTone.warning,
+        ));
+      } else {
+        await _markRepair(delivery, result.message);
+        _report(SandboxMirrorResult(
+          'Paper-сделка принята · T-Invest Sandbox отказала: ${result.message}',
+          SandboxMirrorTone.failure,
+        ));
+      }
     } on Object catch (error) {
+      // Неизвестно, успел ли provider принять запрос до разрыва. Оставляем
+      // durable pending, а не создаём новый attempt: повтор использует те же
+      // request ids и тем самым сверяется с provider-side idempotency state.
+      await _deliveries.save(delivery.copyWith(lastError: '$error'));
       _report(SandboxMirrorResult(
-        'Paper-сделка принята · T-Invest Sandbox: $error',
+        'Paper-сделка принята · T-Invest Sandbox: $error. '
+        'Результат неоднозначен; безопасный повтор сохранит те же IDs.',
         SandboxMirrorTone.failure,
       ));
     } finally {
       broker.close();
     }
     return decision;
+  }
+
+  Future<void> _markRepair(
+    SandboxMirrorDelivery delivery,
+    String error,
+  ) async {
+    await _deliveries.save(delivery.copyWith(
+      status: SandboxMirrorDeliveryStatus.repairRequired,
+      lastError: error,
+    ));
   }
 
   /// Controller после await показывает общий server-paper toast. Результат
