@@ -9,7 +9,15 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ...db import get_db
-from ...models import NotificationOutbox, PaperTrade, TradeIdea
+from ...models import (
+    AuditEvent,
+    DataQualityEvent,
+    IdeaEvent,
+    IdeaSkip,
+    NotificationOutbox,
+    PaperTrade,
+    TradeIdea,
+)
 from ...models.enums import PaperStatus
 from ...schemas.common import ApiModel
 
@@ -36,22 +44,57 @@ class NotificationsHealth(ApiModel):
     latest_created_at: datetime | None
 
 
+class DecisionsHealth(ApiModel):
+    approved: int
+    rejected: int
+
+
+class LifecycleHealth(ApiModel):
+    total: int
+    by_status: dict[str, int]
+    latest_event_at: datetime | None
+
+
+class DataQualityHealth(ApiModel):
+    total: int
+    by_flag: dict[str, int]
+    latest_event_at: datetime | None
+
+
+class IdempotencyHealth(ApiModel):
+    approve_replays: int
+    reject_replays: int
+
+
 class RuntimeDiagnosticsOut(ApiModel):
     request_id: str
     generated_at: datetime
     ideas: IdeasHealth
     paper: PaperHealth
     notifications: NotificationsHealth
+    decisions: DecisionsHealth
+    lifecycle: LifecycleHealth
+    data_quality: DataQualityHealth
+    idempotency: IdempotencyHealth
 
 
-def _status_counts(db: Session, model, status_column) -> dict[str, int]:
+def _value_counts(db: Session, model, value_column) -> dict[str, int]:
     rows = db.execute(
-        select(status_column, func.count(model.id)).group_by(status_column)
+        select(value_column, func.count(model.id)).group_by(value_column)
     ).all()
     return {
-        str(getattr(status, "value", status)): int(count)
-        for status, count in rows
+        str(getattr(value, "value", value)): int(count)
+        for value, count in rows
     }
+
+
+def _audit_action_count(db: Session, action: str) -> int:
+    return int(
+        db.scalar(
+            select(func.count(AuditEvent.id)).where(AuditEvent.action == action)
+        )
+        or 0
+    )
 
 
 @router.get("/runtime", response_model=RuntimeDiagnosticsOut)
@@ -59,10 +102,10 @@ def runtime_diagnostics(
     request: Request,
     db: Session = Depends(get_db),
 ) -> RuntimeDiagnosticsOut:
-    idea_statuses = _status_counts(db, TradeIdea, TradeIdea.status)
+    idea_statuses = _value_counts(db, TradeIdea, TradeIdea.status)
     latest_signal_at = db.scalar(select(func.max(TradeIdea.signal_time)))
 
-    paper_statuses = _status_counts(db, PaperTrade, PaperTrade.status)
+    paper_statuses = _value_counts(db, PaperTrade, PaperTrade.status)
     live_statuses = (PaperStatus.PENDING, PaperStatus.OPEN)
     live = int(
         db.scalar(
@@ -97,6 +140,16 @@ def runtime_diagnostics(
         .limit(1)
     ).first()
 
+    rejected_decisions = int(
+        db.scalar(select(func.count(IdeaSkip.idea_id))) or 0
+    )
+
+    lifecycle_statuses = _value_counts(db, IdeaEvent, IdeaEvent.new_status)
+    latest_lifecycle_event = db.scalar(select(func.max(IdeaEvent.occurred_at)))
+
+    quality_flags = _value_counts(db, DataQualityEvent, DataQualityEvent.flag)
+    latest_quality_event = db.scalar(select(func.max(DataQualityEvent.occurred_at)))
+
     return RuntimeDiagnosticsOut(
         request_id=request.state.request_id,
         generated_at=datetime.now(UTC),
@@ -118,6 +171,24 @@ def runtime_diagnostics(
             latest_created_at=(
                 None if latest_notification is None else latest_notification.created_at
             ),
+        ),
+        decisions=DecisionsHealth(
+            approved=sum(paper_statuses.values()),
+            rejected=rejected_decisions,
+        ),
+        lifecycle=LifecycleHealth(
+            total=sum(lifecycle_statuses.values()),
+            by_status=lifecycle_statuses,
+            latest_event_at=latest_lifecycle_event,
+        ),
+        data_quality=DataQualityHealth(
+            total=sum(quality_flags.values()),
+            by_flag=quality_flags,
+            latest_event_at=latest_quality_event,
+        ),
+        idempotency=IdempotencyHealth(
+            approve_replays=_audit_action_count(db, "approve_paper_replay"),
+            reject_replays=_audit_action_count(db, "reject_replay"),
         ),
     )
 
