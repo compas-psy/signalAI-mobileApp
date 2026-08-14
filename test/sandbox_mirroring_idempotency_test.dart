@@ -60,14 +60,16 @@ class _FakeTInvestGateway {
 
   String get baseUrl => 'http://127.0.0.1:${_server.port}';
 
-  Map<String, dynamic> bodyOf(String method) =>
-      calls.firstWhere((call) => call.method == method).body;
+  List<Map<String, dynamic>> bodiesOf(String method) => [
+        for (final call in calls)
+          if (call.method == method) call.body,
+      ];
 
   Future<void> close() => _server.close(force: true);
 }
 
 void main() {
-  test('sandbox mirror reuses caller-owned provider ids for entry and stop', () async {
+  test('sandbox replay keeps caller-owned provider ids for entry and stop', () async {
     final gateway = _FakeTInvestGateway();
     await gateway.start();
     addTearDown(gateway.close);
@@ -83,22 +85,28 @@ void main() {
 
     const entryRequestId = '11111111-1111-8111-8111-111111111111';
     const stopRequestId = '22222222-2222-8222-8222-222222222222';
-
-    final result = await broker.placeOrder(
-      const OrderRequest(
-        symbol: 'SiZ6',
-        long: true,
-        quantity: 3,
-        entry: 90000,
-        stopLoss: 89500,
-        takeProfit: 91000,
-        requestId: entryRequestId,
-        protectiveStopRequestId: stopRequestId,
-      ),
+    const request = OrderRequest(
+      symbol: 'SiZ6',
+      long: true,
+      quantity: 3,
+      entry: 90000,
+      stopLoss: 89500,
+      takeProfit: 91000,
+      requestId: entryRequestId,
+      protectiveStopRequestId: stopRequestId,
     );
 
-    expect(result.accepted, isTrue);
-    expect(gateway.bodyOf('PostSandboxOrder')['orderId'], entryRequestId);
-    expect(gateway.bodyOf('PostSandboxStopOrder')['orderId'], stopRequestId);
+    final first = await broker.placeOrder(request);
+    final replay = await broker.placeOrder(request);
+
+    expect(first.accepted, isTrue);
+    expect(replay.accepted, isTrue);
+
+    final entries = gateway.bodiesOf('PostSandboxOrder');
+    final stops = gateway.bodiesOf('PostSandboxStopOrder');
+    expect(entries, hasLength(2));
+    expect(stops, hasLength(2));
+    expect(entries.map((body) => body['orderId']).toSet(), {entryRequestId});
+    expect(stops.map((body) => body['orderId']).toSet(), {stopRequestId});
   });
 }
