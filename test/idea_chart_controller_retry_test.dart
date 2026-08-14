@@ -52,7 +52,7 @@ Idea _idea() => Idea(
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  test('повторная загрузка после временного отказа снова спрашивает источник',
+  test('повтор после отказа не уведомляет синхронно и снова спрашивает источник',
       () async {
     final source = _FlakyChartSource();
     final controller = AppController(
