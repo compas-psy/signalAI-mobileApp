@@ -112,6 +112,8 @@ class SandboxMirroringEngineClient extends EngineClient {
     required this.repository,
     required this.onResult,
     LocalStore? instrumentStore,
+    super.client,
+    super.onHandledFailure,
   }) : _instrumentStore = instrumentStore ?? LocalStore() {
     TInvestSandboxAccess.attach(repository);
   }
@@ -341,6 +343,13 @@ class SandboxMirroringEngineClient extends EngineClient {
   /// sandbox ставим в event queue, чтобы он пришёл следом и не был затёрт
   /// общим сообщением.
   void _report(SandboxMirrorResult result) {
+    if (result.tone == SandboxMirrorTone.failure) {
+      reportHandledFailure(
+        EngineFailureStage.sandboxReconciliation,
+        StateError(result.message),
+        StackTrace.current,
+      );
+    }
     Timer.run(() => onResult(result));
   }
 

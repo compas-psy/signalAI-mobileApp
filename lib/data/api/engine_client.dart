@@ -90,7 +90,11 @@ class IdeaDecision {
   }
 }
 
-enum EngineFailureStage { ideaHydration, chartLoad }
+enum EngineFailureStage {
+  ideaHydration,
+  chartLoad,
+  sandboxReconciliation,
+}
 
 class EngineHandledFailure {
   const EngineHandledFailure({
@@ -124,7 +128,10 @@ class EngineClient {
     _onHandledFailure = reporter;
   }
 
-  void _reportHandled(
+  /// Reports a failure that the UX intentionally handles without throwing.
+  /// Subclasses use the same reporter so one device-local recorder owns all
+  /// diagnostics and applies the same secret redaction before persistence.
+  void reportHandledFailure(
     EngineFailureStage stage,
     Object error, [
     StackTrace? stackTrace,
@@ -212,7 +219,7 @@ class EngineClient {
       // Сводка из ленты уже на экране; упавшая догрузка полной карточки не
       // должна ронять разбор — просто останется меньше подробностей. Но
       // диагностический след теперь остаётся и переживает перезапуск.
-      _reportHandled(EngineFailureStage.ideaHydration, error, stackTrace);
+      reportHandledFailure(EngineFailureStage.ideaHydration, error, stackTrace);
       return null;
     }
   }
@@ -345,7 +352,7 @@ class EngineClient {
     // Не записываем instrumentId: для диагностики достаточно стадии,
     // таймфреймов и сетевой причины, а идентификатор инструмента здесь не
     // нужен и раздувал бы локальную телеметрию.
-    _reportHandled(
+    reportHandledFailure(
       EngineFailureStage.chartLoad,
       StateError(reason),
       StackTrace.current,
