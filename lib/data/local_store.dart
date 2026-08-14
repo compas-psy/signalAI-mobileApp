@@ -95,4 +95,25 @@ class LocalStore {
       _memory[name] = value;
     }
   }
+
+  /// Пишет документ только если можно подтвердить, что он реально на диске.
+  ///
+  /// Обычный [write] намеренно деградирует в память: для настроек это лучше,
+  /// чем потерять изменение совсем. Перед внешним side effect такая семантика
+  /// опасна — процесс может умереть и забыть, что запрос уже был отправлен.
+  /// Поэтому торговый delivery-state использует именно этот метод и не
+  /// начинает broker call, если долговечную запись подтвердить нельзя.
+  Future<bool> writeDurably(String name, Map<String, dynamic> value) async {
+    final dir = await _dir();
+    if (dir == null) return false;
+    try {
+      final tmp = File('${dir.path}/$name.json.tmp');
+      tmp.writeAsStringSync(jsonEncode(value));
+      tmp.renameSync(_file(dir, name).path);
+      return true;
+    } on FileSystemException {
+      _memory[name] = value;
+      return false;
+    }
+  }
 }

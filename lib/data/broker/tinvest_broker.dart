@@ -466,7 +466,7 @@ class TInvestBroker implements Broker {
           'price': doubleToQuotation(_align(request.entry, instrument.priceStep)),
           'direction': request.long ? 'ORDER_DIRECTION_BUY' : 'ORDER_DIRECTION_SELL',
           'orderType': 'ORDER_TYPE_LIMIT',
-          'orderId': _idempotencyKey(request),
+          'orderId': request.requestId ?? _idempotencyKey(request),
           if (_managedSandbox) ...{
             'timeInForce': 'TIME_IN_FORCE_DAY',
             'priceType': 'PRICE_TYPE_POINT',
@@ -480,7 +480,8 @@ class TInvestBroker implements Broker {
       // Legacy generic testnet preserves the historical transport contract;
       // production device mirroring always uses role=sandbox.
       try {
-        final stopId = _stopIdempotencyKey(request);
+        final stopId =
+            request.protectiveStopRequestId ?? _stopIdempotencyKey(request);
         await _call(
           _managedSandbox ? 'SandboxService' : 'StopOrdersService',
           _managedSandbox ? 'PostSandboxStopOrder' : 'PostStopOrder',

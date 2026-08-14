@@ -169,6 +169,8 @@ class OrderRequest {
     required this.stopLoss,
     required this.takeProfit,
     this.stopEntry = false,
+    this.requestId,
+    this.protectiveStopRequestId,
   });
 
   final String symbol;
@@ -177,6 +179,19 @@ class OrderRequest {
   /// Вход стоп-заявкой по пробою: заявка активируется, когда цена проходит
   /// уровень в сторону сделки, а не ждёт отката к нему.
   final bool stopEntry;
+
+  /// Стабильный provider-side ключ конкретной попытки входа.
+  ///
+  /// Если задан, повтор того же логического решения обязан уйти с тем же
+  /// ключом. Брокеры, которые не поддерживают внешний ключ, могут его
+  /// игнорировать; T-Invest использует его как `order_id` идемпотентности.
+  final String? requestId;
+
+  /// Отдельный стабильный ключ защитного стопа для той же сделки.
+  ///
+  /// Entry и stop — две разные provider-side операции и не должны делить
+  /// один idempotency key.
+  final String? protectiveStopRequestId;
 
   /// Объём в единицах контракта биржи.
   final double quantity;
