@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'core/app_mode.dart';
+import 'data/api/engine_client.dart';
 import 'data/api/sandbox_mirroring_engine_client.dart';
 import 'data/local_analysis_repository.dart';
 import 'data/local_store.dart';
@@ -60,7 +61,11 @@ Future<void> main() async {
       ),
   };
 
-  runApp(SignalAiApp(repository: repository, thinMode: mode == 'thin'));
+  runApp(SignalAiApp(
+    repository: repository,
+    thinMode: mode == 'thin',
+    runtimeErrors: runtimeErrors,
+  ));
 }
 
 void _installRuntimeErrorBoundaries(RuntimeErrorRecorder recorder) {
@@ -98,10 +103,12 @@ class SignalAiApp extends StatefulWidget {
     super.key,
     required this.repository,
     this.thinMode = AppMode.thin,
+    this.runtimeErrors,
   });
 
   final SignalAiRepository repository;
   final bool thinMode;
+  final RuntimeErrorRecorder? runtimeErrors;
 
   @override
   State<SignalAiApp> createState() => _SignalAiAppState();
@@ -145,6 +152,23 @@ class _SignalAiAppState extends State<SignalAiApp> with WidgetsBindingObserver {
             },
           )
         : null;
+
+    final runtimeErrors = widget.runtimeErrors;
+    if (engine != null && runtimeErrors != null) {
+      engine.setHandledFailureReporter((failure) {
+        final kind = switch (failure.stage) {
+          EngineFailureStage.ideaHydration => RuntimeErrorKind.ideaHydration,
+          EngineFailureStage.chartLoad => RuntimeErrorKind.chartLoad,
+        };
+        unawaited(
+          runtimeErrors.record(
+            kind: kind,
+            error: failure.error,
+            stackTrace: failure.stackTrace,
+          ),
+        );
+      });
+    }
 
     _controller = AppController(
       repository,
