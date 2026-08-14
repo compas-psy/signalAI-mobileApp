@@ -159,6 +159,8 @@ class _SignalAiAppState extends State<SignalAiApp> with WidgetsBindingObserver {
         final kind = switch (failure.stage) {
           EngineFailureStage.ideaHydration => RuntimeErrorKind.ideaHydration,
           EngineFailureStage.chartLoad => RuntimeErrorKind.chartLoad,
+          EngineFailureStage.sandboxReconciliation =>
+            RuntimeErrorKind.sandboxReconciliation,
         };
         unawaited(
           runtimeErrors.record(
