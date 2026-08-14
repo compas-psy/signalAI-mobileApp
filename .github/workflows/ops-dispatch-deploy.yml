@@ -1,0 +1,23 @@
+name: Ops dispatch exact production deploy
+
+on:
+  push:
+    branches:
+      - ops/deploy-db012078-20260814
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch canonical production workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run deploy-release.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref claude/release-y40hk5 \
+            -f source_ref=db0120784d759d0cd219cff1f23e58747af720e0
