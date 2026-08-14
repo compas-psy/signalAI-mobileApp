@@ -67,6 +67,8 @@ def _persist_historically_liquid_si(session) -> Instrument:
         asset_class=AssetClass.FUTURES,
         symbol="SiU6",
         currency="RUB",
+        tick_size=Decimal("1"),
+        tick_value=Decimal("1"),
         in_universe=True,
         is_tradable=False,
         metadata_json={
