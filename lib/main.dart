@@ -1,3 +1,6 @@
+import 'dart:async';
+import 'dart:ui';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -7,14 +10,20 @@ import 'data/local_analysis_repository.dart';
 import 'data/local_store.dart';
 import 'data/mock/demo_repository.dart';
 import 'data/repository.dart';
+import 'monitor/runtime_error_recorder.dart';
 import 'state/app_controller.dart';
 import 'state/app_scope.dart';
 import 'state/navigation.dart';
 import 'theme/tokens.dart';
 import 'ui/app_shell.dart';
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  final runtimeErrors = RuntimeErrorRecorder(store: LocalStore());
+  _installRuntimeErrorBoundaries(runtimeErrors);
+  await runtimeErrors.initialize();
+
   SystemChrome.setSystemUIOverlayStyle(
     const SystemUiOverlayStyle(
       statusBarColor: Color(0x00000000),
@@ -52,6 +61,36 @@ void main() {
   };
 
   runApp(SignalAiApp(repository: repository, thinMode: mode == 'thin'));
+}
+
+void _installRuntimeErrorBoundaries(RuntimeErrorRecorder recorder) {
+  final previousFlutterHandler = FlutterError.onError;
+  FlutterError.onError = (details) {
+    unawaited(
+      recorder.record(
+        kind: RuntimeErrorKind.flutter,
+        error: details.exception,
+        stackTrace: details.stack,
+      ),
+    );
+    if (previousFlutterHandler != null) {
+      previousFlutterHandler(details);
+    } else {
+      FlutterError.presentError(details);
+    }
+  };
+
+  final previousAsyncHandler = PlatformDispatcher.instance.onError;
+  PlatformDispatcher.instance.onError = (error, stackTrace) {
+    unawaited(
+      recorder.record(
+        kind: RuntimeErrorKind.async,
+        error: error,
+        stackTrace: stackTrace,
+      ),
+    );
+    return previousAsyncHandler?.call(error, stackTrace) ?? false;
+  };
 }
 
 class SignalAiApp extends StatefulWidget {
