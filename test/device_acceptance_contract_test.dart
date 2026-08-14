@@ -12,6 +12,7 @@ import 'package:signalai/data/native_bridge.dart';
 import 'package:signalai/domain/idea/idea.dart';
 import 'package:signalai/main.dart';
 import 'package:signalai/state/app_controller.dart';
+import 'package:signalai/state/app_lifecycle.dart';
 import 'package:signalai/state/app_scope.dart';
 import 'package:signalai/state/navigation.dart';
 import 'package:signalai/ui/app_shell.dart';
@@ -178,7 +179,11 @@ void main() {
       engine.calls.clear();
       bridge.enqueue('idea:${full.id}');
 
-      await controller.onAppResumed();
+      await resumeApp(
+        controller: controller,
+        repository: repository,
+        thinMode: true,
+      );
       await Future<void>.delayed(Duration.zero);
 
       expect(
