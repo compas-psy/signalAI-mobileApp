@@ -22,7 +22,7 @@ jobs:
           chmod 600 ~/.ssh/id_deploy
           ssh-keyscan -T 10 -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null
 
-      - name: Verify deployed SHA, scheduler completion and universe
+      - name: Inspect deployed scheduler and universe
         env:
           HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
           EXPECTED_SHA: db0120784d759d0cd219cff1f23e58747af720e0
@@ -42,58 +42,57 @@ jobs:
 
           echo '=== SCHEDULER STATUS ==='
           docker compose --env-file "$ENV_FILE" ps scheduler
+          docker top server-scheduler-1 -eo pid,ppid,etime,pcpu,pmem,args || true
 
-          echo '=== SCHEDULER COMPLETED JOBS SINCE RESTART ==='
-          logs="$(docker compose --env-file "$ENV_FILE" logs --since 15m --no-color scheduler 2>&1)"
+          echo '=== RAW SCHEDULER LOGS SINCE RESTART ==='
+          logs="$(docker compose --env-file "$ENV_FILE" logs --since 20m --no-color scheduler 2>&1)"
+          printf '%s\n' "$logs" | tail -n 240
+
+          echo '=== COMPLETED JOBS ==='
           printf '%s\n' "$logs" | grep -E 'scheduler-1.*(universe|ingest|review|supervise|trigger|paper-live|paper|scan|portfolio|research): (ок|ОТКАЗ)' || true
-
           universe_done="$(printf '%s\n' "$logs" | grep -cE 'scheduler-1.*universe: (ок|ОТКАЗ)' || true)"
           ingest_done="$(printf '%s\n' "$logs" | grep -cE 'scheduler-1.*ingest: (ок|ОТКАЗ)' || true)"
           review_done="$(printf '%s\n' "$logs" | grep -cE 'scheduler-1.*review: (ок|ОТКАЗ)' || true)"
           scan_done="$(printf '%s\n' "$logs" | grep -cE 'scheduler-1.*scan: (ок|ОТКАЗ)' || true)"
-          echo "completed universe=$universe_done ingest=$ingest_done review=$review_done scan=$scan_done"
+          echo "COMPLETED universe=$universe_done ingest=$ingest_done review=$review_done scan=$scan_done"
 
           echo '=== RECENT SCHEDULER FAILURES ==='
           printf '%s\n' "$logs" | grep -E 'задача .* упала|тик планировщика упал целиком|: ОТКАЗ' || true
 
-          echo '=== UNIVERSE COUNTS ==='
-          docker compose --env-file "$ENV_FILE" exec -T postgres sh -lc \
-            'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "${POSTGRES_DB:-signalai}" -At <<"SQL"
-          SELECT asset_class || ''|'' || count(*) FILTER (WHERE in_universe) || ''|'' || count(*) FILTER (WHERE is_tradable)
-          FROM instruments
-          GROUP BY asset_class
-          ORDER BY asset_class;
-          SQL'
+          echo '=== UNIVERSE COUNTS: asset_class|in_universe|tradable ==='
+          printf '%s\n' \
+            "SELECT asset_class, count(*) FILTER (WHERE in_universe), count(*) FILTER (WHERE is_tradable) FROM instruments GROUP BY asset_class ORDER BY asset_class;" \
+            | docker compose --env-file "$ENV_FILE" exec -T postgres sh -c \
+              'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "${POSTGRES_DB:-signalai}" -F "|" -At'
 
-          echo '=== REQUIRED SYMBOLS ==='
-          docker compose --env-file "$ENV_FILE" exec -T postgres sh -lc \
-            'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "${POSTGRES_DB:-signalai}" -At <<"SQL"
-          SELECT symbol || ''|'' || asset_class || ''|'' || in_universe || ''|'' || is_tradable
-          FROM instruments
-          WHERE upper(symbol) IN (''GKU6'', ''BTCUSDT'', ''DOGEUSDT'')
-          ORDER BY symbol;
-          SQL'
+          echo '=== REQUIRED SYMBOLS: symbol|asset_class|in_universe|tradable ==='
+          printf '%s\n' \
+            "SELECT symbol, asset_class, in_universe, is_tradable FROM instruments WHERE upper(symbol) IN ('GKU6','BTCUSDT','DOGEUSDT') ORDER BY symbol;" \
+            | docker compose --env-file "$ENV_FILE" exec -T postgres sh -c \
+              'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "${POSTGRES_DB:-signalai}" -F "|" -At'
 
-          forts_in="$(docker compose --env-file "$ENV_FILE" exec -T postgres sh -lc \
-            'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "${POSTGRES_DB:-signalai}" -Atc "SELECT count(*) FROM instruments WHERE asset_class = ''FUTURES'' AND in_universe"' \
+          forts_in="$(printf '%s\n' \
+            "SELECT count(*) FROM instruments WHERE asset_class = 'FUTURES' AND in_universe;" \
+            | docker compose --env-file "$ENV_FILE" exec -T postgres sh -c \
+              'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "${POSTGRES_DB:-signalai}" -At' \
+            | tr -d '[:space:]')"
+          required_count="$(printf '%s\n' \
+            "SELECT count(*) FROM instruments WHERE upper(symbol) IN ('GKU6','BTCUSDT','DOGEUSDT') AND in_universe;" \
+            | docker compose --env-file "$ENV_FILE" exec -T postgres sh -c \
+              'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "${POSTGRES_DB:-signalai}" -At' \
             | tr -d '[:space:]')"
           echo "FORTS_IN_UNIVERSE=$forts_in"
+          echo "REQUIRED_IN_UNIVERSE=$required_count"
 
-          # The regression was ~176 structural futures entering sequential ingest.
-          # A healthy bounded pool must be materially below that, while keeping
-          # the required liquid roots. 120 is deliberately loose: it detects a
-          # return to the unbounded state without encoding today's exact market.
+          # Regression guard: the broken state admitted ~176 structural FORTS
+          # roots into sequential ingest. Keep the threshold deliberately loose
+          # so this checks boundedness rather than today's exact market count.
           test "$forts_in" -lt 120
+          test "$required_count" -eq 3
           test "$universe_done" -ge 1
           test "$ingest_done" -ge 1
           test "$review_done" -ge 1
           test "$scan_done" -ge 1
-
-          required_count="$(docker compose --env-file "$ENV_FILE" exec -T postgres sh -lc \
-            'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "${POSTGRES_DB:-signalai}" -Atc "SELECT count(*) FROM instruments WHERE upper(symbol) IN (''GKU6'',''BTCUSDT'',''DOGEUSDT'') AND in_universe"' \
-            | tr -d '[:space:]')"
-          echo "REQUIRED_IN_UNIVERSE=$required_count"
-          test "$required_count" -eq 3
           REMOTE
 
       - name: Remove SSH key
