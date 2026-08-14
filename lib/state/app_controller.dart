@@ -2056,8 +2056,23 @@ class AppController extends ChangeNotifier {
     final current = _engineIdeas.ideas.where((i) => i.id == id).firstOrNull;
     // Уже полная — доказательства бывают только в детальном ответе.
     if (current != null && current.evidence.isNotEmpty) return;
-    final full = await _engine.detail(id);
-    if (full == null) return;
+    var full = await _engine.detail(id);
+    // `/ideas/today` намеренно не несёт TradePlan. Один краткий сбой
+    // detail не должен превращать хороший серверный сигнал в карточку без
+    // Entry/SL/TP и кнопки подтверждения до следующего открытия экрана.
+    // Повторяем только чтение уже созданного плана; генерацию сигнала,
+    // триггер и торговые уровни здесь не пересчитываем.
+    full ??= await _engine.detail(id);
+    if (full == null) {
+      if (_selectedSignalId == id) {
+        showToast(
+          'Не удалось загрузить торговый план. Закройте и откройте идею, '
+          'чтобы повторить.',
+          tone: ToastTone.warning,
+        );
+      }
+      return;
+    }
     // Корзина `/ideas/today` — явный ответ сервера на вопрос «можно ли
     // действовать сейчас». Detail старых версий этого поля не несёт и может
     // содержать тот же lifecycle/quality status для обеих корзин. Поэтому

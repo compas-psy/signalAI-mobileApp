@@ -143,6 +143,21 @@ class _Engine extends EngineClient {
   }
 }
 
+class _FlakyDetailEngine extends _Engine {
+  _FlakyDetailEngine(super.idea, {required this.full, this.alwaysFail = false});
+
+  final Idea full;
+  final bool alwaysFail;
+  int detailCalls = 0;
+
+  @override
+  Future<Idea?> detail(String id) async {
+    detailCalls++;
+    if (alwaysFail || detailCalls == 1) return null;
+    return full;
+  }
+}
+
 class _ChartSpy extends IdeaChartSource {
   int calls = 0;
 
@@ -200,6 +215,17 @@ Map<String, dynamic> _detail() => {
         'tradable': true,
       },
     };
+
+Idea _summaryWithoutPlan() {
+  final raw = _detail();
+  raw.remove('plan');
+  raw.remove('sizing');
+  return EngineContract.idea(
+    raw,
+    readiness: IdeaReadiness.active,
+    actionable: true,
+  );
+}
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -285,6 +311,53 @@ void main() {
     controller.openSheet();
     await controller.confirmCurrentSignal();
     expect(engine.approvals, 0);
+  });
+
+  test('временный сбой detail автоматически повторяется и возвращает план',
+      () async {
+    final full = EngineContract.idea(_detail());
+    final summary = _summaryWithoutPlan();
+    final engine = _FlakyDetailEngine(summary, full: full);
+    final controller = AppController(
+      _Repository(),
+      engine: engine,
+      bridge: const _NoDeviceAuth(),
+      prefs: LocalStore.inMemory(),
+    );
+    addTearDown(controller.dispose);
+
+    await controller.load();
+    expect(controller.currentIdea?.plan, isNull);
+
+    controller.openSignal(summary.id);
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    expect(engine.detailCalls, 2);
+    expect(controller.currentIdea?.plan, isNotNull);
+    expect(controller.currentIdea?.readiness, IdeaReadiness.active);
+    expect(controller.currentIdea?.actionable, isTrue);
+  });
+
+  test('постоянный сбой detail не маскируется под идею без торгового плана',
+      () async {
+    final full = EngineContract.idea(_detail());
+    final summary = _summaryWithoutPlan();
+    final engine = _FlakyDetailEngine(summary, full: full, alwaysFail: true);
+    final controller = AppController(
+      _Repository(),
+      engine: engine,
+      bridge: const _NoDeviceAuth(),
+      prefs: LocalStore.inMemory(),
+    );
+    addTearDown(controller.dispose);
+
+    await controller.load();
+    controller.openSignal(summary.id);
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    expect(engine.detailCalls, 2);
+    expect(controller.currentIdea?.plan, isNull);
+    expect(controller.toast, contains('торговый план'));
   });
 
   test('production chart не вызывает прямой market source', () async {
