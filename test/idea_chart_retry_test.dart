@@ -71,5 +71,11 @@ void main() {
     expect(_FlakyLiveSource.attempts, 2);
     expect(find.text('Повторить'), findsNothing);
     expect(find.byType(TradeChart), findsOneWidget);
+
+    // IdeaChartCard owns a periodic live-refresh timer. Unmount it explicitly
+    // so dispose() cancels the timer before flutter_test checks for leaked
+    // asynchronous work at test teardown.
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump();
   });
 }
