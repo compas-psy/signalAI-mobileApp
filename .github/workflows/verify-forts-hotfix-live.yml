@@ -1,0 +1,71 @@
+name: Verify live FORTS hotfix effect
+
+on:
+  push:
+    branches:
+      - ops/verify-forts-hotfix-20260814
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prepare SSH
+        env:
+          KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_verify
+          chmod 600 ~/.ssh/id_verify
+          ssh-keyscan -T 10 -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Read-only live verification
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          USER_NAME: ${{ secrets.VPS_USER || 'root' }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/id_verify -o BatchMode=yes "$USER_NAME@$HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          cd "$HOME/signalai/server"
+          ENV_FILE='/etc/signalai/.env'
+          SUDO=''
+          [ "$(id -u)" -eq 0 ] || SUDO='sudo'
+
+          echo '=== provenance ==='
+          printf 'source_sha='; cat "$HOME/signalai/.signalai-source-sha"
+          curl -fsS --max-time 10 http://127.0.0.1:8000/health
+          echo
+
+          echo '=== scheduler since restart ==='
+          $SUDO docker compose --env-file "$ENV_FILE" logs --since=12m --no-color scheduler 2>&1 \
+            | grep -E 'universe:|ingest:|review:|supervise:|scan:|portfolio:|Traceback|Exception|ERROR|failed' \
+            | tail -n 180 || true
+
+          echo '=== current scanner universe ==='
+          $SUDO docker compose --env-file "$ENV_FILE" exec -T scheduler python - <<'PY'
+          from collections import Counter
+          from sqlalchemy import select
+          from app.db import get_session_factory
+          from app.models import Instrument
+
+          session = get_session_factory()()
+          try:
+              rows = list(session.execute(select(Instrument)).scalars())
+              active = [x for x in rows if x.in_universe and x.is_tradable]
+              counts = Counter((x.venue.value, x.asset_class.value) for x in active)
+              print(f'tradable_total={len(active)}')
+              for (venue, asset), count in sorted(counts.items()):
+                  print(f'{venue}|{asset}|{count}')
+              print('FORTS=' + ','.join(sorted(
+                  x.instrument_id for x in active if x.asset_class.value == 'FUTURES'
+              )))
+          finally:
+              session.rollback()
+              session.close()
+          PY
+          REMOTE
