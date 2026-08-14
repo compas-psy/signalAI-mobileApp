@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from app.models import ResearchObservation, ResearchSource
 from app.models.enums import LicenseStatus
 from app.research.adapters import trudvsem
-from app.research.hiring_runtime import _persist_vacancy_observation, _vacancy
+from app.research.hiring_runtime import _upsert_vacancy_observation, _vacancy
 from app.research.issuers import REGISTRY
 
 
@@ -55,7 +55,7 @@ def test_first_seen_revision_is_persisted_but_not_usable_before_tradable_at(sess
     row = _row(modified_at=datetime(2026, 1, 10, 8, 0, tzinfo=UTC))
     first_seen = datetime(2026, 1, 13, 10, 0, tzinfo=UTC)
 
-    observation, created = _persist_vacancy_observation(
+    observation, created = _upsert_vacancy_observation(
         session,
         row=row,
         issuer=issuer,
@@ -95,7 +95,7 @@ def test_same_revision_reuses_original_first_seen_and_matures_without_new_fact(s
     row = _row(modified_at=datetime(2026, 1, 10, 8, 0, tzinfo=UTC))
     first_seen = datetime(2026, 1, 13, 10, 0, tzinfo=UTC)
 
-    original, created = _persist_vacancy_observation(
+    original, created = _upsert_vacancy_observation(
         session,
         row=row,
         issuer=issuer,
@@ -106,7 +106,7 @@ def test_same_revision_reuses_original_first_seen_and_matures_without_new_fact(s
     assert created is True
 
     later = original.tradable_at.replace(hour=min(23, original.tradable_at.hour + 1))
-    repeated, repeated_created = _persist_vacancy_observation(
+    repeated, repeated_created = _upsert_vacancy_observation(
         session,
         row=row,
         issuer=issuer,
@@ -136,7 +136,7 @@ def test_modified_revision_gets_new_first_seen_and_new_availability_lag(session)
     issuer = _issuer()
     first = _row(modified_at=datetime(2026, 1, 10, 8, 0, tzinfo=UTC))
     first_seen = datetime(2026, 1, 13, 10, 0, tzinfo=UTC)
-    original, _ = _persist_vacancy_observation(
+    original, _ = _upsert_vacancy_observation(
         session,
         row=first,
         issuer=issuer,
@@ -147,7 +147,7 @@ def test_modified_revision_gets_new_first_seen_and_new_availability_lag(session)
 
     revised = _row(modified_at=datetime(2026, 1, 15, 8, 0, tzinfo=UTC))
     revision_seen = datetime(2026, 1, 15, 11, 0, tzinfo=UTC)
-    revision, created = _persist_vacancy_observation(
+    revision, created = _upsert_vacancy_observation(
         session,
         row=revised,
         issuer=issuer,
