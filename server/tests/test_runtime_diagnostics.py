@@ -11,7 +11,16 @@ from fastapi.testclient import TestClient
 
 from app.db import get_db
 from app.main import app
-from app.models import NotificationOutbox, PaperTrade, TradeIdea
+from app.models import (
+    AuditEvent,
+    DataQualityEvent,
+    IdeaEvent,
+    IdeaSkip,
+    NotificationOutbox,
+    PaperTrade,
+    TradeIdea,
+)
+from app.models.enums import IdeaStatus, SkipReason
 from tests.conftest import DEVICE_HEADERS, idea_kwargs
 
 
@@ -82,6 +91,21 @@ def test_runtime_diagnostics_empty_state_is_aggregate_only(client):
         "total": 0,
         "latest_id": None,
         "latest_created_at": None,
+    }
+    assert body["decisions"] == {"approved": 0, "rejected": 0}
+    assert body["lifecycle"] == {
+        "total": 0,
+        "by_status": {},
+        "latest_event_at": None,
+    }
+    assert body["data_quality"] == {
+        "total": 0,
+        "by_flag": {},
+        "latest_event_at": None,
+    }
+    assert body["idempotency"] == {
+        "approve_replays": 0,
+        "reject_replays": 0,
     }
 
     serialized = response.text.lower()
@@ -159,3 +183,142 @@ def test_runtime_diagnostics_counts_existing_pipeline_state(client, session, ins
     assert body["notifications"]["latest_id"] is not None
     assert body["notifications"]["latest_created_at"] is not None
     assert "must not leak" not in response.text
+
+
+def test_runtime_diagnostics_aggregates_lifecycle_quality_decisions_and_replays(
+    client, session, instrument, now
+):
+    watch = TradeIdea(**idea_kwargs(instrument.instrument_id, now, status="WATCH"))
+    rejected = TradeIdea(
+        **idea_kwargs(
+            instrument.instrument_id,
+            now + timedelta(minutes=5),
+            status=IdeaStatus.CANCELLED,
+        )
+    )
+    session.add_all([watch, rejected])
+    session.flush()
+
+    session.add(
+        PaperTrade(
+            idea_id=watch.id,
+            instrument_id=instrument.instrument_id,
+            direction="LONG",
+            status="CLOSED",
+            entry=Decimal("90100"),
+            initial_stop=Decimal("89400"),
+            tp_prices=["91000", "92000"],
+            tp_shares=["0.5", "0.5"],
+            current_stop=Decimal("90100"),
+            tps_taken=0,
+            realized_r=Decimal("0"),
+            opened_at=now,
+            expires_at=now + timedelta(days=5),
+            closed_at=now + timedelta(hours=1),
+        )
+    )
+    session.add(
+        IdeaSkip(
+            idea_id=rejected.id,
+            reason=SkipReason.OTHER,
+            comment="must not leak rejection comment",
+            snapshot_json={"secret": "must not leak rejection snapshot"},
+        )
+    )
+    session.add_all(
+        [
+            IdeaEvent(
+                idea_id=watch.id,
+                sequence=1,
+                old_status=IdeaStatus.DISCOVERED,
+                new_status=IdeaStatus.WATCH,
+                reason_code="candidate",
+                reason_detail="must not leak lifecycle detail",
+                market_snapshot={"secret": "must not leak lifecycle snapshot"},
+                feature_snapshot={},
+                config_hash="0" * 64,
+                engine_version="0.1.0",
+            ),
+            IdeaEvent(
+                idea_id=rejected.id,
+                sequence=1,
+                old_status=IdeaStatus.WATCH,
+                new_status=IdeaStatus.CANCELLED,
+                reason_code="user_rejected",
+                reason_detail="must not leak lifecycle detail",
+                market_snapshot={},
+                feature_snapshot={},
+                config_hash="0" * 64,
+                engine_version="0.1.0",
+                user_action=True,
+            ),
+        ]
+    )
+    session.add_all(
+        [
+            DataQualityEvent(
+                source="moex",
+                flag="STALE_CANDLES",
+                detail="must not leak data quality detail",
+                payload_json={"secret": "must not leak dq payload"},
+            ),
+            DataQualityEvent(
+                source="moex",
+                flag="MISSING_CANDLES",
+                detail="must not leak data quality detail",
+                payload_json={},
+            ),
+            DataQualityEvent(
+                source="t-invest",
+                flag="STALE_CANDLES",
+                detail="must not leak data quality detail",
+                payload_json={},
+            ),
+        ]
+    )
+    session.add_all(
+        [
+            AuditEvent(
+                actor="owner",
+                action="approve_paper_replay",
+                subject=str(watch.id),
+                trace_id=str(uuid4()),
+            ),
+            AuditEvent(
+                actor="owner",
+                action="approve_paper_replay",
+                subject=str(watch.id),
+                trace_id=str(uuid4()),
+            ),
+            AuditEvent(
+                actor="owner",
+                action="reject_replay",
+                subject=str(rejected.id),
+                trace_id=str(uuid4()),
+            ),
+        ]
+    )
+    session.flush()
+
+    response = client.get("/api/v1/diagnostics/runtime")
+    assert response.status_code == 200
+    body = response.json()
+
+    assert body["decisions"] == {"approved": 1, "rejected": 1}
+    assert body["lifecycle"]["total"] == 2
+    assert body["lifecycle"]["by_status"] == {"CANCELLED": 1, "WATCH": 1}
+    assert body["lifecycle"]["latest_event_at"] is not None
+    assert body["data_quality"]["total"] == 3
+    assert body["data_quality"]["by_flag"] == {
+        "MISSING_CANDLES": 1,
+        "STALE_CANDLES": 2,
+    }
+    assert body["data_quality"]["latest_event_at"] is not None
+    assert body["idempotency"] == {
+        "approve_replays": 2,
+        "reject_replays": 1,
+    }
+
+    serialized = response.text.lower()
+    assert "must not leak" not in serialized
+    assert "trace_id" not in serialized
