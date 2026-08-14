@@ -8,15 +8,20 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 import urllib.request
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..models import ResearchObservation
+from ..models.enums import ResearchDirection
 from .adapters import trudvsem
+from .codes import observation_code
 from .collect import Fetched
 from .engines import hiring
 from .fusion import Falsifier, SignalInput
@@ -25,7 +30,6 @@ from .market_context import for_hypothesis
 from .pipeline import run as run_pipeline
 from .policy import CollectionDenied, authorize
 from .reach import USER_AGENT
-from ..models.enums import ResearchDirection
 
 MAX_PAGES = 100  # API сам ограничивает полезную выборку 10k строками.
 TIMEOUT = 30
@@ -130,6 +134,94 @@ def _function(title: str) -> str:
     return "corporate"
 
 
+def _vacancy_lineage_root(row: trudvsem.VacancyDatum) -> str:
+    """Стабильный корень одной вакансии через все её перепубликации."""
+    identity = f"{trudvsem.SOURCE_ID}:vacancy:{row.vacancy_id}"
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+
+def _vacancy_observation_type(row: trudvsem.VacancyDatum) -> str:
+    """Ключ конкретной информационной ревизии вакансии."""
+    information_time = row.information_time
+    revision = (
+        information_time.astimezone(UTC).isoformat()
+        if information_time is not None
+        else "unknown"
+    )
+    return observation_code("hiring", row.vacancy_id, revision)
+
+
+def _persist_vacancy_observation(
+    session: Session,
+    *,
+    row: trudvsem.VacancyDatum,
+    issuer: Issuer,
+    first_seen_at: datetime,
+    raw_sha256: str,
+) -> bool:
+    """Сохранить одну ревизию вакансии без перезаписи первого обнаружения.
+
+    Повтор той же информационной ревизии не создаёт новый факт, даже если
+    страница источника пришла другим набором байтов. Изменение
+    ``information_time`` создаёт новую ревизию с тем же lineage root и
+    ссылкой на предыдущую запись.
+    """
+    observation_type = _vacancy_observation_type(row)
+    existing = session.execute(
+        select(ResearchObservation.id).where(
+            ResearchObservation.source_id == trudvsem.SOURCE_ID,
+            ResearchObservation.entity_id == issuer.secid,
+            ResearchObservation.observation_type == observation_type,
+        )
+    ).first()
+    if existing is not None:
+        return False
+
+    lineage_root_id = _vacancy_lineage_root(row)
+    previous = session.execute(
+        select(ResearchObservation)
+        .where(
+            ResearchObservation.source_id == trudvsem.SOURCE_ID,
+            ResearchObservation.entity_id == issuer.secid,
+            ResearchObservation.lineage_root_id == lineage_root_id,
+        )
+        .order_by(
+            ResearchObservation.revision_number.desc(),
+            ResearchObservation.first_seen_at.desc(),
+        )
+        .limit(1)
+    ).scalars().first()
+
+    when = trudvsem.availability(row, first_seen_at=first_seen_at)
+    session.add(
+        ResearchObservation(
+            observation_type=observation_type,
+            entity_id=issuer.secid,
+            source_id=trudvsem.SOURCE_ID,
+            event_time=row.published_at,
+            published_at=row.information_time,
+            first_seen_at=first_seen_at,
+            tradable_at=when.tradable_at,
+            publication_time_uncertain=when.publication_time_uncertain,
+            lineage_root_id=lineage_root_id,
+            source_locator={
+                "vacancy_id": row.vacancy_id,
+                "employer_identity": row.employer_identity,
+                "employer_name": row.employer_name,
+                "title": row.title,
+                "region_code": row.region_code,
+                "region_name": row.region_name,
+                "url": row.source_url,
+            },
+            raw_sha256=raw_sha256,
+            value_text=row.title,
+            revision_number=(previous.revision_number + 1) if previous else 0,
+            supersedes_id=previous.id if previous else None,
+        )
+    )
+    return True
+
+
 def _fetch(url: str, now: datetime) -> Fetched | None:
     request = urllib.request.Request(
         url,
@@ -195,13 +287,24 @@ def run_hiring_live(session: Session, *, now: datetime | None = None) -> HiringR
         fetched.append(page)
         report.fetched_pages += 1
 
-    raw_rows = [datum for page in fetched for datum in trudvsem.parse(page)]
+    raw_rows = [
+        (datum, page.sha256)
+        for page in fetched
+        for datum in trudvsem.parse(page)
+    ]
     report.vacancies = len(raw_rows)
     by_issuer: dict[str, tuple[Issuer, list[hiring.Vacancy]]] = {}
-    for row in raw_rows:
+    for row, raw_sha256 in raw_rows:
         issuer = _issuer(row)
         if issuer is None:
             continue
+        _persist_vacancy_observation(
+            session,
+            row=row,
+            issuer=issuer,
+            first_seen_at=moment,
+            raw_sha256=raw_sha256,
+        )
         vacancy = _vacancy(row, issuer, moment)
         if vacancy is None:
             continue
