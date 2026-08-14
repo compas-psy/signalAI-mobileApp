@@ -148,35 +148,48 @@ def display_bars(
     now = datetime.now(UTC)
     instrument = _require(db, instrument_id)
 
-    persisted = list(
-        reversed(
-            list(
-                db.execute(
-                    select(Bar)
-                    .where(
-                        Bar.instrument_id == instrument_id,
-                        Bar.timeframe == timeframe,
-                        Bar.is_closed.is_(True),
-                    )
-                    .order_by(Bar.open_time.desc())
-                    .limit(limit)
-                ).scalars()
+    def persisted_rows(selected_timeframe: Timeframe) -> list[Bar]:
+        return list(
+            reversed(
+                list(
+                    db.execute(
+                        select(Bar)
+                        .where(
+                            Bar.instrument_id == instrument_id,
+                            Bar.timeframe == selected_timeframe,
+                            Bar.is_closed.is_(True),
+                        )
+                        .order_by(Bar.open_time.desc())
+                        .limit(limit)
+                    ).scalars()
+                )
             )
         )
-    )
+
+    def merge_persisted(
+        target: dict[datetime, DisplayBar],
+        rows: list[Bar],
+        selected_timeframe: Timeframe,
+    ) -> None:
+        for row in rows:
+            # Defensive read-time guard for rows written by an older server build.
+            if instrument.venue is Venue.MOEX:
+                shadow = type(
+                    "Shadow",
+                    (),
+                    {
+                        "open_time": row.open_time,
+                        "is_closed": True,
+                    },
+                )()
+                if not is_time_closed(shadow, selected_timeframe, now=now):
+                    continue
+            target[row.open_time] = _bar(row)
 
     merged: dict[datetime, DisplayBar] = {}
-    for row in persisted:
-        # Defensive read-time guard for rows written by an older server build.
-        if instrument.venue is Venue.MOEX:
-            shadow = type("Shadow", (), {
-                "open_time": row.open_time,
-                "is_closed": True,
-            })()
-            if not is_time_closed(shadow, timeframe, now=now):
-                continue
-        merged[row.open_time] = _bar(row)
+    merge_persisted(merged, persisted_rows(timeframe), timeframe)
 
+    response_timeframe = timeframe
     live_overlay = False
     try:
         if instrument.venue is Venue.MOEX:
@@ -204,11 +217,40 @@ def display_bars(
         # exchange's live endpoint had a transient failure.
         live_overlay = False
 
+    # MOEX ISS has no native H4 candles. H4 is useful for the analytical
+    # engine, but an owner-facing display chart must not disappear just because
+    # neither audited H4 history nor a native live H4 tail is available. In
+    # that narrow case degrade to H1 and report the actual timeframe returned.
+    if instrument.venue is Venue.MOEX and timeframe is Timeframe.H4 and not merged:
+        fallback: dict[datetime, DisplayBar] = {}
+        merge_persisted(fallback, persisted_rows(Timeframe.H1), Timeframe.H1)
+        fallback_live = False
+        try:
+            tail = _moex_live(
+                instrument,
+                Timeframe.H1,
+                limit=limit,
+                now=now,
+            )
+            for candle in tail:
+                fallback[candle.open_time] = _candle(
+                    candle,
+                    source="moex-live-display",
+                )
+            fallback_live = bool(tail)
+        except Exception:
+            fallback_live = False
+
+        if fallback:
+            merged = fallback
+            response_timeframe = Timeframe.H1
+            live_overlay = fallback_live
+
     rows = [merged[key] for key in sorted(merged)]
     return DisplayBars(
         instrument_id=instrument_id,
         symbol=instrument.symbol,
-        timeframe=timeframe,
+        timeframe=response_timeframe,
         generated_at=now,
         live_overlay=live_overlay,
         bars=rows[-limit:],
