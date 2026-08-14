@@ -31,6 +31,7 @@ from .api.v1 import investment_signals as investment_signal_routes
 from .api.v1 import journal as journal_routes
 from .api.v1 import live_market as live_market_routes
 from .api.v1 import market as market_routes
+from .api.v1 import measurements as measurement_routes
 from .api.v1 import notifications as notification_routes
 from .api.v1 import paper as paper_routes
 from .api.v1 import portfolio as portfolio_routes
@@ -87,6 +88,7 @@ v1.include_router(journal_routes.router)
 v1.include_router(notification_routes.router)
 v1.include_router(control_routes.router)
 v1.include_router(diagnostics_routes.router)
+v1.include_router(measurement_routes.router)
 app.include_router(v1)
 
 
