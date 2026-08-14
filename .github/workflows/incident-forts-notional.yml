@@ -1,0 +1,80 @@
+name: Incident FORTS notional validation
+
+on:
+  push:
+    branches:
+      - incident/signal-gap-20260814
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prepare SSH
+        env:
+          KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_diag
+          chmod 600 ~/.ssh/id_diag
+          ssh-keyscan -T 10 -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Compare D1 and completed-day H1 notionals read-only
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          USER_NAME: ${{ secrets.VPS_USER || 'root' }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/id_diag -o BatchMode=yes "$USER_NAME@$HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          cd "$HOME/signalai/server"
+          ENV_FILE='/etc/signalai/.env'
+          SUDO=''
+          [ "$(id -u)" -eq 0 ] || SUDO='sudo'
+          $SUDO docker compose --env-file "$ENV_FILE" exec -T scheduler python - <<'PY'
+          from collections import defaultdict
+          from datetime import UTC, datetime, timedelta
+          from decimal import Decimal
+          from statistics import median
+          from sqlalchemy import select
+          from app.db import get_session_factory
+          from app.models import Bar, Instrument
+          from app.models.enums import AssetClass, Timeframe, Venue
+
+          session = get_session_factory()()
+          try:
+              now = datetime.now(UTC)
+              instruments = list(session.execute(select(Instrument).where(
+                  Instrument.venue == Venue.MOEX,
+                  Instrument.asset_class == AssetClass.FUTURES,
+                  Instrument.in_universe.is_(True),
+              )).scalars())
+              print(f'forts_in_universe={len(instruments)} utc_now={now.isoformat()}')
+              for instrument in sorted(instruments, key=lambda x: x.instrument_id):
+                  rows = session.execute(select(Bar.open_time, Bar.volume_notional).where(
+                      Bar.instrument_id == instrument.instrument_id,
+                      Bar.timeframe == Timeframe.H1,
+                      Bar.is_closed.is_(True),
+                      Bar.open_time >= now - timedelta(days=35),
+                      Bar.open_time < now.replace(hour=0, minute=0, second=0, microsecond=0),
+                  )).all()
+                  daily = defaultdict(lambda: Decimal(0))
+                  nonnull = defaultdict(int)
+                  for ts, value in rows:
+                      if value is not None:
+                          daily[ts.date()] += value
+                          nonnull[ts.date()] += 1
+                  values = [v for d, v in daily.items() if nonnull[d] >= 3 and v > 0]
+                  med = Decimal(median(values)) if values else None
+                  snap = (instrument.metadata_json or {}).get('snapshot_turnover_rub')
+                  note = 'TRADABLE' if instrument.is_tradable else 'BLOCKED'
+                  print(f'{instrument.instrument_id} | {note} | h1_days={len(values)} | h1_median={med} | board_snapshot={snap}')
+          finally:
+              session.rollback()
+              session.close()
+          PY
+          REMOTE
