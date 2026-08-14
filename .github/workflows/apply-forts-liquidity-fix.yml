@@ -1,0 +1,61 @@
+name: Apply FORTS liquidity incident fix
+
+on:
+  push:
+    branches:
+      - fix/forts-intraday-liquidity-20260814
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/forts-intraday-liquidity-20260814
+          fetch-depth: 0
+      - name: Apply exact production patch
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('server/app/market/universe.py')
+          text = path.read_text()
+
+          anchor = '''def _daily_oi_notionals(\n    session: Session, instrument: Instrument, *, days: int, now: datetime\n) -> list[Decimal]:\n'''
+          helper = '''def _completed_hourly_daily_notionals(\n    session: Session, instrument: Instrument, *, days: int, now: datetime\n) -> list[Decimal]:\n    """Estimate completed-day turnover when FORTS D1 VALUE is absent.\n\n    ISS hourly candles retain contracts traded even when the D1 money VALUE is\n    zero/empty.  A completed H1 bar can therefore be converted to approximate\n    RUB turnover from the contract specification.  The current UTC day is\n    deliberately excluded: since the 2026 unified session it is still an\n    incomplete trading day until the evening close and must not be compared\n    with a full-day liquidity threshold.\n    """\n    if not instrument.tick_size or instrument.tick_size <= 0:\n        return []\n    rubles_per_point = instrument.tick_value / instrument.tick_size\n    since = now - timedelta(days=days)\n    rows = session.execute(\n        select(\n            Bar.open_time,\n            Bar.volume_notional,\n            Bar.volume_units,\n            Bar.close,\n        ).where(\n            Bar.instrument_id == instrument.instrument_id,\n            Bar.timeframe == Timeframe.H1,\n            Bar.is_closed.is_(True),\n            Bar.open_time >= since,\n        )\n    ).all()\n\n    current_day = now.date()\n    daily: dict[date, Decimal] = {}\n    for open_time, volume_notional, volume_units, close in rows:\n        day = open_time.date()\n        if day >= current_day:\n            continue\n        if volume_notional is not None and volume_notional > 0:\n            value = volume_notional\n        elif (\n            volume_units is not None\n            and volume_units > 0\n            and close is not None\n            and close > 0\n        ):\n            value = volume_units * close * rubles_per_point\n        else:\n            continue\n        daily[day] = daily.get(day, Decimal(0)) + value\n    return list(daily.values())\n\n\n'''
+          if text.count(anchor) != 1:
+              raise SystemExit('hourly turnover insertion anchor changed')
+          text = text.replace(anchor, helper + anchor)
+
+          old = '''def futures_candidates(\n    rows: list[moex.FortsRow],\n    today: date,\n    *,\n    min_days_to_expiry: int,\n    min_snapshot_turnover: Decimal = Decimal(0),\n) -> list[FuturesCandidate]:\n    board_trades = any((r.turnover or Decimal(0)) > 0 for r in rows)\n    floor = min_snapshot_turnover if board_trades else Decimal(0)\n'''
+          new = '''def futures_candidates(\n    rows: list[moex.FortsRow],\n    today: date,\n    *,\n    min_days_to_expiry: int,\n    min_snapshot_turnover: Decimal = Decimal(0),\n    filter_by_snapshot: bool = True,\n) -> list[FuturesCandidate]:\n    board_trades = filter_by_snapshot and any(\n        (r.turnover or Decimal(0)) > 0 for r in rows\n    )\n    floor = min_snapshot_turnover if board_trades else Decimal(0)\n'''
+          if text.count(old) != 1:
+              raise SystemExit('candidate anchor changed')
+          text = text.replace(old, new)
+
+          old = '''    history_notional = _median(\n        _daily_notionals(session, instrument.instrument_id, days=30, now=moment)\n    )\n    snapshot_notional = _decimal_meta(snapshot, "snapshot_turnover_rub")\n    if history_notional is not None and history_notional > 0:\n        notional = history_notional\n        verdict.measured["median_daily_notional_rub"] = str(notional)\n        verdict.measured["turnover_source"] = "history_30d_median"\n    elif snapshot_notional is not None and snapshot_notional > 0:\n        notional = snapshot_notional\n        verdict.measured["daily_notional_rub"] = str(notional)\n        verdict.measured["turnover_source"] = "fresh_board_snapshot"\n        verdict.reasons.append("оборот ISS history нулевой/пустой — использован свежий снимок доски")\n    else:\n        notional = None\n        verdict.admitted = False\n        verdict.reasons.append("оборот не измерен: history и свежий снимок доски пусты")\n'''
+          new = '''    history_notional = _median(\n        _daily_notionals(session, instrument.instrument_id, days=30, now=moment)\n    )\n    completed_h1_notional = _median(\n        _completed_hourly_daily_notionals(\n            session, instrument, days=30, now=moment\n        )\n    )\n    snapshot_notional = _decimal_meta(snapshot, "snapshot_turnover_rub")\n    if history_notional is not None and history_notional > 0:\n        notional = history_notional\n        verdict.measured["median_daily_notional_rub"] = str(notional)\n        verdict.measured["turnover_source"] = "history_30d_median"\n    elif completed_h1_notional is not None and completed_h1_notional > 0:\n        notional = completed_h1_notional\n        verdict.measured["median_daily_notional_rub"] = str(notional)\n        verdict.measured["turnover_source"] = "completed_h1_30d_median"\n        verdict.reasons.append(\n            "оборот D1 пустой/нулевой — рассчитана медиана завершённых H1-дней"\n        )\n    elif snapshot_notional is not None and snapshot_notional > 0:\n        notional = snapshot_notional\n        verdict.measured["daily_notional_rub"] = str(notional)\n        verdict.measured["turnover_source"] = "fresh_board_snapshot"\n        verdict.reasons.append("оборот ISS history нулевой/пустой — использован свежий снимок доски")\n    else:\n        notional = None\n        verdict.admitted = False\n        verdict.reasons.append(\n            "оборот не измерен: D1, завершённые H1 и свежий снимок доски пусты"\n        )\n'''
+          if text.count(old) != 1:
+              raise SystemExit('admission anchor changed')
+          text = text.replace(old, new)
+
+          old = '''    prefilter = config.decimal("universe.futures.min_median_daily_notional_rub") / 10\n    candidates = futures_candidates(\n        rows, moment.date(),\n        min_days_to_expiry=min_days,\n        min_snapshot_turnover=prefilter,\n    )\n'''
+          new = '''    # VALTODAY is only the turnover accumulated so far in the current\n    # session.  Candidate membership must not depend on that partial value;\n    # completed-day liquidity is enforced by admit_futures() below.\n    candidates = futures_candidates(\n        rows, moment.date(),\n        min_days_to_expiry=min_days,\n        filter_by_snapshot=False,\n    )\n'''
+          if text.count(old) != 1:
+              raise SystemExit('sync anchor changed')
+          text = text.replace(old, new)
+
+          path.write_text(text)
+          PY
+
+          git diff --check
+          git diff -- server/app/market/universe.py
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add server/app/market/universe.py
+          git commit -m "fix: use completed-day liquidity for FORTS admission"
+          git push origin HEAD:fix/forts-intraday-liquidity-20260814
