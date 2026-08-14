@@ -62,6 +62,57 @@ def _daily_notionals(
     return [v for v in rows if v is not None]
 
 
+def _completed_hourly_daily_notionals(
+    session: Session, instrument: Instrument, *, days: int, now: datetime
+) -> list[Decimal]:
+    """Estimate completed-day turnover when FORTS D1 VALUE is absent.
+
+    ISS hourly candles retain contracts traded even when the D1 money VALUE is
+    zero/empty.  A completed H1 bar can therefore be converted to approximate
+    RUB turnover from the contract specification.  The current UTC day is
+    deliberately excluded: since the 2026 unified session it is still an
+    incomplete trading day until the evening close and must not be compared
+    with a full-day liquidity threshold.
+    """
+    if not instrument.tick_size or instrument.tick_size <= 0:
+        return []
+    rubles_per_point = instrument.tick_value / instrument.tick_size
+    since = now - timedelta(days=days)
+    rows = session.execute(
+        select(
+            Bar.open_time,
+            Bar.volume_notional,
+            Bar.volume_units,
+            Bar.close,
+        ).where(
+            Bar.instrument_id == instrument.instrument_id,
+            Bar.timeframe == Timeframe.H1,
+            Bar.is_closed.is_(True),
+            Bar.open_time >= since,
+        )
+    ).all()
+
+    current_day = now.date()
+    daily: dict[date, Decimal] = {}
+    for open_time, volume_notional, volume_units, close in rows:
+        day = open_time.date()
+        if day >= current_day:
+            continue
+        if volume_notional is not None and volume_notional > 0:
+            value = volume_notional
+        elif (
+            volume_units is not None
+            and volume_units > 0
+            and close is not None
+            and close > 0
+        ):
+            value = volume_units * close * rubles_per_point
+        else:
+            continue
+        daily[day] = daily.get(day, Decimal(0)) + value
+    return list(daily.values())
+
+
 def _daily_oi_notionals(
     session: Session, instrument: Instrument, *, days: int, now: datetime
 ) -> list[Decimal]:
@@ -174,8 +225,11 @@ def futures_candidates(
     *,
     min_days_to_expiry: int,
     min_snapshot_turnover: Decimal = Decimal(0),
+    filter_by_snapshot: bool = True,
 ) -> list[FuturesCandidate]:
-    board_trades = any((r.turnover or Decimal(0)) > 0 for r in rows)
+    board_trades = filter_by_snapshot and any(
+        (r.turnover or Decimal(0)) > 0 for r in rows
+    )
     floor = min_snapshot_turnover if board_trades else Decimal(0)
 
     result: list[FuturesCandidate] = []
@@ -223,11 +277,23 @@ def admit_futures(
     history_notional = _median(
         _daily_notionals(session, instrument.instrument_id, days=30, now=moment)
     )
+    completed_h1_notional = _median(
+        _completed_hourly_daily_notionals(
+            session, instrument, days=30, now=moment
+        )
+    )
     snapshot_notional = _decimal_meta(snapshot, "snapshot_turnover_rub")
     if history_notional is not None and history_notional > 0:
         notional = history_notional
         verdict.measured["median_daily_notional_rub"] = str(notional)
         verdict.measured["turnover_source"] = "history_30d_median"
+    elif completed_h1_notional is not None and completed_h1_notional > 0:
+        notional = completed_h1_notional
+        verdict.measured["median_daily_notional_rub"] = str(notional)
+        verdict.measured["turnover_source"] = "completed_h1_30d_median"
+        verdict.reasons.append(
+            "оборот D1 пустой/нулевой — рассчитана медиана завершённых H1-дней"
+        )
     elif snapshot_notional is not None and snapshot_notional > 0:
         notional = snapshot_notional
         verdict.measured["daily_notional_rub"] = str(notional)
@@ -236,7 +302,9 @@ def admit_futures(
     else:
         notional = None
         verdict.admitted = False
-        verdict.reasons.append("оборот не измерен: history и свежий снимок доски пусты")
+        verdict.reasons.append(
+            "оборот не измерен: D1, завершённые H1 и свежий снимок доски пусты"
+        )
 
     if notional is not None and notional < min_notional:
         verdict.admitted = False
@@ -314,11 +382,13 @@ def sync_futures(
 
     rows, _ = moex.forts_board(**kwargs)
     record_rates(session, rows, now=moment)
-    prefilter = config.decimal("universe.futures.min_median_daily_notional_rub") / 10
+    # VALTODAY is only the turnover accumulated so far in the current
+    # session.  Candidate membership must not depend on that partial value;
+    # completed-day liquidity is enforced by admit_futures() below.
     candidates = futures_candidates(
         rows, moment.date(),
         min_days_to_expiry=min_days,
-        min_snapshot_turnover=prefilter,
+        filter_by_snapshot=False,
     )
     if not candidates:
         _record_empty_board(session, len(rows))
