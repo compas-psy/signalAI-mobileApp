@@ -30,6 +30,7 @@ from .market_context import for_hypothesis
 from .pipeline import run as run_pipeline
 from .policy import CollectionDenied, authorize
 from .reach import USER_AGENT
+from .timeline import visible_at
 
 MAX_PAGES = 100  # API сам ограничивает полезную выборку 10k строками.
 TIMEOUT = 30
@@ -158,24 +159,24 @@ def _persist_vacancy_observation(
     issuer: Issuer,
     first_seen_at: datetime,
     raw_sha256: str,
-) -> bool:
-    """Сохранить одну ревизию вакансии без перезаписи первого обнаружения.
+) -> tuple[ResearchObservation, bool]:
+    """Persist one revision and preserve the first real availability boundary.
 
-    Повтор той же информационной ревизии не создаёт новый факт, даже если
-    страница источника пришла другим набором байтов. Изменение
-    ``information_time`` создаёт новую ревизию с тем же lineage root и
-    ссылкой на предыдущую запись.
+    Re-polling the same source revision returns the existing observation so
+    callers use its original ``first_seen_at`` / ``tradable_at`` rather than
+    moving the information clock on every scheduler tick. A changed
+    ``information_time`` creates a new revision under the same lineage root.
     """
     observation_type = _vacancy_observation_type(row)
     existing = session.execute(
-        select(ResearchObservation.id).where(
+        select(ResearchObservation).where(
             ResearchObservation.source_id == trudvsem.SOURCE_ID,
             ResearchObservation.entity_id == issuer.secid,
             ResearchObservation.observation_type == observation_type,
         )
-    ).first()
+    ).scalars().first()
     if existing is not None:
-        return False
+        return existing, False
 
     lineage_root_id = _vacancy_lineage_root(row)
     previous = session.execute(
@@ -193,33 +194,38 @@ def _persist_vacancy_observation(
     ).scalars().first()
 
     when = trudvsem.availability(row, first_seen_at=first_seen_at)
-    session.add(
-        ResearchObservation(
-            observation_type=observation_type,
-            entity_id=issuer.secid,
-            source_id=trudvsem.SOURCE_ID,
-            event_time=row.published_at,
-            published_at=row.information_time,
-            first_seen_at=first_seen_at,
-            tradable_at=when.tradable_at,
-            publication_time_uncertain=when.publication_time_uncertain,
-            lineage_root_id=lineage_root_id,
-            source_locator={
-                "vacancy_id": row.vacancy_id,
-                "employer_identity": row.employer_identity,
-                "employer_name": row.employer_name,
-                "title": row.title,
-                "region_code": row.region_code,
-                "region_name": row.region_name,
-                "url": row.source_url,
-            },
-            raw_sha256=raw_sha256,
-            value_text=row.title,
-            revision_number=(previous.revision_number + 1) if previous else 0,
-            supersedes_id=previous.id if previous else None,
-        )
+    observation = ResearchObservation(
+        observation_type=observation_type,
+        entity_id=issuer.secid,
+        source_id=trudvsem.SOURCE_ID,
+        event_time=row.published_at,
+        published_at=row.information_time,
+        first_seen_at=first_seen_at,
+        tradable_at=when.tradable_at,
+        publication_time_uncertain=when.publication_time_uncertain,
+        lineage_root_id=lineage_root_id,
+        source_locator={
+            "vacancy_id": row.vacancy_id,
+            "employer_identity": row.employer_identity,
+            "employer_name": row.employer_name,
+            "title": row.title,
+            "region_code": row.region_code,
+            "region_name": row.region_name,
+            "url": row.source_url,
+            "source_created_at": (
+                row.published_at.isoformat() if row.published_at is not None else ""
+            ),
+            "source_modified_at": (
+                row.modified_at.isoformat() if row.modified_at is not None else ""
+            ),
+        },
+        raw_sha256=raw_sha256,
+        value_text=row.title,
+        revision_number=(previous.revision_number + 1) if previous else 0,
+        supersedes_id=previous.id if previous else None,
     )
-    return True
+    session.add(observation)
+    return observation, True
 
 
 def _fetch(url: str, now: datetime) -> Fetched | None:
@@ -244,11 +250,19 @@ def _fetch(url: str, now: datetime) -> Fetched | None:
         return None
 
 
-def _vacancy(row: trudvsem.VacancyDatum, issuer: Issuer, now: datetime) -> hiring.Vacancy | None:
-    published = row.published_at or row.modified_at
-    if published is None:
+def _vacancy(
+    row: trudvsem.VacancyDatum,
+    issuer: Issuer,
+    now: datetime,
+    *,
+    tradable_at: datetime | None = None,
+) -> hiring.Vacancy | None:
+    if tradable_at is not None and not visible_at(tradable_at, now):
         return None
-    age = max(0, (now - published).days)
+    information_time = row.information_time
+    if information_time is None:
+        return None
+    age = max(0, (now - information_time).days)
     if age > 84:
         return None
     return hiring.Vacancy(
@@ -256,7 +270,7 @@ def _vacancy(row: trudvsem.VacancyDatum, issuer: Issuer, now: datetime) -> hirin
         normalized_title=row.title,
         function=_function(row.title),
         region=row.region_name or row.region_code,
-        published_day=published.date().toordinal(),
+        published_day=information_time.date().toordinal(),
         salary=row.salary_mid,
         baseline_salary=None,
         age_days=age,
@@ -298,14 +312,19 @@ def run_hiring_live(session: Session, *, now: datetime | None = None) -> HiringR
         issuer = _issuer(row)
         if issuer is None:
             continue
-        _persist_vacancy_observation(
+        observation, _created = _persist_vacancy_observation(
             session,
             row=row,
             issuer=issuer,
             first_seen_at=moment,
             raw_sha256=raw_sha256,
         )
-        vacancy = _vacancy(row, issuer, moment)
+        vacancy = _vacancy(
+            row,
+            issuer,
+            moment,
+            tradable_at=observation.tradable_at,
+        )
         if vacancy is None:
             continue
         report.matched += 1
