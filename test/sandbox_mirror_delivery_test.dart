@@ -4,6 +4,10 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:signalai/data/api/sandbox_mirror_delivery.dart';
 import 'package:signalai/data/local_store.dart';
 
+const _idea42 = '11111111-2222-4333-8444-555555555555';
+const _idea77 = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+const _ideaMemory = '01234567-89ab-4cde-8fab-0123456789ab';
+
 void main() {
   group('SandboxMirrorDeliveryStore', () {
     test('pending intent survives a new store instance and keeps provider ids', () async {
@@ -11,12 +15,12 @@ void main() {
       addTearDown(() => directory.delete(recursive: true));
 
       final first = SandboxMirrorDeliveryStore(LocalStore(directory: directory));
-      final pending = SandboxMirrorDelivery.pending('idea-42');
+      final pending = SandboxMirrorDelivery.pending(_idea42);
 
       expect(await first.save(pending), isTrue);
 
       final second = SandboxMirrorDeliveryStore(LocalStore(directory: directory));
-      final restored = await second.load('idea-42');
+      final restored = await second.load(_idea42);
 
       expect(restored, isNotNull);
       expect(restored!.status, SandboxMirrorDeliveryStatus.pending);
@@ -29,7 +33,7 @@ void main() {
       addTearDown(() => directory.delete(recursive: true));
 
       final first = SandboxMirrorDeliveryStore(LocalStore(directory: directory));
-      final completed = SandboxMirrorDelivery.pending('idea-77').copyWith(
+      final completed = SandboxMirrorDelivery.pending(_idea77).copyWith(
         status: SandboxMirrorDeliveryStatus.completed,
         exchangeOrderId: 'ORDER-77',
       );
@@ -37,7 +41,7 @@ void main() {
 
       final restored = await SandboxMirrorDeliveryStore(
         LocalStore(directory: directory),
-      ).load('idea-77');
+      ).load(_idea77);
 
       expect(restored!.terminal, isTrue);
       expect(restored.exchangeOrderId, 'ORDER-77');
@@ -46,21 +50,28 @@ void main() {
     test('refuses to claim durability when only memory storage is available', () async {
       final store = SandboxMirrorDeliveryStore(LocalStore.inMemory());
 
-      expect(await store.save(SandboxMirrorDelivery.pending('idea-memory')), isFalse);
+      expect(
+        await store.save(SandboxMirrorDelivery.pending(_ideaMemory)),
+        isFalse,
+      );
     });
   });
 
-  test('provider ids are stable UUIDs and separate entry from protective stop', () {
-    final first = SandboxMirrorDelivery.pending('idea-stable');
-    final second = SandboxMirrorDelivery.pending('idea-stable');
+  test('provider ids use the frozen e-/s- idea UUID identity', () {
+    final first = SandboxMirrorDelivery.pending(_idea42);
+    final second = SandboxMirrorDelivery.pending(_idea42);
 
     expect(first.entryRequestId, second.entryRequestId);
     expect(first.protectiveStopRequestId, second.protectiveStopRequestId);
-    expect(first.entryRequestId, isNot(first.protectiveStopRequestId));
     expect(
-      RegExp(r'^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$')
-          .hasMatch(first.entryRequestId),
-      isTrue,
+      first.entryRequestId,
+      'e-11111111222243338444555555555555',
     );
+    expect(
+      first.protectiveStopRequestId,
+      's-11111111222243338444555555555555',
+    );
+    expect(first.entryRequestId.length, 34);
+    expect(first.protectiveStopRequestId.length, 34);
   });
 }
