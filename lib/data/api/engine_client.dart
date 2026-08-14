@@ -90,12 +90,57 @@ class IdeaDecision {
   }
 }
 
+enum EngineFailureStage { ideaHydration, chartLoad }
+
+class EngineHandledFailure {
+  const EngineHandledFailure({
+    required this.stage,
+    required this.error,
+    this.stackTrace,
+  });
+
+  final EngineFailureStage stage;
+  final Object error;
+  final StackTrace? stackTrace;
+}
+
+typedef EngineFailureReporter = void Function(EngineHandledFailure failure);
+
 class EngineClient {
-  EngineClient({ApiClient? client}) : _api = client ?? ApiClient();
+  EngineClient({
+    ApiClient? client,
+    EngineFailureReporter? onHandledFailure,
+  })  : _api = client ?? ApiClient(),
+        _onHandledFailure = onHandledFailure;
 
   final ApiClient _api;
+  EngineFailureReporter? _onHandledFailure;
 
   static const _base = '/api/v1';
+
+  /// Allows the app bootstrap to attach one shared local diagnostic recorder
+  /// after a specialized EngineClient subclass has been constructed.
+  void setHandledFailureReporter(EngineFailureReporter? reporter) {
+    _onHandledFailure = reporter;
+  }
+
+  void _reportHandled(
+    EngineFailureStage stage,
+    Object error, [
+    StackTrace? stackTrace,
+  ]) {
+    try {
+      _onHandledFailure?.call(
+        EngineHandledFailure(
+          stage: stage,
+          error: error,
+          stackTrace: stackTrace,
+        ),
+      );
+    } on Object {
+      // Diagnostics must never turn an intentionally handled failure fatal.
+    }
+  }
 
   /// Адреса движка нет — и это чинится в приложении, без пересборки.
   ///
@@ -163,9 +208,11 @@ class EngineClient {
     try {
       final json = await _api.get('$_base/ideas/$id');
       return EngineContract.idea(json);
-    } catch (_) {
+    } catch (error, stackTrace) {
       // Сводка из ленты уже на экране; упавшая догрузка полной карточки не
-      // должна ронять разбор — просто останется меньше подробностей.
+      // должна ронять разбор — просто останется меньше подробностей. Но
+      // диагностический след теперь остаётся и переживает перезапуск.
+      _reportHandled(EngineFailureStage.ideaHydration, error, stackTrace);
       return null;
     }
   }
@@ -292,8 +339,16 @@ class EngineClient {
       if (chart != null) return chart;
     }
     final details = reasons.isEmpty ? '' : ' ${reasons.join(' · ')}';
-    onFailure?.call(
-      'Свечи недоступны: проверены ${attempts.join(', ')}.$details',
+    final reason =
+        'Свечи недоступны: проверены ${attempts.join(', ')}.$details';
+    onFailure?.call(reason);
+    // Не записываем instrumentId: для диагностики достаточно стадии,
+    // таймфреймов и сетевой причины, а идентификатор инструмента здесь не
+    // нужен и раздувал бы локальную телеметрию.
+    _reportHandled(
+      EngineFailureStage.chartLoad,
+      StateError(reason),
+      StackTrace.current,
     );
     return null;
   }
