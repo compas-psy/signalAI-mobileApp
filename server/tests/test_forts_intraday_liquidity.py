@@ -3,6 +3,9 @@
 VALTODAY is cumulative *inside the current trading day*.  It must not be used
 as if it were a completed-day liquidity statistic: early in the session that
 silently removes otherwise liquid contracts for the next review interval.
+At the same time, the structural board contains many inactive roots, so a
+small current-session turnover is useful as a discovery signal only — never
+as the final full-day admission statistic.
 """
 
 from __future__ import annotations
@@ -33,6 +36,8 @@ def _partial_session_board(url: str):
                 ["SiZ6", "Si-12.26", "2026-12-17", "1", "1", 0],
                 ["BRU6", "BR-9.26", "2026-09-01", "0.01", "7.5", 2],
                 ["BRV6", "BR-10.26", "2026-10-01", "0.01", "7.5", 2],
+                ["ZZU6", "ZZ-9.26", "2026-09-17", "1", "1", 0],
+                ["ZZZ6", "ZZ-12.26", "2026-12-17", "1", "1", 0],
             ],
         },
         "marketdata": {
@@ -43,17 +48,59 @@ def _partial_session_board(url: str):
                 # Si is liquid on completed days, but has traded only 5m RUB so far today.
                 ["SiU6", "80000", "5000000", "500000", "13:00", "79999", "80001"],
                 ["SiZ6", "81000", "0", "100000", "13:00", "80999", "81001"],
+                # BR is a genuinely new root with enough current activity for discovery.
                 ["BRU6", "70", "500000000", "200000", "13:00", "69.99", "70.01"],
                 ["BRV6", "71", "0", "100000", "13:00", "70.99", "71.01"],
+                # ZZ is structurally valid but unknown and inactive: do not ingest it.
+                ["ZZU6", "100", "1000000", "1000", "13:00", "99", "101"],
+                ["ZZZ6", "101", "0", "1000", "13:00", "100", "102"],
             ],
         },
     }
     return payload, _report(url)
 
 
-def test_sync_does_not_drop_root_on_partial_session_turnover(session):
+def _persist_historically_liquid_si(session) -> Instrument:
+    item = Instrument(
+        instrument_id="MOEX:FUT:SiU6",
+        venue=Venue.MOEX,
+        asset_class=AssetClass.FUTURES,
+        symbol="SiU6",
+        currency="RUB",
+        tick_size=Decimal("1"),
+        tick_value=Decimal("1"),
+        in_universe=True,
+        is_tradable=False,
+        metadata_json={
+            "admission": {
+                "median_daily_notional_rub": "250000000",
+                "turnover_source": "completed_h1_30d_median",
+            }
+        },
+    )
+    session.add(item)
+    session.flush()
+    return item
+
+
+def test_sync_retains_historically_liquid_root_below_discovery_floor(session):
+    _persist_historically_liquid_si(session)
+
     kept = universe.sync_futures(session, now=NOW, fetch=_partial_session_board)
-    assert {item.symbol for item in kept} == {"SiU6", "BRU6"}
+
+    assert "SiU6" in {item.symbol for item in kept}
+
+
+def test_sync_discovers_new_root_above_discovery_floor(session):
+    kept = universe.sync_futures(session, now=NOW, fetch=_partial_session_board)
+
+    assert "BRU6" in {item.symbol for item in kept}
+
+
+def test_sync_excludes_unknown_root_below_discovery_floor(session):
+    kept = universe.sync_futures(session, now=NOW, fetch=_partial_session_board)
+
+    assert "ZZU6" not in {item.symbol for item in kept}
 
 
 def test_admission_uses_completed_h1_days_when_d1_turnover_is_missing(session):
