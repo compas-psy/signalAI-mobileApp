@@ -167,8 +167,11 @@ def test_первая_загрузка_ограничена_бюджетом(ses
         return {"candles": []}, report
 
     ingest_universe(session, fetch=fetch, first_load_budget=3)
-    # Две с историей плюс три новых — не больше.
-    assert touched == {"N0", "N1", "N2", "N3", "N4"}
+    # Две бумаги с историей всегда догружаются, плюс ровно три новых.
+    # Какая именно тройка новых попадёт в бюджет, SQL без ORDER BY не обещает.
+    assert {"N0", "N1"} <= touched
+    assert len(touched) == 5
+    assert len(touched - {"N0", "N1"}) == 3
 
 
 FUNDS = {

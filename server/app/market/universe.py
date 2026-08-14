@@ -394,6 +394,56 @@ def sync_futures(
         _record_empty_board(session, len(rows))
         return []
 
+    # Keep discovery broad enough to survive quiet intraday snapshots, but do
+    # not send every structural FORTS series into the sequential ingest loop.
+    # Current VALTODAY is only a discovery signal; completed-day admission is
+    # still enforced later by admit_futures().
+    min_notional = config.decimal("universe.futures.min_median_daily_notional_rub")
+    discovery_floor = min_notional / Decimal("10")
+    existing_futures = list(
+        session.execute(
+            select(Instrument).where(
+                Instrument.venue == Venue.MOEX,
+                Instrument.asset_class == AssetClass.FUTURES,
+            )
+        ).scalars()
+    )
+    existing_by_id = {item.instrument_id: item for item in existing_futures}
+    existing_by_root: dict[str, list[Instrument]] = {}
+    for item in existing_futures:
+        root = (item.metadata_json or {}).get("root")
+        if root:
+            existing_by_root.setdefault(str(root).upper(), []).append(item)
+
+    bounded: list[FuturesCandidate] = []
+    for candidate in candidates:
+        current_turnover = max(
+            candidate.near.turnover or Decimal(0),
+            (candidate.next_series.turnover or Decimal(0))
+            if candidate.next_series is not None
+            else Decimal(0),
+        )
+        exact = existing_by_id.get(f"MOEX:FUT:{candidate.near.sec_id}")
+        known = list(existing_by_root.get(candidate.root.upper(), []))
+        if exact is not None and exact not in known:
+            known.append(exact)
+
+        historically_liquid = False
+        for item in known:
+            admission = (item.metadata_json or {}).get("admission") or {}
+            measured = _decimal_meta(admission, "median_daily_notional_rub")
+            if measured is not None and measured >= min_notional:
+                historically_liquid = True
+                break
+
+        if (
+            current_turnover >= discovery_floor
+            or historically_liquid
+            or any(item.is_tradable for item in known)
+        ):
+            bounded.append(candidate)
+
+    candidates = bounded
     passed = {c.root for c in candidates}
     for root in moex.series_by_root(rows):
         if root not in passed:
