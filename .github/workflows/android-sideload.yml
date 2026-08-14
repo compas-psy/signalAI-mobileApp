@@ -187,7 +187,9 @@ jobs:
             --build-number="$GITHUB_RUN_NUMBER" \
             --dart-define=SIGNALAI_MODE="$MODE" \
             --dart-define=SIGNALAI_API_BASE_URL="$API_BASE_URL" \
-            --dart-define=SIGNALAI_API_BACKUP_URL="$BACKUP_API_BASE_URL"
+            --dart-define=SIGNALAI_API_BACKUP_URL="$BACKUP_API_BASE_URL" \
+            --dart-define=SIGNALAI_SOURCE_SHA="${{ needs.resolve.outputs.source_sha }}" \
+            --dart-define=SIGNALAI_APP_VERSION="1.0.0+$GITHUB_RUN_NUMBER"
 
       - name: Verify signer and prepare traceable artifacts
         id: artifact
