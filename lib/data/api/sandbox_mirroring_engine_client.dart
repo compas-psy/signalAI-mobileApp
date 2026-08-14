@@ -6,7 +6,6 @@ import '../broker/tinvest_broker.dart';
 import '../broker/tinvest_sandbox_mirror_reconciler.dart';
 import '../local_analysis_repository.dart';
 import '../local_store.dart';
-import 'api_client.dart';
 import 'engine_client.dart';
 import 'sandbox_mirror_delivery.dart';
 
@@ -113,10 +112,9 @@ class SandboxMirroringEngineClient extends EngineClient {
     required this.repository,
     required this.onResult,
     LocalStore? instrumentStore,
-    ApiClient? client,
-    EngineFailureReporter? onHandledFailure,
-  })  : _instrumentStore = instrumentStore ?? LocalStore(),
-        super(client: client, onHandledFailure: onHandledFailure) {
+    super.client,
+    super.onHandledFailure,
+  }) : _instrumentStore = instrumentStore ?? LocalStore() {
     TInvestSandboxAccess.attach(repository);
   }
 
