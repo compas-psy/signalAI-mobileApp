@@ -69,6 +69,10 @@ def test_admission_uses_completed_h1_days_when_d1_turnover_is_missing(session):
         in_universe=True,
     )
     session.add(item)
+    # Persist the FK parent before bulk-inserting bars.  The production path
+    # already has instruments persisted before ingestion; this keeps the test
+    # fixture faithful to that ordering instead of testing ORM flush ordering.
+    session.flush()
 
     # FORTS ISS D1 frequently has an empty/zero VALUE field in production.
     for day in range(30):
