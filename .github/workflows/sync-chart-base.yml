@@ -1,0 +1,25 @@
+name: Sync chart retry with default
+on:
+  push:
+    branches: [fix/chart-retry-current-20260814]
+permissions:
+  contents: write
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/chart-retry-current-20260814
+          fetch-depth: 0
+      - name: Merge current default and remove this workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name signalai-ci
+          git config user.email actions@users.noreply.github.com
+          git fetch origin claude/release-y40hk5
+          git merge --no-edit origin/claude/release-y40hk5
+          git rm .github/workflows/sync-chart-base.yml
+          git commit -m "chore: remove temporary base sync workflow"
+          git push origin HEAD:fix/chart-retry-current-20260814
