@@ -33,12 +33,28 @@ jobs:
           cd "$HOME/signalai/server"
           ENV_FILE=/etc/signalai/.env
           echo "SOURCE_SHA=$(cat "$HOME/signalai/.signalai-source-sha")"
+          DB_USER="$(docker compose --env-file "$ENV_FILE" exec -T postgres printenv POSTGRES_USER | tr -d '\r')"
+          DB_NAME="$(docker compose --env-file "$ENV_FILE" exec -T postgres printenv POSTGRES_DB | tr -d '\r')"
+          test -n "$DB_USER" && test -n "$DB_NAME"
+
           echo '--- short-term universe ---'
-          docker compose --env-file "$ENV_FILE" exec -T postgres sh -lc 'psql -v ON_ERROR_STOP=1 -At -F "|" -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SELECT venue, asset_class, count(*) FROM instruments WHERE in_universe=true AND asset_class IN ('"'"'FUTURES'"'"','"'"'CRYPTO_PERPETUAL'"'"') GROUP BY venue, asset_class ORDER BY venue, asset_class;"'
-          docker compose --env-file "$ENV_FILE" exec -T postgres sh -lc 'psql -v ON_ERROR_STOP=1 -At -F "|" -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SELECT '"'"'TRADABLE'"'"', venue, asset_class, count(*) FROM instruments WHERE in_universe=true AND is_tradable=true AND asset_class IN ('"'"'FUTURES'"'"','"'"'CRYPTO_PERPETUAL'"'"') GROUP BY venue, asset_class ORDER BY venue, asset_class;"'
-          docker compose --env-file "$ENV_FILE" exec -T postgres sh -lc 'psql -v ON_ERROR_STOP=1 -At -F "|" -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SELECT instrument_id, symbol, in_universe, is_tradable FROM instruments WHERE symbol IN ('"'"'GKU6'"'"','"'"'BTCUSDT'"'"','"'"'DOGEUSDT'"'"') ORDER BY symbol;"'
+          docker compose --env-file "$ENV_FILE" exec -T postgres \
+            psql -v ON_ERROR_STOP=1 -At -F '|' -U "$DB_USER" -d "$DB_NAME" \
+            -c "SELECT venue, asset_class, count(*) FROM instruments WHERE in_universe=true AND asset_class IN ('FUTURES','CRYPTO_PERPETUAL') GROUP BY venue, asset_class ORDER BY venue, asset_class;"
+
+          echo '--- tradable short-term ---'
+          docker compose --env-file "$ENV_FILE" exec -T postgres \
+            psql -v ON_ERROR_STOP=1 -At -F '|' -U "$DB_USER" -d "$DB_NAME" \
+            -c "SELECT venue, asset_class, count(*) FROM instruments WHERE in_universe=true AND is_tradable=true AND asset_class IN ('FUTURES','CRYPTO_PERPETUAL') GROUP BY venue, asset_class ORDER BY venue, asset_class;"
+
+          echo '--- required symbols ---'
+          docker compose --env-file "$ENV_FILE" exec -T postgres \
+            psql -v ON_ERROR_STOP=1 -At -F '|' -U "$DB_USER" -d "$DB_NAME" \
+            -c "SELECT instrument_id, symbol, in_universe, is_tradable FROM instruments WHERE symbol IN ('GKU6','BTCUSDT','DOGEUSDT') ORDER BY symbol;"
+
           echo '--- latest scheduler cycle ---'
-          docker compose --env-file "$ENV_FILE" logs --tail=180 --no-color scheduler | grep -E 'universe:|ingest:|review:|supervise:|scan:' | tail -15
+          docker compose --env-file "$ENV_FILE" logs --tail=220 --no-color scheduler \
+            | grep -E 'universe:|ingest:|review:|supervise:|scan:' | tail -20
           REMOTE
       - name: Remove SSH key
         if: always()
