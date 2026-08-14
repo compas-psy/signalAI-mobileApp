@@ -96,9 +96,6 @@ ALIASES: dict[str, tuple[str, ...]] = {
 
 
 def _issuer(row: trudvsem.VacancyDatum) -> Issuer | None:
-    # Если источник дал сильный идентификатор, он либо совпадает точно, либо
-    # строка не сопоставляется вообще. Откат к бренду после чужого ИНН
-    # превращал доказанное другое юрлицо в ложное совпадение.
     if row.employer_inn:
         for issuer in REGISTRY:
             if issuer.inn and issuer.inn == row.employer_inn:
@@ -113,7 +110,6 @@ def _issuer(row: trudvsem.VacancyDatum) -> Issuer | None:
         aliases = ALIASES.get(issuer.secid, (_norm(issuer.name),))
         if any(alias and _norm(alias) == company for alias in aliases):
             matches.append(issuer)
-    # Не выбираем из неоднозначности. Ложная привязка опаснее пропуска.
     return matches[0] if len(matches) == 1 else None
 
 
@@ -136,13 +132,11 @@ def _function(title: str) -> str:
 
 
 def _vacancy_lineage_root(row: trudvsem.VacancyDatum) -> str:
-    """Стабильный корень одной вакансии через все её перепубликации."""
     identity = f"{trudvsem.SOURCE_ID}:vacancy:{row.vacancy_id}"
     return hashlib.sha256(identity.encode("utf-8")).hexdigest()
 
 
 def _vacancy_observation_type(row: trudvsem.VacancyDatum) -> str:
-    """Ключ конкретной информационной ревизии вакансии."""
     information_time = row.information_time
     revision = (
         information_time.astimezone(UTC).isoformat()
@@ -152,7 +146,7 @@ def _vacancy_observation_type(row: trudvsem.VacancyDatum) -> str:
     return observation_code("hiring", row.vacancy_id, revision)
 
 
-def _persist_vacancy_observation(
+def _upsert_vacancy_observation(
     session: Session,
     *,
     row: trudvsem.VacancyDatum,
@@ -160,13 +154,7 @@ def _persist_vacancy_observation(
     first_seen_at: datetime,
     raw_sha256: str,
 ) -> tuple[ResearchObservation, bool]:
-    """Persist one revision and preserve the first real availability boundary.
-
-    Re-polling the same source revision returns the existing observation so
-    callers use its original ``first_seen_at`` / ``tradable_at`` rather than
-    moving the information clock on every scheduler tick. A changed
-    ``information_time`` creates a new revision under the same lineage root.
-    """
+    """Return the durable revision and whether this polling tick created it."""
     observation_type = _vacancy_observation_type(row)
     existing = session.execute(
         select(ResearchObservation).where(
@@ -228,6 +216,25 @@ def _persist_vacancy_observation(
     return observation, True
 
 
+def _persist_vacancy_observation(
+    session: Session,
+    *,
+    row: trudvsem.VacancyDatum,
+    issuer: Issuer,
+    first_seen_at: datetime,
+    raw_sha256: str,
+) -> bool:
+    """Backward-compatible persistence contract used by existing tests/callers."""
+    _, created = _upsert_vacancy_observation(
+        session,
+        row=row,
+        issuer=issuer,
+        first_seen_at=first_seen_at,
+        raw_sha256=raw_sha256,
+    )
+    return created
+
+
 def _fetch(url: str, now: datetime) -> Fetched | None:
     request = urllib.request.Request(
         url,
@@ -246,7 +253,7 @@ def _fetch(url: str, now: datetime) -> Fetched | None:
                 headers={k.lower(): v for k, v in response.headers.items()},
                 content_type=response.headers.get("Content-Type", ""),
             )
-    except Exception:  # источник не должен уронить весь research tick
+    except Exception:
         return None
 
 
@@ -312,7 +319,7 @@ def run_hiring_live(session: Session, *, now: datetime | None = None) -> HiringR
         issuer = _issuer(row)
         if issuer is None:
             continue
-        observation, _created = _persist_vacancy_observation(
+        observation, _created = _upsert_vacancy_observation(
             session,
             row=row,
             issuer=issuer,
@@ -332,7 +339,6 @@ def run_hiring_live(session: Session, *, now: datetime | None = None) -> HiringR
     report.issuers = len(by_issuer)
 
     signals: list[SignalInput] = []
-    issuer_results: dict[str, hiring.HiringResult] = {}
     for secid, (issuer, rows) in by_issuer.items():
         recent = [v for v in rows if v.age_days <= 28]
         baseline_rows = [v for v in rows if 28 < v.age_days <= 84]
@@ -351,7 +357,6 @@ def run_hiring_live(session: Session, *, now: datetime | None = None) -> HiringR
             snapshot_coverage=1.0,
             supplier_confirmation=False,
         )
-        issuer_results[secid] = result
         if not result.applicable or result.direction != "positive":
             continue
         signals.append(
@@ -384,7 +389,6 @@ def run_hiring_live(session: Session, *, now: datetime | None = None) -> HiringR
             direction=head.direction,
         )
         return {
-            # Один официальный источник = ранний кандидат, не подтверждение.
             "confirmations": 1,
             "entity_confidence": confidence,
             "effect_size": float(abs(head.strength)),
