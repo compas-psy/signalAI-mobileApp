@@ -1,0 +1,70 @@
+name: Ops export current device token privately
+
+on:
+  push:
+    branches:
+      - ops/export-device-token-20260814
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prepare SSH
+        env:
+          KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_export
+          chmod 600 ~/.ssh/id_export
+          ssh-keyscan -T 10 -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Export current VPS device token without logging it
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          USER_NAME: ${{ secrets.VPS_USER || 'root' }}
+        run: |
+          set -euo pipefail
+          remote_file=/tmp/signalai-device-token-export.txt
+          ssh -i ~/.ssh/id_export -o BatchMode=yes "$USER_NAME@$HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          ENV_FILE=/etc/signalai/.env
+          out=/tmp/signalai-device-token-export.txt
+          umask 077
+          token="$(sed -n 's/^SIGNALAI_DEVICE_TOKEN=//p' "$ENV_FILE" | tail -1)"
+          case "$token" in
+            ''|*[!A-Za-z0-9._~-]*) exit 12 ;;
+          esac
+          [ "${#token}" -ge 32 ] || exit 13
+          printf '%s' "$token" > "$out"
+          chmod 600 "$out"
+          unset token
+          REMOTE
+          scp -q -i ~/.ssh/id_export -o BatchMode=yes "$USER_NAME@$HOST:$remote_file" ./signalai-device-token.txt
+          test -s ./signalai-device-token.txt
+          # Do not print the credential. Only publish a safe length check.
+          bytes="$(wc -c < ./signalai-device-token.txt | tr -d ' ')"
+          [ "$bytes" -ge 32 ]
+          echo "Exported current device token securely (${bytes} bytes)."
+
+      - name: Upload private transfer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: signalai-device-token-current
+          path: signalai-device-token.txt
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Cleanup sensitive material
+        if: always()
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          USER_NAME: ${{ secrets.VPS_USER || 'root' }}
+        run: |
+          rm -f ./signalai-device-token.txt
+          ssh -i ~/.ssh/id_export -o BatchMode=yes "$USER_NAME@$HOST" 'rm -f /tmp/signalai-device-token-export.txt' 2>/dev/null || true
+          shred -u ~/.ssh/id_export 2>/dev/null || rm -f ~/.ssh/id_export
