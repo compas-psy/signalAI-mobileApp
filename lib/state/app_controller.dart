@@ -350,7 +350,6 @@ class AppController extends ChangeNotifier {
     // экрана — отпускаем кадр, иначе Flutter справедливо ругается на
     // setState во время build.
     await Future<void>.microtask(() {});
-    if (failed) notifyListeners();
     notifyListeners();
     try {
       // Тот же порядок, что у идей: сначала адрес, потом запрос.
@@ -757,6 +756,7 @@ class AppController extends ChangeNotifier {
     // during build». Микрозадача, а не таймер: таймер переживает тест и
     // роняет его на «A Timer is still pending».
     await Future<void>.microtask(() {});
+    if (failed) notifyListeners();
     // В production direct market fallback запрещён: он возвращал на телефон
     // дублирующие клиенты, геоблоки и сетевые вылеты. Демо использует только
     // детерминированную fixture (либо явно подставленный тестовый источник).
