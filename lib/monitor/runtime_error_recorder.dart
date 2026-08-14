@@ -2,7 +2,7 @@ import 'dart:async';
 
 import '../data/local_store.dart';
 
-enum RuntimeErrorKind { flutter, async }
+enum RuntimeErrorKind { flutter, async, ideaHydration, chartLoad }
 
 class RuntimeBuildIdentity {
   const RuntimeBuildIdentity({
