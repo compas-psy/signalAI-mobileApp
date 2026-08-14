@@ -1,0 +1,101 @@
+name: Incident signal rejection summary
+
+on:
+  push:
+    branches:
+      - incident/signal-gap-20260814
+
+permissions:
+  contents: read
+
+jobs:
+  summarize:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prepare SSH
+        env:
+          KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_diag
+          chmod 600 ~/.ssh/id_diag
+          ssh-keyscan -T 10 -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Aggregate current rejection reasons without writing
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          USER_NAME: ${{ secrets.VPS_USER || 'root' }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/id_diag -o BatchMode=yes "$USER_NAME@$HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          DIR="$HOME/signalai/server"
+          ENV_FILE='/etc/signalai/.env'
+          SUDO=''
+          [ "$(id -u)" -eq 0 ] || SUDO='sudo'
+          cd "$DIR"
+          $SUDO docker compose --env-file "$ENV_FILE" exec -T scheduler python - <<'PY'
+          from collections import Counter
+          from datetime import UTC, datetime
+          from decimal import Decimal
+          from sqlalchemy import select
+
+          from app.config import get_config
+          from app.db import get_session_factory
+          from app.models import Instrument
+          from app.pipeline.scan import scan_instrument
+          from app.risk.sizing import RiskState
+
+          session = get_session_factory()()
+          try:
+              instruments = list(session.execute(
+                  select(Instrument).where(
+                      Instrument.in_universe.is_(True),
+                      Instrument.is_tradable.is_(True),
+                  )
+              ).scalars())
+              cfg = get_config()
+              now = datetime.now(UTC)
+              risk = RiskState(risk_equity=Decimal('300000'))
+              stages = Counter()
+              checks = Counter()
+              strategies = Counter()
+              candidate_ids = []
+              for instrument in instruments:
+                  idea, skipped, rejections = scan_instrument(
+                      session, instrument, cfg=cfg, risk_state=risk, now=now
+                  )
+                  for item in skipped:
+                      stages[(item.stage, item.reason)] += 1
+                  for rejection in rejections:
+                      strategies[rejection.strategy.value] += 1
+                      if rejection.failed:
+                          for check in rejection.failed:
+                              checks[(rejection.strategy.value, check.name, check.label, check.detail)] += 1
+                      else:
+                          checks[(rejection.strategy.value, '<none>', '<none>', rejection.reason)] += 1
+                  if idea is not None:
+                      candidate_ids.append((instrument.instrument_id, idea.strategy.value, idea.quality_status.value))
+
+              print(f'instruments={len(instruments)} candidates={len(candidate_ids)}')
+              print('=== candidates before duplicate suppression ===')
+              for row in candidate_ids[:30]:
+                  print(' | '.join(row))
+              print('=== strategy rejection counts ===')
+              for key, count in strategies.most_common():
+                  print(f'{count:4d} | {key}')
+              print('=== top failed checks ===')
+              for (strategy, name, label, detail), count in checks.most_common(40):
+                  clean = ' '.join(str(detail).split())[:220]
+                  print(f'{count:4d} | {strategy} | {name} | {label} | {clean}')
+              print('=== skipped data/liquidity ===')
+              for (stage, reason), count in stages.most_common(30):
+                  clean = ' '.join(str(reason).split())[:220]
+                  print(f'{count:4d} | {stage} | {clean}')
+          finally:
+              session.rollback()
+              session.close()
+          PY
+          REMOTE
