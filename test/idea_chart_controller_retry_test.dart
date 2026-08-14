@@ -66,10 +66,19 @@ void main() {
     expect(source.attempts, 1);
     expect(controller.ideaChartFailed(idea), isTrue);
 
-    await controller.loadIdeaChart(idea);
+    var notifications = 0;
+    controller.addListener(() => notifications += 1);
+    final retry = controller.loadIdeaChart(idea);
+
+    // loadIdeaChart вызывается из build карточки. До первого await он не
+    // должен синхронно уведомлять дерево, иначе Flutter получает
+    // «setState/markNeedsBuild during build».
+    expect(notifications, 0);
+    await retry;
 
     expect(source.attempts, 2);
     expect(controller.ideaChartFailed(idea), isFalse);
     expect(controller.ideaChart(idea.id, timeframe: '4h'), isNotNull);
+    expect(notifications, greaterThan(0));
   });
 }
