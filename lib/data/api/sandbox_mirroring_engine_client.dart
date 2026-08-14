@@ -3,6 +3,7 @@ import 'dart:async';
 import '../../domain/broker/broker.dart';
 import '../../domain/broker/tinvest_role.dart';
 import '../broker/tinvest_broker.dart';
+import '../broker/tinvest_sandbox_mirror_reconciler.dart';
 import '../local_analysis_repository.dart';
 import '../local_store.dart';
 import 'engine_client.dart';
@@ -98,8 +99,10 @@ abstract final class TInvestSandboxAccess {
 /// Порядок принципиален:
 /// 1) сервер проверяет lifecycle/risk и создаёт server-paper;
 /// 2) телефон **до broker call** сохраняет долговечный delivery intent;
-/// 3) только затем тот же TradePlan уходит в sandbox со стабильными provider ids;
-/// 4) Bybit и любые WATCH-идеи сюда не попадают.
+/// 3) первый delivery выставляет entry + protection со стабильными IDs;
+/// 4) любой replay/restart сначала читает provider state и только потом
+///    достраивает отсутствующую часть;
+/// 5) Bybit и любые WATCH-идеи сюда не попадают.
 ///
 /// Токен брокера остаётся на устройстве в защищённом хранилище. Сервер его не
 /// получает и не знает. Sandbox — проверка брокерской механики, а не второй
@@ -126,43 +129,11 @@ class SandboxMirroringEngineClient extends EngineClient {
 
     var delivery = await _deliveries.load(ideaId);
     if (delivery?.terminal ?? false) return decision;
+    final isRecovery = delivery != null || decision.idempotentReplay;
 
-    // Миграционный/межсистемный разрыв: сервер уже видел это решение, но на
-    // устройстве нет delivery history. Автоматически повторять broker side
-    // effect здесь опасно: старая версия приложения могла уже зеркалить эту
-    // идею со случайным id. Явное repair-state безопаснее потенциального
-    // удвоения позиции.
-    if (delivery == null && decision.idempotentReplay) {
-      final uncertain = SandboxMirrorDelivery.pending(ideaId).copyWith(
-        status: SandboxMirrorDeliveryStatus.repairRequired,
-        lastError: 'Сервер вернул повторное решение, а локальной истории '
-            'sandbox-зеркала нет',
-      );
-      final persisted = await _deliveries.save(uncertain);
-      _report(SandboxMirrorResult(
-        persisted
-            ? 'Paper-сделка уже существует · T-Invest Sandbox не повторена: '
-                'локальной истории зеркала нет, поэтому автоповтор заблокирован от дубля'
-            : 'Paper-сделка уже существует · T-Invest Sandbox не повторена: '
-                'не удалось надёжно сохранить состояние сверки',
-        SandboxMirrorTone.failure,
-      ));
-      return decision;
-    }
-
-    // Известный provider rejection не гоняем по кругу тем же действием.
-    // Неоднозначный network outcome остаётся pending и может безопасно
-    // переиграться с теми же provider ids; repairRequired требует отдельной
-    // сверки/ремонта, а не ещё одного ордера.
-    if (delivery?.status == SandboxMirrorDeliveryStatus.repairRequired) {
-      _report(SandboxMirrorResult(
-        'Paper-сделка уже существует · T-Invest Sandbox требует сверки: '
-        '${delivery!.lastError.isEmpty ? 'предыдущая доставка не завершена' : delivery.lastError}',
-        SandboxMirrorTone.failure,
-      ));
-      return decision;
-    }
-
+    // `idempotentReplay=true` protects the server decision only. It is not a
+    // reason to skip broker recovery: a lost first server response can leave
+    // a valid paper decision without any sandbox delivery at all.
     delivery ??= SandboxMirrorDelivery.pending(ideaId);
     if (!await _deliveries.save(delivery)) {
       _report(const SandboxMirrorResult(
@@ -212,38 +183,114 @@ class SandboxMirroringEngineClient extends EngineClient {
       return decision;
     }
 
+    final symbol = _symbolOf(idea.instrumentId);
+    final cache = StoredInstrumentCache(_instrumentStore);
     final broker = TInvestBroker(
       mode: TradingMode.testnet,
       role: TInvestRole.sandbox,
       token: () async => token,
-      instrumentCache: StoredInstrumentCache(_instrumentStore),
+      instrumentCache: cache,
     );
+    final reconciler = TInvestSandboxMirrorReconciler(token: token);
     try {
-      final result = await broker.placeOrder(
-        OrderRequest(
-          symbol: _symbolOf(idea.instrumentId),
-          long: idea.direction.isLong,
-          quantity: plan.quantity,
-          entry: plan.entry,
-          stopLoss: plan.stop,
-          takeProfit: plan.targets.first.price,
-          stopEntry: plan.orderType.name == 'stopLimit',
-          requestId: delivery.entryRequestId,
-          protectiveStopRequestId: delivery.protectiveStopRequestId,
-        ),
+      final request = OrderRequest(
+        symbol: symbol,
+        long: idea.direction.isLong,
+        quantity: plan.quantity,
+        entry: plan.entry,
+        stopLoss: plan.stop,
+        takeProfit: plan.targets.first.price,
+        stopEntry: plan.orderType.name == 'stopLimit',
+        requestId: delivery.entryRequestId,
+        protectiveStopRequestId: delivery.protectiveStopRequestId,
       );
 
+      if (isRecovery) {
+        final accounts = await broker.accounts();
+        if (accounts.isEmpty) {
+          await _markRepair(delivery, 'T-Invest Sandbox не вернула торговый счёт');
+          _report(const SandboxMirrorResult(
+            'Paper-сделка принята · T-Invest Sandbox требует сверки: торговый счёт не найден',
+            SandboxMirrorTone.failure,
+          ));
+          return decision;
+        }
+
+        final instrument = await cache.get(symbol);
+        final alignedStop = _align(plan.stop, instrument?.priceStep ?? 0);
+        final probe = await reconciler.probe(
+          accountId: accounts.first.id,
+          entryRequestId: delivery.entryRequestId,
+          symbol: symbol,
+          long: idea.direction.isLong,
+          stopPrice: alignedStop,
+        );
+
+        switch (probe.status) {
+          case TInvestSandboxMirrorProbeStatus.protected:
+            await _complete(delivery, probe.exchangeOrderId);
+            _report(const SandboxMirrorResult(
+              'Paper-сделка уже существует · T-Invest Sandbox сверена: вход и защитный стоп уже на месте',
+              SandboxMirrorTone.success,
+            ));
+            return decision;
+
+          case TInvestSandboxMirrorProbeStatus.entryWithoutProtection:
+            final repaired = await reconciler.ensureProtectiveStop(
+              accountId: accounts.first.id,
+              instrumentUid: probe.instrumentUid,
+              lots: probe.lotsRequested,
+              long: idea.direction.isLong,
+              stopPrice: alignedStop,
+              requestId: delivery.protectiveStopRequestId,
+            );
+            if (repaired) {
+              await _complete(delivery, probe.exchangeOrderId);
+              _report(const SandboxMirrorResult(
+                'Paper-сделка уже существует · T-Invest Sandbox: недостающий защитный стоп восстановлен',
+                SandboxMirrorTone.success,
+              ));
+            } else {
+              await _markRepair(delivery, 'Вход найден, защитный стоп восстановить не удалось');
+              _report(const SandboxMirrorResult(
+                'Paper-сделка уже существует · T-Invest Sandbox требует сверки: вход есть, защитный стоп не восстановлен',
+                SandboxMirrorTone.failure,
+              ));
+            }
+            return decision;
+
+          case TInvestSandboxMirrorProbeStatus.ambiguous:
+            await _markRepair(delivery, probe.message);
+            _report(SandboxMirrorResult(
+              'Paper-сделка уже существует · T-Invest Sandbox требует ручной сверки: ${probe.message}',
+              SandboxMirrorTone.failure,
+            ));
+            return decision;
+
+          case TInvestSandboxMirrorProbeStatus.unavailable:
+            await _deliveries.save(delivery.copyWith(lastError: probe.message));
+            _report(SandboxMirrorResult(
+              'Paper-сделка уже существует · состояние T-Invest Sandbox не подтверждено: '
+              '${probe.message}. Новый ордер не отправлен.',
+              SandboxMirrorTone.failure,
+            ));
+            return decision;
+
+          case TInvestSandboxMirrorProbeStatus.absent:
+            // Provider explicitly confirmed that this stable entry request id
+            // is absent. Only now is a retry allowed to reach placeOrder().
+            break;
+        }
+      }
+
+      final result = await broker.placeOrder(request);
       if (result.accepted) {
-        final persisted = await _deliveries.save(delivery.copyWith(
-          status: SandboxMirrorDeliveryStatus.completed,
-          exchangeOrderId: result.orderId,
-          lastError: '',
-        ));
+        final persisted = await _complete(delivery, result.orderId);
         _report(SandboxMirrorResult(
           persisted
               ? 'Paper-сделка принята · T-Invest Sandbox: вход и защитный стоп приняты'
               : 'Paper-сделка принята · T-Invest Sandbox приняла вход и стоп, '
-                  'но отметка завершения не записалась; следующий retry использует те же IDs',
+                  'но отметка завершения не записалась; следующий retry сначала сверит провайдера',
           persisted ? SandboxMirrorTone.success : SandboxMirrorTone.warning,
         ));
       } else {
@@ -254,20 +301,31 @@ class SandboxMirroringEngineClient extends EngineClient {
         ));
       }
     } on Object catch (error) {
-      // Неизвестно, успел ли provider принять запрос до разрыва. Оставляем
-      // durable pending, а не создаём новый attempt: повтор использует те же
-      // request ids и тем самым сверяется с provider-side idempotency state.
+      // Неизвестно, дошёл ли первый provider POST. Durable intent остаётся,
+      // поэтому следующий вызов не повторит POST вслепую: сначала выполнит
+      // GetSandboxOrderState по тому же entry request id.
       await _deliveries.save(delivery.copyWith(lastError: '$error'));
       _report(SandboxMirrorResult(
         'Paper-сделка принята · T-Invest Sandbox: $error. '
-        'Результат неоднозначен; безопасный повтор сохранит те же IDs.',
+        'Результат неоднозначен; новый ордер без сверки не отправится.',
         SandboxMirrorTone.failure,
       ));
     } finally {
+      reconciler.close();
       broker.close();
     }
     return decision;
   }
+
+  Future<bool> _complete(
+    SandboxMirrorDelivery delivery,
+    String exchangeOrderId,
+  ) =>
+      _deliveries.save(delivery.copyWith(
+        status: SandboxMirrorDeliveryStatus.completed,
+        exchangeOrderId: exchangeOrderId,
+        lastError: '',
+      ));
 
   Future<void> _markRepair(
     SandboxMirrorDelivery delivery,
@@ -284,6 +342,11 @@ class SandboxMirroringEngineClient extends EngineClient {
   /// общим сообщением.
   void _report(SandboxMirrorResult result) {
     Timer.run(() => onResult(result));
+  }
+
+  static double _align(double price, double step) {
+    if (step <= 0) return price;
+    return (price / step).round() * step;
   }
 
   static String _symbolOf(String instrumentId) {
