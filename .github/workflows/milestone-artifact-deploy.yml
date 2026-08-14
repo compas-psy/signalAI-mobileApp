@@ -1,0 +1,183 @@
+name: Milestone deploy and artifact
+on:
+  push:
+    branches: [ops/milestone-20260814-db012078]
+permissions:
+  contents: read
+  actions: write
+env:
+  SOURCE_SHA: db0120784d759d0cd219cff1f23e58747af720e0
+  FLUTTER_VERSION: '3.44.8'
+
+jobs:
+  dispatch-production:
+    name: Dispatch canonical production deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch deploy-release.yml for exact SHA
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          payload="$(python3 - <<'PY'
+          import json, os
+          print(json.dumps({
+              'ref': 'claude/release-y40hk5',
+              'inputs': {'source_ref': os.environ['SOURCE_SHA']},
+          }))
+          PY
+          )"
+          code="$(curl --silent --show-error --output /tmp/dispatch.out --write-out '%{http_code}' \
+            --request POST \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/deploy-release.yml/dispatches" \
+            --data "$payload")"
+          cat /tmp/dispatch.out || true
+          test "$code" = 204 || { echo "::error::deploy dispatch returned HTTP $code"; exit 1; }
+          echo "Canonical production deploy dispatched for $SOURCE_SHA"
+
+  signed-apk-artifact:
+    name: Signed sideload APK artifact only
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out exact merged milestone
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          fetch-depth: 1
+
+      - name: Verify source provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Resolve locked dependencies
+        run: flutter pub get --enforce-lockfile
+
+      - name: Restore permanent signing identity
+        env:
+          SIDELOAD_KEYSTORE_BASE64: ${{ secrets.SIDELOAD_KEYSTORE_BASE64 }}
+          SIDELOAD_KEYSTORE_PASSWORD: ${{ secrets.SIDELOAD_KEYSTORE_PASSWORD }}
+          SIDELOAD_KEY_PASSWORD: ${{ secrets.SIDELOAD_KEY_PASSWORD }}
+          SIDELOAD_KEY_ALIAS: ${{ secrets.SIDELOAD_KEY_ALIAS }}
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          RELEASE_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          if [ -n "$SIDELOAD_KEYSTORE_BASE64$SIDELOAD_KEYSTORE_PASSWORD$SIDELOAD_KEY_PASSWORD$SIDELOAD_KEY_ALIAS" ]; then
+            KEYSTORE_BASE64="$SIDELOAD_KEYSTORE_BASE64"
+            STORE_PASSWORD="$SIDELOAD_KEYSTORE_PASSWORD"
+            KEY_PASSWORD="$SIDELOAD_KEY_PASSWORD"
+            KEY_ALIAS="$SIDELOAD_KEY_ALIAS"
+          else
+            KEYSTORE_BASE64="$RELEASE_KEYSTORE_BASE64"
+            STORE_PASSWORD="$RELEASE_KEYSTORE_PASSWORD"
+            KEY_PASSWORD="$RELEASE_KEY_PASSWORD"
+            KEY_ALIAS="$RELEASE_KEY_ALIAS"
+          fi
+          test -n "$KEYSTORE_BASE64"
+          test -n "$STORE_PASSWORD"
+          test -n "$KEY_PASSWORD"
+          test -n "$KEY_ALIAS"
+          keystore="${RUNNER_TEMP}/signalai-sideload.jks"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$keystore"
+          test -s "$keystore"
+          keytool -list -keystore "$keystore" -storepass "$STORE_PASSWORD" -alias "$KEY_ALIAS" >/dev/null
+          expected="$(LANG=C keytool -list -v -keystore "$keystore" -storepass "$STORE_PASSWORD" -alias "$KEY_ALIAS" \
+            | awk -F'SHA256: ' '/SHA256:/ {gsub(":", "", $2); print tolower($2); exit}')"
+          test -n "$expected"
+          echo "EXPECTED_SIGNER_SHA256=$expected" >> "$GITHUB_ENV"
+          cat > android/key.properties <<PROPERTIES
+          storeFile=$keystore
+          storePassword=$STORE_PASSWORD
+          keyAlias=$KEY_ALIAS
+          keyPassword=$KEY_PASSWORD
+          PROPERTIES
+
+      - name: Build signed universal and per-ABI APKs
+        env:
+          API_BASE_URL: ${{ secrets.SIGNALAI_API_BASE_URL || 'https://api.ilyamartynov.ru' }}
+          BACKUP_API_BASE_URL: ${{ secrets.SIGNALAI_API_BACKUP_URL || '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          common=(
+            --build-number="$GITHUB_RUN_NUMBER"
+            --dart-define=SIGNALAI_MODE=thin
+            --dart-define=SIGNALAI_API_BASE_URL="$API_BASE_URL"
+            --dart-define=SIGNALAI_API_BACKUP_URL="$BACKUP_API_BASE_URL"
+          )
+          flutter build apk --release "${common[@]}"
+          test -s build/app/outputs/flutter-apk/app-release.apk
+          short="${SOURCE_SHA:0:12}"
+          cp build/app/outputs/flutter-apk/app-release.apk "dist/signalai-sideload-universal-${short}.apk"
+          flutter build apk --release --split-per-abi "${common[@]}"
+          for apk in build/app/outputs/flutter-apk/app-*-release.apk; do
+            [ -s "$apk" ] || continue
+            base="$(basename "$apk")"
+            cp "$apk" "dist/signalai-sideload-${base#app-}"
+          done
+
+      - name: Verify signer and write provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          apksigner="$(find "${ANDROID_HOME}/build-tools" -name apksigner -type f | sort -r | head -1)"
+          test -n "$apksigner"
+          count=0
+          for apk in dist/*.apk; do
+            count=$((count + 1))
+            signer="$($apksigner verify --verbose --print-certs "$apk")"
+            digest="$(printf '%s\n' "$signer" | awk -F': ' '/certificate SHA-256 digest:/ {print tolower($NF); exit}')"
+            test "$digest" = "$EXPECTED_SIGNER_SHA256" || {
+              echo "::error::$apk signer mismatch"; exit 1;
+            }
+          done
+          test "$count" -ge 4
+          {
+            echo "SignalAI sideload milestone"
+            echo "source_sha=$SOURCE_SHA"
+            echo "mode=thin"
+            echo "flutter=$FLUTTER_VERSION"
+            echo "bearer_token_compiled=false"
+            echo "github_release_created=false"
+            echo "github_tag_created=false"
+            echo "signer_sha256=$EXPECTED_SIGNER_SHA256"
+            echo
+            sha256sum dist/*.apk
+          } > dist/PROVENANCE.txt
+
+      - name: Upload Actions artifact only
+        uses: actions/upload-artifact@v4
+        with:
+          name: signalai-sideload-db0120784d75
+          path: dist/
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Remove signing material
+        if: always()
+        shell: bash
+        run: |
+          rm -f android/key.properties
+          shred -u "${RUNNER_TEMP}/signalai-sideload.jks" 2>/dev/null || rm -f "${RUNNER_TEMP}/signalai-sideload.jks"
