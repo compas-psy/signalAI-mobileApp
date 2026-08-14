@@ -40,7 +40,7 @@ def _run_prepare(tmp_path: Path, fingerprint: str) -> subprocess.CompletedProces
     env["HOME"] = str(tmp_path / "home")
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
     return subprocess.run(
-        [str(PREPARE), "prod.example", fingerprint],
+        ["bash", str(PREPARE), "prod.example", fingerprint],
         cwd=ROOT,
         env=env,
         text=True,
