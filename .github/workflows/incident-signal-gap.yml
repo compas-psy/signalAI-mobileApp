@@ -1,0 +1,74 @@
+name: Incident signal gap diagnostic
+
+on:
+  push:
+    branches:
+      - incident/signal-gap-20260814
+
+permissions:
+  contents: read
+
+concurrency:
+  group: incident-signal-gap-20260814
+  cancel-in-progress: true
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prepare SSH
+        env:
+          KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+        run: |
+          set -euo pipefail
+          test -n "$HOST"
+          test -n "$KEY"
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_diag
+          chmod 600 ~/.ssh/id_diag
+          ssh-keyscan -T 10 -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Read-only production diagnostics
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          USER_NAME: ${{ secrets.VPS_USER || 'root' }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/id_diag -o BatchMode=yes "$USER_NAME@$HOST" 'bash -s' <<'REMOTE'
+          set -u
+          DIR="$HOME/signalai/server"
+          ENV_FILE='/etc/signalai/.env'
+          SUDO=''
+          [ "$(id -u)" -eq 0 ] || SUDO='sudo'
+          cd "$DIR"
+
+          echo '=== clock/source ==='
+          date -u '+utc=%Y-%m-%dT%H:%M:%SZ'
+          printf 'source_sha='; cat "$HOME/signalai/.signalai-source-sha" 2>/dev/null || echo unknown
+
+          echo '=== containers ==='
+          $SUDO docker compose --env-file "$ENV_FILE" ps
+
+          echo '=== local health ==='
+          curl -fsS --max-time 10 http://127.0.0.1:8000/health || true
+          echo
+
+          echo '=== scheduler event counts, last 18h ==='
+          logs="$($SUDO docker compose --env-file "$ENV_FILE" logs --since=18h --no-color scheduler 2>&1 || true)"
+          for key in 'universe:' 'ingest:' 'review:' 'supervise:' 'scan:' 'portfolio:'; do
+            printf '%-12s %s\n' "$key" "$(printf '%s\n' "$logs" | grep -cF "$key" || true)"
+          done
+          printf 'errors       %s\n' "$(printf '%s\n' "$logs" | grep -Eic 'traceback|exception|error|failed|timeout' || true)"
+
+          echo '=== last scheduler lifecycle lines ==='
+          printf '%s\n' "$logs" | grep -E 'universe:|ingest:|review:|supervise:|scan:|portfolio:|Traceback|Exception|ERROR|Error|failed|timeout' | tail -n 300 || true
+
+          echo '=== scheduler tail ==='
+          printf '%s\n' "$logs" | tail -n 220
+
+          echo '=== postgres tables ==='
+          $SUDO docker compose --env-file "$ENV_FILE" exec -T postgres sh -lc \
+            'psql -U "$POSTGRES_USER" -d "${POSTGRES_DB:-signalai}" -Atc "select tablename from pg_tables where schemaname=''public'' order by tablename;"' \
+            || true
+          REMOTE
