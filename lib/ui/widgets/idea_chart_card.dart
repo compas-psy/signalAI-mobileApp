@@ -32,6 +32,7 @@ class IdeaChartCard extends StatefulWidget {
     this.loading = false,
     this.failed = false,
     this.failureReason = '',
+    this.liveSource,
   });
 
   final TradingSignal signal;
@@ -41,6 +42,7 @@ class IdeaChartCard extends StatefulWidget {
   final bool loading;
   final bool failed;
   final String failureReason;
+  final LiveIdeaSource? liveSource;
   final SignalChart? chart;
   final Set<ChartLayer> available;
   final Set<ChartLayer> visible;
@@ -52,7 +54,8 @@ class IdeaChartCard extends StatefulWidget {
 }
 
 class _IdeaChartCardState extends State<IdeaChartCard> {
-  final LiveIdeaSource _liveSource = LiveIdeaSource();
+  final LiveIdeaSource _defaultLiveSource = LiveIdeaSource();
+  LiveIdeaSource get _liveSource => widget.liveSource ?? _defaultLiveSource;
   LiveIdeaData? _live;
   Timer? _refreshTimer;
   bool _liveLoading = false;
@@ -168,6 +171,7 @@ class _IdeaChartCardState extends State<IdeaChartCard> {
                   '${widget.failureReason.isEmpty ? '' : ': ${widget.failureReason}'}. '
                   'Разметка и уровни ниже считаны на ${_setupLabel()} и от '
                   'таймфрейма картинки не зависят.',
+                  onRetry: () => unawaited(_refreshLive()),
                 )
               else
                 ZoomableChart(
@@ -340,9 +344,10 @@ class _ProgressStrip extends StatelessWidget {
 }
 
 class _ChartPending extends StatelessWidget {
-  const _ChartPending(this.message);
+  const _ChartPending(this.message, {this.onRetry});
 
   final String message;
+  final VoidCallback? onRetry;
 
   @override
   Widget build(BuildContext context) => AspectRatio(
@@ -352,10 +357,26 @@ class _ChartPending extends StatelessWidget {
           child: Center(
             child: Padding(
               padding: const EdgeInsets.all(24),
-              child: Text(
-                message,
-                textAlign: TextAlign.center,
-                style: T.body(11.5, color: C.dim, height: 1.5),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    message,
+                    textAlign: TextAlign.center,
+                    style: T.body(11.5, color: C.dim, height: 1.5),
+                  ),
+                  if (onRetry != null) ...[
+                    const SizedBox(height: 12),
+                    SizedBox(
+                      width: 128,
+                      child: ActionButton(
+                        label: 'Повторить',
+                        onTap: onRetry,
+                        dense: true,
+                      ),
+                    ),
+                  ],
+                ],
               ),
             ),
           ),
