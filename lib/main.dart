@@ -13,6 +13,7 @@ import 'data/mock/demo_repository.dart';
 import 'data/repository.dart';
 import 'monitor/runtime_error_recorder.dart';
 import 'state/app_controller.dart';
+import 'state/app_lifecycle.dart';
 import 'state/app_scope.dart';
 import 'state/navigation.dart';
 import 'theme/tokens.dart';
@@ -122,7 +123,11 @@ class _SignalAiAppState extends State<SignalAiApp> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     switch (state) {
       case AppLifecycleState.resumed:
-        _controller.onAppResumed();
+        unawaited(resumeApp(
+          controller: _controller,
+          repository: widget.repository,
+          thinMode: widget.thinMode,
+        ));
       case AppLifecycleState.paused:
       case AppLifecycleState.detached:
       case AppLifecycleState.hidden:
