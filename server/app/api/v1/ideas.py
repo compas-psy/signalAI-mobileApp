@@ -12,14 +12,14 @@ from decimal import Decimal, InvalidOperation
 from typing import Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ...db import get_db
 from ...journal.lifecycle import TransitionRequest, can_transition, transition
-from ...models import IdeaEvent, IdeaSkip, Instrument, PaperTrade, TradeIdea
+from ...models import AuditEvent, IdeaEvent, IdeaSkip, Instrument, PaperTrade, TradeIdea
 from ...models.enums import IdeaStatus, QualityStatus, SkipReason, Strategy
 from ...paper.tracker import PaperTradeConflict, approve_for
 from ...pipeline.supervise import supervise as supervise_ideas
@@ -383,6 +383,27 @@ def _existing_trade(db: Session, idea_id: UUID) -> PaperTrade | None:
     ).scalars().first()
 
 
+def _record_decision_replay(
+    db: Session,
+    request: Request,
+    *,
+    action: str,
+    idea_id: UUID,
+) -> None:
+    """Audit retry pressure without storing request bodies or credentials."""
+    db.add(
+        AuditEvent(
+            actor="owner",
+            action=action,
+            subject=str(idea_id),
+            detail="",
+            before_json={},
+            after_json={},
+            trace_id=request.state.request_id,
+        )
+    )
+
+
 def _approval_response(
     idea: TradeIdea,
     trade: PaperTrade,
@@ -439,11 +460,21 @@ def _validate_approval(idea: TradeIdea, *, now: datetime) -> None:
 
 
 @router.post("/ideas/{idea_id}/approve-paper", response_model=IdeaDecisionOut)
-def approve_paper(idea_id: UUID, db: Session = Depends(get_db)) -> IdeaDecisionOut:
+def approve_paper(
+    idea_id: UUID,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> IdeaDecisionOut:
     now = datetime.now(UTC)
     idea = _locked_idea(db, idea_id)
     existing = _existing_trade(db, idea.id)
     if existing is not None:
+        _record_decision_replay(
+            db,
+            request,
+            action="approve_paper_replay",
+            idea_id=idea.id,
+        )
         return _approval_response(idea, existing, replay=True, now=now)
     skipped = db.get(IdeaSkip, idea.id)
     if skipped is not None:
@@ -498,11 +529,20 @@ def _rejection_response(
 
 @router.post("/ideas/{idea_id}/reject", response_model=IdeaDecisionOut)
 def reject(
-    idea_id: UUID, body: SkipRequest, db: Session = Depends(get_db)
+    idea_id: UUID,
+    body: SkipRequest,
+    request: Request,
+    db: Session = Depends(get_db),
 ) -> IdeaDecisionOut:
     idea = _locked_idea(db, idea_id)
     existing = db.get(IdeaSkip, idea.id)
     if existing is not None:
+        _record_decision_replay(
+            db,
+            request,
+            action="reject_replay",
+            idea_id=idea.id,
+        )
         return _rejection_response(idea, existing, replay=True)
     if _existing_trade(db, idea.id) is not None:
         raise HTTPException(
