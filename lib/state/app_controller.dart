@@ -350,6 +350,7 @@ class AppController extends ChangeNotifier {
     // экрана — отпускаем кадр, иначе Flutter справедливо ругается на
     // setState во время build.
     await Future<void>.microtask(() {});
+    if (failed) notifyListeners();
     notifyListeners();
     try {
       // Тот же порядок, что у идей: сначала адрес, потом запрос.
@@ -749,7 +750,6 @@ class AppController extends ChangeNotifier {
     if (failed) {
       _ideaChartsFailed.remove(key);
       _chartFailureReason.remove(key);
-      notifyListeners();
     }
     // Уступаем микрозадачу перед любой работой. Вызов приходит из `build`
     // разбора, а демо-режим отвечает без единого `await` — и
