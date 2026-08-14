@@ -1,0 +1,59 @@
+name: Ops verify production after milestone deploy
+
+on:
+  push:
+    branches:
+      - ops/verify-production-db012078-20260814
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prepare SSH
+        env:
+          KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_verify
+          chmod 600 ~/.ssh/id_verify
+          ssh-keyscan -T 10 -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null
+      - name: Verify source, universe and scheduler
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          USER_NAME: ${{ secrets.VPS_USER || 'root' }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/id_verify -o BatchMode=yes "$USER_NAME@$HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          cd "$HOME/signalai/server"
+          echo "SOURCE_SHA=$(cat "$HOME/signalai/.signalai-source-sha")"
+          echo '--- short-term universe ---'
+          docker compose exec -T postgres sh -lc 'psql -At -U "$POSTGRES_USER" -d "$POSTGRES_DB" <<"SQL"
+          SELECT venue::text || E'\t' || asset_class::text || E'\t' || count(*)
+          FROM instruments
+          WHERE in_universe = true
+            AND asset_class IN ('FUTURES','CRYPTO_PERPETUAL')
+          GROUP BY venue, asset_class
+          ORDER BY venue, asset_class;
+          SELECT 'TRADABLE' || E'\t' || venue::text || E'\t' || asset_class::text || E'\t' || count(*)
+          FROM instruments
+          WHERE in_universe = true AND is_tradable = true
+            AND asset_class IN ('FUTURES','CRYPTO_PERPETUAL')
+          GROUP BY venue, asset_class
+          ORDER BY venue, asset_class;
+          SELECT instrument_id || E'\t' || symbol || E'\t' || in_universe || E'\t' || is_tradable
+          FROM instruments
+          WHERE symbol IN ('GKU6','BTCUSDT','DOGEUSDT')
+          ORDER BY symbol;
+          SQL'
+          echo '--- latest scheduler cycle ---'
+          docker compose logs --tail=160 --no-color scheduler | grep -E 'universe:|ingest:|review:|supervise:|scan:' | tail -15
+          REMOTE
+      - name: Remove SSH key
+        if: always()
+        run: shred -u ~/.ssh/id_verify 2>/dev/null || rm -f ~/.ssh/id_verify
