@@ -135,12 +135,14 @@ jobs:
           HOST: ${{ inputs.host_override || secrets.VPS_HOST || secrets.SERVER_HOST }}
           USER_NAME: ${{ secrets.VPS_USER || inputs.ssh_user }}
           KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
+          HOST_KEY_SHA256: ${{ secrets.VPS_SSH_HOST_KEY_SHA256 }}
           DEVICE_TOKEN: ${{ secrets.SIGNALAI_DEVICE_TOKEN }}
         run: |
           missing=""
           [ -n "$HOST" ] || missing="$missing VPS_HOST|SERVER_HOST"
           [ -n "$USER_NAME" ] || missing="$missing VPS_USER (или задайте ssh_user при запуске)"
           [ -n "$KEY" ] || missing="$missing VPS_SSH_KEY|SSH_SECRET"
+          [ -n "$HOST_KEY_SHA256" ] || missing="$missing VPS_SSH_HOST_KEY_SHA256"
           if [ "$ACTION" = bootstrap ] || [ "$ACTION" = update ]; then
             [ -n "$DEVICE_TOKEN" ] || missing="$missing SIGNALAI_DEVICE_TOKEN"
           fi
@@ -175,21 +177,12 @@ jobs:
         env:
           KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
           HOST: ${{ inputs.host_override || secrets.VPS_HOST || secrets.SERVER_HOST }}
+          HOST_KEY_SHA256: ${{ secrets.VPS_SSH_HOST_KEY_SHA256 }}
         run: |
           install -d -m 700 ~/.ssh
           printf '%s\n' "$KEY" > ~/.ssh/id_deploy
           chmod 600 ~/.ssh/id_deploy
-          # Отпечаток хоста берётся сейчас и фиксируется: без этого первое
-          # соединение согласится на любой ключ, включая подменённый.
-          if ssh-keyscan -T 10 -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null && \
-             [ -s ~/.ssh/known_hosts ]; then
-            echo "Отпечаток хоста записан."
-          else
-            # Не обрываем прогон здесь: следующий шаг даст понятную ошибку
-            # соединения вместо загадочного отказа сканера ключей.
-            echo "::warning::ssh-keyscan не получил ключ от $HOST — хост может быть недоступен"
-            echo "StrictHostKeyChecking=accept-new" >> ~/.ssh/config
-          fi
+          bash .github/scripts/prepare_known_host.sh "$HOST" "$HOST_KEY_SHA256"
 
       - name: Первичная установка
         if: ${{ inputs.action == 'bootstrap' }}
@@ -356,9 +349,6 @@ jobs:
           [ -n "$DOMAIN" ] || { echo "::error::нужен параметр domain"; exit 1; }
 
           echo "──────── кто держит 80 и 443 ────────"
-          # Главный вопрос. Пока он без ответа, любая правка nginx —
-          # угадывание: системный nginx может быть не при делах вовсе, а
-          # порты держать другой веб-сервер, в том числе в контейнере.
           $SUDO ss -tlnp 2>/dev/null | grep -E ':(80|443)\s' | sed 's/^/  /' \
             || echo "  ss недоступен"
           echo
@@ -394,11 +384,6 @@ jobs:
 
           echo
           echo "──────── чиню ────────"
-
-          # Порты держит не системный nginx — значит правкой его конфигурации
-          # ничего не изменится, а перезапуск ещё и уронил бы чужой сайт.
-          # Останавливаемся и говорим, кто владелец: гадать на боевом сервере
-          # владельца дороже, чем сделать второй заход.
           OWNER="$($SUDO ss -tlnp 2>/dev/null | grep -E ':80\s' | head -1)"
           if [ -n "$OWNER" ] && ! printf '%s' "$OWNER" | grep -q nginx; then
             echo "::error::порт 80 держит не nginx: $OWNER"
@@ -412,9 +397,6 @@ jobs:
 
           $SUDO apt-get install -y -qq --no-install-recommends certbot python3-certbot-nginx </dev/null >/dev/null 2>&1 || true
 
-          # Битый ssl-блок ломает handshake для своего SNI и при этом
-          # оставляет остальные сайты рабочими — снаружи это неотличимо от
-          # «сертификата нет». Сносим его до HTTP и выпускаем заново.
           if $SUDO grep -q "ssl_certificate" /etc/nginx/sites-available/signalai 2>/dev/null \
              && ! $SUDO test -f "/etc/letsencrypt/live/$DOMAIN/fullchain.pem"; then
             echo "· в конфигурации есть ssl_certificate, а файла сертификата нет — вот причина handshake failed"
@@ -426,9 +408,6 @@ jobs:
               listen [::]:80;
               server_name $DOMAIN;
 
-              # ACME-путь обслуживает сам nginx с диска. Проксировать его в
-              # приложение нельзя: приложение ответит 404, и подтверждение
-              # домена не пройдёт.
               location ^~ /.well-known/acme-challenge/ {
                   root /var/www/html;
                   default_type "text/plain";
@@ -496,16 +475,10 @@ jobs:
             echo
             echo "· блок для $DOMAIN уже есть — ничего не добавляю"
           else
-            # Резервная копия до правки: конфигурация фронта чужого рабочего
-            # сайта, и откат должен быть в одну команду.
             BACKUP="$CADDYFILE.bak-$(date +%Y%m%d-%H%M%S)"
             $SUDO cp "$CADDYFILE" "$BACKUP"
             echo "· копия: $BACKUP"
 
-            # Caddy живёт в своей сети и до 127.0.0.1:8000 хоста не достаёт:
-            # порт опубликован только на петлю. Подключаем контейнер к сети
-            # движка и ходим по имени сервиса — публиковать API наружу ради
-            # этого было бы шагом назад по §21.
             NET="$($SUDO docker inspect server-api-1 \
               --format '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' | awk '{print $1}')"
             $SUDO docker network connect "$NET" "$WEB" 2>/dev/null \
@@ -524,9 +497,6 @@ jobs:
 
           echo
           echo "──────── проверка и перезагрузка ────────"
-          # validate до reload: битая конфигурация не должна уронить сайт.
-          # Статус берётся у самого validate, а не у конвейера: `| tail`
-          # успешен всегда, и проверка стала бы декоративной.
           VALIDATION="$($SUDO docker exec "$WEB" caddy validate --config /etc/caddy/Caddyfile 2>&1)"
           VALID=$?
           printf '%s\n' "$VALIDATION" | tail -5 | sed 's/^/  /'
@@ -562,8 +532,6 @@ jobs:
             'curl -fsS http://127.0.0.1:8000/health' > health.json 2>/dev/null \
             || { echo "::error::сервер не отвечает на /health"; exit 1; }
 
-          # Секретов в ответе нет: health отдаёт версии, режим и отпечаток
-          # конфигурации, но не адреса и не токены.
           python3 - <<'PY'
           import json
           data = json.load(open("health.json"))
@@ -588,9 +556,6 @@ jobs:
           HOST: ${{ inputs.host_override || secrets.VPS_HOST || secrets.SERVER_HOST }}
           USER_NAME: ${{ secrets.VPS_USER || inputs.ssh_user }}
         run: |
-          # Разбор статуса — отдельным файлом, а не строкой в -c: кавычки
-          # внутри вложенного heredoc внутри ssh экранируются трижды, и
-          # первая же попытка стоила прогона.
           cat > /tmp/show_status.py <<'PY'
           import json, sys
 
@@ -615,8 +580,6 @@ jobs:
           COMPOSE="$SUDO docker compose --env-file /etc/signalai/.env -f $HOME/signalai/server/docker-compose.yml"
 
           echo "──────── контейнеры ────────"
-          # Первый вопрос — существует ли контейнер вообще. Пустые логи у
-          # незапущенного сервиса выглядят точно так же, как у молчащего.
           $COMPOSE ps -a
 
           echo
@@ -625,8 +588,6 @@ jobs:
 
           echo
           echo "──────── планировщик ────────"
-          # Ради этих строк логи и смотрят: по ним видно, дошла ли загрузка
-          # до биржи и что именно она принесла.
           out="$($COMPOSE logs --tail 60 scheduler 2>&1)"
           [ -n "$out" ] && printf '%s\n' "$out" || echo "контейнера планировщика нет"
 
