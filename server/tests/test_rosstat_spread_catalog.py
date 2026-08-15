@@ -21,6 +21,9 @@ HTML = """
 </body></html>
 """
 
+# Reduced from the live 2026-08-15 price catalogue: the current Rosstat page
+# renders these workbook anchors with the same icon-only visible text, so the
+# producer-price filename is the only stable discriminator among neighbours.
 CURRENT_HTML = """
 <html><body>
   <a href="/storage/mediabank/Proizvoditeli_Ind_VED_06-2026.xlsx">\ue2c0XLSX</a>
