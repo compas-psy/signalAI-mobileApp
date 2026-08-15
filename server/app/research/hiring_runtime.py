@@ -30,6 +30,7 @@ from .market_context import for_hypothesis
 from .pipeline import run as run_pipeline
 from .policy import CollectionDenied, authorize
 from .reach import USER_AGENT
+from .timeline import visible_at
 
 MAX_PAGES = 100  # API сам ограничивает полезную выборку 10k строками.
 TIMEOUT = 30
@@ -263,6 +264,33 @@ def _vacancy(row: trudvsem.VacancyDatum, issuer: Issuer, now: datetime) -> hirin
     )
 
 
+def _runtime_vacancy(
+    session: Session,
+    *,
+    row: trudvsem.VacancyDatum,
+    issuer: Issuer,
+    as_of: datetime,
+) -> hiring.Vacancy | None:
+    """Return a vacancy only after its durable observation becomes usable.
+
+    Runtime decisions must use the persisted information axis, not recompute
+    availability from the current collection time. Re-fetching the same
+    vacancy therefore cannot move first-seen forward or manufacture a new
+    confirmation, while a newly discovered revision remains invisible until
+    its stored ``tradable_at`` boundary is reached.
+    """
+    observation = session.execute(
+        select(ResearchObservation).where(
+            ResearchObservation.source_id == trudvsem.SOURCE_ID,
+            ResearchObservation.entity_id == issuer.secid,
+            ResearchObservation.observation_type == _vacancy_observation_type(row),
+        )
+    ).scalars().first()
+    if observation is None or not visible_at(observation.tradable_at, as_of):
+        return None
+    return _vacancy(row, issuer, as_of)
+
+
 def run_hiring_live(session: Session, *, now: datetime | None = None) -> HiringRunReport:
     moment = now or datetime.now(UTC)
     report = HiringRunReport()
@@ -305,7 +333,12 @@ def run_hiring_live(session: Session, *, now: datetime | None = None) -> HiringR
             first_seen_at=moment,
             raw_sha256=raw_sha256,
         )
-        vacancy = _vacancy(row, issuer, moment)
+        vacancy = _runtime_vacancy(
+            session,
+            row=row,
+            issuer=issuer,
+            as_of=moment,
+        )
         if vacancy is None:
             continue
         report.matched += 1
