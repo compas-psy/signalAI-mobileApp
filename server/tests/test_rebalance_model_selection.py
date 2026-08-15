@@ -124,6 +124,8 @@ def test_rebalance_uses_explicit_selected_model_even_when_newer_model_exists(ses
     assert body["model_id"] == str(selected.id)
     actions = {item["instrument_id"]: item["side"] for item in body["actions"]}
     assert actions == {"A": "SELL", "B": "BUY"}
+    assert "executable" not in body
+    assert "order_id" not in body
 
 
 def test_rebalance_fails_closed_when_multiple_models_exist_without_selection(session: Session):
@@ -147,6 +149,7 @@ def test_rebalance_fails_closed_when_multiple_models_exist_without_selection(ses
     assert body["model_id"] == ""
     assert body["actions"] == []
     assert "выберите пакет" in body["reason"].lower()
+    assert "executable" not in body
 
 
 def test_rebalance_fails_closed_for_unknown_model_id(session: Session):
@@ -167,3 +170,4 @@ def test_rebalance_fails_closed_for_unknown_model_id(session: Session):
     assert body["model_id"] == ""
     assert body["actions"] == []
     assert "пакет не найден" in body["reason"].lower()
+    assert "executable" not in body
