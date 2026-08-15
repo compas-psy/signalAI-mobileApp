@@ -393,24 +393,45 @@ def _write(
     provenance: Provenance,
     text: str = "",
 ) -> bool:
-    """Записать наблюдение, если такого ещё нет.
+    """Persist a new fact or a materially changed revision.
 
-    Возвращает `False` на повторе. Три копии одного факта в правиле 3–2–1
-    выглядели бы как три независимых подтверждения — то есть ровно та
-    ошибка, ради предотвращения которой правило и существует.
+    An identical re-fetch returns ``False`` even if the source bytes or
+    locator changed: it is still one confirmation. A changed value, text,
+    unit or period boundary is preserved as the next revision and points to
+    the previous one. Revisions become tradable no earlier than first-seen,
+    so a later correction cannot rewrite historical availability.
     """
-    existing = session.execute(
-        select(ResearchObservation.id).where(
-            ResearchObservation.source_id == source_id,
-            ResearchObservation.observation_type == observation_type,
-            ResearchObservation.entity_id == entity_id,
-            ResearchObservation.period_end == period_end,
-        )
-    ).first()
-    if existing is not None:
+    existing = list(
+        session.execute(
+            select(ResearchObservation)
+            .where(
+                ResearchObservation.source_id == source_id,
+                ResearchObservation.observation_type == observation_type,
+                ResearchObservation.entity_id == entity_id,
+                ResearchObservation.period_end == period_end,
+            )
+            .order_by(
+                ResearchObservation.revision_number.asc(),
+                ResearchObservation.id.asc(),
+            )
+        ).scalars()
+    )
+    if any(
+        row.value_numeric == value
+        and row.value_text == text
+        and row.unit == unit
+        and row.period_start == period_start
+        for row in existing
+    ):
         return False
 
+    latest = existing[-1] if existing else None
+    revision_number = (latest.revision_number + 1) if latest is not None else 0
     when = availability or _fallback_availability(published_at, first_seen_at)
+    effective_tradable_at = when.tradable_at
+    if latest is not None:
+        effective_tradable_at = max(effective_tradable_at, first_seen_at)
+
     session.add(
         ResearchObservation(
             observation_type=observation_type,
@@ -420,7 +441,7 @@ def _write(
             period_end=period_end,
             published_at=published_at,
             first_seen_at=first_seen_at,
-            tradable_at=when.tradable_at,
+            tradable_at=effective_tradable_at,
             publication_time_uncertain=when.publication_time_uncertain,
             # Корень — не источник. Источник говорит, откуда байты и по
             # какому праву; корень — из чего факт возник. Приравняв их, мы
@@ -433,6 +454,8 @@ def _write(
             value_numeric=value,
             value_text=text,
             unit=unit,
+            revision_number=revision_number,
+            supersedes_id=latest.id if latest is not None else None,
         )
     )
     return True
