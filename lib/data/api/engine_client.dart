@@ -415,6 +415,34 @@ class EngineClient {
     }
   }
 
+  /// Сверить текущий инвестиционный счёт с выбранным пакетом.
+  ///
+  /// GET остаётся advisory-only: клиент не получает ни order id, ни флага
+  /// исполнения и не может превратить ответ в заявку.
+  Future<PortfolioRebalance> portfolioRebalance(String modelId) async {
+    final selected = modelId.trim();
+    if (selected.isEmpty) {
+      return const PortfolioRebalance.unavailable('Пакет не выбран.');
+    }
+    if (!isConfigured) {
+      return const PortfolioRebalance.unavailable(_noAddress);
+    }
+    try {
+      final raw = await _api.get(
+        '$_base/portfolio/rebalance?model_id=${Uri.encodeQueryComponent(selected)}',
+      );
+      final result = EngineContract.portfolioRebalance(raw);
+      if (result.modelId.isNotEmpty && result.modelId != selected) {
+        return const PortfolioRebalance.unavailable(
+          'Движок вернул ребаланс другого пакета. Обновите пакеты и повторите.',
+        );
+      }
+      return result;
+    } catch (error) {
+      return PortfolioRebalance.unavailable(_reason(error));
+    }
+  }
+
   /// Ранние сигналы: гипотезы и готовность источников.
   ///
   /// Отдельно от идей и от пакетов, потому что это третий вопрос. Идеи —

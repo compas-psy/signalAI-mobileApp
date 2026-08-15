@@ -332,10 +332,16 @@ class AppController extends ChangeNotifier {
 
   PortfolioState? _portfolio;
   bool _portfolioLoading = false;
+  PortfolioRebalance? _portfolioRebalance;
+  String? _portfolioRebalanceModelId;
+  String? _portfolioRebalanceLoadingModelId;
 
   /// Пакеты капитала и состояние их сборки. null — ещё не запрашивали.
   PortfolioState? get portfolio => _portfolio;
   bool get portfolioLoading => _portfolioLoading;
+  PortfolioRebalance? get portfolioRebalance => _portfolioRebalance;
+  String? get portfolioRebalanceModelId => _portfolioRebalanceModelId;
+  String? get portfolioRebalanceLoadingModelId => _portfolioRebalanceLoadingModelId;
 
   /// Запросить пакеты у движка.
   ///
@@ -363,6 +369,51 @@ class AppController extends ChangeNotifier {
     } finally {
       _portfolioLoading = false;
       notifyListeners();
+    }
+  }
+
+  /// Сверить счёт именно с выбранным серверным пакетом.
+  ///
+  /// Снимок текущих позиций отправляется непосредственно перед сравнением.
+  /// При быстром переключении пакетов поздний ответ старого запроса
+  /// отбрасывается и не может появиться под карточкой нового состава.
+  Future<void> loadPortfolioRebalance(
+    EnginePackage package, {
+    bool force = false,
+  }) async {
+    final modelId = package.id.trim();
+    if (modelId.isEmpty) {
+      _portfolioRebalanceModelId = '';
+      _portfolioRebalance = const PortfolioRebalance.unavailable(
+        'Пакет не выбран.',
+      );
+      notifyListeners();
+      return;
+    }
+    if (_portfolioRebalanceLoadingModelId == modelId) return;
+    if (!force &&
+        _portfolioRebalanceModelId == modelId &&
+        _portfolioRebalance != null) {
+      return;
+    }
+
+    _portfolioRebalanceModelId = modelId;
+    _portfolioRebalance = null;
+    _portfolioRebalanceLoadingModelId = modelId;
+    await Future<void>.microtask(() {});
+    notifyListeners();
+    try {
+      await _engineReady;
+      await _syncHoldings();
+      final result = await _engine.portfolioRebalance(modelId);
+      if (_portfolioRebalanceModelId == modelId) {
+        _portfolioRebalance = result;
+      }
+    } finally {
+      if (_portfolioRebalanceLoadingModelId == modelId) {
+        _portfolioRebalanceLoadingModelId = null;
+        notifyListeners();
+      }
     }
   }
 

@@ -10,7 +10,7 @@ class _FakeApi extends ApiClient {
   String? lastPath;
 
   @override
-  Future<Map<String, dynamic>> getJson(String path) async {
+  Future<Map<String, dynamic>> get(String path) async {
     lastPath = path;
     return response;
   }
