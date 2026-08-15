@@ -41,7 +41,7 @@ from ...research.pipeline import expire as expire_hypotheses
 from ...research.policy import CollectionDenied, authorize
 from ...research.run_engines import DEMAND_FREQUENCY, run_demand
 from ...research.sources import ALL_SOURCES, CONNECT_ORDER, readiness, sync_registry
-from ...research.spread_runtime import PRODUCTION_BASKETS
+from ...research.spread_runtime import PRODUCTION_BASKETS, prepare_periods
 from ...schemas.common import ApiModel, Money
 
 router = APIRouter(prefix="/research", tags=["research"])
@@ -279,15 +279,59 @@ def _facts(session: Session, key: str) -> dict:
         ).where(ResearchObservation.observation_type.like(f"{prefix}%"))
     ).one()
     total, periods, last_seen = rows
-    if key == "SPREAD" and not PRODUCTION_BASKETS:
+    if key == "SPREAD":
+        if not PRODUCTION_BASKETS:
+            return {
+                "wired": True,
+                "observations": int(total or 0),
+                "unique_periods": 0,
+                "last_seen_at": last_seen,
+                "history_ready": False,
+                "history_note": "production baskets not configured",
+            }
+
+        # SPREAD consumes complete quarter averages for every configured
+        # leg. Counting raw monthly period_end values here made six months
+        # look like six quarters and could report false readiness. Reuse
+        # the exact runtime preparation path instead of duplicating its
+        # completeness/tradable_at/unit rules in diagnostics.
+        moment = datetime.now(UTC)
+        prepared = [
+            (basket, prepare_periods(session, basket, as_of=moment))
+            for basket in PRODUCTION_BASKETS
+        ]
+        complete = max(
+            (len(preparation.periods) for _, preparation in prepared),
+            default=0,
+        )
+        states = [
+            (basket, preparation, history_verdict(
+                len(preparation.periods), "quarterly"
+            ))
+            for basket, preparation in prepared
+        ]
+        ready = any(enough for _, _, (enough, _) in states)
+        notes: list[str] = []
+        for basket, preparation, (enough, why) in states:
+            if enough:
+                continue
+            reasons = ",".join(preparation.reason_codes)
+            note = (
+                f"{basket.basket_id}: {len(preparation.periods)} "
+                f"complete quarters; {why}"
+            )
+            if reasons:
+                note += f"; {reasons}"
+            notes.append(note)
         return {
             "wired": True,
             "observations": int(total or 0),
-            "unique_periods": int(periods or 0),
+            "unique_periods": complete,
             "last_seen_at": last_seen,
-            "history_ready": False,
-            "history_note": "production baskets not configured",
+            "history_ready": ready,
+            "history_note": "; ".join(notes),
         }
+
     frequency = DEMAND_FREQUENCY if key == "DEMAND" else "quarterly"
     enough, why = history_verdict(int(periods or 0), frequency)
     return {
