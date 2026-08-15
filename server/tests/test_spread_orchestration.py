@@ -51,6 +51,8 @@ def test_explicit_research_run_surfaces_unconfigured_spread(session):
         "SPREAD: production baskets not configured" in item
         for item in report.skipped
     )
+    assert report.signals == 0
+    assert report.hypotheses == 0
 
 
 def test_scheduler_mode_invokes_spread_without_enabling_hiring(
