@@ -8,6 +8,7 @@ from app.api.v1 import research as research_api
 from app.models import ResearchObservation
 from app.research.engines import spread
 from app.research.issuers import automatic, of
+from app.research.sources import sync_registry
 from app.research.spread_runtime import PRODUCTION_BASKETS
 
 
@@ -93,6 +94,7 @@ def test_vertical_integration_has_an_explicit_confidence_cap():
 
 
 def test_spread_owner_status_does_not_mistake_months_for_complete_quarters(session):
+    sync_registry(session)
     first_seen = datetime(2026, 8, 1, 12, tzinfo=UTC)
     for month in range(1, 7):
         session.add(
