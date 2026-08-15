@@ -22,19 +22,21 @@ from __future__ import annotations
 
 import urllib.error
 import urllib.request
+from calendar import monthrange
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..models import ResearchObservation
-from .adapters import cbr, fns
+from .adapters import cbr, fns, rosstat_prices
 from .codes import observation_code
 from .collect import Fetched
 from .policy import CollectionDenied, Permit, authorize
 from .provenance import Provenance, cbr as cbr_provenance, fns as fns_provenance
+from .provenance import rosstat as rosstat_provenance
 from .reach import USER_AGENT
 from .timeline import tradable_at
 
@@ -246,6 +248,97 @@ def collect_fns(
     return _record_plan(session, report, pages, moment)
 
 
+def collect_rosstat_prices(
+    session: Session,
+    *,
+    now: datetime | None = None,
+    catalogue_html: str = "",
+) -> CollectReport:
+    """Забрать официальный месячный XLSX цен производителей Росстата.
+
+    Время публикации конкретной строки workbook не выдумываем: пока источник
+    не отдаёт его в разобранном виде, `published_at=None`, а общий timeline
+    применяет консервативный first-seen lag. Повтор того же периода
+    дедуплицируется до расчёта новой availability, поэтому re-fetch не может
+    передвинуть историческую границу `tradable_at`.
+    """
+    moment = now or datetime.now(UTC)
+    report = CollectReport()
+    try:
+        authorize(
+            session,
+            rosstat_prices.SOURCE_ID,
+            {"fetch", "transform"},
+            now=moment,
+        )
+    except CollectionDenied as denied:
+        report.skipped.append(f"{rosstat_prices.SOURCE_ID}: {denied.reason}")
+        return report
+
+    report.attempted += 1
+    catalogue = catalogue_html or _text(rosstat_prices.CATALOG_URL)
+    if not catalogue:
+        report.errors.append(f"{rosstat_prices.CATALOG_URL}: каталог не прочитан")
+        return report
+    report.fetched += 1
+
+    try:
+        workbook_url = rosstat_prices.discover_workbook(catalogue)
+    except (rosstat_prices.DatasetNotFound, rosstat_prices.AmbiguousDataset) as error:
+        report.errors.append(f"rosstat: {error}")
+        return report
+
+    report.attempted += 1
+    fetched = _get(workbook_url, moment)
+    if fetched is None or not fetched.ok:
+        report.errors.append(f"{workbook_url}: XLSX не получен")
+        return report
+    report.fetched += 1
+
+    try:
+        points = rosstat_prices.parse_workbook(fetched.body)
+    except (
+        rosstat_prices.WorkbookSchemaError,
+        rosstat_prices.DuplicatePricePoint,
+    ) as error:
+        report.errors.append(f"rosstat: {error}")
+        return report
+
+    provenance = rosstat_provenance("producer_prices")
+    for point in points:
+        period_end = date(
+            point.period.year,
+            point.period.month,
+            monthrange(point.period.year, point.period.month)[1],
+        )
+        written = _write(
+            session,
+            source_id=rosstat_prices.SOURCE_ID,
+            observation_type=rosstat_prices.observation_type(point.product),
+            entity_id="RU",
+            value=point.value,
+            unit=f"OKEI:{point.product.okei}",
+            period_start=point.period,
+            period_end=period_end,
+            published_at=None,
+            availability=None,
+            first_seen_at=moment,
+            locator={
+                "catalogue": rosstat_prices.CATALOG_URL,
+                "dataset": rosstat_prices.DATASET_TITLE,
+                "url": workbook_url,
+                "okpd2": point.product.okpd2,
+                "okei": point.product.okei,
+                "product_name": point.product.name,
+            },
+            raw_sha256=fetched.sha256,
+            provenance=provenance,
+        )
+        report.written += int(written)
+        report.duplicates += int(not written)
+    return report
+
+
 def _record_plan(
     session: Session, report: CollectReport, pages: dict[str, str], moment: datetime
 ) -> CollectReport:
@@ -386,7 +479,11 @@ def _text(url: str) -> str:
 def collect_all(session: Session, *, now: datetime | None = None) -> CollectReport:
     """Пройти по всем источникам, у которых есть написанный адаптер."""
     total = CollectReport()
-    for one in (collect_cbr(session, now=now), collect_fns(session, now=now)):
+    for one in (
+        collect_cbr(session, now=now),
+        collect_fns(session, now=now),
+        collect_rosstat_prices(session, now=now),
+    ):
         total.attempted += one.attempted
         total.fetched += one.fetched
         total.written += one.written
@@ -396,4 +493,10 @@ def collect_all(session: Session, *, now: datetime | None = None) -> CollectRepo
     return total
 
 
-__all__ = ["CollectReport", "collect_all", "collect_cbr", "collect_fns"]
+__all__ = [
+    "CollectReport",
+    "collect_all",
+    "collect_cbr",
+    "collect_fns",
+    "collect_rosstat_prices",
+]

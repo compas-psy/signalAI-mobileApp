@@ -224,12 +224,19 @@ RUSSIA_FREE: tuple[SourceSpec, ...] = (
     SourceSpec(
         "rosstat", "Росстат / ЕМИСС", "Росстат", "file",
         LicenseStatus.APPROVED,
-        "CSV/XLSX/ZIP и официальные выгрузки: производство, запасы, розница, "
-        "цены производителей. Файловый адаптер, а не скрытые endpoints; "
-        "хранить vintage и учитывать ревизии",
+        "официальные открытые CSV/XLSX/ZIP: производство, запасы, розница и "
+        "цены производителей. Открытые данные разрешено использовать и "
+        "перерабатывать при сохранении достоверности и ссылки на источник; "
+        "сырой массив продукт не перераспространяет",
+        base_url="https://rosstat.gov.ru/",
+        catalogue_urls=("https://rosstat.gov.ru/statistics/price",),
         expected_frequency="monthly",
         allowed_operations=dict(_READ),
         feeds={"DEMAND": "full", "SPREAD": "full", "CAPACITY": "full"},
+        terms_url="https://rosstat.gov.ru/opendata/",
+        terms_checked_at=datetime(2026, 8, 15, tzinfo=UTC),
+        terms_review_due_at=datetime(2027, 2, 15, tzinfo=UTC),
+        datasets=("producer_prices",),
     ),
     SourceSpec(
         "budget_open_data", "Открытые данные «Электронного бюджета»",
