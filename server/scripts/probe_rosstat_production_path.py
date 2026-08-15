@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from io import BytesIO
 from urllib.request import Request, urlopen
+from zipfile import ZipFile
 
 from app.research.adapters import rosstat_prices
 from app.research.reach import USER_AGENT
@@ -42,12 +44,34 @@ def fetch(url: str) -> bytes:
         return body
 
 
+def inspect_workbook(content: bytes) -> None:
+    with ZipFile(BytesIO(content)) as archive:
+        shared = rosstat_prices._shared_strings(archive)
+        for name, path in rosstat_prices._sheet_paths(archive):
+            rows = rosstat_prices._sheet_rows(archive, path, shared)
+            print(f"SHEET name={name!r} path={path!r} rows={len(rows)}")
+            printed = 0
+            for index, row in enumerate(rows):
+                nonempty = [value for value in row if value.strip()]
+                if not nonempty:
+                    continue
+                print(f"ROW {index + 1}: {row[:24]!r}")
+                printed += 1
+                if printed >= 18:
+                    break
+
+
 def main() -> None:
     catalogue = fetch(rosstat_prices.CATALOG_URL).decode("utf-8", errors="replace")
     workbook_url = rosstat_prices.discover_workbook(catalogue)
     print(f"WORKBOOK {workbook_url}")
 
-    points = rosstat_prices.parse_workbook(fetch(workbook_url))
+    raw_workbook = fetch(workbook_url)
+    try:
+        points = rosstat_prices.parse_workbook(raw_workbook)
+    except rosstat_prices.WorkbookSchemaError:
+        inspect_workbook(raw_workbook)
+        raise
     print(f"POINTS {len(points)}")
 
     by_product = defaultdict(list)
