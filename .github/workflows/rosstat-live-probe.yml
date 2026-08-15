@@ -30,4 +30,6 @@ jobs:
           uv lock --check
           uv sync --frozen
       - name: Probe current producer-price workbook
+        env:
+          PYTHONPATH: .
         run: .venv/bin/python scripts/probe_rosstat_prices.py
