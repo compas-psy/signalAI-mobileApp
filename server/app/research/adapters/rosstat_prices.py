@@ -387,25 +387,26 @@ def _parse_sheet(rows: list[list[str]]) -> list[ProducerPricePoint] | None:
 
 
 def parse_workbook(content: bytes) -> list[ProducerPricePoint]:
-    """Parse monthly producer prices from an XLSX without an Excel dependency.
+    """Parse supported monthly producer-price layouts from Rosstat XLSX.
 
-    Only worksheets with an explicit OKPD2, OKEI, product-name and month/year
-    header are accepted. Unrelated sheets are ignored. If the workbook has no
-    matching sheet, collection fails visibly so a Rosstat layout change cannot
-    silently feed shifted columns into SPREAD.
+    The adapter preserves the historical explicit-OKEI layout and also accepts
+    the live 2021+ layouts where the year is in the sheet title, months are
+    separate headers, and 2024+ national values live on a child row. The live
+    parser emits only products whose text unit can be mapped explicitly back to
+    OKEI and whose cross-sheet unit evidence is consistent.
     """
     try:
         with ZipFile(BytesIO(content)) as archive:
             shared = _shared_strings(archive)
+            rows_by_sheet = [
+                _sheet_rows(archive, path, shared)
+                for _name, path in _sheet_paths(archive)
+            ]
             points: list[ProducerPricePoint] = []
             matched_sheets = 0
             seen: set[tuple[tuple[str, str], date]] = set()
 
-            for _name, path in _sheet_paths(archive):
-                parsed = _parse_sheet(_sheet_rows(archive, path, shared))
-                if parsed is None:
-                    continue
-                matched_sheets += 1
+            def add(parsed: list[ProducerPricePoint]) -> None:
                 for point in parsed:
                     key = (point.product.key, point.period)
                     if key in seen:
@@ -414,6 +415,23 @@ def parse_workbook(content: bytes) -> list[ProducerPricePoint]:
                         )
                     seen.add(key)
                     points.append(point)
+
+            for rows in rows_by_sheet:
+                parsed = _parse_sheet(rows)
+                if parsed is None:
+                    continue
+                matched_sheets += 1
+                add(parsed)
+
+            # Function-local import avoids a module import cycle: the live parser
+            # reuses the validated identity/value types defined above.
+            from . import rosstat_live_prices
+
+            live_points, live_matched = rosstat_live_prices.parse_sheets(
+                rows_by_sheet
+            )
+            matched_sheets += live_matched
+            add(live_points)
     except (DuplicatePricePoint, WorkbookSchemaError):
         raise
     except (BadZipFile, KeyError, ET.ParseError) as error:
@@ -421,7 +439,7 @@ def parse_workbook(content: bytes) -> list[ProducerPricePoint]:
 
     if matched_sheets == 0:
         raise WorkbookSchemaError(
-            "Rosstat workbook has no ОКПД2/ОКЕИ/Наименование + month/year header"
+            "Rosstat workbook has no supported OKPD2 producer-price monthly layout"
         )
     return points
 
