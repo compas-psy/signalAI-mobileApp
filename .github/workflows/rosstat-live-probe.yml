@@ -25,6 +25,19 @@ jobs:
           version: '0.11.33'
           enable-cache: true
           cache-dependency-glob: server/uv.lock
+      - name: Inspect Rosstat TLS chain without disabling verification
+        working-directory: .
+        run: |
+          set -u
+          for host in rosstat.gov.ru www.rosstat.gov.ru; do
+            echo "=== OPENSSL $host ==="
+            (echo | openssl s_client -connect "$host:443" -servername "$host" -showcerts 2>&1 || true) \
+              | grep -E '^(depth=|verify error:|subject=|issuer=|Verify return code:|-----BEGIN CERTIFICATE-----|-----END CERTIFICATE-----)' || true
+            echo "=== CURL $host ==="
+            curl --head --silent --show-error --max-time 12 "https://$host/statistics/price" >/dev/null \
+              && echo "CURL_OK $host" \
+              || echo "CURL_FAIL $host exit=$?"
+          done
       - name: Install locked server dependencies
         run: |
           uv lock --check
