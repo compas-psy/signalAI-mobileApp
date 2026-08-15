@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+from calendar import monthrange
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
+from app.api.v1 import research as research_api
+from app.models import ResearchObservation
 from app.research.engines import spread
 from app.research.issuers import automatic, of
 from app.research.spread_runtime import PRODUCTION_BASKETS
@@ -86,3 +90,37 @@ def test_vertical_integration_has_an_explicit_confidence_cap():
     assert spread.VERTICAL_INTEGRATION_CAP == Decimal("0.50")
     assert "spread_vertical_integration" in result.reason_codes
     assert result.confidence <= spread.VERTICAL_INTEGRATION_CAP
+
+
+def test_spread_owner_status_does_not_mistake_months_for_complete_quarters(session):
+    first_seen = datetime(2026, 8, 1, 12, tzinfo=UTC)
+    for month in range(1, 7):
+        session.add(
+            ResearchObservation(
+                observation_type="rosstat:producer_price:24_42_11:168",
+                entity_id="RU",
+                source_id="rosstat",
+                period_start=date(2026, month, 1),
+                period_end=date(2026, month, monthrange(2026, month)[1]),
+                published_at=None,
+                first_seen_at=first_seen,
+                tradable_at=first_seen + timedelta(hours=1),
+                publication_time_uncertain=True,
+                lineage_root_id="rosstat:producer_prices",
+                source_locator={"okpd2": "24.42.11", "okei": "168"},
+                raw_sha256=f"{month:064x}",
+                value_numeric=Decimal(1000 + month),
+                value_text="",
+                unit="OKEI:168",
+            )
+        )
+    session.flush()
+
+    state = next(item for item in research_api._engines(session) if item.key == "SPREAD")
+
+    assert state.wired is True
+    assert state.observations == 6
+    assert state.unique_periods == 0
+    assert state.history_ready is False
+    assert "complete quarters" in state.history_note
+    assert "rual_primary_aluminium_alumina" in state.history_note
