@@ -1,0 +1,35 @@
+name: Rosstat production parser probe
+
+on:
+  push:
+    branches:
+      - probe/4-rosstat-live-parser3
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.11.33'
+          enable-cache: true
+          cache-dependency-glob: server/uv.lock
+      - name: Install locked server dependencies
+        run: |
+          uv lock --check
+          uv sync --frozen
+      - name: Exercise production Rosstat TLS, discovery and live parser
+        env:
+          PYTHONPATH: .
+        run: .venv/bin/python scripts/probe_rosstat_production_path.py
