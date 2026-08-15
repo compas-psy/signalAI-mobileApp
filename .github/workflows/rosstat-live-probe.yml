@@ -1,0 +1,23 @@
+name: Rosstat live probe
+
+on:
+  push:
+    branches:
+      - probe/4-rosstat-live
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Probe current producer-price workbook
+        env:
+          PYTHONPATH: server
+        run: python server/scripts/probe_rosstat_prices.py
