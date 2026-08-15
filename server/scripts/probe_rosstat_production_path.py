@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from decimal import Decimal, InvalidOperation
+from io import BytesIO
 from urllib.request import Request, urlopen
+from zipfile import ZipFile
 
-from app.research.adapters import rosstat_prices
+from app.research.adapters import rosstat_live_prices, rosstat_prices
 from app.research.reach import USER_AGENT
 
 TIMEOUT = 45
@@ -34,12 +37,42 @@ def fetch(url: str) -> bytes:
         return body
 
 
+def nonnumeric_month_markers(content: bytes) -> set[str]:
+    markers: set[str] = set()
+    with ZipFile(BytesIO(content)) as archive:
+        shared = rosstat_prices._shared_strings(archive)
+        for _name, path in rosstat_prices._sheet_paths(archive):
+            rows = rosstat_prices._sheet_rows(archive, path, shared)
+            header = rosstat_live_prices._header(rows)
+            if header is None:
+                continue
+            for row in rows[header.row_index + 1 :]:
+                for column in header.periods:
+                    raw = row[column].strip() if column < len(row) else ""
+                    normalized = (
+                        raw.replace("\u00a0", "")
+                        .replace(" ", "")
+                        .replace(",", ".")
+                    )
+                    if not normalized or normalized in rosstat_prices._MISSING:
+                        continue
+                    try:
+                        Decimal(normalized)
+                    except InvalidOperation:
+                        markers.add(raw)
+    return markers
+
+
 def main() -> None:
     catalogue = fetch(rosstat_prices.CATALOG_URL).decode("utf-8", errors="replace")
     workbook_url = rosstat_prices.discover_workbook(catalogue)
     print(f"WORKBOOK {workbook_url}")
 
-    points = rosstat_prices.parse_workbook(fetch(workbook_url))
+    raw_workbook = fetch(workbook_url)
+    markers = sorted(nonnumeric_month_markers(raw_workbook))
+    print(f"NONNUMERIC_MONTH_MARKERS count={len(markers)} values={markers!r}")
+
+    points = rosstat_prices.parse_workbook(raw_workbook)
     print(f"POINTS {len(points)}")
 
     by_product = defaultdict(list)
