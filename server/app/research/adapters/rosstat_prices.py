@@ -31,7 +31,7 @@ _ALLOWED_HOSTS = {"rosstat.gov.ru", "www.rosstat.gov.ru"}
 _CURRENT_WORKBOOK = re.compile(
     r"^Proizvoditeli_Cena_\d{2}-\d{4}\.xlsx$", re.IGNORECASE
 )
-_CA_BUNDLE = Path(__file__).parent / "certs" / "rosstat-russian-trusted-ca.pem"
+_CA_BUNDLE = Path(__file__).parent / "certs" / "rosstat-russian-trusted-ca.crt"
 _OKPD2 = re.compile(r"^\d{2}(?:\.\d{1,3}){1,4}$")
 _OKEI = re.compile(r"^\d{3}$")
 _CELL_REF = re.compile(r"^([A-Z]+)\d+$")
