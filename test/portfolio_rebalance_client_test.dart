@@ -41,12 +41,18 @@ void main() {
     final result =
         await EngineClient(client: api).portfolioRebalance('model-selected');
 
-    expect(api.lastPath, '/portfolio/rebalance?model_id=model-selected');
+    expect(api.lastPath, '/api/v1/portfolio/rebalance?model_id=model-selected');
     expect(result.isAvailable, isTrue);
     expect(result.modelId, 'model-selected');
     expect(result.needed, isTrue);
+    expect(result.urgent, isFalse);
+    expect(result.reason, 'расхождение выше порога');
+    expect(result.maxDrift, closeTo(0.30, 1e-12));
+    expect(result.totalValue, 100000);
     expect(result.actions.single.symbol, 'SBER');
+    expect(result.actions.single.side, 'BUY');
     expect(result.actions.single.amountRub, 30000);
+    expect(result.actions.single.actualWeight, closeTo(0.20, 1e-12));
     expect(result.actions.single.targetWeight, closeTo(0.50, 1e-12));
   });
 
