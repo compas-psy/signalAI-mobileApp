@@ -46,6 +46,9 @@ from sqlalchemy.orm import Session
 from ..models import ResearchSource
 from ..models.enums import LicenseStatus
 
+# Полный набор операций для источника, который что-то реально отдаёт.
+# Перераспространение сырых данных не разрешается нигде: это отдельное
+# право, и ни один из бесплатных маршрутов его не даёт.
 _READ = {
     "fetch": True,
     "store_raw": True,
@@ -53,6 +56,8 @@ _READ = {
     "display_derived": True,
     "redistribute_raw": False,
 }
+# Ручной импорт: файл владелец получает законным способом сам, автоматика
+# к источнику не ходит.
 _MANUAL = {
     "fetch": False,
     "store_raw": True,
@@ -60,6 +65,7 @@ _MANUAL = {
     "display_derived": True,
     "redistribute_raw": False,
 }
+# Ничего нельзя: источник в реестре только чтобы объяснить, почему его нет.
 _NONE = {
     "fetch": False,
     "store_raw": False,
@@ -78,19 +84,42 @@ class SourceSpec:
     license_status: LicenseStatus
     note: str
     base_url: str = ""
+    # Остальные хосты источника, кроме базового. У ФНС описания наборов, их
+    # структура и сами файлы лежат на разных хостах, и открытый доступ к
+    # одному ничего не говорит о двух других. Проба по базовому адресу дала
+    # бы ответ про четверть маршрута, выглядящий как ответ про весь.
     extra_urls: tuple[str, ...] = ()
+    # Точки входа в каталог источника. Адаптер обязан находить выгрузки,
+    # а не собирать их адреса из имени набора: ведомства нумеруют наборы
+    # своими идентификаторами и добавляют дату выпуска в имя файла.
+    # Собранный адрес выглядит правдоподобно и отвечает 404 — то есть
+    # сбор молча не идёт, а экран объясняется спокойным рынком.
     catalogue_urls: tuple[str, ...] = ()
     auth_type: str = "none"
     expected_frequency: str = ""
     source_timezone: str = "Europe/Moscow"
     allowed_operations: dict = field(default_factory=lambda: dict(_NONE))
+    # Что движки берут отсюда и **насколько полно**. Полнота важнее самого
+    # факта: источник, закрывающий половину входов движка, и источник,
+    # закрывающий все, снаружи выглядят одинаково — строкой в списке, — а
+    # означают разное. ФНС даёт финансовое состояние поставщика, но не
+    # контракты; без ЕИС движок SUPPLIER считает часть картины.
     feeds: dict[str, str] = field(default_factory=dict)
     rate_limit_policy: dict = field(default_factory=dict)
+
+    # Когда условия использования были проверены и когда проверить снова.
+    #
+    # Живут в реестре как **запись о состоявшейся проверке**, а не как
+    # автоматическое значение. Источник без даты остаётся закрытым, каким
+    # бы ни был его правовой статус: «approved» без проверки — это мнение,
+    # а не решение.
     terms_checked_at: datetime | None = None
     terms_review_due_at: datetime | None = None
     terms_url: str = ""
     datasets: tuple[str, ...] = ()
 
+
+# ── Россия: бесплатные официальные маршруты ─────────────────────────────────
 
 RUSSIA_FREE: tuple[SourceSpec, ...] = (
     SourceSpec(
@@ -102,9 +131,21 @@ RUSSIA_FREE: tuple[SourceSpec, ...] = (
         "При цитировании обязательна ссылка; условия могут быть изменены в "
         "одностороннем порядке, поэтому проверка назначена на ноябрь",
         base_url="https://www.cbr.ru/dataservice/",
+        # Несколько кандидатов, а не один: раскладка сервиса данных должна
+        # быть установлена прогоном, а не угадана. Собранный адрес
+        # `/dataservice/data?dataset=...` отвечал 501 на все четыре набора.
+        # Прогон установил: publications отвечает 200 и JSON, остальные
+        # кандидаты — 501 и 404. Оставлен работающий; держать в реестре
+        # проверенно-мёртвые адреса значит каждый деплой заново
+        # доказывать, что они мертвы.
         catalogue_urls=("https://www.cbr.ru/dataservice/publications",),
         expected_frequency="monthly",
         allowed_operations=dict(_READ),
+        # Мониторинг предприятий закрывает спрос целиком. Мощности — частично:
+        # загрузка и ожидания есть, а запасов, сроков поставки и цен
+        # производителя в нужной детализации нет. Спред — частично: курс и
+        # ставки отсюда, а цены продукции, сырья, энергии и логистики нужны
+        # из других источников, иначе считать разницу не из чего.
         feeds={"DEMAND": "full", "CAPACITY": "partial", "SPREAD": "partial"},
         terms_url="https://www.cbr.ru/user_agreement/",
         terms_checked_at=datetime(2026, 8, 1, tzinfo=UTC),
@@ -131,14 +172,24 @@ RUSSIA_FREE: tuple[SourceSpec, ...] = (
         "коммерчески. Обязательны ссылка на ФНС, законная цель и достоверное "
         "представление. Перепубликация сырого массива отключена решением "
         "продукта, хотя условия её допускают",
+        # Адрес файла, а не каталога. Файловый хост ФНС не делает листинга
+        # директорий: на `/opendata/` он держит соединение до таймаута, и
+        # проба по каталогу три прогона подряд сообщала «источник молчит»
+        # про хост, который на файлы отвечает за девяносто миллисекунд.
         base_url="https://file.nalog.ru/opendata/reestrod.csv",
         extra_urls=(
             "https://www.nalog.gov.ru/opendata/",
             "https://data.nalog.ru/opendata/",
         ),
+        # Каталог отвечает 200, а собранные имена файлов — 404. Значит
+        # раскладку надо прочитать: наборы ФНС нумеруются идентификатором
+        # вида «ИНН-код», а дата выпуска входит в имя файла.
         catalogue_urls=("https://www.nalog.gov.ru/opendata/",),
         expected_frequency="yearly",
         allowed_operations=dict(_READ),
+        # Финансовое состояние поставщика — да; контракты, исполнение, авансы
+        # и приёмка — нет, они в ЕИС. Пока ЕИС не подключён, SUPPLIER считает
+        # часть картины, и называть это полным покрытием было бы обманом.
         feeds={"SUPPLIER": "partial", "WCQ": "partial"},
         terms_url="https://www.nalog.gov.ru/files/tipovye_usloviya_od.pdf",
         terms_checked_at=datetime(2026, 8, 1, tzinfo=UTC),
@@ -196,7 +247,7 @@ RUSSIA_FREE: tuple[SourceSpec, ...] = (
         "является",
         expected_frequency="monthly",
         allowed_operations=dict(_READ),
-        feeds={"BUDGET": "full"},
+        feeds={"BUDGET": "full", "SUPPLIER": "full"},
     ),
     SourceSpec(
         "issuer_ir", "IR-разделы сайтов эмитентов", "эмитенты", "html",
@@ -239,6 +290,8 @@ RUSSIA_FREE: tuple[SourceSpec, ...] = (
         feeds={"SPREAD": "full"},
     ),
 )
+
+# ── Россия: только ручная проверка ──────────────────────────────────────────
 
 RUSSIA_MANUAL: tuple[SourceSpec, ...] = (
     SourceSpec(
@@ -315,6 +368,8 @@ RUSSIA_MANUAL: tuple[SourceSpec, ...] = (
     ),
 )
 
+# ── Крипта: бесплатные маршруты ─────────────────────────────────────────────
+
 CRYPTO: tuple[SourceSpec, ...] = (
     SourceSpec(
         "defillama", "DefiLlama API", "DefiLlama", "api",
@@ -339,11 +394,8 @@ CRYPTO: tuple[SourceSpec, ...] = (
         expected_frequency="hourly",
         allowed_operations=dict(_READ),
         feeds={"CRYPTO_SUPPLY": "full", "CRYPTO_ECON": "full"},
-        rate_limit_policy={
-            "strategy": "token_bucket",
-            "requests_per_second": 3,
-            "daily_quota": 100_000,
-        },
+        rate_limit_policy={"strategy": "token_bucket", "requests_per_second": 3,
+                           "daily_quota": 100_000},
     ),
     SourceSpec(
         "github", "GitHub REST API", "GitHub", "api",
@@ -367,11 +419,8 @@ CRYPTO: tuple[SourceSpec, ...] = (
         expected_frequency="daily",
         allowed_operations=dict(_READ),
         feeds={"CRYPTO_SUPPLY": "full"},
-        rate_limit_policy={
-            "strategy": "token_bucket",
-            "requests_per_minute": 100,
-            "monthly_quota": 10_000,
-        },
+        rate_limit_policy={"strategy": "token_bucket", "requests_per_minute": 100,
+                           "monthly_quota": 10_000},
     ),
     SourceSpec(
         "binance_market", "Binance Market Data API", "Binance", "api",
@@ -411,11 +460,22 @@ CRYPTO: tuple[SourceSpec, ...] = (
 
 ALL_SOURCES: tuple[SourceSpec, ...] = RUSSIA_FREE + RUSSIA_MANUAL + CRYPTO
 
+# Порядок подключения адаптеров (карта владельца).
+#
+# Не «в чём больше пользы», а «что даёт больше сигналов на единицу работы»:
+# каждый источник здесь кормит минимум один движок целиком.
+# Выключатели наборов данных.
+#
+# Нужны там, где у одного владельца разные правовые режимы: открытые наборы
+# ФНС бесплатны и разрешены, полная отчётность той же ФНС — платная. Один
+# «источник ФНС» с общим тумблером означал бы, что включение открытых данных
+# случайно включает и подписную часть.
 FLAGS: dict[str, str] = {
     "fns_open_data": "ENABLE_FNS_OPEN_DATA",
     "fns_bfo": "ENABLE_FNS_BFO",
 }
 
+# Значения по умолчанию: открытые данные включены, подписная часть нет.
 FLAG_DEFAULTS: dict[str, bool] = {
     "ENABLE_FNS_OPEN_DATA": True,
     "ENABLE_FNS_BFO": False,
@@ -491,6 +551,9 @@ def sync_registry(
         row.expected_frequency = spec.expected_frequency
         row.source_timezone = spec.source_timezone
         row.terms_url = spec.terms_url
+        # Даты переносятся из реестра, а не проставляются автоматически.
+        # Источник, у которого проверки не было, остаётся без даты и потому
+        # закрытым — каким бы ни был его правовой статус.
         row.terms_checked_at = spec.terms_checked_at
         row.terms_review_due_at = spec.terms_review_due_at
         row.enabled = (
@@ -503,7 +566,13 @@ def sync_registry(
 
 
 def readiness(session: Session) -> dict:
-    """Готовность контура: что разрешено, что ждёт проверки, чего не будет."""
+    """Готовность контура: что разрешено, что ждёт проверки, чего не будет.
+
+    Три состояния вместо двух. «Маршрут официальный и бесплатный, но срок
+    проверки условий не проставлен» — это не то же самое, что «источник
+    платный» или «источник запрещён»: первое чинится проверкой условий за
+    один вечер, второе деньгами, третье не чинится вовсе.
+    """
     rows = list(session.execute(select(ResearchSource)).scalars())
     free = [r for r in rows if r.license_status is LicenseStatus.APPROVED]
     awaiting = [r for r in free if r.terms_review_due_at is None]
