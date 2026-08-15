@@ -10,6 +10,8 @@ def test_extended_non_okpd2_source_codes_do_not_block_valid_series():
     # extensions such as `05.10.10.101.АГ` in the same column. The research
     # identity model intentionally accepts only base OKPD2, so an unrelated
     # extended row must be ignored rather than translated or made fatal.
+    # `_sheet_rows()` returns cell values as strings, so this direct parser
+    # fixture mirrors that production boundary rather than passing Python floats.
     rows = [
         [
             "Средние цены производителей промышленных товаров (услуг)\n"
@@ -25,9 +27,16 @@ def test_extended_non_okpd2_source_codes_do_not_block_valid_series():
             "март",
         ],
         ["Уголь специальной марки", "05.10.10.101.АГ", "тонн", "", "", ""],
-        ["Российская Федерация", "", "", 1, 2, 3],
+        ["Российская Федерация", "", "", "1", "2", "3"],
         ["Бензин автомобильный", "19.20.21.100", "тонн", "", "", ""],
-        ["Российская Федерация", "", "", 30205.87, 31480.85, 34924.56],
+        [
+            "Российская Федерация",
+            "",
+            "",
+            "30205.87",
+            "31480.85",
+            "34924.56",
+        ],
     ]
 
     points, matched = rosstat_live_prices.parse_sheets([rows])
