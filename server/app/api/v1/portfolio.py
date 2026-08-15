@@ -351,6 +351,7 @@ class RebalanceOut(ApiModel):
 def rebalance(
     session: Session = Depends(get_db),
     account_id: UUID | None = Query(default=None),
+    model_id: UUID | None = Query(default=None),
 ) -> RebalanceOut:
     """Что стоило бы поправить в фактическом составе.
 
@@ -367,11 +368,34 @@ def rebalance(
         return RebalanceOut(reason="инвестиционный счёт не подключён")
 
     holdings = latest_holdings(session, account.id)
-    model = session.execute(
-        select(PortfolioModel).order_by(PortfolioModel.generated_at.desc()).limit(1)
-    ).scalar_one_or_none()
-    if model is None:
-        return RebalanceOut(reason="пакет ещё не посчитан — сравнивать не с чем")
+    if model_id is not None:
+        model = session.execute(
+            select(PortfolioModel).where(PortfolioModel.id == model_id)
+        ).scalar_one_or_none()
+        if model is None:
+            return RebalanceOut(
+                reason="пакет не найден — обновите список и выберите пакет снова"
+            )
+    else:
+        models = list(
+            session.execute(
+                select(PortfolioModel)
+                .order_by(PortfolioModel.generated_at.desc())
+                .limit(2)
+            ).scalars()
+        )
+        if not models:
+            return RebalanceOut(
+                reason="пакет ещё не посчитан — сравнивать не с чем"
+            )
+        if len(models) > 1:
+            return RebalanceOut(
+                reason=(
+                    "выберите пакет: для ребаланса нужен model_id "
+                    "выбранного состава"
+                )
+            )
+        model = models[0]
 
     draft = plan(model, holdings)
     return RebalanceOut(
