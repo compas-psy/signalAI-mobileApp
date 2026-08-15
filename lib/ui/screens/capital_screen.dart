@@ -772,8 +772,156 @@ class _PackagesState extends State<_Packages> {
           _PackageComposition(package: package),
           const SizedBox(height: 12),
           _PackageEvidence(package: package),
+          const SizedBox(height: 12),
+          _SelectedPackageRebalance(
+            controller: controller,
+            package: package,
+          ),
         ],
       ],
+    );
+  }
+}
+
+/// Ручные действия для приведения текущего счёта к выбранному пакету.
+class _SelectedPackageRebalance extends StatefulWidget {
+  const _SelectedPackageRebalance({
+    required this.controller,
+    required this.package,
+  });
+
+  final AppController controller;
+  final EnginePackage package;
+
+  @override
+  State<_SelectedPackageRebalance> createState() =>
+      _SelectedPackageRebalanceState();
+}
+
+class _SelectedPackageRebalanceState
+    extends State<_SelectedPackageRebalance> {
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  @override
+  void didUpdateWidget(covariant _SelectedPackageRebalance oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.package.id != widget.package.id) _load();
+  }
+
+  void _load() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      widget.controller.loadPortfolioRebalance(widget.package);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final controller = widget.controller;
+    final modelId = widget.package.id;
+    final active = controller.portfolioRebalanceModelId == modelId;
+    final loading = controller.portfolioRebalanceLoadingModelId == modelId;
+    final rebalance = active ? controller.portfolioRebalance : null;
+
+    if (loading || rebalance == null) {
+      return _PackagesNote(
+        title: 'Мой счёт → этот пакет',
+        text: 'Сверяю текущие позиции с выбранным составом…',
+        busy: true,
+      );
+    }
+    if (!rebalance.isAvailable) {
+      return _PackagesNote(
+        title: 'Ребаланс недоступен',
+        text: rebalance.unavailableReason!,
+        onRetry: () => controller.loadPortfolioRebalance(
+          widget.package,
+          force: true,
+        ),
+      );
+    }
+
+    return SectionCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Expanded(child: SectionLabel('МОЙ СЧЁТ → ЭТОТ ПАКЕТ')),
+              OutlineBadge(
+                label: rebalance.urgent
+                    ? 'срочно'
+                    : (rebalance.needed ? 'нужно поправить' : 'в норме'),
+                color: rebalance.needed ? C.warning : C.green,
+                borderColor:
+                    rebalance.needed ? C.warningBorder : C.greenBorder,
+                background:
+                    rebalance.needed ? C.warningFaint : C.greenFaint,
+                fontWeight: 700,
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            rebalance.reason.isNotEmpty
+                ? rebalance.reason
+                : (rebalance.needed
+                    ? 'Есть отклонения от выбранного состава.'
+                    : 'Отклонения ниже порога ребаланса.'),
+            style: T.body(11.5, color: C.muted, height: 1.45),
+          ),
+          if (rebalance.actions.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            for (final action in rebalance.actions) ...[
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          action.symbol.isEmpty
+                              ? action.instrumentId
+                              : action.symbol,
+                          style: T.body(12.5, weight: 700),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          '${(action.actualWeight * 100).toStringAsFixed(1)}% → '
+                          '${(action.targetWeight * 100).toStringAsFixed(1)}% · '
+                          '${action.reason}',
+                          style: T.mono(10.5, color: C.muted),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Text(
+                    '${action.side == 'BUY' ? 'Купить' : 'Сократить'} '
+                    '${action.amountRub.round()} ₽',
+                    style: T.mono(
+                      11.5,
+                      weight: 700,
+                      color: action.side == 'BUY' ? C.green : C.warning,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+            ],
+          ],
+          const SizedBox(height: 2),
+          Text(
+            'Только подсказка для ручного исполнения — заявок этот экран не отправляет.',
+            style: T.mono(9.5, color: C.faint, height: 1.35),
+          ),
+        ],
+      ),
     );
   }
 }

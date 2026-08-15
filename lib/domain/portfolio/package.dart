@@ -213,3 +213,63 @@ class PortfolioState {
   List<EnginePackage> forHorizon(int years) =>
       [for (final p in packages) if (p.horizonYears == years) p];
 }
+
+
+/// Одна ручная корректировка текущего счёта к выбранному серверному пакету.
+class PortfolioRebalanceAction {
+  const PortfolioRebalanceAction({
+    required this.instrumentId,
+    required this.symbol,
+    required this.side,
+    required this.targetWeight,
+    required this.actualWeight,
+    required this.amountRub,
+    required this.reason,
+  });
+
+  final String instrumentId;
+  final String symbol;
+  final String side;
+  final double targetWeight;
+  final double actualWeight;
+  final double amountRub;
+  final String reason;
+}
+
+/// Advisory-only сверка текущего инвестиционного счёта с одним пакетом.
+///
+/// Здесь намеренно нет executable/order id: инвестиционный ребаланс остаётся
+/// подсказкой для ручного решения владельца, а не торговой командой.
+class PortfolioRebalance {
+  const PortfolioRebalance({
+    required this.modelId,
+    required this.needed,
+    required this.urgent,
+    required this.reason,
+    required this.maxDrift,
+    required this.totalValue,
+    required this.actions,
+    this.unavailableReason,
+  });
+
+  const PortfolioRebalance.unavailable(String reason)
+      : modelId = '',
+        needed = false,
+        urgent = false,
+        reason = '',
+        maxDrift = 0,
+        totalValue = 0,
+        actions = const [],
+        unavailableReason = reason;
+
+  final String modelId;
+  final bool needed;
+  final bool urgent;
+  final String reason;
+  final double maxDrift;
+  final double totalValue;
+  final List<PortfolioRebalanceAction> actions;
+  final String? unavailableReason;
+
+  bool get isAvailable => unavailableReason == null;
+}

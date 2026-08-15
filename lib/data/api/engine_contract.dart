@@ -98,6 +98,37 @@ abstract final class EngineContract {
   /// Движок называет инструмент площадкой, классом и кодом. Целиком эта
   /// строка в заголовок карточки не помещается и обрезается на «CRYPTO:PER…»
   /// — по такой подписи нельзя понять, о каком активе идея.
+  /// Разбор advisory-only ребаланса выбранного пакета.
+  static PortfolioRebalance portfolioRebalance(Map<String, dynamic> json) {
+    final actions = <PortfolioRebalanceAction>[];
+    final rawActions = json['actions'];
+    if (rawActions is List) {
+      for (final raw in rawActions) {
+        if (raw is! Map<String, dynamic>) continue;
+        actions.add(
+          PortfolioRebalanceAction(
+            instrumentId: '${raw['instrument_id'] ?? ''}',
+            symbol: '${raw['symbol'] ?? ''}',
+            side: '${raw['side'] ?? ''}',
+            targetWeight: _num(raw['target_weight']),
+            actualWeight: _num(raw['actual_weight']),
+            amountRub: _num(raw['amount_rub']),
+            reason: '${raw['reason'] ?? ''}',
+          ),
+        );
+      }
+    }
+    return PortfolioRebalance(
+      modelId: '${json['model_id'] ?? ''}',
+      needed: json['needed'] == true,
+      urgent: json['urgent'] == true,
+      reason: '${json['reason'] ?? ''}',
+      maxDrift: _num(json['max_drift']),
+      totalValue: _num(json['total_value']),
+      actions: actions,
+    );
+  }
+
   static String symbolOf(String instrumentId) {
     final cut = instrumentId.lastIndexOf(':');
     return cut < 0 ? instrumentId : instrumentId.substring(cut + 1);
