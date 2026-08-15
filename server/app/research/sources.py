@@ -247,7 +247,7 @@ RUSSIA_FREE: tuple[SourceSpec, ...] = (
         "является",
         expected_frequency="monthly",
         allowed_operations=dict(_READ),
-        feeds={"BUDGET": "full", "SUPPLIER": "full"},
+        feeds={"BUDGET": "full"},
     ),
     SourceSpec(
         "issuer_ir", "IR-разделы сайтов эмитентов", "эмитенты", "html",
@@ -330,7 +330,7 @@ RUSSIA_MANUAL: tuple[SourceSpec, ...] = (
         "веб-интерфейс бесплатен, API перенесён в платный Yandex Search API. "
         "Замена: ручная еженедельная выгрузка выбранных запросов",
         auth_type="oauth",
-        expected_frequency="weekly",
+        expected_frequency="monthly",
         allowed_operations=dict(_MANUAL),
         feeds={"DEMAND": "full"},
     ),
