@@ -49,15 +49,21 @@ jobs:
           openssl x509 -in /tmp/rosstat-leaf.pem -noout -text \
             | grep -A3 -E 'Authority Key Identifier|Authority Information Access' || true
 
-          # Public CA material is bootstrapped from the Gosuslugi static host.
-          # Transport trust is NOT used as the security boundary here: exact
-          # independently recorded SHA-256 fingerprints below are mandatory.
+          # The root comes from the Gosuslugi static host and the exact issuing
+          # CA URL comes from the live Rosstat leaf AIA. Neither transport is
+          # the security boundary: both certificates must match independently
+          # recorded SHA-256 fingerprints before they are accepted.
           curl --insecure --fail --location --silent --show-error --max-time 20 \
             https://gu-st.ru/content/Other/doc/russian_trusted_root_ca.cer \
             -o /tmp/russian-root.cer
-          curl --insecure --fail --location --silent --show-error --max-time 20 \
-            https://gu-st.ru/content/Other/doc/russian_trusted_sub_ca.cer \
-            -o /tmp/russian-sub.cer
+
+          if ! curl --fail --location --silent --show-error --max-time 20 \
+            http://nuc-cdp.digital.gov.ru/cdp/subca_ssl_rsa2024.crt \
+            -o /tmp/russian-sub.cer; then
+            curl --insecure --fail --location --silent --show-error --max-time 20 \
+              https://nuc-cdp.digital.gov.ru/cdp/subca_ssl_rsa2024.crt \
+              -o /tmp/russian-sub.cer
+          fi
 
           to_pem() {
             src="$1"
@@ -90,6 +96,11 @@ jobs:
           curl --cacert /tmp/rosstat-ca-bundle.pem --fail --head --silent --show-error --max-time 20 \
             https://rosstat.gov.ru/statistics/price >/dev/null
           echo 'ROSSTAT_PINNED_TLS_OK'
+
+          echo '=== PINNED ROOT PEM ==='
+          cat /tmp/russian-root.pem
+          echo '=== PINNED SUB PEM ==='
+          cat /tmp/russian-sub.pem
       - name: Install locked server dependencies
         run: |
           uv lock --check
