@@ -330,7 +330,7 @@ RUSSIA_MANUAL: tuple[SourceSpec, ...] = (
         "веб-интерфейс бесплатен, API перенесён в платный Yandex Search API. "
         "Замена: ручная еженедельная выгрузка выбранных запросов",
         auth_type="oauth",
-        expected_frequency="monthly",
+        expected_frequency="weekly",
         allowed_operations=dict(_MANUAL),
         feeds={"DEMAND": "full"},
     ),
