@@ -104,20 +104,13 @@ class PortfolioModel(UuidPk, Base):
     cvar_95: Mapped[Ratio] = mapped_column(nullable=True)
 
     rationale: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    # Состав годен, но рискованнее, чем обещает профиль. Прятать такой нельзя:
-    # на рынке, пережившем 2022 год, «не уложился в целевую просадку» — это
-    # свойство рынка, а не брак состава. Владелец видит числа и решает сам.
-    meets_target: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=True
-    )
+    meets_target: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     warnings_json: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     stress_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     config_hash: Mapped[str] = mapped_column(String(64), nullable=False)
 
     generated_at: Mapped[datetime] = utcnow_column()
-    valid_until: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
+    valid_until: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     weights: Mapped[list["PortfolioWeight"]] = relationship(
         back_populates="model", lazy="selectin"
@@ -135,8 +128,10 @@ class PortfolioModel(UuidPk, Base):
 class PortfolioWeight(Base):
     """Целевой вес инструмента в модели.
 
-    Сумма весов проверяется кодом при сохранении (UX-ТЗ §7.1: «Сумма ровно
-    100%»), а потолок крипты — отдельным ограничением (§6.4, §27).
+    ``evidence_json`` хранит не текстовое объяснение постфактум, а точную
+    декомпозицию screening score и гипотезы, которые были decision-available
+    при сборке модели. Это позволяет ответить «почему бумага была выше в
+    отборе именно тогда» без повторного запуска сегодняшнего research state.
     """
 
     __tablename__ = "portfolio_weights"
@@ -154,6 +149,7 @@ class PortfolioWeight(Base):
     kill_conditions: Mapped[str] = mapped_column(Text, nullable=False, default="")
     score: Mapped[Ratio] = mapped_column(nullable=True)
     expected_return: Mapped[Ratio] = mapped_column(nullable=True)
+    evidence_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
 
     model: Mapped[PortfolioModel] = relationship(back_populates="weights")
 
@@ -184,11 +180,7 @@ class RebalanceDraft(UuidPk, Base):
     after_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     estimated_costs: Mapped[Money] = mapped_column(nullable=False, default=0)
     estimated_tax: Mapped[Money] = mapped_column(nullable=True)
-    # §15.1 UX-ТЗ: налоговые расчёты маркируются оценочными, окончательная
-    # сумма — за брокером как налоговым агентом.
-    tax_is_estimate: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=True
-    )
+    tax_is_estimate: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = utcnow_column()
 
 
@@ -197,12 +189,8 @@ class PortfolioRun(UuidPk, Base):
 
     Нужен затем, что «состава нет» — это два разных ответа. Либо конвейер до
     оптимизации не дошёл (мало данных, короткая общая история), либо составы
-    посчитаны и ни один не прошёл проверку на истории. На экране оба
-    выглядели одинаково — точкой «нет», — и владелец не мог понять, ждать ему
-    данных или менять требования.
-
-    Хранится последний прогон, а не история: это состояние конвейера, и
-    вопрос к нему всегда один — «что сейчас мешает».
+    посчитаны и ни один не прошёл проверку на истории. Хранится последний
+    прогон: это состояние текущего конвейера, а не журнал инвестрешений.
     """
 
     __tablename__ = "portfolio_runs"
@@ -215,11 +203,8 @@ class PortfolioRun(UuidPk, Base):
     built: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     admitted: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
-    # Почему прогон не дал состава — словами, как их увидит владелец.
     note: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    # Причины отказа по каждому варианту пакета: профиль × размер × горизонт.
     reasons_json: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
-    # Что не взято в пересчёт и почему: бумаги без истории, без оборота.
     dropped_json: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
 
     __table_args__ = (
