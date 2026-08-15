@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from urllib.error import URLError
+from urllib.parse import urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 from app.research.adapters import rosstat_prices
 from app.research.reach import USER_AGENT
 
 TIMEOUT = 45
+CATALOGUES = (
+    rosstat_prices.CATALOG_URL,
+    "https://www.rosstat.gov.ru/statistics/price",
+)
 PREFIXES = (
     "06.10.10",  # crude oil
     "06.20.10",  # natural gas
@@ -34,12 +40,42 @@ def fetch(url: str) -> bytes:
         return response.read()
 
 
-def main() -> None:
-    catalogue = fetch(rosstat_prices.CATALOG_URL).decode("utf-8", errors="replace")
-    workbook_url = rosstat_prices.discover_workbook(catalogue)
-    print(f"WORKBOOK {workbook_url}")
+def host_variant(url: str, host: str) -> str:
+    parts = urlsplit(url)
+    return urlunsplit((parts.scheme, host, parts.path, parts.query, parts.fragment))
 
-    points = rosstat_prices.parse_workbook(fetch(workbook_url))
+
+def fetch_first(urls: tuple[str, ...]) -> tuple[str, bytes]:
+    failures: list[str] = []
+    for url in urls:
+        try:
+            return url, fetch(url)
+        except (URLError, OSError) as error:
+            failures.append(f"{url}: {error}")
+            print(f"FETCH_FAIL {url} {error}")
+    raise SystemExit("ALL_FETCH_VARIANTS_FAILED " + " | ".join(failures))
+
+
+def main() -> None:
+    catalogue_url, raw_catalogue = fetch_first(CATALOGUES)
+    print(f"CATALOGUE_OK {catalogue_url}")
+    catalogue = raw_catalogue.decode("utf-8", errors="replace")
+    discovered = rosstat_prices.discover_workbook(catalogue)
+    print(f"WORKBOOK_DISCOVERED {discovered}")
+
+    workbook_urls = tuple(
+        dict.fromkeys(
+            (
+                discovered,
+                host_variant(discovered, "www.rosstat.gov.ru"),
+                host_variant(discovered, "rosstat.gov.ru"),
+            )
+        )
+    )
+    workbook_url, raw_workbook = fetch_first(workbook_urls)
+    print(f"WORKBOOK_OK {workbook_url}")
+
+    points = rosstat_prices.parse_workbook(raw_workbook)
     print(f"POINTS {len(points)}")
 
     by_product = defaultdict(list)
