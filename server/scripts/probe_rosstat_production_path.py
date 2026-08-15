@@ -13,6 +13,7 @@ TARGETS = {
     ("19.20.21.100", "168"),  # motor gasoline, tonnes
     ("06.10.10.200", "168"),  # prepared crude oil, tonnes
 }
+TARGET_OKPD2 = {item[0] for item in TARGETS}
 PREFIXES = (
     "06.10.10",
     "06.20.10",
@@ -50,15 +51,14 @@ def inspect_workbook(content: bytes) -> None:
         for name, path in rosstat_prices._sheet_paths(archive):
             rows = rosstat_prices._sheet_rows(archive, path, shared)
             print(f"SHEET name={name!r} path={path!r} rows={len(rows)}")
-            printed = 0
             for index, row in enumerate(rows):
-                nonempty = [value for value in row if value.strip()]
-                if not nonempty:
+                if not TARGET_OKPD2.intersection(value.strip() for value in row):
                     continue
-                print(f"ROW {index + 1}: {row[:24]!r}")
-                printed += 1
-                if printed >= 18:
-                    break
+                start = max(0, index - 1)
+                stop = min(len(rows), index + 4)
+                print(f"TARGET_NEIGHBORHOOD sheet={name!r} rows={start + 1}-{stop}")
+                for near in range(start, stop):
+                    print(f"ROW {near + 1}: {rows[near][:24]!r}")
 
 
 def main() -> None:
