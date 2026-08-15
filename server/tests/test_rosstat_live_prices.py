@@ -6,6 +6,10 @@ from app.research.adapters import rosstat_live_prices
 
 
 def test_extended_non_okpd2_source_codes_do_not_block_valid_series():
+    # The live 2026 workbook mixes base OKPD2 identities with source-specific
+    # extensions such as `05.10.10.101.АГ` in the same column. The research
+    # identity model intentionally accepts only base OKPD2, so an unrelated
+    # extended row must be ignored rather than translated or made fatal.
     rows = [
         [
             "Средние цены производителей промышленных товаров (услуг)\n"
