@@ -1,16 +1,14 @@
 from __future__ import annotations
 
-from collections import defaultdict
+from io import BytesIO
 from urllib.request import Request, urlopen
+from zipfile import ZipFile
 
-from app.research.adapters import rosstat_prices
+from app.research.adapters import rosstat_live_prices, rosstat_prices
 from app.research.reach import USER_AGENT
 
 TIMEOUT = 45
-TARGETS = {
-    ("19.20.21.100", "168"),
-    ("06.10.10.200", "168"),
-}
+PREFIXES = ("20.15", "06.20.10")
 
 
 def fetch(url: str) -> bytes:
@@ -38,37 +36,36 @@ def main() -> None:
     catalogue = fetch(rosstat_prices.CATALOG_URL).decode("utf-8", errors="replace")
     workbook_url = rosstat_prices.discover_workbook(catalogue)
     print(f"WORKBOOK {workbook_url}")
+    raw = fetch(workbook_url)
 
-    points = rosstat_prices.parse_workbook(fetch(workbook_url))
-    print(f"POINTS {len(points)}")
+    seen: set[tuple[str, str, str]] = set()
+    with ZipFile(BytesIO(raw)) as archive:
+        shared = rosstat_prices._shared_strings(archive)
+        for sheet_name, path in rosstat_prices._sheet_paths(archive):
+            rows = rosstat_prices._sheet_rows(archive, path, shared)
+            header = rosstat_live_prices._header(rows)
+            if header is None:
+                continue
+            for row in rows[header.row_index + 1 :]:
+                okpd2 = row[header.okpd2_col].strip() if header.okpd2_col < len(row) else ""
+                if not okpd2.startswith(PREFIXES):
+                    continue
+                name = row[header.name_col].strip() if header.name_col < len(row) else ""
+                unit = (
+                    row[header.unit_col].strip()
+                    if header.unit_col is not None and header.unit_col < len(row)
+                    else ""
+                )
+                key = (okpd2, name, unit)
+                if key in seen:
+                    continue
+                seen.add(key)
+                print(
+                    f"CANDIDATE sheet={sheet_name!r} okpd2={okpd2!r} "
+                    f"unit={unit!r} name={name!r}"
+                )
 
-    by_product = defaultdict(list)
-    for point in points:
-        by_product[point.product.key].append(point)
-
-    found = set()
-    for key, rows in sorted(by_product.items()):
-        if key not in TARGETS:
-            continue
-        found.add(key)
-        product = rows[0].product
-        earliest = min(row.period for row in rows)
-        latest = max(row.period for row in rows)
-        latest_value = next(row.value for row in rows if row.period == latest)
-        years = sorted({row.period.year for row in rows})
-        print(
-            "TARGET_SERIES "
-            f"okpd2={product.okpd2} okei={product.okei} "
-            f"name={product.name!r} earliest={earliest.isoformat()} "
-            f"latest={latest.isoformat()} latest_value={latest_value} "
-            f"count={len(rows)} years={years} "
-            f"observation_type={rosstat_prices.observation_type(product)}"
-        )
-
-    missing = sorted(TARGETS - found)
-    if missing:
-        raise SystemExit(f"TARGETS_MISSING {missing}")
-    print("TARGETS_OK")
+    print(f"CANDIDATE_COUNT {len(seen)}")
 
 
 if __name__ == "__main__":
