@@ -1,8 +1,9 @@
 """От наблюдений к гипотезам (§12–§14).
 
-DEMAND остаётся детерминированным вычислительным entry point. HIRING —
-внешний официальный источник и включается только production scheduler либо
-явным ручным research refresh. Unit-тесты и чистые расчёты не открывают сеть.
+DEMAND остаётся детерминированным вычислительным entry point. HIRING и
+SPREAD включаются только production scheduler либо явным ручным research
+refresh. Unit-тесты и чистые расчёты по умолчанию не открывают сеть и не
+запускают live orchestration.
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ from .issuers import Issuer, automatic, in_section, of
 from .legal_checks import apply_verified_review
 from .market_context import MarketContext, for_hypothesis
 from .pipeline import run as run_pipeline
+from .spread_runtime import run_spread
 
 DEMAND_FREQUENCY = "monthly"
 DEMAND_PREFIX = "cbr:enterprise_monitoring:"
@@ -228,12 +230,12 @@ def _run_demand_only(session: Session, *, now: datetime | None = None) -> Engine
 
 
 def _running_as_scheduler() -> bool:
-    """Scheduler process is the only implicit place where live fetch is okay.
+    """Scheduler process is the only implicit place where live work is okay.
 
     При ``python -m app.scheduler`` CPython передаёт в ``sys.argv[0]`` путь
     к ``app/scheduler/__main__.py``, а не строку ``app.scheduler``. Поэтому
     проверяем и модульное имя, и реальный путь entry point; unit-тесты с
-    pytest под это условие не попадают и сеть не открывают.
+    pytest под это условие не попадают и live orchestration не запускают.
     """
     command = " ".join(sys.argv).lower().replace("\\", "/")
     return "app.scheduler" in command or "/app/scheduler/__main__.py" in command
@@ -244,28 +246,39 @@ def run_demand(
     *,
     now: datetime | None = None,
     include_hiring: bool | None = None,
+    include_spread: bool | None = None,
 ) -> EngineReport:
-    """Посчитать research engines без неожиданных внешних соединений.
+    """Посчитать research engines без неожиданных live-вызовов.
 
-    `include_hiring=None` означает: включить HIRING только если этот код
-    реально запущен через `python -m app.scheduler`. API-кнопка передаёт True
-    явно; pytest и чистые вычисления по умолчанию остаются офлайн.
+    ``None`` для HIRING/SPREAD означает: включить движок только если код
+    реально запущен через ``python -m app.scheduler``. API-кнопка передаёт
+    True явно; pytest и чистые вычисления по умолчанию остаются офлайн.
+    SPREAD сам по себе сеть не открывает, но относится к тому же live-cycle:
+    он должен считать только уже собранный и зафиксированный срез данных.
     """
     moment = now or datetime.now(UTC)
     report = _run_demand_only(session, now=moment)
-    should_hire = _running_as_scheduler() if include_hiring is None else include_hiring
-    if not should_hire:
-        return report
+    scheduler_mode = _running_as_scheduler()
+    should_hire = scheduler_mode if include_hiring is None else include_hiring
+    should_spread = scheduler_mode if include_spread is None else include_spread
 
-    apply_verified_review(session, "trudvsem", now=moment)
-    hiring_report = run_hiring_live(session, now=moment)
-    report.observations += hiring_report.vacancies
-    report.sections += hiring_report.issuers
-    report.signals += hiring_report.signals
-    report.hypotheses += hiring_report.hypotheses
-    report.skipped.extend(
-        f"HIRING: {item}" for item in hiring_report.skipped[:20]
-    )
+    if should_hire:
+        apply_verified_review(session, "trudvsem", now=moment)
+        hiring_report = run_hiring_live(session, now=moment)
+        report.observations += hiring_report.vacancies
+        report.sections += hiring_report.issuers
+        report.signals += hiring_report.signals
+        report.hypotheses += hiring_report.hypotheses
+        report.skipped.extend(
+            f"HIRING: {item}" for item in hiring_report.skipped[:20]
+        )
+
+    if should_spread:
+        spread_report = run_spread(session, now=moment)
+        report.signals += spread_report.signals
+        report.hypotheses += spread_report.hypotheses
+        report.skipped.extend(spread_report.skipped[:20])
+
     return report
 
 
