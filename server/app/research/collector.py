@@ -442,12 +442,19 @@ def _fallback_availability(published_at: datetime | None, first_seen_at: datetim
     return tradable_at(published_at=published_at, first_seen_at=first_seen_at)
 
 
+def _urlopen(request: urllib.request.Request):
+    context = rosstat_prices.tls_context_for(request.full_url)
+    if context is None:
+        return urllib.request.urlopen(request, timeout=TIMEOUT)
+    return urllib.request.urlopen(request, timeout=TIMEOUT, context=context)
+
+
 def _get(url: str, moment: datetime) -> Fetched | None:
     request = urllib.request.Request(
         url, headers={"User-Agent": USER_AGENT, "Accept": "*/*"}
     )
     try:
-        with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
+        with _urlopen(request) as response:
             return Fetched(
                 url=url,
                 status=response.status,
@@ -470,7 +477,7 @@ def _text(url: str) -> str:
         url, headers={"User-Agent": USER_AGENT, "Accept": "text/html,*/*"}
     )
     try:
-        with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
+        with _urlopen(request) as response:
             return response.read(1024 * 1024).decode("utf-8", errors="replace")
     except Exception:  # noqa: BLE001
         return ""

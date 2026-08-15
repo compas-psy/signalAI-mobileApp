@@ -11,12 +11,14 @@ from __future__ import annotations
 
 import posixpath
 import re
+import ssl
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, InvalidOperation
 from html.parser import HTMLParser
 from io import BytesIO
+from pathlib import Path
 from urllib.parse import urljoin, urlparse
 from zipfile import BadZipFile, ZipFile
 
@@ -26,6 +28,10 @@ SOURCE_ID = "rosstat"
 CATALOG_URL = "https://rosstat.gov.ru/statistics/price"
 DATASET_TITLE = "Средние цены производителей промышленных товаров (услуг) с 1998 г."
 _ALLOWED_HOSTS = {"rosstat.gov.ru", "www.rosstat.gov.ru"}
+_CURRENT_WORKBOOK = re.compile(
+    r"^Proizvoditeli_Cena_\d{2}-\d{4}\.xlsx$", re.IGNORECASE
+)
+_CA_BUNDLE = Path(__file__).parent / "certs" / "rosstat-russian-trusted-ca.crt"
 _OKPD2 = re.compile(r"^\d{2}(?:\.\d{1,3}){1,4}$")
 _OKEI = re.compile(r"^\d{3}$")
 _CELL_REF = re.compile(r"^([A-Z]+)\d+$")
@@ -163,22 +169,39 @@ def _usable_xlsx(href: str) -> str | None:
     return url
 
 
-def discover_workbook(html: str) -> str:
-    """Return the one exact current XLSX target from Rosstat's price page.
+def tls_context() -> ssl.SSLContext:
+    """Strict trust context for Rosstat's Ministry-issued TLS chain only."""
+    return ssl.create_default_context(cafile=str(_CA_BUNDLE))
 
-    Similar producer-price datasets are deliberately ignored. If Rosstat
-    changes the title or temporarily publishes duplicate exact links, collection
-    stops visibly instead of silently feeding the wrong series into SPREAD.
+
+def tls_context_for(url: str) -> ssl.SSLContext | None:
+    """Return the pinned context only for official Rosstat HTTPS hosts."""
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or parsed.hostname not in _ALLOWED_HOSTS:
+        return None
+    return tls_context()
+
+
+def discover_workbook(html: str) -> str:
+    """Return the one exact current producer-price XLSX from the price page.
+
+    Rosstat's current page renders XLSX anchors with an icon-only label, so the
+    live contract is the narrow `Proizvoditeli_Cena_MM-YYYY.xlsx` filename.
+    The historical exact title remains accepted for compatibility. Any second
+    distinct matching URL fails closed instead of guessing which vintage is data.
     """
     parser = _Links()
     parser.feed(html)
 
-    matches = {
-        url
-        for href, title in parser.links
-        if title == DATASET_TITLE
-        if (url := _usable_xlsx(href)) is not None
-    }
+    matches: set[str] = set()
+    for href, title in parser.links:
+        url = _usable_xlsx(href)
+        if url is None:
+            continue
+        filename = posixpath.basename(urlparse(url).path)
+        if title == DATASET_TITLE or _CURRENT_WORKBOOK.fullmatch(filename):
+            matches.add(url)
+
     if not matches:
         raise DatasetNotFound(DATASET_TITLE)
     if len(matches) != 1:
@@ -319,8 +342,16 @@ def _header(
 
 def _decimal(value: str) -> Decimal | None:
     normalized = _normalize(value)
-    if normalized in _MISSING:
+    if normalized in _MISSING or normalized == "…1)":
         return None
+
+    # The live 2026 workbook appends footnote `2)` immediately after
+    # the second decimal place (for example `12471,552)`). Strip only
+    # this observed grammar; arbitrary annotations still fail closed.
+    footnoted = re.fullmatch(r"([+-]?\d[\d ]*[,.]\d{2})2\)", normalized)
+    if footnoted is not None:
+        normalized = footnoted.group(1)
+
     normalized = normalized.replace(" ", "").replace(",", ".")
     try:
         return Decimal(normalized)
@@ -364,25 +395,26 @@ def _parse_sheet(rows: list[list[str]]) -> list[ProducerPricePoint] | None:
 
 
 def parse_workbook(content: bytes) -> list[ProducerPricePoint]:
-    """Parse monthly producer prices from an XLSX without an Excel dependency.
+    """Parse supported monthly producer-price layouts from Rosstat XLSX.
 
-    Only worksheets with an explicit OKPD2, OKEI, product-name and month/year
-    header are accepted. Unrelated sheets are ignored. If the workbook has no
-    matching sheet, collection fails visibly so a Rosstat layout change cannot
-    silently feed shifted columns into SPREAD.
+    The adapter preserves the historical explicit-OKEI layout and also accepts
+    the live 2021+ layouts where the year is in the sheet title, months are
+    separate headers, and 2024+ national values live on a child row. The live
+    parser emits only products whose text unit can be mapped explicitly back to
+    OKEI and whose cross-sheet unit evidence is consistent.
     """
     try:
         with ZipFile(BytesIO(content)) as archive:
             shared = _shared_strings(archive)
+            rows_by_sheet = [
+                _sheet_rows(archive, path, shared)
+                for _name, path in _sheet_paths(archive)
+            ]
             points: list[ProducerPricePoint] = []
             matched_sheets = 0
             seen: set[tuple[tuple[str, str], date]] = set()
 
-            for _name, path in _sheet_paths(archive):
-                parsed = _parse_sheet(_sheet_rows(archive, path, shared))
-                if parsed is None:
-                    continue
-                matched_sheets += 1
+            def add(parsed: list[ProducerPricePoint]) -> None:
                 for point in parsed:
                     key = (point.product.key, point.period)
                     if key in seen:
@@ -391,6 +423,23 @@ def parse_workbook(content: bytes) -> list[ProducerPricePoint]:
                         )
                     seen.add(key)
                     points.append(point)
+
+            for rows in rows_by_sheet:
+                parsed = _parse_sheet(rows)
+                if parsed is None:
+                    continue
+                matched_sheets += 1
+                add(parsed)
+
+            # Function-local import avoids a module import cycle: the live parser
+            # reuses the validated identity/value types defined above.
+            from . import rosstat_live_prices
+
+            live_points, live_matched = rosstat_live_prices.parse_sheets(
+                rows_by_sheet
+            )
+            matched_sheets += live_matched
+            add(live_points)
     except (DuplicatePricePoint, WorkbookSchemaError):
         raise
     except (BadZipFile, KeyError, ET.ParseError) as error:
@@ -398,7 +447,7 @@ def parse_workbook(content: bytes) -> list[ProducerPricePoint]:
 
     if matched_sheets == 0:
         raise WorkbookSchemaError(
-            "Rosstat workbook has no ОКПД2/ОКЕИ/Наименование + month/year header"
+            "Rosstat workbook has no supported ОКПД2/OKPD2 producer-price monthly layout"
         )
     return points
 
@@ -417,4 +466,6 @@ __all__ = [
     "discover_workbook",
     "observation_type",
     "parse_workbook",
+    "tls_context",
+    "tls_context_for",
 ]
