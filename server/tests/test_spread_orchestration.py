@@ -39,7 +39,7 @@ def _rosstat_observation() -> ResearchObservation:
     )
 
 
-def test_explicit_research_run_surfaces_unconfigured_spread(session):
+def test_explicit_research_run_surfaces_missing_spread_data(session):
     report = run_engines.run_demand(
         session,
         include_hiring=False,
@@ -48,7 +48,8 @@ def test_explicit_research_run_surfaces_unconfigured_spread(session):
     )
 
     assert any(
-        "SPREAD: production baskets not configured" in item
+        "rual_primary_aluminium_alumina" in item
+        and "spread_missing_series" in item
         for item in report.skipped
     )
     assert report.signals == 0
@@ -83,7 +84,7 @@ def test_scheduler_mode_invokes_spread_without_enabling_hiring(
     assert "spread-called" in report.skipped
 
 
-def test_spread_engine_status_is_wired_and_names_configuration_blocker(session):
+def test_spread_engine_status_ignores_unrelated_rosstat_series(session):
     sync_registry(session)
     session.add(_rosstat_observation())
     session.flush()
@@ -93,9 +94,10 @@ def test_spread_engine_status_is_wired_and_names_configuration_blocker(session):
 
     assert spread.wired is True
     assert spread.observations == 1
-    assert spread.unique_periods == 1
+    assert spread.unique_periods == 0
     assert spread.history_ready is False
-    assert "production baskets not configured" in spread.history_note
+    assert "rual_primary_aluminium_alumina" in spread.history_note
+    assert "complete quarters" in spread.history_note
 
 
 def test_manual_research_refresh_runs_collection_and_all_live_engines(
