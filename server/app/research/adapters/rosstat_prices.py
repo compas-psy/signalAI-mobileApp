@@ -439,7 +439,7 @@ def parse_workbook(content: bytes) -> list[ProducerPricePoint]:
 
     if matched_sheets == 0:
         raise WorkbookSchemaError(
-            "Rosstat workbook has no supported OKPD2 producer-price monthly layout"
+            "Rosstat workbook has no supported ОКПД2/OKPD2 producer-price monthly layout"
         )
     return points
 

@@ -142,7 +142,11 @@ def _unit_evidence(
     if not okpd2:
         return None
     if not _OKPD2.fullmatch(okpd2):
-        raise WorkbookSchemaError(f"invalid live Rosstat OKPD2: {okpd2!r}")
+        # Rosstat also publishes source-specific extended identifiers such as
+        # `05.10.10.101.АГ` in the same column. They are not valid base OKPD2
+        # identities for this research model, so ignore them instead of
+        # translating or letting an unrelated row block the workbook.
+        return None
     raw_name = _at(row, header.name_col).strip()
     name, embedded_okei = _name_and_embedded_unit(raw_name)
     explicit_okei = (
@@ -206,7 +210,8 @@ def _parse_sheet(
 
         if okpd2:
             if not _OKPD2.fullmatch(okpd2):
-                raise WorkbookSchemaError(f"invalid live Rosstat OKPD2: {okpd2!r}")
+                pending_regional_product = None
+                continue
             okei = units.get(okpd2)
             if okei is None:
                 pending_regional_product = None
