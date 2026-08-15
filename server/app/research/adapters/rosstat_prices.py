@@ -11,12 +11,14 @@ from __future__ import annotations
 
 import posixpath
 import re
+import ssl
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, InvalidOperation
 from html.parser import HTMLParser
 from io import BytesIO
+from pathlib import Path
 from urllib.parse import urljoin, urlparse
 from zipfile import BadZipFile, ZipFile
 
@@ -26,6 +28,10 @@ SOURCE_ID = "rosstat"
 CATALOG_URL = "https://rosstat.gov.ru/statistics/price"
 DATASET_TITLE = "Средние цены производителей промышленных товаров (услуг) с 1998 г."
 _ALLOWED_HOSTS = {"rosstat.gov.ru", "www.rosstat.gov.ru"}
+_CURRENT_WORKBOOK = re.compile(
+    r"^Proizvoditeli_Cena_\d{2}-\d{4}\.xlsx$", re.IGNORECASE
+)
+_CA_BUNDLE = Path(__file__).parent / "certs" / "rosstat-russian-trusted-ca.pem"
 _OKPD2 = re.compile(r"^\d{2}(?:\.\d{1,3}){1,4}$")
 _OKEI = re.compile(r"^\d{3}$")
 _CELL_REF = re.compile(r"^([A-Z]+)\d+$")
@@ -163,22 +169,39 @@ def _usable_xlsx(href: str) -> str | None:
     return url
 
 
-def discover_workbook(html: str) -> str:
-    """Return the one exact current XLSX target from Rosstat's price page.
+def tls_context() -> ssl.SSLContext:
+    """Strict trust context for Rosstat's Ministry-issued TLS chain only."""
+    return ssl.create_default_context(cafile=str(_CA_BUNDLE))
 
-    Similar producer-price datasets are deliberately ignored. If Rosstat
-    changes the title or temporarily publishes duplicate exact links, collection
-    stops visibly instead of silently feeding the wrong series into SPREAD.
+
+def tls_context_for(url: str) -> ssl.SSLContext | None:
+    """Return the pinned context only for official Rosstat HTTPS hosts."""
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or parsed.hostname not in _ALLOWED_HOSTS:
+        return None
+    return tls_context()
+
+
+def discover_workbook(html: str) -> str:
+    """Return the one exact current producer-price XLSX from the price page.
+
+    Rosstat's current page renders XLSX anchors with an icon-only label, so the
+    live contract is the narrow `Proizvoditeli_Cena_MM-YYYY.xlsx` filename.
+    The historical exact title remains accepted for compatibility. Any second
+    distinct matching URL fails closed instead of guessing which vintage is data.
     """
     parser = _Links()
     parser.feed(html)
 
-    matches = {
-        url
-        for href, title in parser.links
-        if title == DATASET_TITLE
-        if (url := _usable_xlsx(href)) is not None
-    }
+    matches: set[str] = set()
+    for href, title in parser.links:
+        url = _usable_xlsx(href)
+        if url is None:
+            continue
+        filename = posixpath.basename(urlparse(url).path)
+        if title == DATASET_TITLE or _CURRENT_WORKBOOK.fullmatch(filename):
+            matches.add(url)
+
     if not matches:
         raise DatasetNotFound(DATASET_TITLE)
     if len(matches) != 1:
@@ -417,4 +440,6 @@ __all__ = [
     "discover_workbook",
     "observation_type",
     "parse_workbook",
+    "tls_context",
+    "tls_context_for",
 ]
