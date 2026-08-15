@@ -856,11 +856,11 @@ class _SelectedPackageRebalanceState
                 label: rebalance.urgent
                     ? 'срочно'
                     : (rebalance.needed ? 'нужно поправить' : 'в норме'),
-                color: rebalance.needed ? C.warning : C.success,
+                color: rebalance.needed ? C.warning : C.green,
                 borderColor:
-                    rebalance.needed ? C.warningBorder : C.successBorder,
+                    rebalance.needed ? C.warningBorder : C.greenBorder,
                 background:
-                    rebalance.needed ? C.warningFaint : C.successFaint,
+                    rebalance.needed ? C.warningFaint : C.greenFaint,
                 fontWeight: 700,
               ),
             ],
@@ -907,7 +907,7 @@ class _SelectedPackageRebalanceState
                     style: T.mono(
                       11.5,
                       weight: 700,
-                      color: action.side == 'BUY' ? C.success : C.warning,
+                      color: action.side == 'BUY' ? C.green : C.warning,
                     ),
                   ),
                 ],
