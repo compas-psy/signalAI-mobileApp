@@ -1,0 +1,182 @@
+name: Apply scoped RUAL SPREAD basket patch
+
+on:
+  push:
+    branches:
+      - feature/4-rual-spread-basket
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/4-rual-spread-basket
+          fetch-depth: 1
+      - name: Apply exact production basket changes
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          # Strong issuer identity, verified against the current MOEX security card.
+          path = Path('server/app/research/issuers.py')
+          text = path.read_text()
+          old = '''# Отрасль — публично известный факт. ИНН заполнен там, где он проверен по
+          # открытым наборам ФНС; остальные оставлены пустыми намеренно, и это видно
+          # в ответе API, а не спрятано в комментарии.
+          REGISTRY: tuple[Issuer, ...] = (
+          '''
+          new = '''# Отрасль — публично известный факт. ИНН заполнен там, где он проверен по
+          # первичному публичному раскрытию или открытым наборам; остальные оставлены
+          # пустыми намеренно, и это видно в ответе API, а не спрятано в комментарии.
+          REGISTRY: tuple[Issuer, ...] = (
+          '''
+          assert text.count(old) == 1, 'issuer registry header changed unexpectedly'
+          text = text.replace(old, new)
+          old = '''    Issuer("PHOR", "ФосАгро", "C"),
+              Issuer("AKRN", "Акрон", "C"),
+          '''
+          new = '''    Issuer("PHOR", "ФосАгро", "C"),
+              Issuer("RUAL", "РУСАЛ", "C", inn="3906394938"),
+              Issuer("AKRN", "Акрон", "C"),
+          '''
+          assert text.count(old) == 1, 'manufacturing issuer block changed unexpectedly'
+          path.write_text(text.replace(old, new))
+
+          # Vertical integration is not merely a label: it must cap confidence.
+          path = Path('server/app/research/engines/spread.py')
+          text = path.read_text()
+          old = '''# Потолок уверенности для непроверенной модели.
+          UNCALIBRATED_CAP = Decimal("0.50")
+          '''
+          new = '''# Потолок уверенности для непроверенной модели.
+          UNCALIBRATED_CAP = Decimal("0.50")
+
+          # Вертикально интегрированная группа частично переносит изменение цены
+          # сырья между своими сегментами. Пока доля внутреннего трансферта не
+          # измерена, внешний raw-material spread не может быть увереннее 0.50.
+          VERTICAL_INTEGRATION_CAP = Decimal("0.50")
+          '''
+          assert text.count(old) == 1, 'SPREAD cap block changed unexpectedly'
+          text = text.replace(old, new)
+          old = '''    if vertically_integrated:
+              # Рост цены сырья для группы может быть нейтральным: то, что одно
+              # подразделение переплатило, другое заработало.
+              result.reason_codes.append("spread_vertical_integration")
+          '''
+          new = '''    if vertically_integrated:
+              # Рост цены сырья для группы может быть нейтральным: то, что одно
+              # подразделение переплатило, другое заработало. Поэтому это не
+              # декоративный reason-code, а отдельное ограничение уверенности.
+              result.reason_codes.append("spread_vertical_integration")
+              result.cap_confidence(
+                  VERTICAL_INTEGRATION_CAP, "spread_vertical_integration"
+              )
+          '''
+          assert text.count(old) == 1, 'vertical integration block changed unexpectedly'
+          text = text.replace(old, new)
+          old = '''    "UNCALIBRATED_CAP",
+              "WEIGHTS",
+          '''
+          new = '''    "UNCALIBRATED_CAP",
+              "VERTICAL_INTEGRATION_CAP",
+              "WEIGHTS",
+          '''
+          assert text.count(old) == 1, 'SPREAD export block changed unexpectedly'
+          path.write_text(text.replace(old, new))
+
+          # First production basket. Values are deliberately conservative and
+          # source-backed; this is an early proxy, not a full RUSAL margin model.
+          path = Path('server/app/research/spread_runtime.py')
+          text = path.read_text()
+          old = '''Production issuer baskets intentionally remain empty until a green live-source
+          probe validates exact current OKPD2/OKEI series and their economic exposure.
+          Tests inject explicit fixture baskets; runtime code must never infer one from a
+          human-readable product label.
+          '''
+          new = '''Production issuer baskets are explicit and source-backed. Runtime code must never
+          infer one from a human-readable product label. The first basket is deliberately
+          low-coverage and uncalibrated: it can surface an early candidate, but confidence
+          remains capped until outcome measurement validates the economic proxy.
+          '''
+          assert text.count(old) == 1, 'SPREAD runtime docstring changed unexpectedly'
+          text = text.replace(old, new)
+          old = '''# Deliberately empty until the post-green live Rosstat probe validates exact
+          # machine series, coefficient rationale and issuer exposure.
+          PRODUCTION_BASKETS: tuple[SpreadBasket, ...] = ()
+          '''
+          new = '''# RUSAL primary aluminium / alumina proxy.
+          #
+          # Machine series were found in the current Rosstat producer-price workbook:
+          #   24.42.11 — unwrought aluminium, tonnes (OKEI 168)
+          #   24.42.12 — aluminium oxide / alumina, tonnes (OKEI 168)
+          # International Aluminium Institute mass balance: about 2 t alumina -> 1 t Al.
+          # RUSAL 2025 disclosure: primary aluminium/alloys are ~80% of group revenue,
+          # while alumina is 18.7% of aluminium cash cost. Electricity and other inputs
+          # are intentionally absent, so cost coverage stays low rather than being
+          # disguised as a complete margin model. RUSAL also has a full production cycle
+          # and 100% alumina availability, hence vertical-integration treatment.
+          # The company discloses quotation-period timing effects but not a stable whole-
+          # quarter lag suitable for this model, so contract_lag_periods remains zero.
+          PRODUCTION_BASKETS: tuple[SpreadBasket, ...] = (
+              SpreadBasket(
+                  basket_id="rual_primary_aluminium_alumina",
+                  issuers=("RUAL",),
+                  legs=(
+                      SpreadLegConfig(
+                          observation_type="rosstat:producer_price:24_42_11:168",
+                          unit="OKEI:168",
+                          coefficient=Decimal("1"),
+                          rationale=(
+                              "Rosstat OKPD2 24.42.11, OKEI 168; one tonne "
+                              "unwrought-aluminium output basis"
+                          ),
+                          side="product",
+                      ),
+                      SpreadLegConfig(
+                          observation_type="rosstat:producer_price:24_42_12:168",
+                          unit="OKEI:168",
+                          coefficient=Decimal("2.0"),
+                          rationale=(
+                              "International Aluminium Institute mass balance: about "
+                              "2 tonnes alumina per 1 tonne primary aluminium; fixed "
+                              "engineering coefficient, not fitted to prices"
+                          ),
+                          side="input",
+                      ),
+                  ),
+                  revenue_coverage=0.80,
+                  cost_coverage=0.187,
+                  calibrated=False,
+                  contract_lag_periods=0,
+                  hedged=False,
+                  vertically_integrated=True,
+              ),
+          )
+          '''
+          assert text.count(old) == 1, 'production basket block changed unexpectedly'
+          text = text.replace(old, new)
+          old = '''    Passing ``baskets`` is mainly for deterministic tests and future explicit
+              manual runs. Normal production calls use ``PRODUCTION_BASKETS``, which is
+              intentionally empty until a separate live-source validation change.
+          '''
+          new = '''    Passing ``baskets`` is mainly for deterministic tests and explicit manual
+              runs. Normal production calls use the source-backed ``PRODUCTION_BASKETS``;
+              incomplete/missing observations still fail closed in ``prepare_periods``.
+          '''
+          assert text.count(old) == 1, 'run_spread docstring changed unexpectedly'
+          path.write_text(text.replace(old, new))
+          PY
+      - name: Remove one-shot workflow and commit patch
+        run: |
+          rm .github/workflows/apply-rual-spread-basket-patch.yml
+          git config user.name "signalai-patch-bot"
+          git config user.email "signalai-patch-bot@users.noreply.github.com"
+          git add server/app/research/issuers.py server/app/research/engines/spread.py server/app/research/spread_runtime.py .github/workflows/apply-rual-spread-basket-patch.yml
+          git diff --cached --check
+          git commit -m "feat: add conservative RUAL SPREAD proxy"
+          git push origin HEAD:feature/4-rual-spread-basket
