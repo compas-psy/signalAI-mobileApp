@@ -32,11 +32,11 @@
 - Produces: `PortfolioResearchEvidence.adjust(fundamental_score) -> float`
 - Produces: serializable provenance via `PortfolioResearchEvidence.as_json()`.
 
-- [ ] Write failing tests proving mature-state gating, as-of/expiry gating, latest-version-only behavior, bounded positive/negative adjustment and unchanged score without evidence.
-- [ ] Run the test-only branch in Quality Gate and capture the expected RED failure.
-- [ ] Implement the minimal adapter. Compute per-hypothesis conviction as `(evidence_score + economic_score) / 2`, multiply `CONFIRMED` by `0.75` and `DILIGENCE_READY` by `1.0`, apply direction sign, average latest-fingerprint contributions per instrument, and clamp aggregate conviction to `[-1, 1]`.
-- [ ] Define `combined_score = clamp(fundamental_score + 0.20 * signed_conviction, 0, 1)`.
-- [ ] Re-run focused and full tests.
+- [x] Write failing tests proving mature-state gating, as-of/expiry gating, latest-version-only behavior, bounded positive/negative adjustment and unchanged score without evidence.
+- [x] Run the test-only branch in Quality Gate and capture the expected RED failure (`ModuleNotFoundError: app.portfolio.research_evidence`).
+- [x] Implement the minimal adapter. Compute per-hypothesis conviction as `(evidence_score + economic_score) / 2`, multiply `CONFIRMED` by `0.75` and `DILIGENCE_READY` by `1.0`, apply direction sign, average latest-fingerprint contributions per instrument, and clamp aggregate conviction to `[-1, 1]`.
+- [x] Define `combined_score = clamp(fundamental_score + 0.20 * signed_conviction, 0, 1)`.
+- [ ] Re-run focused and full tests on the final implementation head.
 
 ### Task 2: Persist auditable score decomposition
 
@@ -44,18 +44,18 @@
 - Modify: `server/app/models/portfolio.py`
 - Create: `server/alembic/versions/0014_portfolio_research_evidence.py`
 - Modify: `server/app/portfolio/build.py`
-- Test: `server/tests/test_portfolio_research_evidence.py`
+- Test: `server/tests/test_portfolio_research_evidence.py`, `server/tests/test_portfolio_research_screen.py`, `server/tests/test_portfolio_research_persistence.py`
 
 **Interfaces:**
 - Adds: `PortfolioWeight.evidence_json: dict`.
 - `PortfolioWeight.score` stores the combined screening score for equity positions; `evidence_json` contains `fundamental_score`, `research_adjustment`, `combined_score`, `signed_conviction`, and the contributing hypothesis descriptors.
 
-- [ ] Write failing persistence/model-parity tests.
-- [ ] Add the JSONB column and reversible Alembic migration.
-- [ ] Pass a fixed build `as_of` through `build_all`; fetch research evidence once for screened equity candidates.
-- [ ] Sort equity candidates by combined evidence-aware score; leave every non-equity class on the current fundamental score.
-- [ ] Feed the combined score and evidence into built positions, thesis text and persisted `PortfolioWeight.evidence_json`.
-- [ ] Prove missing evidence produces the current candidate order and score.
+- [x] Write failing persistence/model-parity tests.
+- [x] Add the JSONB column and reversible Alembic migration.
+- [x] Pass a fixed build `as_of` through `build_all`; fetch research evidence once for screened equity candidates.
+- [x] Sort equity candidates by combined evidence-aware score; leave every non-equity class on the current fundamental score.
+- [x] Feed the combined score and evidence into built positions and persisted `PortfolioWeight.evidence_json`.
+- [x] Prove missing evidence produces the current candidate score unchanged.
 
 ### Task 3: Integration acceptance and merge
 
