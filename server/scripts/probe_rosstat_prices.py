@@ -56,10 +56,24 @@ def fetch_first(urls: tuple[str, ...]) -> tuple[str, bytes]:
     raise SystemExit("ALL_FETCH_VARIANTS_FAILED " + " | ".join(failures))
 
 
+def catalogue_candidates(catalogue: str) -> None:
+    parser = rosstat_prices._Links()  # diagnostic only on temporary branch
+    parser.feed(catalogue)
+    candidates = []
+    for href, title in parser.links:
+        lower = title.lower()
+        if ".xlsx" in href.lower() or "цен" in lower or "производител" in lower:
+            candidates.append((href, title))
+    print(f"CATALOGUE_LINKS {len(parser.links)} CANDIDATES {len(candidates)}")
+    for href, title in candidates[:200]:
+        print(f"CATALOGUE_CANDIDATE href={href!r} title={title!r}")
+
+
 def main() -> None:
     catalogue_url, raw_catalogue = fetch_first(CATALOGUES)
     print(f"CATALOGUE_OK {catalogue_url}")
     catalogue = raw_catalogue.decode("utf-8", errors="replace")
+    catalogue_candidates(catalogue)
     discovered = rosstat_prices.discover_workbook(catalogue)
     print(f"WORKBOOK_DISCOVERED {discovered}")
 
