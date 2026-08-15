@@ -1,0 +1,33 @@
+name: RUAL SPREAD live acceptance
+
+on:
+  push:
+    branches:
+      - probe/4-rual-spread-live-acceptance
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.11.33'
+          enable-cache: true
+          cache-dependency-glob: server/uv.lock
+      - name: Install locked server dependencies
+        working-directory: server
+        run: |
+          uv lock --check
+          uv sync --frozen
+      - name: Probe current Rosstat production series
+        working-directory: server
+        env:
+          PYTHONPATH: .
+        run: .venv/bin/python scripts/probe_rual_spread_live.py
