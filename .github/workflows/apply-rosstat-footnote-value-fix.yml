@@ -1,0 +1,66 @@
+name: Apply Rosstat footnote value fix
+
+on:
+  push:
+    branches:
+      - fix/4-rosstat-live-reachability
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/4-rosstat-live-reachability
+          fetch-depth: 1
+      - name: Apply exact live-value grammar
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('server/app/research/adapters/rosstat_prices.py')
+          text = path.read_text()
+          old = '''def _decimal(value: str) -> Decimal | None:
+              normalized = _normalize(value)
+              if normalized in _MISSING:
+                  return None
+              normalized = normalized.replace(" ", "").replace(",", ".")
+              try:
+                  return Decimal(normalized)
+              except InvalidOperation as error:
+                  raise WorkbookSchemaError(f"invalid producer-price value: {value!r}") from error
+          '''
+          new = '''def _decimal(value: str) -> Decimal | None:
+              normalized = _normalize(value)
+              if normalized in _MISSING or normalized == "…1)":
+                  return None
+
+              # The live 2026 workbook appends footnote `2)` immediately after
+              # the second decimal place (for example `12471,552)`). Strip only
+              # this observed grammar; arbitrary annotations still fail closed.
+              footnoted = re.fullmatch(r"([+-]?\\d[\\d ]*[,.]\\d{2})2\\)", normalized)
+              if footnoted is not None:
+                  normalized = footnoted.group(1)
+
+              normalized = normalized.replace(" ", "").replace(",", ".")
+              try:
+                  return Decimal(normalized)
+              except InvalidOperation as error:
+                  raise WorkbookSchemaError(f"invalid producer-price value: {value!r}") from error
+          '''
+          assert text.count(old) == 1
+          path.write_text(text.replace(old, new, 1))
+          PY
+      - name: Remove one-shot workflow and push surgical fix
+        run: |
+          rm .github/workflows/apply-rosstat-footnote-value-fix.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add server/app/research/adapters/rosstat_prices.py .github/workflows/apply-rosstat-footnote-value-fix.yml
+          git diff --cached --check
+          git commit -m 'fix: parse confirmed Rosstat footnote value markers'
+          git push origin HEAD:fix/4-rosstat-live-reachability
