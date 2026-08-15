@@ -8,8 +8,15 @@ from app.research.adapters import rosstat_live_prices, rosstat_prices
 from app.research.reach import USER_AGENT
 
 TIMEOUT = 45
-PREFIXES = ("05.10", "07.10", "19.10", "24.10", "24.20", "24.31", "24.32")
-KEYWORDS = ("кокс", "уголь кокс", "руда желез", "окатыш", "чугун", "сталь", "прокат")
+PREFIXES = ("24.42", "23.42", "07.29")
+KEYWORDS = (
+    "алюмин",
+    "глиноз",
+    "оксид алюмини",
+    "боксит",
+    "криолит",
+    "анод",
+)
 
 
 def fetch(url: str) -> bytes:
