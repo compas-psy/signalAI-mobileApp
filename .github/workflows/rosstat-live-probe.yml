@@ -93,9 +93,10 @@ jobs:
           openssl verify -CAfile /tmp/russian-root.pem /tmp/russian-sub.pem
           openssl verify -CAfile /tmp/russian-root.pem -untrusted /tmp/russian-sub.pem /tmp/rosstat-leaf.pem
           cat /tmp/russian-root.pem /tmp/russian-sub.pem > /tmp/rosstat-ca-bundle.pem
-          curl --cacert /tmp/rosstat-ca-bundle.pem --fail --head --silent --show-error --max-time 20 \
-            https://rosstat.gov.ru/statistics/price >/dev/null
-          echo 'ROSSTAT_PINNED_TLS_OK'
+          curl --cacert /tmp/rosstat-ca-bundle.pem --fail --silent --show-error --max-time 20 \
+            https://rosstat.gov.ru/statistics/price -o /tmp/rosstat-price.html
+          test -s /tmp/rosstat-price.html
+          echo "ROSSTAT_PINNED_TLS_OK bytes=$(wc -c </tmp/rosstat-price.html)"
 
           echo '=== PINNED ROOT PEM ==='
           cat /tmp/russian-root.pem
