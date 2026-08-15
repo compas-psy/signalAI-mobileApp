@@ -342,8 +342,16 @@ def _header(
 
 def _decimal(value: str) -> Decimal | None:
     normalized = _normalize(value)
-    if normalized in _MISSING:
+    if normalized in _MISSING or normalized == "…1)":
         return None
+
+    # The live 2026 workbook appends footnote `2)` immediately after
+    # the second decimal place (for example `12471,552)`). Strip only
+    # this observed grammar; arbitrary annotations still fail closed.
+    footnoted = re.fullmatch(r"([+-]?\d[\d ]*[,.]\d{2})2\)", normalized)
+    if footnoted is not None:
+        normalized = footnoted.group(1)
+
     normalized = normalized.replace(" ", "").replace(",", ".")
     try:
         return Decimal(normalized)
