@@ -22,7 +22,7 @@ jobs:
           python - <<'PY'
           from pathlib import Path
 
-          # Strong issuer identity, verified against the current MOEX security card.
+          # Strong issuer identity, verified against current primary disclosure.
           path = Path('server/app/research/issuers.py')
           text = path.read_text()
           old = '''# Отрасль — публично известный факт. ИНН заполнен там, где он проверен по
@@ -63,22 +63,16 @@ jobs:
           '''
           assert text.count(old) == 1, 'SPREAD cap block changed unexpectedly'
           text = text.replace(old, new)
-          old = '''    if vertically_integrated:
-              # Рост цены сырья для группы может быть нейтральным: то, что одно
-              # подразделение переплатило, другое заработало.
-              result.reason_codes.append("spread_vertical_integration")
-          '''
-          new = '''    if vertically_integrated:
-              # Рост цены сырья для группы может быть нейтральным: то, что одно
-              # подразделение переплатило, другое заработало. Поэтому это не
-              # декоративный reason-code, а отдельное ограничение уверенности.
-              result.reason_codes.append("spread_vertical_integration")
-              result.cap_confidence(
-                  VERTICAL_INTEGRATION_CAP, "spread_vertical_integration"
-              )
-          '''
-          assert text.count(old) == 1, 'vertical integration block changed unexpectedly'
-          text = text.replace(old, new)
+
+          needle = '        result.reason_codes.append("spread_vertical_integration")\n'
+          replacement = needle + (
+              '        result.cap_confidence(\n'
+              '            VERTICAL_INTEGRATION_CAP, "spread_vertical_integration"\n'
+              '        )\n'
+          )
+          assert text.count(needle) == 1, 'vertical integration reason line changed unexpectedly'
+          text = text.replace(needle, replacement)
+
           old = '''    "UNCALIBRATED_CAP",
               "WEIGHTS",
           '''
@@ -105,6 +99,7 @@ jobs:
           '''
           assert text.count(old) == 1, 'SPREAD runtime docstring changed unexpectedly'
           text = text.replace(old, new)
+
           old = '''# Deliberately empty until the post-green live Rosstat probe validates exact
           # machine series, coefficient rationale and issuer exposure.
           PRODUCTION_BASKETS: tuple[SpreadBasket, ...] = ()
@@ -160,6 +155,7 @@ jobs:
           '''
           assert text.count(old) == 1, 'production basket block changed unexpectedly'
           text = text.replace(old, new)
+
           old = '''    Passing ``baskets`` is mainly for deterministic tests and future explicit
               manual runs. Normal production calls use ``PRODUCTION_BASKETS``, which is
               intentionally empty until a separate live-source validation change.
