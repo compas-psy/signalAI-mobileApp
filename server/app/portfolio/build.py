@@ -162,6 +162,7 @@ class Position:
     kill: str
     score: float
     expected_return: float
+    evidence: dict = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -688,6 +689,7 @@ def build_package(
                 kill=_kill(card),
                 score=card.score,
                 expected_return=float(mu_annual[i]),
+                evidence=card.evidence_json,
             )
         )
     result.positions.sort(key=lambda p: -p.weight)
@@ -704,6 +706,7 @@ def build_all(
     fetch=None,
     profiles: tuple[RiskProfile, ...] = tuple(RiskProfile),
     horizons: tuple[int, ...] = (1, 5),
+    as_of: datetime | None = None,
 ) -> BuildReport:
     """Пересобрать все пакеты и сохранить их.
 
@@ -713,6 +716,7 @@ def build_all(
     """
     cfg = get_config()
     report = BuildReport()
+    now = as_of or datetime.now(UTC)
 
     universe = investment_universe(session)
     report.universe = len(universe)
@@ -724,7 +728,7 @@ def build_all(
 
     min_history = int(cfg.get("universe.investments.min_history_days", 120))
     cards = fund.screen(
-        session, universe, min_history_days=min_history, fetch=fetch
+        session, universe, min_history_days=min_history, fetch=fetch, as_of=now
     )
     passed = [c for c in cards if not c.rejected]
     report.screened = len(passed)
@@ -809,7 +813,6 @@ def build_all(
             "положительный состав не из чего"
         )
 
-    now = datetime.now(UTC)
     for profile_key in profiles:
         for package_key, config_key in (
             (PackageSize.SIMPLE, "simple"),
@@ -939,5 +942,6 @@ def _persist(session: Session, package: Package, *, cfg, now: datetime) -> None:
                 kill_conditions=position.kill,
                 score=Decimal(str(round(position.score, 6))),
                 expected_return=Decimal(str(round(position.expected_return, 6))),
+                evidence_json=position.evidence,
             )
         )

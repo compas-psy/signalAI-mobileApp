@@ -18,6 +18,11 @@
 неприменимо». Разница та же, что в §15.1 для оценки идеи, и по той же
 причине: неприменимое, посчитанное нулём, тянет оценку вниз и выбрасывает
 инструмент, к которому вопрос просто не относился.
+
+Зрелые гипотезы исследовательского контура добавляют отдельный, ограниченный
+слой к акциям. Они не становятся «ещё одной фундаментальной метрикой» и не
+влияют на облигации/фонды: их вклад хранится отдельно и не может обойти
+портфельные лимиты, оптимизацию и walk-forward admission.
 """
 
 from __future__ import annotations
@@ -34,6 +39,7 @@ from ..market import moex
 from ..market.http import FetchError
 from ..models import Bar, Instrument
 from ..models.enums import AssetClass, Timeframe
+from .research_evidence import PortfolioResearchEvidence, evidence_for
 
 
 class Measure(StrEnum):
@@ -57,12 +63,13 @@ class Metric:
 
 @dataclass(slots=True)
 class Fundamental:
-    """Фундаментальная карточка бумаги."""
+    """Фундаментальная карточка бумаги с отдельным research overlay."""
 
     instrument_id: str
     asset_class: AssetClass
     title: str
     metrics: list[Metric] = field(default_factory=list)
+    research: PortfolioResearchEvidence | None = None
     rejected: str = ""
 
     @property
@@ -70,17 +77,38 @@ class Fundamental:
         return {m.name: m.value for m in self.metrics if m.counts and m.value is not None}
 
     @property
-    def score(self) -> float:
-        """Сводная оценка по измеренному, без штрафа за неприменимое.
-
-        Делитель — количество применимых метрик, а не всех подряд. Иначе
-        облигационный фонд, к которому не относится половина вопросов,
-        проигрывал бы акции только потому, что на него меньше данных.
-        """
+    def fundamental_score(self) -> float:
+        """Оценка только по измеренному фундаменталу, без research overlay."""
         usable = [m for m in self.metrics if m.counts and m.value is not None]
         if not usable:
             return 0.0
         return sum(m.value for m in usable) / len(usable)
+
+    @property
+    def score(self) -> float:
+        """Screening score: fundamental base plus bounded mature research.
+
+        Делитель фундаментальной части — количество применимых метрик, а не
+        всех подряд. Research не маскируется под ещё одну метрику: он
+        применяется после расчёта базы и только в пределах собственного
+        жёсткого cap.
+        """
+        base = self.fundamental_score
+        if self.asset_class is not AssetClass.EQUITY or self.research is None:
+            return base
+        return self.research.adjust(base)
+
+    @property
+    def evidence_json(self) -> dict:
+        if self.asset_class is not AssetClass.EQUITY or self.research is None:
+            return {
+                "fundamental_score": round(self.fundamental_score, 6),
+                "signed_conviction": 0.0,
+                "research_adjustment": 0.0,
+                "combined_score": round(self.fundamental_score, 6),
+                "hypotheses": [],
+            }
+        return self.research.as_json(fundamental_score=self.fundamental_score)
 
     @property
     def note(self) -> str:
@@ -308,20 +336,30 @@ def screen(
     min_history_days: int = 120,
     min_turnover_rub: float = 5_000_000,
     fetch=None,
+    as_of: datetime | None = None,
 ) -> list[Fundamental]:
-    """Фундаментальный срез по списку бумаг.
+    """Фундаментальный срез по списку бумаг плюс зрелый research overlay.
 
-    Отбракованные не исчезают: у каждой записана причина. «Пропала из
-    состава» неотличимо от «сломалась загрузка», и без причины владелец
-    не может понять, почему знакомая бумага не попала в пакет.
+    Отбракованные не исчезают: у каждой записана причина. Research получает
+    только акции, уже входящие в переданную инвестиционную вселенную; он не
+    может сам добавить новый тикер или обойти ликвидность/историю.
     """
-    today = date.today()
+    moment = as_of or datetime.now(UTC)
+    today = moment.date()
+    equity_ids = [
+        instrument.instrument_id
+        for instrument in instruments
+        if instrument.asset_class is AssetClass.EQUITY
+    ]
+    research = evidence_for(session, equity_ids, as_of=moment)
+
     result: list[Fundamental] = []
     for instrument in instruments:
         card = Fundamental(
             instrument_id=instrument.instrument_id,
             asset_class=instrument.asset_class,
             title=instrument.title or instrument.symbol,
+            research=research.get(instrument.instrument_id),
         )
         if instrument.asset_class in (AssetClass.OFZ, AssetClass.CORPORATE_BOND):
             card.metrics = _bond_metrics(instrument, today)

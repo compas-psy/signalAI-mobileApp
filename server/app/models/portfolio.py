@@ -137,6 +137,9 @@ class PortfolioWeight(Base):
 
     Сумма весов проверяется кодом при сохранении (UX-ТЗ §7.1: «Сумма ровно
     100%»), а потолок крипты — отдельным ограничением (§6.4, §27).
+
+    ``evidence_json`` хранит точную декомпозицию screening score и гипотезы,
+    которые были decision-available при сборке модели.
     """
 
     __tablename__ = "portfolio_weights"
@@ -154,6 +157,7 @@ class PortfolioWeight(Base):
     kill_conditions: Mapped[str] = mapped_column(Text, nullable=False, default="")
     score: Mapped[Ratio] = mapped_column(nullable=True)
     expected_return: Mapped[Ratio] = mapped_column(nullable=True)
+    evidence_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
 
     model: Mapped[PortfolioModel] = relationship(back_populates="weights")
 
