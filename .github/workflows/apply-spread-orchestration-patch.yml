@@ -1,0 +1,147 @@
+name: Apply scoped SPREAD orchestration patch
+
+on:
+  push:
+    branches:
+      - feature/4-spread-orchestration-status
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/4-spread-orchestration-status
+          fetch-depth: 1
+      - name: Apply exact research API changes
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('server/app/api/v1/research.py')
+          text = path.read_text()
+
+          old = '''from ...research import adapters, explore, gateway, netdiag, reach
+          from ...research.adapters import cbr, fns
+          from ...research.engines import ENGINES
+          from ...research.confirmations import history_verdict
+          from ...research.policy import CollectionDenied, authorize
+          from ...research.run_engines import DEMAND_FREQUENCY
+          from ...research.sources import ALL_SOURCES, CONNECT_ORDER, readiness, sync_registry
+          '''
+          new = '''from ...research import adapters, explore, gateway, netdiag, reach
+          from ...research.adapters import cbr, fns
+          from ...research.collector import collect_all
+          from ...research.engines import ENGINES
+          from ...research.confirmations import history_verdict
+          from ...research.pipeline import expire as expire_hypotheses
+          from ...research.policy import CollectionDenied, authorize
+          from ...research.run_engines import DEMAND_FREQUENCY, run_demand
+          from ...research.sources import ALL_SOURCES, CONNECT_ORDER, readiness, sync_registry
+          from ...research.spread_runtime import PRODUCTION_BASKETS
+          '''
+          assert text.count(old) == 1, 'research imports changed unexpectedly'
+          text = text.replace(old, new)
+
+          old = '''_OBSERVATION_PREFIX = {"DEMAND": "cbr:enterprise_monitoring:"}
+          '''
+          new = '''_OBSERVATION_PREFIX = {
+              "DEMAND": "cbr:enterprise_monitoring:",
+              "SPREAD": "rosstat:producer_price:",
+          }
+          '''
+          assert text.count(old) == 1, 'observation prefix map changed unexpectedly'
+          text = text.replace(old, new)
+
+          old = '''    total, periods, last_seen = rows
+              frequency = DEMAND_FREQUENCY if key == "DEMAND" else "quarterly"
+              enough, why = history_verdict(int(periods or 0), frequency)
+              return {
+                  "wired": True,
+                  "observations": int(total or 0),
+                  "unique_periods": int(periods or 0),
+                  "last_seen_at": last_seen,
+                  "history_ready": enough,
+                  "history_note": why,
+              }
+          '''
+          new = '''    total, periods, last_seen = rows
+              if key == "SPREAD" and not PRODUCTION_BASKETS:
+                  return {
+                      "wired": True,
+                      "observations": int(total or 0),
+                      "unique_periods": int(periods or 0),
+                      "last_seen_at": last_seen,
+                      "history_ready": False,
+                      "history_note": "production baskets not configured",
+                  }
+              frequency = DEMAND_FREQUENCY if key == "DEMAND" else "quarterly"
+              enough, why = history_verdict(int(periods or 0), frequency)
+              return {
+                  "wired": True,
+                  "observations": int(total or 0),
+                  "unique_periods": int(periods or 0),
+                  "last_seen_at": last_seen,
+                  "history_ready": enough,
+                  "history_note": why,
+              }
+          '''
+          assert text.count(old) == 1, 'engine facts block changed unexpectedly'
+          text = text.replace(old, new)
+
+          marker = '''\n\nclass HostReachOut(ApiModel):
+          '''
+          insert = '''\n\nclass ResearchRefreshOut(ApiModel):
+              """Итог явного owner-triggered research refresh."""
+
+              collected: str
+              engines: str
+              expired_hypotheses: int = 0
+
+
+          @router.post("/refresh", response_model=ResearchRefreshOut)
+          def refresh_research(session: Session = Depends(get_db)) -> ResearchRefreshOut:
+              """Собрать источники и прогнать все live research engines сейчас.
+
+              Это тот же порядок, что у scheduler: сначала фиксируем правовой
+              реестр и наблюдения, затем считаем HIRING/SPREAD по уже записанному
+              срезу и только после этого закрываем протухшие гипотезы. SPREAD при
+              пустом production basket не придумывает сигнал — его точная причина
+              возвращается в `engines` через общий отчёт.
+              """
+              moment = datetime.now(UTC)
+              sync_registry(session, now=moment)
+              collected = collect_all(session, now=moment)
+              session.flush()
+              engines = run_demand(
+                  session,
+                  now=moment,
+                  include_hiring=True,
+                  include_spread=True,
+              )
+              expired = expire_hypotheses(session, now=moment)
+              session.commit()
+              return ResearchRefreshOut(
+                  collected=collected.summary(),
+                  engines=engines.summary(),
+                  expired_hypotheses=expired,
+              )
+          '''
+          assert text.count(marker) == 1, 'HostReachOut insertion point changed unexpectedly'
+          text = text.replace(marker, insert + marker)
+
+          path.write_text(text)
+          PY
+      - name: Remove one-shot workflow and commit patch
+        run: |
+          rm .github/workflows/apply-spread-orchestration-patch.yml
+          git config user.name "signalai-patch-bot"
+          git config user.email "signalai-patch-bot@users.noreply.github.com"
+          git add server/app/api/v1/research.py .github/workflows/apply-spread-orchestration-patch.yml
+          git diff --cached --check
+          git commit -m "feat: expose SPREAD status and manual research refresh"
+          git push origin HEAD:feature/4-spread-orchestration-status
