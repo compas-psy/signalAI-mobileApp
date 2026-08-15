@@ -5,6 +5,10 @@ import pytest
 from app.research.adapters import rosstat_prices
 
 
+# Full live scan of Proizvoditeli_Cena_06-2026.xlsx on 2026-08-15 found only
+# two annotated month-cell forms: `…1)` for no value and a numeric value whose
+# second decimal place is followed by footnote `2)`. Keep the accepted grammar
+# intentionally this narrow so future source changes fail visibly.
 def test_footnoted_missing_marker_remains_missing():
     assert rosstat_prices._decimal("…1)") is None
 
