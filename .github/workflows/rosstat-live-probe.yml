@@ -25,6 +25,20 @@ jobs:
           version: '0.11.33'
           enable-cache: true
           cache-dependency-glob: server/uv.lock
+      - name: Discover Russian CA downloads through trusted Gosuslugi HTTPS
+        working-directory: .
+        run: |
+          set -euo pipefail
+          curl --fail --location --silent --show-error --max-time 20 \
+            --dump-header /tmp/gosuslugi-headers.txt \
+            https://www.gosuslugi.ru/crt -o /tmp/gosuslugi-crt.html
+          echo '=== GOSUSLUGI RESPONSE ==='
+          grep -E '^(HTTP/|location:)' /tmp/gosuslugi-headers.txt || true
+          echo '=== CERTIFICATE REFERENCES ==='
+          grep -Eo 'https?://[^"'"'"' <>]+|[^"'"'"' <>]*(russian|trusted)[^"'"'"' <>]*\.(cer|crt|pem|zip)' /tmp/gosuslugi-crt.html \
+            | sort -u | head -80 || true
+          echo '=== PAGE BYTES ==='
+          wc -c /tmp/gosuslugi-crt.html
       - name: Inspect Rosstat TLS chain without disabling verification
         working-directory: .
         run: |
