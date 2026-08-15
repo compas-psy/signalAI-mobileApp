@@ -50,6 +50,11 @@ MIN_QUARTERS = 12
 # Потолок уверенности для непроверенной модели.
 UNCALIBRATED_CAP = Decimal("0.50")
 
+# Вертикально интегрированная группа частично переносит изменение цены
+# сырья между своими сегментами. Пока доля внутреннего трансферта не
+# измерена, внешний raw-material spread не может быть увереннее 0.50.
+VERTICAL_INTEGRATION_CAP = Decimal("0.50")
+
 
 @dataclass(frozen=True, slots=True)
 class Leg:
@@ -200,6 +205,9 @@ def evaluate(
         # Рост цены сырья для группы может быть нейтральным: то, что одно
         # подразделение переплатило, другое заработало.
         result.reason_codes.append("spread_vertical_integration")
+        result.cap_confidence(
+            VERTICAL_INTEGRATION_CAP, "spread_vertical_integration"
+        )
 
     # Авария разделяет «спред хороший» и «спред можно снять». Это разные
     # утверждения, и второе — то, ради чего движок существует.
@@ -239,6 +247,7 @@ __all__ = [
     "STRATEGY_VERSION",
     "SpreadResult",
     "UNCALIBRATED_CAP",
+    "VERTICAL_INTEGRATION_CAP",
     "WEIGHTS",
     "evaluate",
 ]

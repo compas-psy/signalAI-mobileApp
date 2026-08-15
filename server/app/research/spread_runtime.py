@@ -6,10 +6,10 @@ monthly, so this module is the deliberately strict boundary between the two.
 It never forward-fills a leg, never substitutes zero, and never exposes an
 observation to the engine before the observation's persisted ``tradable_at``.
 
-Production issuer baskets intentionally remain empty until a green live-source
-probe validates exact current OKPD2/OKEI series and their economic exposure.
-Tests inject explicit fixture baskets; runtime code must never infer one from a
-human-readable product label.
+Production issuer baskets are explicit and source-backed. Runtime code must never
+infer one from a human-readable product label. The first basket is deliberately
+low-coverage and uncalibrated: it can surface an early candidate, but confidence
+remains capped until outcome measurement validates the economic proxy.
 """
 
 from __future__ import annotations
@@ -117,9 +117,54 @@ class SpreadRunReport:
         return ", ".join(parts)
 
 
-# Deliberately empty until the post-green live Rosstat probe validates exact
-# machine series, coefficient rationale and issuer exposure.
-PRODUCTION_BASKETS: tuple[SpreadBasket, ...] = ()
+# RUSAL primary aluminium / alumina proxy.
+#
+# Machine series were found in the current Rosstat producer-price workbook:
+#   24.42.11 — unwrought aluminium, tonnes (OKEI 168)
+#   24.42.12 — aluminium oxide / alumina, tonnes (OKEI 168)
+# International Aluminium Institute mass balance: about 2 t alumina -> 1 t Al.
+# RUSAL 2025 disclosure: primary aluminium/alloys are ~80% of group revenue,
+# while alumina is 18.7% of aluminium cash cost. Electricity and other inputs
+# are intentionally absent, so cost coverage stays low rather than being
+# disguised as a complete margin model. RUSAL also has a full production cycle
+# and 100% alumina availability, hence vertical-integration treatment.
+# The company discloses quotation-period timing effects but not a stable whole-
+# quarter lag suitable for this model, so contract_lag_periods remains zero.
+PRODUCTION_BASKETS: tuple[SpreadBasket, ...] = (
+    SpreadBasket(
+        basket_id="rual_primary_aluminium_alumina",
+        issuers=("RUAL",),
+        legs=(
+            SpreadLegConfig(
+                observation_type="rosstat:producer_price:24_42_11:168",
+                unit="OKEI:168",
+                coefficient=Decimal("1"),
+                rationale=(
+                    "Rosstat OKPD2 24.42.11, OKEI 168; one tonne "
+                    "unwrought-aluminium output basis"
+                ),
+                side="product",
+            ),
+            SpreadLegConfig(
+                observation_type="rosstat:producer_price:24_42_12:168",
+                unit="OKEI:168",
+                coefficient=Decimal("2.0"),
+                rationale=(
+                    "International Aluminium Institute mass balance: about "
+                    "2 tonnes alumina per 1 tonne primary aluminium; fixed "
+                    "engineering coefficient, not fitted to prices"
+                ),
+                side="input",
+            ),
+        ),
+        revenue_coverage=0.80,
+        cost_coverage=0.187,
+        calibrated=False,
+        contract_lag_periods=0,
+        hedged=False,
+        vertically_integrated=True,
+    ),
+)
 
 
 def _add_reason(reasons: list[str], code: str) -> None:
@@ -288,9 +333,9 @@ def run_spread(
 ) -> SpreadRunReport:
     """Evaluate configured baskets and hand valid signals to common fusion.
 
-    Passing ``baskets`` is mainly for deterministic tests and future explicit
-    manual runs. Normal production calls use ``PRODUCTION_BASKETS``, which is
-    intentionally empty until a separate live-source validation change.
+    Passing ``baskets`` is mainly for deterministic tests and explicit manual
+    runs. Normal production calls use the source-backed ``PRODUCTION_BASKETS``;
+    incomplete/missing observations still fail closed in ``prepare_periods``.
     """
     moment = now or datetime.now(UTC)
     configured = PRODUCTION_BASKETS if baskets is None else baskets
