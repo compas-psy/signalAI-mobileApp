@@ -25,8 +25,9 @@ from .rosstat_prices import (
 )
 
 # Deliberately narrow classifier bridge. These are OKEI codes, not guessed
-# display units. New aliases/codes must be added explicitly with regression
-# coverage before the live parser can emit them.
+# display units: current OKEI assigns 166 to kilogram and 168 to tonne.
+# New aliases/codes must be added explicitly with regression coverage before
+# the live parser can emit them.
 _UNIT_TO_OKEI = {
     "т": "168",
     "тонн": "168",
