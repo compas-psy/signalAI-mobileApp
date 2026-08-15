@@ -1,0 +1,80 @@
+name: One-shot restore investment comments
+
+on:
+  push:
+    branches:
+      - feature/investment-evidence-bridge
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/investment-evidence-bridge
+      - name: Restore unrelated comments and formatting
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          p = Path('server/app/models/portfolio.py')
+          s = p.read_text()
+          reps = [
+            (
+              '    rationale: Mapped[str] = mapped_column(Text, nullable=False, default="")\n    meets_target: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)\n',
+              '    rationale: Mapped[str] = mapped_column(Text, nullable=False, default="")\n    # Состав годен, но рискованнее, чем обещает профиль. Прятать такой нельзя:\n    # на рынке, пережившем 2022 год, «не уложился в целевую просадку» — это\n    # свойство рынка, а не брак состава. Владелец видит числа и решает сам.\n    meets_target: Mapped[bool] = mapped_column(\n        Boolean, nullable=False, default=True\n    )\n'
+            ),
+            (
+              '    generated_at: Mapped[datetime] = utcnow_column()\n    valid_until: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)\n',
+              '    generated_at: Mapped[datetime] = utcnow_column()\n    valid_until: Mapped[datetime] = mapped_column(\n        DateTime(timezone=True), nullable=False\n    )\n'
+            ),
+            (
+              '    ``evidence_json`` хранит не текстовое объяснение постфактум, а точную\n    декомпозицию screening score и гипотезы, которые были decision-available\n    при сборке модели. Это позволяет ответить «почему бумага была выше в\n    отборе именно тогда» без повторного запуска сегодняшнего research state.\n',
+              '    Сумма весов проверяется кодом при сохранении (UX-ТЗ §7.1: «Сумма ровно\n    100%»), а потолок крипты — отдельным ограничением (§6.4, §27).\n\n    ``evidence_json`` хранит точную декомпозицию screening score и гипотезы,\n    которые были decision-available при сборке модели.\n'
+            ),
+            (
+              '    estimated_tax: Mapped[Money] = mapped_column(nullable=True)\n    tax_is_estimate: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)\n',
+              '    estimated_tax: Mapped[Money] = mapped_column(nullable=True)\n    # §15.1 UX-ТЗ: налоговые расчёты маркируются оценочными, окончательная\n    # сумма — за брокером как налоговым агентом.\n    tax_is_estimate: Mapped[bool] = mapped_column(\n        Boolean, nullable=False, default=True\n    )\n'
+            ),
+            (
+              '    Нужен затем, что «состава нет» — это два разных ответа. Либо конвейер до\n    оптимизации не дошёл (мало данных, короткая общая история), либо составы\n    посчитаны и ни один не прошёл проверку на истории. Хранится последний\n    прогон: это состояние текущего конвейера, а не журнал инвестрешений.\n',
+              '    Нужен затем, что «состава нет» — это два разных ответа. Либо конвейер до\n    оптимизации не дошёл (мало данных, короткая общая история), либо составы\n    посчитаны и ни один не прошёл проверку на истории. На экране оба\n    выглядели одинаково — точкой «нет», — и владелец не мог понять, ждать ему\n    данных или менять требования.\n\n    Хранится последний прогон, а не история: это состояние конвейера, и\n    вопрос к нему всегда один — «что сейчас мешает».\n'
+            ),
+            (
+              '    note: Mapped[str] = mapped_column(Text, nullable=False, default="")\n    reasons_json: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)\n    dropped_json: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)\n',
+              '    # Почему прогон не дал состава — словами, как их увидит владелец.\n    note: Mapped[str] = mapped_column(Text, nullable=False, default="")\n    # Причины отказа по каждому варианту пакета: профиль × размер × горизонт.\n    reasons_json: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)\n    # Что не взято в пересчёт и почему: бумаги без истории, без оборота.\n    dropped_json: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)\n'
+            ),
+          ]
+          for old, new in reps:
+              if s.count(old) != 1:
+                  raise SystemExit(f'model match count {s.count(old)} for {old!r}')
+              s = s.replace(old, new)
+          p.write_text(s if s.endswith('\n') else s + '\n')
+
+          p = Path('server/app/portfolio/fundamentals.py')
+          s = p.read_text()
+          reps = [
+            ('                value=_ramp(value, 8.0, 20.0),\n', '                # 8% годовых — слабо для ОФЗ, 20% — исключительно много.\n                value=_ramp(value, 8.0, 20.0),\n'),
+            ('    else:\n        days = float(raw_duration)\n', '    else:\n        # Дюрация в днях. Короткая бумага предсказуемее — и это её плюс,\n        # а не недостаток: длинная переоценивается на каждом движении ставки.\n        days = float(raw_duration)\n'),
+            ('    elif not payments:\n        metrics.append(\n', '    elif not payments:\n        # Отсутствие выплат — это факт о бумаге, а не пробел в данных:\n        # компания не платит. Оценка ноль, статус «измерено».\n        metrics.append(\n'),
+            ('                value=_ramp(cap, 5e10, 2e12),\n', '                # 50 млрд — малая компания, 2 трлн — крупнейшие.\n                value=_ramp(cap, 5e10, 2e12),\n'),
+          ]
+          for old, new in reps:
+              if s.count(old) != 1:
+                  raise SystemExit(f'fundamental match count {s.count(old)} for {old!r}')
+              s = s.replace(old, new)
+          p.write_text(s)
+
+          Path('.github/workflows/oneshot-restore-investment-comments.yml').unlink()
+          PY
+      - name: Commit restored surgical diff
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add server/app/models/portfolio.py server/app/portfolio/fundamentals.py .github/workflows/oneshot-restore-investment-comments.yml
+          git commit -m "chore: restore unrelated portfolio comments"
+          git push origin HEAD:feature/investment-evidence-bridge
