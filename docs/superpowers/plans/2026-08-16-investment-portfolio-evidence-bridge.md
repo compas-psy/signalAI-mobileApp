@@ -62,9 +62,9 @@
 **Files:**
 - Modify only tests/docs if verification reveals a contract issue.
 
-- [ ] Verify no execution/broker code changed.
-- [ ] Verify portfolio risk constraints and walk-forward admission are untouched.
+- [x] Verify no execution/broker code changed.
+- [x] Verify portfolio risk constraints and walk-forward admission are untouched.
 - [ ] Run exact-head Quality Gate: server imports/migration parity/PostgreSQL pytest, Flutter analyze/tests, secret scan and release-attestation guard.
-- [ ] Audit the PR diff for unrelated changes.
+- [x] Audit the PR diff for unrelated changes; unrelated comment/formatting churn was restored before the final gate.
 - [ ] Merge only if exact-head is green.
 - [ ] Add evidence to issue #86 and continue to roadmap stage 2 without a production release; this slice is not yet a user-visible milestone large enough for a cumulative VPS+sideload release.
