@@ -21,23 +21,27 @@ A `SpreadBasket` is explicit configuration. Every leg names:
 
 A basket also carries revenue/cost coverage, contract lag, hedge/vertical-integration flags and an explicit issuer list. Until a real basket is validated from the live official workbook, the production registry is empty. Tests inject fixture baskets directly.
 
+The existing `spread.py` has quarterly semantics: its year-ago comparison is four periods back and its calibration floor is twelve quarters. Rosstat producer prices are monthly. Therefore the runtime must aggregate monthly observations into calendar-quarter averages before constructing `spread.Period` objects. A quarter is usable only if every configured leg has exactly one usable numeric observation in each of all three constituent months.
+
 ## Data flow
 
-1. Query only `rosstat` observations for the basket's exact series.
-2. Enforce `tradable_at <= as_of` before any value is used.
+1. Query only `rosstat` observations for the basket's exact machine series.
+2. Enforce `tradable_at <= as_of` before any numeric value is used.
 3. Reject observations whose unit differs from the configured unit.
-4. Group rows by `period_end` and keep only periods containing every configured leg exactly once.
-5. Build `spread.Period` objects from those complete period averages.
-6. If no basket, a series is missing, a unit mismatches, or complete history is insufficient, return an explicit no-signal reason and do not call the common pipeline.
-7. Otherwise call the existing `spread.evaluate()` with the basket's coverage/lag/integration parameters.
-8. Emit `SignalInput` only for issuers explicitly named in the validated basket. The common fusion/pipeline remains responsible for hypothesis persistence; D1 market context is only an overlay in resolution, never a substitute for a fundamental leg.
+4. Group usable rows by calendar quarter and leg.
+5. Require January-February-March, April-May-June, July-August-September or October-November-December to be complete for every configured leg. Missing or duplicate monthly points make the whole quarter unusable.
+6. Compute each leg's arithmetic mean across its three monthly producer prices. Build one `spread.Period` per complete quarter from those averages.
+7. If no basket, a series is missing, a unit mismatches, or complete quarterly history is insufficient, return an explicit no-signal reason and do not call the common pipeline.
+8. Otherwise call the existing `spread.evaluate()` with the basket's coverage/lag/integration parameters.
+9. Emit `SignalInput` only for issuers explicitly named in the validated basket. The common fusion/pipeline remains responsible for hypothesis persistence; D1 market context is only an overlay in resolution, never a substitute for a fundamental leg.
 
 ## Safety rules
 
 - No fuzzy series matching by label; only stable machine observation keys.
-- No forward filling and no zero substitution for missing legs.
+- No forward filling and no zero substitution for missing legs or months.
 - No use before persisted `tradable_at`.
-- No partial optimistic spread.
+- No partial quarter and no partial optimistic spread.
+- No conversion of monthly rows directly into engine periods.
 - No default issuer exposure before live validation.
 - No trading/execution behavior changes.
 
@@ -46,9 +50,10 @@ A basket also carries revenue/cost coverage, contract lag, hedge/vertical-integr
 Regression tests must prove:
 
 - observations after `as_of` are invisible;
-- incomplete periods are excluded and yield a precise missing-series status when history is insufficient;
+- a quarter missing one month or one leg is excluded;
+- three monthly values become one arithmetic quarterly average;
+- four engine periods represent one year, so twelve complete quarters are required for calibrated runtime history;
 - unit mismatch fails closed;
-- complete periods are converted to the existing `spread.Period` without changing engine math;
 - an empty production basket registry cannot emit an issuer signal;
 - a fixture basket with an explicit issuer can reach `SignalInput`/pipeline only when all required evidence is complete.
 
