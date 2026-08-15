@@ -8,7 +8,15 @@ from app.research.adapters import rosstat_live_prices, rosstat_prices
 from app.research.reach import USER_AGENT
 
 TIMEOUT = 45
-PREFIXES = ("20.15", "06.20.10")
+KEYWORDS = (
+    "карбамид",
+    "мочевин",
+    "селитр",
+    "азофоск",
+    "удобрен",
+    "аммофос",
+    "нитроаммо",
+)
 
 
 def fetch(url: str) -> bytes:
@@ -48,9 +56,9 @@ def main() -> None:
                 continue
             for row in rows[header.row_index + 1 :]:
                 okpd2 = row[header.okpd2_col].strip() if header.okpd2_col < len(row) else ""
-                if not okpd2.startswith(PREFIXES):
-                    continue
                 name = row[header.name_col].strip() if header.name_col < len(row) else ""
+                if not any(keyword in name.lower() for keyword in KEYWORDS):
+                    continue
                 unit = (
                     row[header.unit_col].strip()
                     if header.unit_col is not None and header.unit_col < len(row)
