@@ -34,11 +34,14 @@ from ...models import (
 from ...models.enums import HypothesisState
 from ...research import adapters, explore, gateway, netdiag, reach
 from ...research.adapters import cbr, fns
+from ...research.collector import collect_all
 from ...research.engines import ENGINES
 from ...research.confirmations import history_verdict
+from ...research.pipeline import expire as expire_hypotheses
 from ...research.policy import CollectionDenied, authorize
-from ...research.run_engines import DEMAND_FREQUENCY
+from ...research.run_engines import DEMAND_FREQUENCY, run_demand
 from ...research.sources import ALL_SOURCES, CONNECT_ORDER, readiness, sync_registry
+from ...research.spread_runtime import PRODUCTION_BASKETS
 from ...schemas.common import ApiModel, Money
 
 router = APIRouter(prefix="/research", tags=["research"])
@@ -252,7 +255,10 @@ def _engines(session: Session) -> list[EngineStateOut]:
 #: не написан, и это отдельное состояние: «источник объявлен входом» и
 #: «данные действительно обрабатываются» — разные вещи, а раньше экран
 #: показывал первое, называя вторым.
-_OBSERVATION_PREFIX = {"DEMAND": "cbr:enterprise_monitoring:"}
+_OBSERVATION_PREFIX = {
+    "DEMAND": "cbr:enterprise_monitoring:",
+    "SPREAD": "rosstat:producer_price:",
+}
 
 
 def _facts(session: Session, key: str) -> dict:
@@ -273,6 +279,15 @@ def _facts(session: Session, key: str) -> dict:
         ).where(ResearchObservation.observation_type.like(f"{prefix}%"))
     ).one()
     total, periods, last_seen = rows
+    if key == "SPREAD" and not PRODUCTION_BASKETS:
+        return {
+            "wired": True,
+            "observations": int(total or 0),
+            "unique_periods": int(periods or 0),
+            "last_seen_at": last_seen,
+            "history_ready": False,
+            "history_note": "production baskets not configured",
+        }
     frequency = DEMAND_FREQUENCY if key == "DEMAND" else "quarterly"
     enough, why = history_verdict(int(periods or 0), frequency)
     return {
@@ -403,6 +418,43 @@ def hypotheses(
             reason=reason,
         ),
         hypotheses=[_out(session, row) for row in rows],
+    )
+
+
+class ResearchRefreshOut(ApiModel):
+    """Итог явного owner-triggered research refresh."""
+
+    collected: str
+    engines: str
+    expired_hypotheses: int = 0
+
+
+@router.post("/refresh", response_model=ResearchRefreshOut)
+def refresh_research(session: Session = Depends(get_db)) -> ResearchRefreshOut:
+    """Собрать источники и прогнать все live research engines сейчас.
+
+    Это тот же порядок, что у scheduler: сначала фиксируем правовой
+    реестр и наблюдения, затем считаем HIRING/SPREAD по уже записанному
+    срезу и только после этого закрываем протухшие гипотезы. SPREAD при
+    пустом production basket не придумывает сигнал — его точная причина
+    возвращается в `engines` через общий отчёт.
+    """
+    moment = datetime.now(UTC)
+    sync_registry(session, now=moment)
+    collected = collect_all(session, now=moment)
+    session.flush()
+    engines = run_demand(
+        session,
+        now=moment,
+        include_hiring=True,
+        include_spread=True,
+    )
+    expired = expire_hypotheses(session, now=moment)
+    session.commit()
+    return ResearchRefreshOut(
+        collected=collected.summary(),
+        engines=engines.summary(),
+        expired_hypotheses=expired,
     )
 
 
