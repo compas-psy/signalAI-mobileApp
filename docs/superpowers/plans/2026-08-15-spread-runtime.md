@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Convert persisted, decision-visible Rosstat producer-price observations into the existing SPREAD engine and common research pipeline without partial baskets or invented issuer exposure.
+**Goal:** Convert persisted, decision-visible monthly Rosstat producer-price observations into complete quarterly periods for the existing SPREAD engine and common research pipeline without partial baskets or invented issuer exposure.
 
-**Architecture:** Add one offline runtime module. Configuration is explicit and injectable; the production basket registry stays empty until a post-green live-source probe validates exact current series. The runtime queries only configured machine keys, builds complete periods, calls `engines.spread.evaluate()`, and can create pipeline signals only for explicitly configured issuers.
+**Architecture:** Add one offline runtime module. Configuration is explicit and injectable; the production basket registry stays empty until a post-green live-source probe validates exact current series. The runtime queries only configured machine keys, averages three complete months into one calendar quarter, calls `engines.spread.evaluate()`, and can create pipeline signals only for explicitly configured issuers.
 
 **Tech Stack:** Python 3, SQLAlchemy, existing research models/engine/fusion/pipeline, pytest.
 
@@ -13,13 +13,14 @@
 - Do not add another SPREAD engine.
 - Do not add a network fetch or third-party dependency.
 - Never use an observation before persisted `tradable_at`.
-- Never substitute zero, forward-fill, or silently drop a required leg into a partial optimistic period.
+- Never substitute zero, forward-fill, or silently drop a required leg/month into a partial optimistic quarter.
+- The existing engine is quarterly: four periods mean one year and twelve periods mean twelve quarters. Never feed raw monthly rows directly to it.
 - Never infer issuer exposure from labels; production registry remains empty until live validation.
 - Do not modify trading/execution behavior.
 
 ---
 
-### Task 1: Runtime preparation contract
+### Task 1: Quarterly preparation contract
 
 **Files:**
 - Create: `server/tests/test_spread_runtime.py`
@@ -31,36 +32,38 @@
 - `SpreadBasket` fields: `basket_id`, `issuers`, `legs`, `revenue_coverage`, `cost_coverage`, `calibrated`, `contract_lag_periods`, `hedged`, `vertically_integrated`.
 - `SpreadPreparation` fields: `periods`, `observation_ids`, `reason_codes`.
 
-- [ ] **Step 1: Write failing tests for visibility, completeness and unit safety**
+- [ ] **Step 1: Write failing tests for visibility, quarterly completeness and unit safety**
 
-Create fixture observations with exact configured machine keys. Assert:
+Create fixture observations with exact configured machine keys. Prove three complete monthly points for every leg become one quarterly period with arithmetic means:
 
 ```python
 prepared = prepare_periods(session, basket, as_of=cutoff)
-assert [period.period for period in prepared.periods] == expected_complete_periods
-assert "spread_observation_not_yet_tradable" in prepared.reason_codes
+assert [period.period for period in prepared.periods] == ["2025-Q1"]
+assert prepared.periods[0].products[0].price == Decimal("110")  # mean 100, 110, 120
 ```
 
-Also assert a wrong `OKEI:<code>` unit yields no prepared period and includes `spread_unit_mismatch`, and that a month missing one required leg is never materialized as a `spread.Period`.
+Add a later `tradable_at` row and assert its month is unavailable at `cutoff`. Add one wrong `OKEI:<code>` row and assert `spread_unit_mismatch` plus no quarter containing it. Remove one month from one required leg and assert the whole quarter is absent with `spread_incomplete_quarter`.
 
 - [ ] **Step 2: Run the focused tests and verify RED**
 
 Run: `pytest server/tests/test_spread_runtime.py -q`
 Expected: FAIL because `app.research.spread_runtime` does not exist.
 
-- [ ] **Step 3: Implement minimal preparation code**
+- [ ] **Step 3: Implement minimal quarterly preparation code**
 
-Use an exact SQL query:
+Query only configured Rosstat machine series, then enforce visibility before reading `value_numeric`:
 
 ```python
-select(ResearchObservation).where(
-    ResearchObservation.source_id == rosstat_prices.SOURCE_ID,
-    ResearchObservation.observation_type.in_(required_types),
-    ResearchObservation.tradable_at <= as_of,
-)
+rows = session.execute(
+    select(ResearchObservation).where(
+        ResearchObservation.source_id == rosstat_prices.SOURCE_ID,
+        ResearchObservation.observation_type.in_(required_types),
+    )
+).scalars()
+visible = [row for row in rows if row.tradable_at <= as_of]
 ```
 
-Validate unit before grouping. For each `period_end`, materialize a `spread.Period` only when every configured leg has one usable numeric observation. Map configured `side` to `products` or `inputs`; copy the configured coefficient and the stored numeric value into `spread.Leg`.
+Validate expected unit and one numeric row per leg/month. Map each `period_end` into calendar quarter. Materialize a quarter only when all three months and every configured leg are present exactly once. For each leg use `sum(monthly_values) / Decimal(3)` as the `spread.Leg.price`; preserve the configured coefficient and side.
 
 - [ ] **Step 4: Run focused tests and verify GREEN**
 
@@ -87,7 +90,7 @@ assert report.hypotheses == 0
 assert "SPREAD: production baskets not configured" in report.skipped
 ```
 
-For an injected fixture basket with explicit `issuers=("GAZP",)`, 12 complete visible periods and a persistent positive spread, assert a SPREAD signal/hypothesis is produced only for `GAZP`. Remove one required series from enough months and assert no signal plus an explicit insufficient-complete-history reason.
+For an injected fixture basket with explicit `issuers=("GAZP",)`, 36 complete monthly observations per leg (= 12 complete quarters) and a persistent positive spread, assert a SPREAD signal/hypothesis is produced only for `GAZP`. Remove enough required monthly observations to leave fewer than 12 complete quarters and assert no signal plus the engine/runtime insufficient-history reason.
 
 - [ ] **Step 2: Run focused tests and verify RED**
 
@@ -110,7 +113,7 @@ result = spread.evaluate(
 )
 ```
 
-If inapplicable or neutral, record its exact reason/detail and emit nothing. Otherwise create `SignalInput(strategy_key="SPREAD", ...)` only for `basket.issuers`. Resolve issuer confidence through the existing issuer registry and add `for_hypothesis(...)` as a market-context overlay. Call the existing `run_pipeline`; do not write hypotheses directly.
+If inapplicable or neutral, record its exact reason/detail and emit nothing. Otherwise create `SignalInput(strategy_key=spread.STRATEGY_KEY, ...)` only for `basket.issuers`. Resolve issuer confidence through the existing issuer registry and add `for_hypothesis(...)` as a market-context overlay. Call the existing `run_pipeline`; do not write hypotheses directly.
 
 - [ ] **Step 4: Run focused tests and verify GREEN**
 
