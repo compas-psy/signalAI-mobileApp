@@ -25,33 +25,71 @@ jobs:
           version: '0.11.33'
           enable-cache: true
           cache-dependency-glob: server/uv.lock
-      - name: Discover Russian CA downloads through trusted Gosuslugi HTTPS
+      - name: Confirm trusted Gosuslugi certificate guidance endpoint
         working-directory: .
         run: |
           set -euo pipefail
           curl --fail --location --silent --show-error --max-time 20 \
-            --dump-header /tmp/gosuslugi-headers.txt \
             https://www.gosuslugi.ru/crt -o /tmp/gosuslugi-crt.html
-          echo '=== GOSUSLUGI RESPONSE ==='
-          grep -E '^(HTTP/|location:)' /tmp/gosuslugi-headers.txt || true
-          echo '=== CERTIFICATE REFERENCES ==='
-          grep -Eo 'https?://[^"'"'"' <>]+|[^"'"'"' <>]*(russian|trusted)[^"'"'"' <>]*\.(cer|crt|pem|zip)' /tmp/gosuslugi-crt.html \
-            | sort -u | head -80 || true
-          echo '=== PAGE BYTES ==='
-          wc -c /tmp/gosuslugi-crt.html
-      - name: Inspect Rosstat TLS chain without disabling verification
+          test -s /tmp/gosuslugi-crt.html
+          echo "GOSUSLUGI_CRT_OK bytes=$(wc -c </tmp/gosuslugi-crt.html)"
+      - name: Capture Rosstat leaf and validate pinned Ministry CA chain
         working-directory: .
         run: |
-          set -u
-          for host in rosstat.gov.ru www.rosstat.gov.ru; do
-            echo "=== OPENSSL $host ==="
-            (echo | openssl s_client -connect "$host:443" -servername "$host" -showcerts 2>&1 || true) \
-              | grep -E '^(depth=|verify error:|subject=|issuer=|Verify return code:|-----BEGIN CERTIFICATE-----|-----END CERTIFICATE-----)' || true
-            echo "=== CURL $host ==="
-            curl --head --silent --show-error --max-time 12 "https://$host/statistics/price" >/dev/null \
-              && echo "CURL_OK $host" \
-              || echo "CURL_FAIL $host exit=$?"
-          done
+          set -euo pipefail
+          ROOT_EXPECTED=D26D2D0231B7C39F92CC738512BA54103519E4405D68B5BD703E9788CA8ECF31
+          SUB_EXPECTED=2155785036C900DBB5F1BB2A1569C80C55595BD6BF94867A29BBDDBC7D88A3F2
+
+          echo | openssl s_client -connect rosstat.gov.ru:443 -servername rosstat.gov.ru -showcerts 2>/tmp/rosstat-sclient.err \
+            | awk '/-----BEGIN CERTIFICATE-----/{capture=1} capture{print} /-----END CERTIFICATE-----/{exit}' \
+            > /tmp/rosstat-leaf.pem
+          test -s /tmp/rosstat-leaf.pem
+          echo '=== ROSSTAT LEAF ==='
+          openssl x509 -in /tmp/rosstat-leaf.pem -noout -subject -issuer -serial -dates -fingerprint -sha256
+          openssl x509 -in /tmp/rosstat-leaf.pem -noout -text \
+            | grep -A3 -E 'Authority Key Identifier|Authority Information Access' || true
+
+          # Public CA material is bootstrapped from the Gosuslugi static host.
+          # Transport trust is NOT used as the security boundary here: exact
+          # independently recorded SHA-256 fingerprints below are mandatory.
+          curl --insecure --fail --location --silent --show-error --max-time 20 \
+            https://gu-st.ru/content/Other/doc/russian_trusted_root_ca.cer \
+            -o /tmp/russian-root.cer
+          curl --insecure --fail --location --silent --show-error --max-time 20 \
+            https://gu-st.ru/content/Other/doc/russian_trusted_sub_ca.cer \
+            -o /tmp/russian-sub.cer
+
+          to_pem() {
+            src="$1"
+            dst="$2"
+            if openssl x509 -in "$src" -noout >/dev/null 2>&1; then
+              openssl x509 -in "$src" -out "$dst"
+            else
+              openssl x509 -inform DER -in "$src" -out "$dst"
+            fi
+          }
+          to_pem /tmp/russian-root.cer /tmp/russian-root.pem
+          to_pem /tmp/russian-sub.cer /tmp/russian-sub.pem
+
+          root_fp=$(openssl x509 -in /tmp/russian-root.pem -noout -fingerprint -sha256 | cut -d= -f2 | tr -d ':')
+          sub_fp=$(openssl x509 -in /tmp/russian-sub.pem -noout -fingerprint -sha256 | cut -d= -f2 | tr -d ':')
+          echo "ROOT_SHA256=$root_fp"
+          echo "SUB_SHA256=$sub_fp"
+          test "$root_fp" = "$ROOT_EXPECTED"
+          test "$sub_fp" = "$SUB_EXPECTED"
+
+          echo '=== PINNED ROOT ==='
+          openssl x509 -in /tmp/russian-root.pem -noout -subject -issuer -dates
+          echo '=== PINNED SUB ==='
+          openssl x509 -in /tmp/russian-sub.pem -noout -subject -issuer -dates
+          openssl x509 -in /tmp/russian-sub.pem -noout -text | grep -A2 'Subject Key Identifier' || true
+
+          openssl verify -CAfile /tmp/russian-root.pem /tmp/russian-sub.pem
+          openssl verify -CAfile /tmp/russian-root.pem -untrusted /tmp/russian-sub.pem /tmp/rosstat-leaf.pem
+          cat /tmp/russian-root.pem /tmp/russian-sub.pem > /tmp/rosstat-ca-bundle.pem
+          curl --cacert /tmp/rosstat-ca-bundle.pem --fail --head --silent --show-error --max-time 20 \
+            https://rosstat.gov.ru/statistics/price >/dev/null
+          echo 'ROSSTAT_PINNED_TLS_OK'
       - name: Install locked server dependencies
         run: |
           uv lock --check
@@ -59,4 +97,5 @@ jobs:
       - name: Probe current producer-price workbook
         env:
           PYTHONPATH: .
+          SSL_CERT_FILE: /tmp/rosstat-ca-bundle.pem
         run: .venv/bin/python scripts/probe_rosstat_prices.py
