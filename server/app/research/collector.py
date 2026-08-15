@@ -35,12 +35,8 @@ from .adapters import cbr, fns, rosstat_prices
 from .codes import observation_code
 from .collect import Fetched
 from .policy import CollectionDenied, Permit, authorize
-from .provenance import (
-    Provenance,
-    cbr as cbr_provenance,
-    fns as fns_provenance,
-    rosstat as rosstat_provenance,
-)
+from .provenance import Provenance, cbr as cbr_provenance, fns as fns_provenance
+from .provenance import rosstat as rosstat_provenance
 from .reach import USER_AGENT
 from .timeline import tradable_at
 
@@ -92,6 +88,12 @@ def collect_cbr(session: Session, *, now: datetime | None = None) -> CollectRepo
         report.skipped.append(f"{cbr.SOURCE_ID}: {denied.reason}")
         return report
 
+    # Двухшаговый сбор: сначала дерево публикаций, из него — числовые
+    # идентификаторы наших наборов, и только потом сами ряды. Прежний
+    # проход останавливался на первом шаге: список публикаций забирался,
+    # разбирался в ноль строк, и «сбор идёт» означало «сбор не приносит
+    # ничего». Подставлять в запрос наши имена наборов бессмысленно — у
+    # сервиса своя нумерация, что живой прогон и показал (501 на все).
     план = cbr.fetch_plan(permit)
     report.attempted += 1
     публикации = _get(план[0].url, moment)
@@ -107,6 +109,11 @@ def collect_cbr(session: Session, *, now: datetime | None = None) -> CollectRepo
         )
         return report
 
+    # Трёхшаговый, а не двухшаговый. Прежний проход доходил до списка
+    # наборов и разбирал **его** как данные: у каждой строки было название
+    # показателя и не было ни числа, ни периода — потому что это описание
+    # набора, а не факт. В журнале это выглядело как «забрано 11/11,
+    # наблюдений 0»: сеть открыта, источник отвечает, наблюдений нет.
     год = moment.year
     targets: list[tuple[str, str]] = []
     for dataset, ids in найдено.items():
@@ -129,6 +136,10 @@ def collect_cbr(session: Session, *, now: datetime | None = None) -> CollectRepo
                     dataset,
                     cbr.data_of(pub_id, набор, y1=год - HISTORY_YEARS, y2=год),
                 )
+                # Не больше трёх наборов на публикацию: лимит источника один
+                # запрос в секунду, и выгребать всё дерево за один прогон
+                # значит подойти к блокировке ради данных, которые движку
+                # сегодня не нужны.
                 for набор in наборы[:3]
             )
 
@@ -141,6 +152,9 @@ def collect_cbr(session: Session, *, now: datetime | None = None) -> CollectRepo
         report.fetched += 1
         rows = cbr.parse(fetched, dataset=dataset)
         if not rows:
+            # Пустой разбор — новость, а не тишина: контракт источника
+            # меняется, и следующий шаг должен делаться по факту ответа, а
+            # не по догадке о нём. В отчёт идут имена полей, не значения.
             report.errors.append(
                 f"{dataset}: разбор дал 0 строк; {cbr.shape_of(fetched)}"
             )
@@ -149,6 +163,11 @@ def collect_cbr(session: Session, *, now: datetime | None = None) -> CollectRepo
         записано = 0
         повторов = 0
         for datum in rows:
+            # Строка без числа и без периода — не факт, а описание набора:
+            # сервис данных отдаёт их вперемешку со значениями. Записать её
+            # наблюдением значит положить в правило 3–2–1 утверждение,
+            # которого никто не делал, и вдобавок столкнуть все такие строки
+            # в один дедуп-ключ (период у всех пустой).
             if datum.value is None and datum.period_end is None:
                 empty += 1
                 continue
@@ -175,12 +194,19 @@ def collect_cbr(session: Session, *, now: datetime | None = None) -> CollectRepo
             report.duplicates += int(not written)
             записано += int(written)
             повторов += int(not written)
+        # Повторы, которых больше, чем записей, — не повторный сбор, а
+        # схлопнувшийся ключ: у строк не нашлось ни различающего показателя,
+        # ни различающего периода, и весь ряд лёг в одну ячейку. В сводке
+        # это выглядело безобидным «повторов 516» при «наблюдений 1».
         if повторов > 10 and записано <= 1:
             report.errors.append(
                 f"{dataset}: {повторов} строк легли в один ключ — у строк нет "
                 f"различающего показателя или периода; {cbr.shape_of(fetched)}"
             )
         if empty:
+            # Молчать нельзя: если пустыми окажутся все строки, «наблюдений
+            # 0» будет выглядеть как спокойный рынок вместо неразобранного
+            # формата.
             report.skipped.append(
                 f"{dataset}: {empty} строк без значения и периода — описание "
                 f"набора, а не факт"
@@ -396,6 +422,11 @@ def _write(
             first_seen_at=first_seen_at,
             tradable_at=when.tradable_at,
             publication_time_uncertain=when.publication_time_uncertain,
+            # Корень — не источник. Источник говорит, откуда байты и по
+            # какому праву; корень — из чего факт возник. Приравняв их, мы
+            # получили вывод «два источника — максимум два корня», и вывод
+            # был неверен: у одного источника наборов несколько, и рождаются
+            # они по-разному.
             lineage_root_id=provenance.lineage_root_id,
             source_locator=locator,
             raw_sha256=raw_sha256,
@@ -427,11 +458,8 @@ def _get(url: str, moment: datetime) -> Fetched | None:
             )
     except urllib.error.HTTPError as error:
         return Fetched(
-            url=url,
-            status=error.code,
-            body=b"",
-            requested_at=moment,
-            responded_at=datetime.now(UTC),
+            url=url, status=error.code, body=b"",
+            requested_at=moment, responded_at=datetime.now(UTC),
         )
     except Exception:  # noqa: BLE001 — недоступность видна отдельной пробой
         return None
@@ -450,12 +478,11 @@ def _text(url: str) -> str:
 
 def collect_all(session: Session, *, now: datetime | None = None) -> CollectReport:
     """Пройти по всем источникам, у которых есть написанный адаптер."""
-    moment = now or datetime.now(UTC)
     total = CollectReport()
     for one in (
-        collect_cbr(session, now=moment),
-        collect_fns(session, now=moment),
-        collect_rosstat_prices(session, now=moment),
+        collect_cbr(session, now=now),
+        collect_fns(session, now=now),
+        collect_rosstat_prices(session, now=now),
     ):
         total.attempted += one.attempted
         total.fetched += one.fetched
