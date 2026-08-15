@@ -1,0 +1,43 @@
+name: Rename Rosstat CA bundle
+
+on:
+  push:
+    branches:
+      - fix/4-rosstat-live-reachability
+
+permissions:
+  contents: write
+
+jobs:
+  rename:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/4-rosstat-live-reachability
+          fetch-depth: 1
+      - name: Keep public CA material out of secret-bearing suffixes
+        run: |
+          set -euo pipefail
+          git mv \
+            server/app/research/certs/rosstat-russian-trusted-ca.pem \
+            server/app/research/certs/rosstat-russian-trusted-ca.crt
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('server/app/research/adapters/rosstat_prices.py')
+          text = path.read_text()
+          old = 'certs" / "rosstat-russian-trusted-ca.pem"'
+          new = 'certs" / "rosstat-russian-trusted-ca.crt"'
+          assert text.count(old) == 1
+          path.write_text(text.replace(old, new, 1))
+          PY
+      - name: Remove one-shot workflow and push surgical rename
+        run: |
+          rm .github/workflows/rename-rosstat-ca-bundle.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'fix: keep public Rosstat CA bundle outside secret suffixes'
+          git push origin HEAD:fix/4-rosstat-live-reachability
