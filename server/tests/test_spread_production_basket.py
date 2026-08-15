@@ -122,6 +122,8 @@ def test_spread_owner_status_does_not_mistake_months_for_complete_quarters(sessi
 
     assert state.wired is True
     assert state.observations == 6
+    # Engine status counts only complete product+input quarters that could
+    # actually reach spread.evaluate(), never raw monthly publication rows.
     assert state.unique_periods == 0
     assert state.history_ready is False
     assert "complete quarters" in state.history_note
