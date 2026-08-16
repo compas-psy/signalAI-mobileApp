@@ -26,6 +26,7 @@ def _model(session, *, generated_at, suffix: str, weights: list[tuple[str, str, 
         meets_target=True,
         warnings_json=[],
         stress_json={"год": "-0.18"},
+        config_hash=f"test-{suffix}",
         generated_at=generated_at,
         valid_until=generated_at + timedelta(days=30),
     )
