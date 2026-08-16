@@ -16,7 +16,7 @@ jobs:
     steps:
       - name: Print public SSH host-key fingerprints
         env:
-          HOST: ${{ secrets.VPS_HOST }}
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
         run: |
           set -euo pipefail
           test -n "$HOST"
