@@ -26,7 +26,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..models import Bar, DataQualityEvent, PortfolioModel
+from ..models import Bar, DataQualityEvent
 from ..models.enums import Timeframe
 from ..market.blindness import annotate as annotate_blind
 
@@ -163,6 +163,7 @@ def build_default_scheduler(
     from ..research.pipeline import expire as expire_hypotheses
     from ..research.sources import readiness, sync_registry
     from ..portfolio.build import build_all
+    from ..portfolio.lifecycle import rebuild_due
 
     scheduler = Scheduler()
     state: dict[str, datetime | None] = {"last_bar": None}
@@ -179,8 +180,6 @@ def build_default_scheduler(
                 kept = sync(session, fetch=fetch)
                 parts.append(f"{name}: {len(kept)}")
             except Exception as exc:
-                # Отказ одной площадки не должен обнулять вселенную другой:
-                # иначе недоступность биржи выглядит как «инструментов нет».
                 errors.append(f"{name} — {type(exc).__name__}: {exc}")
         detail = ", ".join(parts) if parts else "ничего не обновлено"
         if errors:
@@ -212,14 +211,9 @@ def build_default_scheduler(
         return detail
 
     def supervise(session: Session) -> str:
-        # Идёт до скана, а не после: идея, которую рынок уже обогнал, не
-        # должна участвовать в отборе дня и занимать место живой.
         report = run_supervise(session)
         detail = f"проверено {report.checked}"
         if report.no_data:
-            # С причиной, а не только с именем: «биржа не знает символа»,
-            # «биржа ответила 429» и «инструмент только что попал в отбор»
-            # требуют разных действий, а первые два ещё и чинятся.
             named = annotate_blind(session, report.no_data_instruments)
             detail += f", без баров {report.no_data} ({named}) — надзор по ним слеп"
         if report.changed:
@@ -234,34 +228,18 @@ def build_default_scheduler(
         return detail
 
     def paper(session: Session) -> str:
-        # После триггера и до скана: сделка заводится по идее, которая
-        # только что стала сработавшей, и ведётся по свежим барам.
-        #
-        # Владелец разрешил старт без подтверждения. Требование его же:
-        # «она сама отслеживается и закрывается, не зависает до времён,
-        # пока срок жизни идеи закончился».
         return run_paper(session).summary()
 
     def trigger(session: Session) -> str:
-        # Идёт после супервизора и до скана. После — потому что подтверждать
-        # идею, которую рынок уже обогнал, незачем: супервизор её закроет.
-        # До — потому что подтверждённая идея должна успеть в отбор дня.
         report = run_trigger_recheck(session)
         detail = f"проверено {report.checked}"
         if report.not_eligible:
-            # Не «пропущено», а «перепроверять нечего»: этим идеям не хватило
-            # не подтверждения, а качества, и новые свечи его не добавят.
             detail += f", вне перепроверки {report.not_eligible}"
         if report.no_data:
             named = annotate_blind(session, report.no_data_instruments)
             detail += f", без баров {report.no_data} ({named}) — надзор по ним слеп"
         if report.confirmed_but_blocked:
-            # «Подтвердилось и повысили» и «подтвердилось, но качества всё
-            # ещё не хватает» — разные новости, и вторая объясняет, почему
-            # экран не изменился после подтверждения.
-            detail += (
-                f", подтверждено но не допущено {report.confirmed_but_blocked}"
-            )
+            detail += f", подтверждено но не допущено {report.confirmed_but_blocked}"
         if report.promoted:
             detail += f", подтверждено {report.promoted}"
             detail += "; " + "; ".join(report.details[:2])
@@ -274,8 +252,6 @@ def build_default_scheduler(
         if newest is None:
             return "баров нет — сканировать нечего"
         if state["last_bar"] is not None and newest <= state["last_bar"]:
-            # Рынок не двигался: новый скан дал бы тот же ответ, а идеи
-            # продублировались бы в журнале.
             return f"новых баров нет с {newest.isoformat()} — скан пропущен"
         state["last_bar"] = newest
         result = run_scan(session)
@@ -285,35 +261,20 @@ def build_default_scheduler(
         )
 
     def portfolio(session: Session) -> str:
-        # Прогон тяжёлый — сотня оптимизаций на каждый вариант, — а
-        # планировщик последователен: пока он идёт, скан идей не работает.
-        # Поэтому сначала дешёвый вопрос: появились ли вообще новые данные
-        # с прошлой сборки. Не появились — считать нечего, тот же состав
-        # получится тот же.
-        newest = session.execute(
-            select(func.max(Bar.open_time)).where(
-                Bar.timeframe == Timeframe.D1, Bar.is_closed.is_(True)
-            )
-        ).scalar_one_or_none()
-        built = session.execute(
-            select(func.min(PortfolioModel.generated_at))
-        ).scalar_one_or_none()
-        if newest is not None and built is not None and built > newest:
-            return f"новых дневок с {newest.date().isoformat()} нет — пересчёт пропущен"
+        # В отличие от скана, срок жизни модели сам по себе является
+        # причиной пересчёта. Поэтому отсутствие новых D1 не блокирует
+        # обновление модели, которая истекла или истечёт в ближайшие сутки.
+        decision = rebuild_due(session)
+        if not decision.due:
+            return f"пересчёт пропущен — {decision.reason}"
 
-        # Класс фонда уточняется перед сборкой, а не при загрузке: он
-        # выводится из накопленного ряда цен, и до первой истории мерить
-        # нечего. Дешёвая операция, ошибиться порядком запуска дороже.
         classified = classify_funds(session)
         report = build_all(session)
         detail = (
-            f"вселенная {report.universe}, срез прошли {report.screened}, "
-            f"кандидатов {report.candidates}, пакетов допущено "
-            f"{report.admitted} из {len(report.packages)}"
+            f"причина {decision.reason}; вселенная {report.universe}, "
+            f"срез прошли {report.screened}, кандидатов {report.candidates}, "
+            f"пакетов допущено {report.admitted} из {len(report.packages)}"
         )
-        # Сколько доходных бумаг дошло до отбора. «Рынок акций падает» и
-        # «доходных бумаг во вселенной нет» — разные поломки, и по общему
-        # числу пакетов их не различить.
         if report.income_note:
             detail += f"; {report.income_note}"
         else:
@@ -325,22 +286,9 @@ def build_default_scheduler(
         return detail
 
     def research(session: Session) -> str:
-        # Что этот шаг делает сегодня и чего не делает.
-        #
-        # Реестр источников синхронизируется из кода — правовой режим это
-        # зафиксированное решение, и расхождение репозитория с базой здесь
-        # самый неприятный вид расхождения. Протухшие гипотезы закрываются:
-        # без срока они живут вечно и превращаются в кладбище решений.
-        #
-        # Сбор идёт по тем источникам, у которых проверены условия и
-        # написан адаптер. Правовой шлюз спрашивается по-настоящему: у
-        # закрытого источника прогон не ходит в сеть вовсе, и причина
-        # попадает в строку журнала, а не теряется.
         sync_registry(session)
         collected = collect_all(session)
         session.flush()
-        # Движки идут сразу за сбором: наблюдение, не дошедшее до гипотезы,
-        # снаружи неотличимо от несобранного.
         engines = run_demand(session)
         expired = expire_hypotheses(session)
         state = readiness(session)
@@ -395,15 +343,6 @@ def run_forever(
                     result.elapsed_ms,
                     result.detail,
                 )
-                # Итог задачи пишется всегда, а не только при отказе.
-                #
-                # Планировщик — отдельный процесс без входящих портов, и
-                # увидеть его работу можно было лишь в логах контейнера,
-                # то есть с доступом к серверу. Владелец, глядя на пустой
-                # экран, не мог отличить «движок считает прямо сейчас» от
-                # «движок молчит третий день». Длинная задача при этом не
-                # пишет ничего, пока не закончится, — по логу деплоя это
-                # выглядело как полная тишина.
                 session.add(
                     DataQualityEvent(
                         source="scheduler",

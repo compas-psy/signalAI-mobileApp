@@ -26,6 +26,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..models import Holding, PortfolioModel, RebalanceDraft
+from .lifecycle import ModelDiff, model_diff
 
 # Ниже этого расхождения доли ребаланс не предлагается.
 #
@@ -71,6 +72,7 @@ class Draft:
     max_drift: Decimal = Decimal(0)
     reason: str = ""
     urgent: bool = False
+    model_changed: bool = False
 
     @property
     def needed(self) -> bool:
@@ -92,12 +94,18 @@ def plan(
     holdings: list[Holding],
     *,
     threshold: Decimal = DRIFT_THRESHOLD,
+    previous_model: PortfolioModel | None = None,
 ) -> Draft:
     """Сравнить фактический состав с целевым и предложить действия.
 
     Позиции, которых нет в целевом составе, попадают в продажу целиком —
     но только если их доля выше порога. Бумага на 0,4% счёта, оставшаяся от
     прошлого пакета, не стоит заявки.
+
+    Если передано предыдущее поколение модели, причина каждого действия
+    объясняется изменением самой рекомендации там, где оно действительно
+    произошло. Без предыдущего поколения сохраняется прежняя логика drift —
+    исторический model_id не превращается задним числом в «новую модель».
     """
     draft = Draft(model_id=model.id)
     total, actual = _weights(holdings)
@@ -110,6 +118,13 @@ def plan(
     draft.total_value = total
 
     target = {w.instrument_id: Decimal(str(w.target_weight)) for w in model.weights}
+    before_target = (
+        {w.instrument_id: Decimal(str(w.target_weight)) for w in previous_model.weights}
+        if previous_model is not None
+        else {}
+    )
+    diff = model_diff(previous_model, model) if previous_model is not None else ModelDiff()
+    draft.model_changed = diff.material
     universe = sorted(set(target) | set(actual))
 
     for instrument_id in universe:
@@ -122,7 +137,16 @@ def plan(
         if size < threshold:
             continue
         amount = (size * total).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-        if want == 0:
+        if instrument_id in diff.removed:
+            reason = "удалена из новой модели"
+        elif instrument_id in diff.added:
+            reason = "добавлена в новую модель"
+        elif instrument_id in diff.weight_changed:
+            reason = (
+                "целевая доля модели изменилась "
+                f"{before_target[instrument_id]:.1%} → {want:.1%}"
+            )
+        elif want == 0:
             reason = "бумаги нет в целевом составе — закрыть позицию"
         elif have == 0:
             reason = f"позиции нет, целевая доля {want:.1%}"
@@ -142,7 +166,12 @@ def plan(
     # Сначала продажи: покупать не на что, пока деньги в другой бумаге.
     draft.actions.sort(key=lambda a: (a.side != "SELL", -a.amount_rub))
     draft.urgent = draft.max_drift >= URGENT_DRIFT
-    if not draft.actions:
+    if diff.material:
+        draft.reason = (
+            f"модель изменилась: +{len(diff.added)} / -{len(diff.removed)} / "
+            f"Δ{len(diff.weight_changed)}"
+        )
+    elif not draft.actions:
         draft.reason = (
             f"состав в пределах допуска: наибольшее расхождение "
             f"{draft.max_drift:.1%} при пороге {threshold:.0%}"
@@ -191,9 +220,14 @@ def record(
     if not draft.needed:
         return None
     moment = now or datetime.now(UTC)
+    trigger = (
+        "model_change"
+        if draft.model_changed
+        else ("drift_urgent" if draft.urgent else "drift")
+    )
     row = RebalanceDraft(
         model_id=model.id,
-        trigger_reason=("drift_urgent" if draft.urgent else "drift")[:64],
+        trigger_reason=trigger[:64],
         actions_json=[a.as_dict() for a in draft.actions],
         before_json={
             a.instrument_id: str(a.actual_weight) for a in draft.actions

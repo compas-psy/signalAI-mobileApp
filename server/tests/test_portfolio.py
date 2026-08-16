@@ -293,17 +293,27 @@ def test_консервативный_профиль_держит_потолок
         assert equity <= cap + 1e-3
 
 
-def test_повторный_прогон_не_плодит_составы(market, session):
+def test_повторный_прогон_сохраняет_поколения_каждого_слота(market, session):
     classify_funds(session)
     for _ in range(2):
         build_all(
             session, draws=20, fetch=_no_network,
             profiles=(RiskProfile.OPTIMAL,), horizons=(1,),
         )
-    shapes = {
-        (m.profile, m.package, m.horizon_years) for m in session.query(PortfolioModel)
-    }
-    assert len(shapes) == session.query(PortfolioModel).count()
+
+    models = session.query(PortfolioModel).all()
+    shapes = {(m.profile, m.package, m.horizon_years) for m in models}
+
+    # Stage 4: повторный расчёт создаёт новое поколение, а не уничтожает
+    # предыдущую рекомендацию. При этом набор логических слотов не меняется.
+    assert len(shapes) == 3
+    assert len(models) == 2 * len(shapes)
+    for shape in shapes:
+        assert sum(
+            1
+            for model in models
+            if (model.profile, model.package, model.horizon_years) == shape
+        ) == 2
 
 
 # ── API ──────────────────────────────────────────────────────────────────
