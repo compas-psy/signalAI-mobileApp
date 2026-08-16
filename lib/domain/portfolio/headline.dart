@@ -49,9 +49,10 @@ class PortfolioHeadlines {
     this.unavailableReason,
   });
 
-  const PortfolioHeadlines.unavailable(String reason, {required int horizonYears})
-      : horizonYears = horizonYears,
-        portfolios = const [],
+  const PortfolioHeadlines.unavailable(
+    String reason, {
+    required this.horizonYears,
+  })  : portfolios = const [],
         unavailableReason = reason;
 
   final int horizonYears;
