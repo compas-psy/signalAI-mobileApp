@@ -26,6 +26,7 @@ class PositionOut(ApiModel):
     kill_conditions: str
     score: Money | None = None
     expected_return: Money | None = None
+    evidence: dict = Field(default_factory=dict)
 
 
 class ClassSliceOut(ApiModel):
@@ -34,6 +35,14 @@ class ClassSliceOut(ApiModel):
     asset_class: str
     label: str
     weight: Money
+
+
+class ModelChangesOut(ApiModel):
+    """Материальные изменения относительно прошлого поколения того же слота."""
+
+    added: list[str] = Field(default_factory=list)
+    removed: list[str] = Field(default_factory=list)
+    weight_changed: list[str] = Field(default_factory=list)
 
 
 class PackageOut(ApiModel):
@@ -56,6 +65,7 @@ class PackageOut(ApiModel):
     valid_until: datetime
     mix: list[ClassSliceOut] = Field(default_factory=list)
     positions: list[PositionOut] = Field(default_factory=list)
+    changes: ModelChangesOut = Field(default_factory=ModelChangesOut)
 
 
 class HeadlinePortfolioOut(ApiModel):

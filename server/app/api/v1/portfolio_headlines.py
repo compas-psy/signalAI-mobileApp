@@ -16,10 +16,37 @@ from sqlalchemy.orm import Session
 from ...db import get_db
 from ...models import PortfolioModel
 from ...portfolio.headlines import select_headlines
-from ...schemas.portfolio import HeadlinePortfolioOut, HeadlinePortfolioResponse
+from ...portfolio.lifecycle import model_diff, previous_generation
+from ...schemas.portfolio import (
+    HeadlinePortfolioOut,
+    HeadlinePortfolioResponse,
+    ModelChangesOut,
+    PackageOut,
+)
 from .portfolio import _package_out
 
 router = APIRouter(prefix="/portfolio", tags=["portfolio"])
+
+
+def _headline_package(session: Session, model: PortfolioModel) -> PackageOut:
+    """Add evidence and generation diff needed by the owner-facing card."""
+    package = _package_out(session, model)
+    evidence_by_instrument = {
+        weight.instrument_id: dict(weight.evidence_json or {}) for weight in model.weights
+    }
+    positions = [
+        position.model_copy(
+            update={"evidence": evidence_by_instrument.get(position.instrument_id, {})}
+        )
+        for position in package.positions
+    ]
+    diff = model_diff(previous_generation(session, model), model)
+    changes = ModelChangesOut(
+        added=list(diff.added),
+        removed=list(diff.removed),
+        weight_changed=list(diff.weight_changed),
+    )
+    return package.model_copy(update={"positions": positions, "changes": changes})
 
 
 @router.get("/headlines", response_model=HeadlinePortfolioResponse)
@@ -46,7 +73,7 @@ def headlines(
                 status=str(item.status),
                 reason=item.reason,
                 package=(
-                    _package_out(session, item.model)
+                    _headline_package(session, item.model)
                     if item.model is not None
                     else None
                 ),

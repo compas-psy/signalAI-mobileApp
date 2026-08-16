@@ -7,12 +7,12 @@ import '../../theme/tokens.dart';
 import '../widgets/segmented.dart';
 import 'capital_screen.dart';
 import 'investment_signals_screen.dart';
+import 'portfolio_headlines_screen.dart';
 
 /// Раздел «Портфель» (ТЗ §7).
 ///
-/// Пакеты, инвестиционные сигналы, черновик ребалансировки и счета. Пакеты и
-/// книга капитала продолжают использовать рабочий CapitalScreen; сигналы —
-/// отдельный серверный контур с фундаменталом + D1 timing + катализаторами.
+/// Пакеты — три owner-facing стратегии от сервера. Инвестиционные сигналы,
+/// ребалансировка и счета остаются отдельными рабочими поверхностями.
 class PortfolioScreen extends StatelessWidget {
   const PortfolioScreen({super.key, required this.pill});
 
@@ -27,33 +27,38 @@ class PortfolioScreen extends StatelessWidget {
       return const InvestmentSignalsScreen();
     }
 
-    final body = CapitalScreen(
+    if (section == PortfolioPill.packages) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(S.screen, 12, S.screen, 2),
+            child: SegmentedControl(
+              items: [for (final h in PackageHorizon.values) h.label],
+              index: PackageHorizon.values.indexOf(controller.packageHorizon),
+              onSelect: (i) =>
+                  controller.setPackageHorizon(PackageHorizon.values[i]),
+            ),
+          ),
+          Expanded(
+            child: PortfolioHeadlinesScreen(
+              horizonYears: controller.packageHorizon.years,
+            ),
+          ),
+        ],
+      );
+    }
+
+    return CapitalScreen(
       pill: switch (section) {
         PortfolioPill.packages => CapitalPill.packages.index,
         PortfolioPill.signals => CapitalPill.packages.index,
-        PortfolioPill.rebalance => CapitalPill.overview.index,
+        // Старый /packages здесь остаётся технической поверхностью: именно
+        // он загружает advisory-only сверку счёта с выбранной моделью.
+        // В основном chooser внутренние варианты больше не показываются.
+        PortfolioPill.rebalance => CapitalPill.packages.index,
         PortfolioPill.accounts => CapitalPill.accounts.index,
       },
-    );
-
-    // Горизонт переключает не оформление, а состав: на годовом сроке
-    // просадку рынка акций пересидеть нельзя, и веса другие во всех трёх
-    // профилях. Поэтому переключатель стоит над пакетами, а не внутри.
-    if (section != PortfolioPill.packages) return body;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(S.screen, 12, S.screen, 2),
-          child: SegmentedControl(
-            items: [for (final h in PackageHorizon.values) h.label],
-            index: PackageHorizon.values.indexOf(controller.packageHorizon),
-            onSelect: (i) =>
-                controller.setPackageHorizon(PackageHorizon.values[i]),
-          ),
-        ),
-        Expanded(child: body),
-      ],
     );
   }
 }
