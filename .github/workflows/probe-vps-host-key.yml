@@ -12,6 +12,7 @@ permissions: {}
 jobs:
   fingerprint:
     runs-on: ubuntu-latest
+    environment: production
     steps:
       - name: Print public SSH host-key fingerprints
         env:
