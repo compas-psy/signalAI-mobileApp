@@ -411,17 +411,17 @@ def stock_board(
 def security_issuer_id(
     sec_id: str, *, fetch=http_json
 ) -> tuple[str | None, FetchReport]:
-    """Явный идентификатор эмитента MOEX; имена и тикеры не используются."""
+    """Явный код эмитента из описания MOEX; имена и тикеры не используются."""
     payload, report = fetch(
         f"{BASE}/securities/{sec_id}.json?iss.meta=off&iss.only=description"
     )
-    for row in iss_rows(payload, "description"):
-        if str(row.get("name") or "").strip().lower() != "emitent_inn":
-            continue
-        raw = str(row.get("value") or "").strip()
-        inn = "".join(ch for ch in raw if ch.isdigit())
-        if len(inn) in (10, 12):
-            return f"MOEX:INN:{inn}", report
+    description = {
+        str(row.get("name") or "").strip().lower(): str(row.get("value") or "").strip()
+        for row in iss_rows(payload, "description")
+    }
+    emitter_id = description.get("emitter_id", "")
+    if emitter_id:
+        return f"MOEX:EMITTER:{emitter_id}", report
     return None, report
 
 
