@@ -15,6 +15,21 @@ enum PortfolioHeadlineStatus {
       };
 }
 
+@immutable
+class PortfolioModelChanges {
+  const PortfolioModelChanges({
+    this.added = const [],
+    this.removed = const [],
+    this.weightChanged = const [],
+  });
+
+  final List<String> added;
+  final List<String> removed;
+  final List<String> weightChanged;
+
+  bool get isEmpty => added.isEmpty && removed.isEmpty && weightChanged.isEmpty;
+}
+
 /// One of the three investment choices visible to the owner.
 ///
 /// The server chooses the internal package variant. The mobile app must not
@@ -27,6 +42,8 @@ class PortfolioHeadline {
     required this.status,
     required this.reason,
     this.package,
+    this.evidenceByInstrument = const {},
+    this.changes = const PortfolioModelChanges(),
   });
 
   final String profile;
@@ -34,6 +51,8 @@ class PortfolioHeadline {
   final PortfolioHeadlineStatus status;
   final String reason;
   final EnginePackage? package;
+  final Map<String, Map<String, dynamic>> evidenceByInstrument;
+  final PortfolioModelChanges changes;
 
   bool get hasPackage => package != null;
   bool get isRiskier => status == PortfolioHeadlineStatus.riskierThanTarget;
