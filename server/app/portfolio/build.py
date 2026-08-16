@@ -32,7 +32,13 @@ from sqlalchemy.orm import Session
 
 from ..config import get_config
 from ..market.investments import investment_universe
-from ..models import Bar, Instrument, PortfolioModel, PortfolioRun, PortfolioWeight
+from ..models import (
+    Bar,
+    Instrument,
+    PortfolioModel,
+    PortfolioRun,
+    PortfolioWeight,
+)
 from ..models.enums import AssetClass, PackageSize, RiskProfile, Timeframe
 from . import fundamentals as fund
 from .stats import (
@@ -49,9 +55,18 @@ from .stats import (
 )
 from .walkforward import judge, walk_forward
 
+# ── Профили ──────────────────────────────────────────────────────────────
+
 
 @dataclass(frozen=True, slots=True)
 class Profile:
+    """Профиль риска — это целевые колебания и потолки по классам (§6.1).
+
+    Профиль не задаёт ни одной бумаги. Он говорит, сколько колебаний
+    владелец согласен переносить и чего в портфеле не должно быть больше
+    определённой доли. Всё остальное решает оптимизатор на данных.
+    """
+
     target_volatility: float
     drawdown_limit: float
     caps: dict[AssetClass, float]
@@ -59,6 +74,9 @@ class Profile:
     title: str = ""
 
 
+# Классы, которые платят проценты, а не растут. Денежный рынок, фонды
+# облигаций, ОФЗ и корпоративные бумаги: их доход не зависит от того, куда
+# идёт рынок акций, и в падающий год он остаётся положительным.
 INCOME_CLASSES: frozenset[AssetClass] = frozenset(
     {
         AssetClass.MONEY_MARKET,
@@ -67,6 +85,7 @@ INCOME_CLASSES: frozenset[AssetClass] = frozenset(
         AssetClass.CORPORATE_BOND,
     }
 )
+
 
 PROFILES: dict[RiskProfile, Profile] = {
     RiskProfile.CONSERVATIVE: Profile(
@@ -101,8 +120,19 @@ PROFILES: dict[RiskProfile, Profile] = {
     ),
 }
 
-HORIZON_WINDOW = {1: 504, 5: 0}
+# Горизонт меняет не состав, а окно оценки. Годовой пакет обязан отражать
+# текущий режим рынка; пятилетний — пережить смену режимов, поэтому смотрит
+# на всю доступную историю.
+HORIZON_WINDOW = {1: 504, 5: 0}  # торговых дней; 0 — вся история
+
+# Меньше двух бумаг — это не портфель, а ставка: диверсификации нет, и
+# портфельные показатели к ней неприменимы. Всё, что выше, решает
+# оптимизатор, а не заявленный размер пакета.
 MIN_POSITIONS = 2
+
+# Доля, ниже которой позиция не окупает собственного существования: комиссия
+# за вход и выход съедает её вклад, а на экране она занимает такую же строку,
+# как осмысленная позиция.
 DUST_WEIGHT = 0.02
 
 ROLE_BY_CLASS = {
@@ -115,6 +145,9 @@ ROLE_BY_CLASS = {
     AssetClass.CRYPTO_SPOT: "асимметричный риск",
     AssetClass.CRYPTO_PERPETUAL: "асимметричный риск",
 }
+
+
+# ── Результат сборки ─────────────────────────────────────────────────────
 
 
 @dataclass(slots=True)
@@ -139,6 +172,8 @@ class Package:
     horizon_years: int
     admitted: bool
     reason: str
+    # Состав годен, но рискованнее, чем обещает профиль. Это не повод его
+    # прятать: числа риска показываются рядом, решение за владельцем.
     meets_target: bool = True
     warnings: list[str] = field(default_factory=list)
     positions: list[Position] = field(default_factory=list)
@@ -153,12 +188,19 @@ class Package:
 
 @dataclass(slots=True)
 class BuildReport:
+    """Что произошло за прогон — на этом строится экран прогресса."""
+
     universe: int = 0
     screened: int = 0
     candidates: int = 0
     common_days: int = 0
+
+    # Доходный контур считается отдельно, и отчитывается тоже отдельно:
+    # «пакетов нет» из-за падающего рынка акций и «нет доходных бумаг во
+    # вселенной» — разные поломки, и чинить их надо по-разному.
     income_candidates: int = 0
     income_note: str = ""
+
     packages: list[Package] = field(default_factory=list)
     rejected: list[tuple[str, str]] = field(default_factory=list)
     note: str = ""
@@ -166,6 +208,9 @@ class BuildReport:
     @property
     def admitted(self) -> int:
         return sum(1 for p in self.packages if p.admitted)
+
+
+# ── Данные ───────────────────────────────────────────────────────────────
 
 
 def daily_closes(
@@ -198,12 +243,46 @@ def _panel_with_window(
     target: int | None = None,
     classes: dict[str, AssetClass] | None = None,
 ) -> tuple[ReturnPanel, list[tuple[str, str]]]:
+    """Панель, у которой хватает общей истории на скользящую проверку.
+
+    Панель строится по датам, **общим** для всех бумаг, — иначе ковариация
+    считалась бы по разным периодам для разных пар. Отсюда неприятное
+    свойство: одна недавно допущенная бумага обрезает окно всем остальным.
+    Именно это и произошло на боевом сервере: 54 бумаги с историей, а общее
+    окно короче, чем нужно одному циклу проверки (два года обучения плюс
+    квартал измерения). Проверка не проводилась ни разу, значит ни один
+    состав не мог быть допущен — экран честно показывал «нет» на шаге
+    оптимизации, и причина этого «нет» была не видна.
+
+    Здесь короткие ряды **отбрасываются**, а не укорачивают всех: бумага без
+    длинной истории просто не участвует в этом пересчёте. Отброшенные едут в
+    отчёт с причиной — «пропала из состава» не должно быть неотличимо от
+    «сломалась загрузка».
+    """
     working = dict(series)
     dropped: list[tuple[str, str]] = []
     panel = build_panel(working)
+    # Цель — не минимально допустимое окно, а осмысленное. Останавливаться на
+    # первом же успехе значило получить три окна проверки: девять месяцев вне
+    # обучения, по которым вердикт «состав теряет 3.1% годовых» говорит
+    # больше о конкретном квартале, чем о составе. Пока отбрасывание коротких
+    # рядов удлиняет общее окно и бумаг остаётся достаточно — продолжаем.
     goal = max(needed, target or needed)
     by_class = classes or {}
     while panel.periods < goal and len(working) > min_width:
+        # Уходит самый короткий ряд — он и ограничивает пересечение. Но не
+        # любой: класс актива, от которого осталась пара бумаг, беречь
+        # важнее длины окна. Вырезав все облигации и денежный рынок, мы
+        # оставим консервативный профиль без единого допустимого состава —
+        # его потолок на акции просто не даст набрать 100%.
+        #
+        # А как только минимального окна хватает, доходные бумаги не режутся
+        # вовсе. Длинное окно — это удобство оценки; бумага, которая растёт,
+        # когда рынок акций падает, — это единственное, из чего в такой год
+        # вообще собирается положительный состав. Менять второе на первое
+        # значит остаться без пакетов ровно тогда, когда они нужнее всего.
+        # Фонды денежного рынка и облигаций моложе акций, и в этом обмене
+        # они всегда проигрывали.
         protect = INCOME_CLASSES if panel.periods >= needed else frozenset()
         shortest = _next_to_drop(working, by_class, protect=protect)
         if shortest is None:
@@ -212,6 +291,8 @@ def _panel_with_window(
         candidate = dict(working)
         del candidate[shortest]
         grown = build_panel(candidate)
+        # Если удаление не удлиняет окно, дальше резать бессмысленно: длину
+        # держит не этот ряд, и мы просто обедняем отбор.
         if panel.periods >= needed and grown.periods <= panel.periods:
             break
         working, panel = candidate, grown
@@ -231,6 +312,15 @@ def _next_to_drop(
     *,
     protect: frozenset[AssetClass] = frozenset(),
 ) -> str | None:
+    """Какой ряд убрать следующим: самый короткий из тех, кого не жалко.
+
+    «Не жалко» — значит его класс представлен ещё как минимум двумя другими
+    бумагами. Класс, доживший до пары представителей, не режется: без него
+    часть профилей перестаёт быть выполнимой в принципе.
+
+    ``protect`` — классы, которые не режутся вообще. Возвращается ``None``,
+    если резать больше некого: это не ошибка, а сигнал остановиться.
+    """
     counts: dict[AssetClass, int] = {}
     for key in working:
         asset_class = by_class.get(key)
@@ -252,6 +342,9 @@ def _next_to_drop(
     return min(pool, key=length)
 
 
+# ── Ограничения ──────────────────────────────────────────────────────────
+
+
 def _constraints(
     classes: list[AssetClass],
     profile: Profile,
@@ -259,11 +352,32 @@ def _constraints(
     positions: int,
     issuer_ids: list[str | None] | None = None,
 ) -> Constraints:
-    """Потолки на бумагу, класс и source-backed юридического эмитента."""
+    """Границы весов: потолок на бумагу, эмитента и потолки по классам.
+
+    Потолок на бумагу выведен из размера пакета, а не назначен числом: в
+    пакете на три позиции 20% — это мало, в пакете на двенадцать — это уже
+    концентрация. Берётся полторы «равные доли», но не больше трети.
+
+    Денежный рынок из этого правила исключён, и это не послабление, а
+    исправление ошибки. Потолок на бумагу — защита от того, что один эмитент
+    подведёт. Фонд денежного рынка в этой роли — не ставка, а место, где
+    деньги ждут: держать в нём 80% не концентрация, а решение не покупать
+    остальное.
+
+    Пока он подчинялся общему потолку, происходило вот что: веса обязаны
+    давать 100%, доходных бумаг в отборе две, потолок на бумагу 18% — значит
+    ими закрывается 37%, а оставшиеся 63% **обязаны** уйти в акции. В
+    падающий рынок оптимизатор был вынужден покупать то, от чего профиль и
+    должен защищать, и состав честно терял 18% годовых вне обучения. Это не
+    свойство рынка, это ограничение, требующее покупки.
+
+    Если у нескольких бумаг есть один и тот же явный ``issuer_id`` от MOEX,
+    их суммарная доля получает тот же потолок, что одна бумага. Пустой issuer
+    никогда не склеивается: угадывать юрлицо по тикеру или названию нельзя.
+    """
     n = len(classes)
     if issuer_ids is not None and len(issuer_ids) != n:
         raise ValueError("issuer_ids должны соответствовать списку классов")
-
     per_name = min(0.34, max(0.12, 1.5 / max(1, positions)))
     lo = np.zeros(n)
     hi = np.full(n, per_name)
@@ -279,23 +393,24 @@ def _constraints(
         mask = np.array([c is asset_class for c in classes])
         if mask.any():
             groups.append((mask, float(cap)))
-
-    # Две акции одного юрлица — не две независимые ставки. Добавляем группу
-    # только для явного source-backed issuer_id. None/пустые значения никогда
-    # не склеиваются: это было бы угадыванием эмитента.
     if issuer_ids is not None:
-        for issuer_id in sorted({i for i in issuer_ids if i}):
-            mask = np.array([i == issuer_id for i in issuer_ids])
+        for issuer_id in sorted({value for value in issuer_ids if value}):
+            mask = np.array([value == issuer_id for value in issuer_ids])
             if int(mask.sum()) > 1:
                 groups.append((mask, per_name))
-
     if hi.sum() < 1.0:
+        # Потолки не дают набрать 100% — расширяем потолок на бумагу до
+        # выполнимого. Молча вернуть недобранный портфель нельзя: сумма
+        # весов обязана быть единицей (UX-ТЗ §7.1).
         hi = np.minimum(1.0, hi * (1.05 / max(hi.sum(), 1e-9)))
     return Constraints(lo=lo, hi=hi, groups=tuple(groups))
 
 
+# ── Сборка одного пакета ─────────────────────────────────────────────────
+
+
 def _reachable(hi: np.ndarray, groups: tuple[tuple[np.ndarray, float], ...]) -> float:
-    """Проверить, можно ли набрать 100% при в том числе вложенных группах."""
+    """Можно ли набрать 100% при потолках, включая вложенные issuer-группы."""
     if hi.size == 0 or float(hi.sum()) < 1.0 - 1e-9:
         return float(hi.sum())
     lo = np.zeros_like(hi)
@@ -316,6 +431,17 @@ def _reachable(hi: np.ndarray, groups: tuple[tuple[np.ndarray, float], ...]) -> 
 def _drop_unstable(
     weights: np.ndarray, dispersion: np.ndarray, *, ratio: float = 1.0
 ) -> np.ndarray:
+    """Убрать позиции, чей вес неотличим от собственного разброса.
+
+    ``ratio`` — во сколько раз разброс должен превышать вес, чтобы позицию
+    считать случайной. Единица означает буквально «стандартное отклонение
+    веса больше самого веса»: такая доля с равным успехом могла оказаться
+    нулём.
+
+    Если после отсева не остаётся хотя бы двух бумаг, состав возвращается
+    как был: «не уверены ни в чём» — это повод сказать об этом на проверке
+    на истории, а не молча отдать пустой портфель.
+    """
     if weights.size == 0 or dispersion.size != weights.size:
         return weights
     keep = ~((dispersion > ratio * np.maximum(weights, 1e-12)) & (weights > 0))
@@ -327,39 +453,84 @@ def _drop_unstable(
 def _trim(
     weights: np.ndarray, count: tuple[int, int], constraints: Constraints
 ) -> np.ndarray:
+    """Свести состав к разрешённому числу позиций, не нарушив ограничений.
+
+    Хвост из десяти позиций по 0.4% — не диверсификация, а комиссия: такие
+    доли не переживают ни одного ребаланса. Но вычеркнуть лишнее и поделить
+    остаток на сумму нельзя: нормировка раздувает оставшиеся веса и легко
+    выносит класс за его потолок — консервативный профиль так набирал 31%
+    акций при разрешённых 25%. Поэтому после отбора состав **проецируется**
+    обратно на множество ограничений.
+
+    Если оставленных бумаг не хватает, чтобы набрать 100% под потолками
+    классов, набор расширяется следующими по весу — пока не станет
+    выполнимым. Недобранный портфель — не портфель.
+
+    Чего здесь **не** делается: добора до заявленного числа позиций. Раньше
+    состав, в котором оптимизатор дал вес трём бумагам, дополнялся до пяти
+    следующими по списку — то есть теми, которым веса не досталось. В
+    падающий рынок это затаскивало в консервативный пакет ровно те акции,
+    от которых он и должен защищать: у них вес был нулевой, а квота
+    требовала пятой строки. Позицию покупают потому, что она улучшает
+    состав, а не потому, что нужна пятая строка. Размер пакета — это
+    потолок широты, а не квота.
+    """
     _, high = count
     order = list(np.argsort(-weights))
     keep = [int(i) for i in order[:high] if weights[i] >= 0.005]
+    # Единственный настоящий минимум — два: одна бумага это не портфель, а
+    # ставка, и мерить её портфельными показателями бессмысленно.
     if len(keep) < MIN_POSITIONS:
         keep = [int(i) for i in order[:MIN_POSITIONS]]
 
     rest = [int(i) for i in order if int(i) not in keep]
     while True:
         hi = np.zeros_like(constraints.hi)
+        # Потолок на бумагу считается от фактического числа позиций: в
+        # составе из трёх бумаг доля в треть — норма, а не концентрация.
         room = min(0.5, max(1.4 / max(1, len(keep)), 0.0))
         for i in keep:
+            # Расширять потолок можно, сужать — нет. Здесь стояло
+            # `min(0.5, …)`, и оно резало обратно то, что ограничения
+            # разрешили осознанно: денежному рынку позволено 100%, а отбор
+            # позиций возвращал ему 50% — и вторую половину проекции
+            # приходилось класть в падающие акции. Ограничение, которое
+            # заставляет купить, — это не ограничение риска.
             hi[i] = max(float(constraints.hi[i]), min(0.5, room))
         if _reachable(hi, constraints.groups) >= 1.0 - 1e-9 or not rest:
             break
         keep.append(rest.pop(0))
 
     if _reachable(hi, constraints.groups) < 1.0 - 1e-9:
+        # Даже вся вселенная не набирает 100% под потолками — состава нет.
         return np.zeros_like(weights)
 
     seed = np.zeros_like(weights)
     seed[keep] = weights[keep]
     result = project_with_groups(seed, constraints.lo, hi, constraints.groups)
 
+    # Пыль срезается после проекции, а не до неё. Проекция раскладывает
+    # остаток по всем оставленным бумагам, и доли по полпроцента появляются
+    # именно на этом шаге: до него их не было. Такая позиция не переживает ни
+    # одного ребаланса — она только стоит комиссии и места в списке.
     dust = result < DUST_WEIGHT
     if dust.any() and not dust.all():
         seed = np.where(dust, 0.0, result)
         trimmed = np.where(dust, 0.0, hi)
         if _reachable(trimmed, constraints.groups) >= 1.0 - 1e-9:
-            result = project_with_groups(seed, constraints.lo, trimmed, constraints.groups)
+            result = project_with_groups(
+                seed, constraints.lo, trimmed, constraints.groups
+            )
     return result
 
 
 def _stress(panel: ReturnPanel, weights: np.ndarray) -> dict:
+    """Худшее, что уже случалось с этим составом на его собственной истории.
+
+    Не выдуманные сценарии «падение рынка на 30%», а фактические окна:
+    сколько состав терял за месяц и за квартал в худшем случае. Владелец
+    видит числа, которые действительно происходили.
+    """
     series = panel.values @ weights
     result: dict[str, str] = {}
     for label, window in (("месяц", 21), ("квартал", 63), ("год", 252)):
@@ -368,7 +539,8 @@ def _stress(panel: ReturnPanel, weights: np.ndarray) -> dict:
         rolled = np.convolve(series, np.ones(window), mode="valid")
         result[label] = f"{float(np.exp(rolled.min()) - 1):.1%}"
     if series.size:
-        result["день"] = f"{float(np.exp(series.min()) - 1):.1%}"
+        worst_day = float(np.exp(series.min()) - 1)
+        result["день"] = f"{worst_day:.1%}"
     return result
 
 
@@ -379,6 +551,7 @@ def _thesis(card: fund.Fundamental, weight: float) -> str:
 
 
 def _kill(card: fund.Fundamental) -> str:
+    """Условия выхода, привязанные к тому, из-за чего бумага попала в пакет."""
     if card.asset_class in (AssetClass.OFZ, AssetClass.CORPORATE_BOND):
         return (
             "доходность к погашению упала ниже доходности денежного рынка; "
@@ -395,6 +568,7 @@ def _kill(card: fund.Fundamental) -> str:
 
 
 def _explicit_issuer_id(instrument: Instrument) -> str | None:
+    """Только канонический source-backed issuer ID; догадок здесь нет."""
     value = (instrument.metadata_json or {}).get("issuer_id")
     if isinstance(value, str) and value.startswith("MOEX:INN:"):
         return value
@@ -453,9 +627,21 @@ def build_package(
         result.reason = "оптимизатор не сошёлся ни на одной выборке"
         return result
 
+    # Позиции, вес которых по бутстрэп-выборкам скачет сильнее собственной
+    # величины, из состава убираются.
+    #
+    # Ресэмплинг Мишо усредняет сотню составов, и в среднем такая бумага
+    # выглядит прилично: 6% там, ноль тут, 12% в третьей выборке — среднее
+    # 6%. Но это не «доля 6%», а «мы не знаем, нужна ли она вообще».
+    # Разброс здесь считался с самого начала и никуда не применялся — а он
+    # и есть честная мера устойчивости позиции.
     stable = _drop_unstable(resampled.weights, resampled.dispersion)
     weights = _trim(stable, count, constraints)
     if abs(float(weights.sum())) < 1e-6:
+        # Проекция вернула нули: потолки классов профиля вместе не дают 100%
+        # на отобранных бумагах. Это состояние вселенной, а не приговор
+        # рынку, и называть его надо именно так — иначе экран скажет
+        # «вне обучения состав теряет 0.0% годовых».
         present = sorted({str(c) for c in classes})
         result.reason = (
             "состав не собран: потолки профиля не дают набрать 100% из "
@@ -465,8 +651,12 @@ def build_package(
         return result
 
     def rebuild(train: np.ndarray) -> np.ndarray:
+        # Окно горизонта применяется и внутри проверки: иначе проверялся бы
+        # не тот способ счёта, которым получен показанный состав.
         piece = train if window == 0 or train.shape[0] <= window else train[-window:]
         cov = annualise_cov(shrunk_covariance(piece))
+        # Сжатое среднее, а не выборочное: проверка обязана мерить тот же
+        # способ счёта, которым получен показанный состав.
         mu = shrunk_mean(piece, cov)
         w = optimise_to_volatility(
             mu, cov, constraints, target_volatility=profile.target_volatility
@@ -476,12 +666,19 @@ def build_package(
     wf = cfg.section("backtest")["walk_forward"]
     train_days = int(wf["train_months"]) * 21
     test_days = int(wf["test_months"]) * 21
+    # Проверка идёт по всей истории, а не по окну горизонта. Годовой пакет
+    # считается по последним двум годам — но доверия он заслуживает лишь
+    # тем, что такой способ счёта работал и раньше, на других режимах.
+    # Проверять его на том же куске, из которого взяты веса, значит не
+    # проверять вовсе.
     report = walk_forward(panel, rebuild, train=train_days, test=test_days)
     verdict = judge(report, drawdown_limit=profile.drawdown_limit)
 
     realised = performance(working.values @ weights)
     result.volatility = realised.volatility
     result.cvar_95 = realised.cvar_95
+    # Стресс — по всей истории: «худшее, что уже случалось» не может
+    # ограничиваться последними двумя годами.
     result.stress = _stress(panel, weights)
 
     if report.performed and report.combined is not None:
@@ -505,6 +702,9 @@ def build_package(
         f"{report.summary}"
     )
 
+    # На экране — то же число, которым считал оптимизатор. Показать рядом с
+    # долей выборочное среднее значило бы объяснять вес не тем, из чего он
+    # получен: сжатие меняет эти числа заметно, и расхождение заметили бы.
     mu_annual = shrunk_mean(
         working.values, annualise_cov(shrunk_covariance(working.values))
     )
@@ -532,6 +732,9 @@ def build_package(
     return result
 
 
+# ── Прогон целиком ───────────────────────────────────────────────────────
+
+
 def build_all(
     session: Session,
     *,
@@ -541,6 +744,12 @@ def build_all(
     horizons: tuple[int, ...] = (1, 5),
     as_of: datetime | None = None,
 ) -> BuildReport:
+    """Пересобрать все пакеты и сохранить их.
+
+    Старые модели того же профиля, пакета и горизонта удаляются: показывать
+    вчерашний состав рядом с сегодняшним нельзя — владелец не обязан
+    угадывать, какой из них действующий (UX-ТЗ §7.1, «пакет протухает»).
+    """
     cfg = get_config()
     report = BuildReport()
     now = as_of or datetime.now(UTC)
@@ -548,7 +757,9 @@ def build_all(
     universe = investment_universe(session)
     report.universe = len(universe)
     if not universe:
-        report.note = "инвестиционной вселенной нет: доски биржи ещё не синхронизированы"
+        report.note = (
+            "инвестиционной вселенной нет: доски биржи ещё не синхронизированы"
+        )
         return _record(session, report)
 
     min_history = int(cfg.get("universe.investments.min_history_days", 120))
@@ -568,6 +779,8 @@ def build_all(
     by_id = {i.instrument_id: i for i in universe}
     card_by_id = {c.instrument_id: c for c in passed}
 
+    # Кандидаты: лучшие по срезу внутри класса. Ограничение сверху защищает
+    # оптимизатор от ложных связей на широком наборе.
     per_class: dict[AssetClass, list[fund.Fundamental]] = {}
     for card in passed:
         per_class.setdefault(card.asset_class, []).append(card)
@@ -583,6 +796,9 @@ def build_all(
     train_days = int(wf_config["train_months"]) * 21
     test_days = int(wf_config["test_months"]) * 21
     needed = train_days + test_days
+    # Одно окно — это не проверка, а единственное наблюдение: три окна дают
+    # девять месяцев вне обучения, и на них оценка заведомо грубая. Целимся в
+    # шесть окон и отступаем к минимуму, если истории не хватает.
     panel, dropped = _panel_with_window(
         series,
         needed=needed,
@@ -600,6 +816,9 @@ def build_all(
         )
         return _record(session, report)
     if panel.periods < needed:
+        # Оптимизацию провести можно, а проверить состав на данных, которых
+        # он не видел, — нет. Считать и показать непроверенное было бы хуже
+        # честного «пока нечем проверить».
         report.note = (
             f"общего окна {panel.periods} дней хватает на оптимизацию, но не на "
             f"проверку на истории: одному циклу нужно {needed} дней "
@@ -615,9 +834,12 @@ def build_all(
             PROFILES[key].caps.get(AssetClass.CRYPTO_SPOT, crypto_cap), crypto_cap
         )
 
+    # Сколько доходных бумаг дошло до панели. Это и есть ответ на вопрос
+    # «почему в падающий год пусто»: пока в отборе только акции, ни один
+    # профиль не соберёт положительный состав — не потому, что оптимизатор
+    # плох, а потому, что расти нечему.
     report.income_candidates = sum(
-        1
-        for key in panel.columns
+        1 for key in panel.columns
         if key in by_id and by_id[key].asset_class in INCOME_CLASSES
     )
     if report.income_candidates == 0:
@@ -649,6 +871,9 @@ def build_all(
                 report.packages.append(built)
                 _persist(session, built, cfg=cfg, now=now)
     if report.packages and report.admitted == 0 and not report.note:
+        # Причины разных вариантов чаще всего совпадают — показываем их
+        # списком, а не одним общим «не прошёл». Владельцу нужно знать, чего
+        # именно не хватило: доходности вне обучения или устойчивости.
         reasons: list[str] = []
         for package in report.packages:
             if package.reason and package.reason not in reasons:
@@ -661,6 +886,11 @@ def build_all(
 
 
 def _record(session: Session, report: BuildReport) -> BuildReport:
+    """Записать итог прогона: без него «нет» на экране остаётся без причины.
+
+    Хранится один прогон, последний. История прогонов здесь не нужна: вопрос
+    к конвейеру всегда один — что мешает сейчас.
+    """
     session.execute(delete(PortfolioRun))
     session.add(
         PortfolioRun(
@@ -691,6 +921,7 @@ def _record(session: Session, report: BuildReport) -> BuildReport:
 
 
 def _persist(session: Session, package: Package, *, cfg, now: datetime) -> None:
+    """Сохранить пакет, заменив предыдущий той же формы."""
     stale = list(
         session.execute(
             select(PortfolioModel.id).where(
@@ -701,12 +932,21 @@ def _persist(session: Session, package: Package, *, cfg, now: datetime) -> None:
         ).scalars()
     )
     if stale:
-        session.execute(delete(PortfolioWeight).where(PortfolioWeight.model_id.in_(stale)))
+        # Удаление идёт запросами, а не через ORM-каскад: у модели загружена
+        # коллекция весов, и session.delete() пытается сначала обнулить в них
+        # ссылку на модель — то есть первичный ключ. Прямой DELETE такой
+        # заботы не проявляет и делает ровно то, что просили.
+        session.execute(
+            delete(PortfolioWeight).where(PortfolioWeight.model_id.in_(stale))
+        )
         session.execute(delete(PortfolioModel).where(PortfolioModel.id.in_(stale)))
         session.expire_all()
     session.flush()
 
     if not package.admitted or not package.positions:
+        # Не прошедший проверку состав не сохраняется как модель: модель —
+        # это то, что можно показать владельцу. Причина уезжает в отчёт
+        # прогона и видна в статусе портфеля.
         return
 
     model = PortfolioModel(
