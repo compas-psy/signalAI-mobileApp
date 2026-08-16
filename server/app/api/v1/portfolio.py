@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 from ...db import get_db
 from ...market.investments import INVESTMENT_CLASSES, investment_universe
 from ...portfolio import holdings as holdings_store
+from ...portfolio.lifecycle import current_models
 from ...portfolio.rebalance import latest_holdings, plan
 from ...schemas.common import ApiModel, Money
 from pydantic import Field
@@ -197,9 +198,6 @@ def _stages(
         StageOut(
             key="optimisation",
             name="Оптимизация состава",
-            # Шаг считается сделанным, если составы посчитаны, — даже если
-            # ни один не прошёл проверку. Иначе «посчитали и забраковали»
-            # выглядит как «не считали», и владелец ждёт того, чего не будет.
             done=bool(models) or bool(run and run.built),
             detail=(
                 f"составов {len(models)}"
@@ -275,25 +273,23 @@ def packages(
     profile: RiskProfile | None = Query(default=None),
     horizon_years: int | None = Query(default=None, ge=1, le=30),
 ) -> PortfolioResponse:
-    """Пакеты капитала вместе с состоянием конвейера."""
-    query = select(PortfolioModel)
-    if profile is not None:
-        query = query.where(PortfolioModel.profile == profile)
-    if horizon_years is not None:
-        query = query.where(PortfolioModel.horizon_years == horizon_years)
-    models = list(session.execute(query).scalars())
+    """Только последние неистёкшие поколения пакетов и состояние конвейера."""
+    everything = current_models(session)
+    models = [
+        model
+        for model in everything
+        if (profile is None or model.profile == profile)
+        and (horizon_years is None or model.horizon_years == horizon_years)
+    ]
 
     order = {PackageSize.SIMPLE: 0, PackageSize.BALANCED: 1, PackageSize.MAX_POTENTIAL: 2}
     models.sort(key=lambda m: (m.horizon_years, order.get(m.package, 9)))
 
-    everything = list(session.execute(select(PortfolioModel)).scalars())
     run = _last_run(session)
     stages = _stages(session, everything, run)
     generated = max((m.generated_at for m in everything), default=None)
     reason = ""
     if not models:
-        # Причина берётся с прогона, а не выводится из «первого невыполненного
-        # шага»: шаг говорит, где остановились, а прогон — почему.
         if run is not None and run.note:
             reason = run.note
         else:
@@ -353,12 +349,7 @@ def rebalance(
     account_id: UUID | None = Query(default=None),
     model_id: UUID | None = Query(default=None),
 ) -> RebalanceOut:
-    """Что стоило бы поправить в фактическом составе.
-
-    Считается от позиций на счёте, а не от прошлого предложения: владелец
-    мог купить не всё, купить иначе или продать что-то сам, и предложение
-    обязано исходить из того, что есть на самом деле.
-    """
+    """Что стоило бы поправить в фактическом составе."""
     account = session.execute(
         select(Account).where(Account.circuit == "investment")
         if account_id is None
@@ -377,13 +368,7 @@ def rebalance(
                 reason="пакет не найден — обновите список и выберите пакет снова"
             )
     else:
-        models = list(
-            session.execute(
-                select(PortfolioModel)
-                .order_by(PortfolioModel.generated_at.desc())
-                .limit(2)
-            ).scalars()
-        )
+        models = sorted(current_models(session), key=lambda m: m.generated_at, reverse=True)
         if not models:
             return RebalanceOut(
                 reason="пакет ещё не посчитан — сравнивать не с чем"
@@ -465,16 +450,7 @@ def put_holdings(
     payload: HoldingsIn,
     session: Session = Depends(get_db),
 ) -> HoldingsOut:
-    """Принять снимок фактических позиций.
-
-    Снимки копятся по датам: ребаланс сравнивает «было» и «стало», и без
-    истории это сравнение не восстановить. В пределах одной даты снимок
-    заменяется — второе чтение того же дня уточняет первое.
-
-    Неопознанные бумаги возвращаются списком, а не пропускаются молча: доли
-    посчитались бы от неполной суммы, и ребаланс предложил бы докупить то,
-    что уже куплено.
-    """
+    """Принять снимок фактических позиций."""
     account = holdings_store.account_for(
         session,
         broker=payload.broker,
@@ -514,11 +490,7 @@ def rebuild(
     session: Session = Depends(get_db),
     draws: int = Query(default=120, ge=20, le=400),
 ) -> PortfolioResponse:
-    """Пересобрать пакеты немедленно.
-
-    Ограничение по частоте — не вежливость к серверу, а защита данных:
-    параллельные прогоны переписывали бы одни и те же модели.
-    """
+    """Пересобрать пакеты немедленно, добавив новое поколение моделей."""
     now = datetime.now(UTC)
     previous = _last_rebuild.get("at")
     if previous is not None and now - previous < REBUILD_COOLDOWN:
