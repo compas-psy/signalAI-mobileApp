@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from app.db import get_db
 from app.main import app
@@ -34,7 +35,10 @@ def _model(session, *, generated_at, suffix: str, weights: list[tuple[str, str, 
     session.flush()
     for instrument_id, target_weight, evidence in weights:
         symbol = instrument_id.split(":")[-1]
-        if session.get(Instrument, instrument_id) is None:
+        existing = session.execute(
+            select(Instrument).where(Instrument.instrument_id == instrument_id)
+        ).scalar_one_or_none()
+        if existing is None:
             session.add(
                 Instrument(
                     instrument_id=instrument_id,
