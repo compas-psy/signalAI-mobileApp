@@ -11,7 +11,7 @@
    мнимых закономерностей.
 4. **Оптимизация состава.** Ресэмплинг Michaud на блочном бутстрэпе: сто с
    лишним выборок, в каждой свой оптимум, наружу — усреднённый состав.
-   Ограничения — потолки по классам профиля и потолок на бумагу.
+   Ограничения — потолки по классам профиля и потолок на бумагу/эмитента.
 5. **Проверка на истории.** Скользящее окно: веса считаются по прошлому,
    измеряются на следующем куске, которого оптимизатор не видел.
 6. **Допуск.** Не прошедший проверку пакет не показывается — с причиной.
@@ -346,9 +346,13 @@ def _next_to_drop(
 
 
 def _constraints(
-    classes: list[AssetClass], profile: Profile, *, positions: int
+    classes: list[AssetClass],
+    profile: Profile,
+    *,
+    positions: int,
+    issuer_ids: list[str | None] | None = None,
 ) -> Constraints:
-    """Границы весов: потолок на бумагу и потолки по классам.
+    """Границы весов: потолок на бумагу, эмитента и потолки по классам.
 
     Потолок на бумагу выведен из размера пакета, а не назначен числом: в
     пакете на три позиции 20% — это мало, в пакете на двенадцать — это уже
@@ -366,8 +370,14 @@ def _constraints(
     падающий рынок оптимизатор был вынужден покупать то, от чего профиль и
     должен защищать, и состав честно терял 18% годовых вне обучения. Это не
     свойство рынка, это ограничение, требующее покупки.
+
+    Если у нескольких бумаг есть один и тот же явный ``issuer_id`` от MOEX,
+    их суммарная доля получает тот же потолок, что одна бумага. Пустой issuer
+    никогда не склеивается: угадывать юрлицо по тикеру или названию нельзя.
     """
     n = len(classes)
+    if issuer_ids is not None and len(issuer_ids) != n:
+        raise ValueError("issuer_ids должны соответствовать списку классов")
     per_name = min(0.34, max(0.12, 1.5 / max(1, positions)))
     lo = np.zeros(n)
     hi = np.full(n, per_name)
@@ -383,6 +393,11 @@ def _constraints(
         mask = np.array([c is asset_class for c in classes])
         if mask.any():
             groups.append((mask, float(cap)))
+    if issuer_ids is not None:
+        for issuer_id in sorted({value for value in issuer_ids if value}):
+            mask = np.array([value == issuer_id for value in issuer_ids])
+            if int(mask.sum()) > 1:
+                groups.append((mask, per_name))
     if hi.sum() < 1.0:
         # Потолки не дают набрать 100% — расширяем потолок на бумагу до
         # выполнимого. Молча вернуть недобранный портфель нельзя: сумма
@@ -395,19 +410,22 @@ def _constraints(
 
 
 def _reachable(hi: np.ndarray, groups: tuple[tuple[np.ndarray, float], ...]) -> float:
-    """Максимальная сумма весов при этих потолках.
-
-    Классы в ``groups`` не пересекаются (каждый вес принадлежит одному
-    классу), поэтому верхняя граница считается сложением: по классу — его
-    потолок либо сумма потолков бумаг, что меньше; всё остальное — как есть.
-    """
-    taken = np.zeros(hi.size, dtype=bool)
-    total = 0.0
-    for mask, cap in groups:
-        total += min(cap, float(hi[mask].sum()))
-        taken |= mask
-    total += float(hi[~taken].sum())
-    return total
+    """Можно ли набрать 100% при потолках, включая вложенные issuer-группы."""
+    if hi.size == 0 or float(hi.sum()) < 1.0 - 1e-9:
+        return float(hi.sum())
+    lo = np.zeros_like(hi)
+    seed = np.minimum(hi, np.full(hi.size, 1.0 / hi.size))
+    try:
+        candidate = project_with_groups(seed, lo, hi, groups, iterations=200)
+    except ValueError:
+        return 0.0
+    if abs(float(candidate.sum()) - 1.0) > 1e-7:
+        return 0.0
+    if np.any(candidate < lo - 1e-8) or np.any(candidate > hi + 1e-8):
+        return 0.0
+    if any(float(candidate[mask].sum()) > cap + 1e-7 for mask, cap in groups):
+        return 0.0
+    return 1.0
 
 
 def _drop_unstable(
@@ -549,6 +567,14 @@ def _kill(card: fund.Fundamental) -> str:
     return "измеренный класс фонда изменился; оборот упал ниже порога"
 
 
+def _explicit_issuer_id(instrument: Instrument) -> str | None:
+    """Только канонический source-backed issuer ID; догадок здесь нет."""
+    value = (instrument.metadata_json or {}).get("issuer_id")
+    if isinstance(value, str) and value.startswith("MOEX:EMITTER:"):
+        return value
+    return None
+
+
 def build_package(
     panel: ReturnPanel,
     cards: dict[str, fund.Fundamental],
@@ -568,8 +594,14 @@ def build_package(
     )
 
     classes = [instruments[c].asset_class for c in working.columns]
+    issuer_ids = [_explicit_issuer_id(instruments[c]) for c in working.columns]
     target_positions = count[1]
-    constraints = _constraints(classes, profile, positions=target_positions)
+    constraints = _constraints(
+        classes,
+        profile,
+        positions=target_positions,
+        issuer_ids=issuer_ids,
+    )
 
     result = Package(
         profile=profile_key,

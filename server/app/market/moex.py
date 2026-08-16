@@ -408,6 +408,23 @@ def stock_board(
     return rows, reports
 
 
+def security_issuer_id(
+    sec_id: str, *, fetch=http_json
+) -> tuple[str | None, FetchReport]:
+    """Явный код эмитента из описания MOEX; имена и тикеры не используются."""
+    payload, report = fetch(
+        f"{BASE}/securities/{sec_id}.json?iss.meta=off&iss.only=description"
+    )
+    description = {
+        str(row.get("name") or "").strip().lower(): str(row.get("value") or "").strip()
+        for row in iss_rows(payload, "description")
+    }
+    emitter_id = description.get("emitter_id", "")
+    if emitter_id:
+        return f"MOEX:EMITTER:{emitter_id}", report
+    return None, report
+
+
 def dividends(sec_id: str, *, fetch=http_json) -> tuple[list[tuple[date, Decimal]], FetchReport]:
     """История дивидендов бумаги.
 

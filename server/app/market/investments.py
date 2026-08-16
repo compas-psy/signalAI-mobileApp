@@ -127,6 +127,27 @@ def _extras(row: moex.BoardRow, market: str, board: str) -> dict:
     return data
 
 
+def _issuer_id(
+    row: moex.BoardRow,
+    existing: Instrument | None,
+    asset_class: AssetClass,
+    *,
+    fetch=None,
+) -> str | None:
+    """Эмитент только из явного идентификатора MOEX; имена не сопоставляем."""
+    previous = (existing.metadata_json or {}).get("issuer_id") if existing else None
+    if isinstance(previous, str) and previous:
+        return previous
+    if asset_class is not AssetClass.EQUITY:
+        return None
+    kwargs = {"fetch": fetch} if fetch else {}
+    try:
+        issuer_id, _ = moex.security_issuer_id(row.sec_id, **kwargs)
+    except FetchError:
+        return None
+    return issuer_id
+
+
 def sync_investments(session: Session, *, fetch=None) -> list[str]:
     """Обновить справочник инвестиционных бумаг по доскам биржи.
 
@@ -190,6 +211,10 @@ def sync_investments(session: Session, *, fetch=None) -> list[str]:
             existing = session.execute(
                 select(Instrument).where(Instrument.instrument_id == instrument_id)
             ).scalar_one_or_none()
+            metadata = _extras(row, market, board)
+            issuer_id = _issuer_id(row, existing, provisional, fetch=fetch)
+            if issuer_id:
+                metadata["issuer_id"] = issuer_id
             payload = {
                 "venue": Venue.MOEX,
                 "symbol": row.sec_id,
@@ -203,7 +228,7 @@ def sync_investments(session: Session, *, fetch=None) -> list[str]:
                 "contract_multiplier": Decimal(1),
                 "is_tradable": True,
                 "in_universe": True,
-                "metadata_json": _extras(row, market, board),
+                "metadata_json": metadata,
                 "updated_at": now,
             }
             if existing is None:
