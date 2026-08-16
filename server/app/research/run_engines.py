@@ -16,7 +16,7 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..models import ResearchObservation
+from ..models import AuditEvent, ResearchObservation
 from ..models.enums import ResearchDirection
 from .confirmations import Reading, count as count_confirmations, history_verdict
 from .engines import demand
@@ -50,6 +50,33 @@ class EngineReport:
         if self.skipped:
             parts.append(f"пропущено {len(self.skipped)}: {self.skipped[0]}")
         return ", ".join(parts)
+
+
+def _record_evaluation(
+    session: Session,
+    *,
+    key: str,
+    now: datetime,
+    signals: int,
+    skipped: list[str] | None = None,
+) -> None:
+    """Persist the fact that an engine actually ran, including zero-result runs.
+
+    Owner diagnostics must distinguish "evaluated, no signal" from "never
+    evaluated". The existing append-only audit log is deliberately reused
+    here instead of introducing mutable in-process state that disappears on
+    restart.
+    """
+    session.add(
+        AuditEvent(
+            occurred_at=now,
+            actor="system",
+            action="research_engine_evaluated",
+            subject=key,
+            detail=(skipped or [""])[0],
+            after_json={"signals": int(signals)},
+        )
+    )
 
 
 def demand_periods(rows: list[ResearchObservation]) -> list[demand.DemandPeriod]:
@@ -258,6 +285,13 @@ def run_demand(
     """
     moment = now or datetime.now(UTC)
     report = _run_demand_only(session, now=moment)
+    _record_evaluation(
+        session,
+        key=demand.STRATEGY_KEY,
+        now=moment,
+        signals=report.signals,
+        skipped=report.skipped,
+    )
     scheduler_mode = _running_as_scheduler()
     should_hire = scheduler_mode if include_hiring is None else include_hiring
     should_spread = scheduler_mode if include_spread is None else include_spread
@@ -265,6 +299,13 @@ def run_demand(
     if should_hire:
         apply_verified_review(session, "trudvsem", now=moment)
         hiring_report = run_hiring_live(session, now=moment)
+        _record_evaluation(
+            session,
+            key="HIRING",
+            now=moment,
+            signals=hiring_report.signals,
+            skipped=hiring_report.skipped,
+        )
         report.observations += hiring_report.vacancies
         report.sections += hiring_report.issuers
         report.signals += hiring_report.signals
@@ -275,6 +316,13 @@ def run_demand(
 
     if should_spread:
         spread_report = run_spread(session, now=moment)
+        _record_evaluation(
+            session,
+            key="SPREAD",
+            now=moment,
+            signals=spread_report.signals,
+            skipped=spread_report.skipped,
+        )
         report.signals += spread_report.signals
         report.hypotheses += spread_report.hypotheses
         report.skipped.extend(spread_report.skipped[:20])
