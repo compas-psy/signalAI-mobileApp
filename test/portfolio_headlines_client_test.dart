@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:signalai/data/api/api_client.dart';
-import 'package:signalai/data/api/engine_client.dart';
+import 'package:signalai/data/api/portfolio_headlines_client.dart';
 
 class _FakeHeadlinesApi extends ApiClient {
   _FakeHeadlinesApi(this.response)
@@ -45,7 +45,7 @@ void main() {
       ],
     });
 
-    final result = await EngineClient(client: api).portfolioHeadlines(
+    final result = await PortfolioHeadlinesClient(client: api).fetch(
       horizonYears: 5,
     );
 
@@ -85,7 +85,7 @@ void main() {
       ],
     });
 
-    final result = await EngineClient(client: api).portfolioHeadlines(
+    final result = await PortfolioHeadlinesClient(client: api).fetch(
       horizonYears: 1,
     );
 
