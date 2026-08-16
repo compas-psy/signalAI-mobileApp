@@ -127,6 +127,27 @@ def _extras(row: moex.BoardRow, market: str, board: str) -> dict:
     return data
 
 
+def _issuer_id(
+    row: moex.BoardRow,
+    existing: Instrument | None,
+    asset_class: AssetClass,
+    *,
+    fetch=None,
+) -> str | None:
+    """Эмитент только из явного идентификатора MOEX; имена не сопоставляем."""
+    previous = (existing.metadata_json or {}).get("issuer_id") if existing else None
+    if isinstance(previous, str) and previous:
+        return previous
+    if asset_class is not AssetClass.EQUITY:
+        return None
+    kwargs = {"fetch": fetch} if fetch else {}
+    try:
+        issuer_id, _ = moex.security_issuer_id(row.sec_id, **kwargs)
+    except FetchError:
+        return None
+    return issuer_id
+
+
 def sync_investments(session: Session, *, fetch=None) -> list[str]:
     """Обновить справочник инвестиционных бумаг по доскам биржи.
 
@@ -145,13 +166,6 @@ def sync_investments(session: Session, *, fetch=None) -> list[str]:
         try:
             rows, _ = moex.stock_board(market, board, **kwargs)
         except (FetchError, ValueError) as exc:
-            # Доска недоступна — бумаги с неё остаются в справочнике такими,
-            # какими были. Обнулять вселенную из-за одного отказа сети нельзя.
-            #
-            # Но и молчать нельзя, и это была настоящая ошибка: доска фондов
-            # не доезжала неделю, во вселенной не было ни одного фонда, и
-            # экран сообщал лишь «в отборе только акции и ОФЗ» — про доску
-            # не знал никто. Целый класс активов пропал беззвучно.
             _note(
                 session, board,
                 f"доска не ответила: {type(exc).__name__}: {exc}"[:400],
@@ -173,9 +187,6 @@ def sync_investments(session: Session, *, fetch=None) -> list[str]:
         liquid = [r for r in rows if r.turnover and r.turnover >= floor and r.last]
         liquid.sort(key=lambda r: r.turnover or Decimal(0), reverse=True)
         if not liquid:
-            # Пустой отбор — это тоже событие, а не тишина. Причин ровно две,
-            # и они требуют разных действий: биржа не дала строк либо порог
-            # оборота отсёк всё. Из «фондов нет» ни одну из них не видно.
             with_price = sum(1 for r in rows if r.last)
             best = max((r.turnover or Decimal(0) for r in rows), default=Decimal(0))
             _note(
@@ -190,6 +201,10 @@ def sync_investments(session: Session, *, fetch=None) -> list[str]:
             existing = session.execute(
                 select(Instrument).where(Instrument.instrument_id == instrument_id)
             ).scalar_one_or_none()
+            metadata = _extras(row, market, board)
+            issuer_id = _issuer_id(row, existing, provisional, fetch=fetch)
+            if issuer_id:
+                metadata["issuer_id"] = issuer_id
             payload = {
                 "venue": Venue.MOEX,
                 "symbol": row.sec_id,
@@ -203,7 +218,7 @@ def sync_investments(session: Session, *, fetch=None) -> list[str]:
                 "contract_multiplier": Decimal(1),
                 "is_tradable": True,
                 "in_universe": True,
-                "metadata_json": _extras(row, market, board),
+                "metadata_json": metadata,
                 "updated_at": now,
             }
             if existing is None:
@@ -228,23 +243,13 @@ def sync_investments(session: Session, *, fetch=None) -> list[str]:
     return kept
 
 
-# ── Классификация фондов измерением ──────────────────────────────────────
-
-# Границы взяты по смыслу инструмента, а не подобраны под конкретный фонд:
-# денежный рынок не имеет просадок по построению, облигационный колеблется
-# единицами процентов, акционный — десятками.
 MONEY_MARKET_VOL = 0.015
 MONEY_MARKET_DRAWDOWN = 0.003
 BOND_FUND_VOL = 0.06
 
 
 def classify_funds(session: Session, *, min_days: int = 120) -> dict[str, str]:
-    """Уточнить класс биржевых фондов по их собственной истории.
-
-    Возвращает карту «инструмент → чем оказался». Фонд, у которого истории
-    меньше порога, не переклассифицируется: угадывать класс по сорока дням
-    хуже, чем оставить предварительный и написать об этом.
-    """
+    """Уточнить класс биржевых фондов по их собственной истории."""
     funds = list(
         session.execute(
             select(Instrument).where(
