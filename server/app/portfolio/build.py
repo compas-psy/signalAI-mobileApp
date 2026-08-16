@@ -213,18 +213,22 @@ class BuildReport:
 # ── Данные ───────────────────────────────────────────────────────────────
 
 
-def daily_closes(session: Session, instrument_ids: list[str]) -> dict[str, list]:
+def daily_closes(
+    session: Session,
+    instrument_ids: list[str],
+    *,
+    as_of: datetime | None = None,
+) -> dict[str, list]:
     series: dict[str, list] = {}
     for instrument_id in instrument_ids:
-        rows = session.execute(
-            select(Bar.open_time, Bar.close)
-            .where(
-                Bar.instrument_id == instrument_id,
-                Bar.timeframe == Timeframe.D1,
-                Bar.is_closed.is_(True),
-            )
-            .order_by(Bar.open_time)
-        ).all()
+        query = select(Bar.open_time, Bar.close).where(
+            Bar.instrument_id == instrument_id,
+            Bar.timeframe == Timeframe.D1,
+            Bar.is_closed.is_(True),
+        )
+        if as_of is not None:
+            query = query.where(Bar.open_time <= as_of)
+        rows = session.execute(query.order_by(Bar.open_time)).all()
         points = [(t.date(), float(c)) for t, c in rows if c is not None]
         if len(points) >= 2:
             series[instrument_id] = points
@@ -755,7 +759,7 @@ def build_all(
         candidates.extend(c.instrument_id for c in group[:limit])
     report.candidates = len(candidates)
 
-    series = daily_closes(session, candidates)
+    series = daily_closes(session, candidates, as_of=now)
     wf_config = cfg.section("backtest")["walk_forward"]
     train_days = int(wf_config["train_months"]) * 21
     test_days = int(wf_config["test_months"]) * 21
