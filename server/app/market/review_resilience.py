@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import UTC, datetime
+from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -129,10 +130,11 @@ def sync_futures_core_seeded(
     """Guarantee measurement of core FORTS roots without bypassing admission.
 
     The original synchronizer bounds discovery using current-session turnover,
-    historical admission, or an already-tradable row. A transient in-memory
-    seed supplies only the third *discovery* condition. The original function
-    then overwrites it to ``is_tradable=False`` before any commit and ordinary
-    review decides admission from the real thresholds.
+    historical admission, or an already-tradable row. A transient seed supplies
+    only the third *discovery* condition. It carries the complete contract
+    specification from the same MOEX board snapshot so it is a valid Instrument
+    even before the original synchronizer refreshes it. The original function
+    then overwrites every kept candidate to ``is_tradable=False`` before review.
     """
     config = cfg or get_config()
     moment = now or datetime.now(UTC)
@@ -158,15 +160,26 @@ def sync_futures_core_seeded(
             ).scalars()
         }
         for candidate in core:
-            instrument_id = f"MOEX:FUT:{candidate.near.sec_id}"
+            series = candidate.near
+            instrument_id = f"MOEX:FUT:{series.sec_id}"
             seed = existing.get(instrument_id)
             if seed is None:
                 seed = Instrument(
                     instrument_id=instrument_id,
                     venue=Venue.MOEX,
                     asset_class=AssetClass.FUTURES,
-                    symbol=candidate.near.sec_id,
+                    symbol=series.sec_id,
+                    title=series.short_name,
                     currency="RUB",
+                    tick_size=series.min_step or Decimal(1),
+                    tick_value=series.step_price or Decimal(1),
+                    expiry=series.last_trade_date,
+                    next_contract=(
+                        f"MOEX:FUT:{candidate.next_series.sec_id}"
+                        if candidate.can_roll
+                        else None
+                    ),
+                    correlation_cluster=universe.cluster_for(candidate.root),
                     in_universe=False,
                     is_tradable=True,
                     metadata_json={"root": candidate.root, "core_discovery_seed": True},
