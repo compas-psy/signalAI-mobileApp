@@ -179,9 +179,6 @@ def project_capped(
     if not groups:
         return plain
 
-    # Классы активов не пересекаются, но issuer-cap является вложенным в
-    # класс акций. Активный разбор ниже для таких ограничений неверен, поэтому
-    # не пытаемся применить его: project_with_groups перейдёт к Dykstra.
     occupied = np.zeros(v.size, dtype=bool)
     for mask, _ in groups:
         if np.any(occupied & mask):
@@ -240,7 +237,8 @@ def project_with_groups(
     x = v.copy()
     corrections = [np.zeros_like(v) for _ in range(len(groups) + 1)]
     for _ in range(iterations):
-        previous = x.copy()
+        previous_x = x.copy()
+        previous_corrections = [c.copy() for c in corrections]
         y = x + corrections[0]
         x = project_box_simplex(y, lo, hi)
         corrections[0] = y - x
@@ -252,7 +250,12 @@ def project_with_groups(
                 z[mask] = y[mask] - (total - cap) / float(mask.sum())
             x = z
             corrections[k] = y - x
-        if float(np.abs(x - previous).max()) < 1e-10:
+        x_delta = float(np.abs(x - previous_x).max())
+        correction_delta = max(
+            float(np.abs(current - previous).max())
+            for current, previous in zip(corrections, previous_corrections)
+        )
+        if x_delta < 1e-10 and correction_delta < 1e-10:
             break
     return x
 
