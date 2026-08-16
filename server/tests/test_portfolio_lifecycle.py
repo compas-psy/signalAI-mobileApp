@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 
 from sqlalchemy import func, select
 
-from app.models import Instrument, PortfolioModel, PortfolioWeight
+from app.models import Holding, Instrument, PortfolioModel, PortfolioWeight
 from app.models.enums import AssetClass, PackageSize, RiskProfile, Venue
 from app.portfolio.build import Package, Position, _persist
 
@@ -113,6 +113,18 @@ def _weight(session, model: PortfolioModel, instrument_id: str, weight: str) -> 
     session.flush()
 
 
+def _holding(instrument_id: str, value: str) -> Holding:
+    return Holding(
+        account_id=None,
+        instrument_id=instrument_id,
+        as_of=date(2026, 8, 16),
+        quantity=Decimal("1"),
+        market_value=Decimal(value),
+        asset_class=AssetClass.EQUITY,
+        source="test",
+    )
+
+
 def test_rebuild_retains_previous_model_generation(session):
     """A rebuild appends a generation; audit history must not be destroyed."""
     _instrument(session, "MOEX:EQ:AAA")
@@ -196,3 +208,66 @@ def test_rebuild_due_when_model_nears_expiry_even_without_new_bars(session):
     decision = rebuild_due(session, as_of=now, expiry_buffer=timedelta(days=1))
     assert decision.due is True
     assert decision.reason == "model_expiring"
+
+
+def test_rebalance_explains_model_add_remove_and_target_change(session):
+    from app.portfolio.rebalance import plan
+
+    now = datetime(2026, 8, 16, 12, tzinfo=UTC)
+    previous = _model(
+        session,
+        generated_at=now - timedelta(days=2),
+        valid_until=now + timedelta(days=3),
+    )
+    current = _model(
+        session,
+        generated_at=now - timedelta(hours=1),
+        valid_until=now + timedelta(days=6),
+    )
+    for instrument_id in ("MOEX:EQ:AAA", "MOEX:EQ:BBB", "MOEX:EQ:CCC"):
+        _instrument(session, instrument_id)
+    _weight(session, previous, "MOEX:EQ:AAA", "0.60")
+    _weight(session, previous, "MOEX:EQ:BBB", "0.40")
+    _weight(session, current, "MOEX:EQ:AAA", "0.45")
+    _weight(session, current, "MOEX:EQ:CCC", "0.55")
+
+    draft = plan(
+        current,
+        [_holding("MOEX:EQ:AAA", "600"), _holding("MOEX:EQ:BBB", "400")],
+        previous_model=previous,
+    )
+    reasons = {action.instrument_id: action.reason for action in draft.actions}
+    assert reasons["MOEX:EQ:BBB"] == "удалена из новой модели"
+    assert reasons["MOEX:EQ:CCC"] == "добавлена в новую модель"
+    assert reasons["MOEX:EQ:AAA"] == "целевая доля модели изменилась 60.0% → 45.0%"
+    assert draft.reason == "модель изменилась: +1 / -1 / Δ1"
+
+
+def test_rebalance_keeps_drift_reason_when_model_did_not_change(session):
+    from app.portfolio.rebalance import plan
+
+    now = datetime(2026, 8, 16, 12, tzinfo=UTC)
+    previous = _model(
+        session,
+        generated_at=now - timedelta(days=2),
+        valid_until=now + timedelta(days=3),
+    )
+    current = _model(
+        session,
+        generated_at=now - timedelta(hours=1),
+        valid_until=now + timedelta(days=6),
+    )
+    for instrument_id in ("MOEX:EQ:AAA", "MOEX:EQ:BBB"):
+        _instrument(session, instrument_id)
+    _weight(session, previous, "MOEX:EQ:AAA", "0.60")
+    _weight(session, previous, "MOEX:EQ:BBB", "0.40")
+    _weight(session, current, "MOEX:EQ:AAA", "0.60")
+    _weight(session, current, "MOEX:EQ:BBB", "0.40")
+
+    draft = plan(
+        current,
+        [_holding("MOEX:EQ:AAA", "800"), _holding("MOEX:EQ:BBB", "200")],
+        previous_model=previous,
+    )
+    assert draft.reason.startswith("расхождение до")
+    assert all("модель" not in action.reason for action in draft.actions)
