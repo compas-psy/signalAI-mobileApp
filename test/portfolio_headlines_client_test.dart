@@ -96,4 +96,66 @@ void main() {
     expect(result.portfolios[2].status.name, 'missing');
     expect(result.portfolios[2].reason, 'Нет актуального состава');
   });
+
+  test('headline preserves per-position evidence and model diff', () async {
+    final api = _FakeHeadlinesApi(const {
+      'horizon_years': 1,
+      'portfolios': [
+        {
+          'profile': 'OPTIMAL',
+          'label': 'Сбалансированный',
+          'status': 'ready',
+          'reason': '',
+          'package': {
+            'id': 'model-1',
+            'profile': 'OPTIMAL',
+            'package': 'BALANCED',
+            'horizon_years': 1,
+            'expected_return_low': '0.08',
+            'expected_return_high': '0.14',
+            'target_volatility': '0.12',
+            'drawdown_limit': '0.18',
+            'cvar_95': '0.04',
+            'rationale': 'test',
+            'generated_at': '2026-08-16T10:00:00Z',
+            'valid_until': '2026-08-17T10:00:00Z',
+            'positions': [
+              {
+                'instrument_id': 'EQ:MOEX:AAA',
+                'symbol': 'AAA',
+                'title': 'AAA',
+                'asset_class': 'EQUITY',
+                'target_weight': '0.5',
+                'role': 'core',
+                'thesis': 'test',
+                'kill_conditions': 'test',
+                'evidence': {
+                  'summary': 'mature research supports AAA',
+                  'hypothesis_ids': ['hyp-new'],
+                },
+              },
+            ],
+            'changes': {
+              'added': ['EQ:MOEX:CCC'],
+              'removed': ['EQ:MOEX:BBB'],
+              'weight_changed': ['EQ:MOEX:AAA'],
+            },
+          },
+        },
+      ],
+    });
+
+    final result = await PortfolioHeadlinesClient(client: api).fetch(
+      horizonYears: 1,
+    );
+    final headline = result.portfolios.single;
+
+    expect(
+      headline.evidenceByInstrument['EQ:MOEX:AAA']?['summary'],
+      'mature research supports AAA',
+    );
+    expect(headline.changes.added, ['EQ:MOEX:CCC']);
+    expect(headline.changes.removed, ['EQ:MOEX:BBB']);
+    expect(headline.changes.weightChanged, ['EQ:MOEX:AAA']);
+  });
 }
