@@ -1,0 +1,26 @@
+name: Probe VPS host key fingerprint
+
+on:
+  push:
+    branches:
+      - codex/restore-vps-deploy-compat
+    paths:
+      - '.github/workflows/probe-vps-host-key.yml'
+
+permissions: {}
+
+jobs:
+  fingerprint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Print public SSH host-key fingerprints
+        env:
+          HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          test -n "$HOST"
+          tmp="$(mktemp)"
+          trap 'rm -f "$tmp"' EXIT
+          ssh-keyscan -T 10 "$HOST" > "$tmp" 2>/dev/null
+          test -s "$tmp"
+          ssh-keygen -lf "$tmp" -E sha256 | awk '{print $1, $2, $NF}'
