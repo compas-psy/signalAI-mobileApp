@@ -106,12 +106,14 @@ jobs:
         env:
           HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
           KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
+          HOST_KEY_SHA256: ${{ secrets.VPS_SSH_HOST_KEY_SHA256 || 'SHA256:cUfeWKyHoFIhKsV17Bpk076calxUaxd90XhuETb4vng' }}
           DEVICE_TOKEN: ${{ secrets.SIGNALAI_DEVICE_TOKEN }}
         run: |
           set -eu
           missing=''
           [ -n "$HOST" ] || missing="$missing VPS_HOST|SERVER_HOST"
           [ -n "$KEY" ] || missing="$missing VPS_SSH_KEY|SSH_SECRET"
+          [ -n "$HOST_KEY_SHA256" ] || missing="$missing VPS_SSH_HOST_KEY_SHA256"
           if [ -n "$missing" ]; then
             echo "::error::не заданы секреты:$missing"
             exit 1
@@ -126,15 +128,13 @@ jobs:
         env:
           KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
           HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          HOST_KEY_SHA256: ${{ secrets.VPS_SSH_HOST_KEY_SHA256 || 'SHA256:cUfeWKyHoFIhKsV17Bpk076calxUaxd90XhuETb4vng' }}
         run: |
           set -eu
           install -d -m 700 ~/.ssh
           printf '%s\n' "$KEY" > ~/.ssh/id_deploy
           chmod 600 ~/.ssh/id_deploy
-          if ! ssh-keyscan -T 10 -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null; then
-            echo '::error::не удалось получить SSH host key сервера'
-            exit 1
-          fi
+          bash .github/scripts/prepare_known_host.sh "$HOST" "$HOST_KEY_SHA256"
 
       - name: Подготовить закрытые файлы деплоя
         env:
