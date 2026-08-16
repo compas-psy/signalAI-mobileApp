@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
@@ -43,6 +44,21 @@ def _downtrend() -> list[float]:
     return [300.0 - i * 0.7 for i in range(240)]
 
 
+def _pre_breakout() -> tuple[list[float], list[float]]:
+    # Noisy constructive trend followed by a quiet 30-session coil near the
+    # high. Last five sessions accelerate slightly while turnover expands.
+    closes = [100.0 + 0.10 * i + 1.15 * math.sin(i * 0.7) for i in range(90)]
+    anchor = closes[-1]
+    closes.extend(
+        anchor + 0.025 * i + 0.14 * math.sin(i * 0.55)
+        for i in range(30)
+    )
+    for i in range(5):
+        closes[-5 + i] += 0.12 * (i + 1)
+    turnover = [100.0] * (len(closes) - 5) + [175.0, 180.0, 190.0, 185.0, 195.0]
+    return closes, turnover
+
+
 def test_technical_overlay_ranks_slow_uptrend_above_downtrend():
     up = ranking._technical(_uptrend())
     down = ranking._technical(_downtrend())
@@ -52,6 +68,22 @@ def test_technical_overlay_ranks_slow_uptrend_above_downtrend():
     assert up["score"] > down["score"]
     assert up["state"] == "восходящий D1"
     assert down["state"] == "нисходящий D1"
+
+
+def test_early_radar_prefers_coil_before_breakout_to_already_vertical_spike():
+    pre, turnover = _pre_breakout()
+    chased = list(pre)
+    start = chased[-6]
+    chased[-5:] = [start * factor for factor in (1.04, 1.09, 1.15, 1.22, 1.30)]
+
+    early = ranking._technical(pre, turnover)["early"]
+    late = ranking._technical(chased, turnover)["early"]
+
+    assert early["score"] > late["score"]
+    assert early["turnover_ratio_5v20"] is not None
+    assert early["turnover_ratio_5v20"] > 1.5
+    assert late["chase_penalty"] >= 0.9
+    assert late["state"] == "поздно / не догонять"
 
 
 def test_daily_ranking_keeps_weak_names_and_sorts_descending(session, monkeypatch):
@@ -82,9 +114,14 @@ def test_daily_ranking_keeps_weak_names_and_sorts_descending(session, monkeypatc
 
     assert snapshot.universe_count == 2
     assert snapshot.scored_count == 2
+    assert snapshot.methodology == "equity_rank_v2_early"
     assert [item["symbol"] for item in snapshot.items_json] == ["GOOD", "WEAK"]
     assert snapshot.items_json[0]["rank"] == 1
     assert snapshot.items_json[0]["score"] > snapshot.items_json[1]["score"]
+    assert "early_score" in snapshot.items_json[0]
+    assert "why_now" in snapshot.items_json[0]
+    assert "confirmation" in snapshot.items_json[0]
+    assert "invalidation" in snapshot.items_json[0]
     assert snapshot.items_json[1]["eligible"] is False
     assert snapshot.items_json[1]["score"] <= 39
     assert "ликвидность" in snapshot.items_json[1]["warnings"][0]
