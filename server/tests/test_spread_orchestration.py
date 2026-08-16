@@ -56,6 +56,24 @@ def test_explicit_research_run_surfaces_missing_spread_data(session):
     assert report.hypotheses == 0
 
 
+def test_explicit_research_run_marks_engines_as_evaluated_even_without_signals(session):
+    sync_registry(session)
+    run_engines.run_demand(
+        session,
+        include_hiring=False,
+        include_spread=True,
+        now=datetime(2026, 8, 15, 10, tzinfo=UTC),
+    )
+    session.flush()
+
+    engines = {item.key: item for item in research_api._engines(session)}
+
+    assert engines["DEMAND"].evaluated is True
+    assert engines["DEMAND"].signals == 0
+    assert engines["SPREAD"].evaluated is True
+    assert engines["SPREAD"].signals == 0
+
+
 def test_scheduler_mode_invokes_spread_without_enabling_hiring(
     session, monkeypatch
 ):
