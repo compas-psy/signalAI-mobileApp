@@ -4,7 +4,8 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 
-from app.models import ResearchObservation
+from app.api.v1 import research as research_api
+from app.models import AuditEvent, ResearchObservation
 from app.research import hiring_runtime
 from app.research.adapters.trudvsem import VacancyDatum
 from app.research.sources import sync_registry
@@ -150,3 +151,37 @@ def test_runtime_reuses_original_availability_after_repeat_collection(session):
         issuer=issuer,
         as_of=original_tradable_at + timedelta(seconds=1),
     ) is not None
+
+
+def test_owner_status_reports_hiring_as_wired_and_exposes_last_run_reason(session):
+    sync_registry(session)
+    row = datum(modified=datetime(2026, 8, 12, 10, tzinfo=UTC))
+    issuer = hiring_runtime._issuer(row)
+    assert issuer is not None
+    moment = datetime(2026, 8, 13, 10, tzinfo=UTC)
+    assert hiring_runtime._persist_vacancy_observation(
+        session,
+        row=row,
+        issuer=issuer,
+        first_seen_at=moment,
+        raw_sha256="a" * 64,
+    )
+    session.add(
+        AuditEvent(
+            occurred_at=moment,
+            actor="system",
+            action="research_engine_evaluated",
+            subject="HIRING",
+            detail="Работа России не ответила",
+            after_json={"signals": 0},
+        )
+    )
+    session.flush()
+
+    hiring = next(item for item in research_api._engines(session) if item.key == "HIRING")
+
+    assert hiring.wired is True
+    assert hiring.observations == 1
+    assert hiring.evaluated is True
+    assert hiring.signals == 0
+    assert hiring.evaluation_note == "Работа России не ответила"

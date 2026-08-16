@@ -36,7 +36,7 @@ from ...models.enums import HypothesisState
 from ...research import adapters, explore, gateway, netdiag, reach
 from ...research.adapters import cbr, fns
 from ...research.collector import collect_all
-from ...research.engines import ENGINES
+from ...research.engines import ENGINES, hiring
 from ...research.confirmations import history_verdict
 from ...research.pipeline import expire as expire_hypotheses
 from ...research.policy import CollectionDenied, authorize
@@ -130,6 +130,8 @@ class EngineStateOut(ApiModel):
     history_ready: bool = False   # хватает ли истории по периодичности
     history_note: str = ""        # если нет — чего именно не хватает
     evaluated: bool = False       # движок реально запускался
+    last_evaluated_at: datetime | None = None
+    evaluation_note: str = ""     # точная причина последнего нулевого результата
     signals: int = 0              # сколько сигналов сформировал
 
 
@@ -258,6 +260,7 @@ def _engines(session: Session) -> list[EngineStateOut]:
 #: показывал первое, называя вторым.
 _OBSERVATION_PREFIX = {
     "DEMAND": "cbr:enterprise_monitoring:",
+    "HIRING": "hiring:",
     "SPREAD": "rosstat:producer_price:",
 }
 
@@ -274,9 +277,16 @@ def _evaluation(session: Session, key: str) -> dict:
         .limit(1)
     ).scalars().first()
     if row is None:
-        return {"evaluated": False, "signals": 0}
+        return {
+            "evaluated": False,
+            "last_evaluated_at": None,
+            "evaluation_note": "",
+            "signals": 0,
+        }
     return {
         "evaluated": True,
+        "last_evaluated_at": row.occurred_at,
+        "evaluation_note": row.detail,
         "signals": int((row.after_json or {}).get("signals", 0)),
     }
 
@@ -300,6 +310,35 @@ def _facts(session: Session, key: str) -> dict:
         ).where(ResearchObservation.observation_type.like(f"{prefix}%"))
     ).one()
     total, periods, last_seen = rows
+
+    if key == "HIRING":
+        moment = datetime.now(UTC)
+        event_times = session.execute(
+            select(ResearchObservation.event_time).where(
+                ResearchObservation.observation_type.like(f"{prefix}%"),
+                ResearchObservation.tradable_at <= moment,
+                ResearchObservation.event_time.is_not(None),
+            )
+        ).scalars()
+        weeks = {
+            (event_time.isocalendar().year, event_time.isocalendar().week)
+            for event_time in event_times
+        }
+        ready = len(weeks) >= hiring.MIN_WEEKS
+        return {
+            "wired": True,
+            "observations": int(total or 0),
+            "unique_periods": len(weeks),
+            "last_seen_at": last_seen,
+            "history_ready": ready,
+            "history_note": (
+                ""
+                if ready
+                else f"истории {len(weeks)} из {hiring.MIN_WEEKS} недель для HIRING"
+            ),
+            **evaluation,
+        }
+
     if key == "SPREAD":
         if not PRODUCTION_BASKETS:
             return {
@@ -717,7 +756,6 @@ def plan_check(session: Session = Depends(get_db)) -> list[PlanCheckOut]:
             )
     session.commit()
     return result
-
 
 class CatalogueOut(ApiModel):
     """Что лежит в точке входа источника."""
