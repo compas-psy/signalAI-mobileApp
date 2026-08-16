@@ -32,14 +32,21 @@ from datetime import date
 
 import numpy as np
 
+# ── Выравнивание рядов ───────────────────────────────────────────────────
+
 
 @dataclass(frozen=True, slots=True)
 class ReturnPanel:
-    """Панель доходностей: даты × инструменты, без пропусков."""
+    """Панель доходностей: даты × инструменты, без пропусков.
+
+    Пропуски не заполняются нулями. Ноль в ряду доходностей — это не «нет
+    данных», а «цена не изменилась»; подстановка занижает волатильность и
+    завышает вес инструмента, у которого просто нет истории.
+    """
 
     dates: tuple[date, ...]
     columns: tuple[str, ...]
-    values: np.ndarray
+    values: np.ndarray  # (T, N), логарифмические доходности
 
     @property
     def periods(self) -> int:
@@ -58,6 +65,12 @@ class ReturnPanel:
 
 
 def build_panel(series: dict[str, list[tuple[date, float]]]) -> ReturnPanel:
+    """Собрать панель по датам, общим для всех инструментов.
+
+    Пересечение, а не объединение: оптимизатору нужна одновременная история,
+    иначе ковариация считается по разным периодам для разных пар и перестаёт
+    быть матрицей одного рынка.
+    """
     usable = {k: v for k, v in series.items() if len(v) >= 2}
     if not usable:
         return ReturnPanel((), (), np.zeros((0, 0)))
@@ -78,6 +91,8 @@ def build_panel(series: dict[str, list[tuple[date, float]]]) -> ReturnPanel:
             prices[i, j] = by_day[day]
 
     if np.any(prices <= 0):
+        # Нулевая или отрицательная цена — не доходность, а испорченный ряд.
+        # Логарифм от неё даёт inf и заражает всю матрицу.
         keep = [j for j in range(prices.shape[1]) if np.all(prices[:, j] > 0)]
         prices = prices[:, keep]
         columns = [columns[j] for j in keep]
@@ -88,7 +103,17 @@ def build_panel(series: dict[str, list[tuple[date, float]]]) -> ReturnPanel:
     return ReturnPanel(tuple(dates[1:]), tuple(columns), returns)
 
 
+# ── Оценки моментов ──────────────────────────────────────────────────────
+
+
 def shrunk_covariance(returns: np.ndarray) -> np.ndarray:
+    """Ковариация со сжатием к цели «одинаковая корреляция».
+
+    Цель выбрана не диагональная: активы одного рынка коррелируют, и
+    обнуление всех связей — такая же неправда, как выборочная матрица с её
+    ложными связями. Интенсивность сжатия оценивается по формуле Ledoit–Wolf
+    (доля дисперсии оценок в общем расхождении с целью) и зажимается в [0, 1].
+    """
     T, N = returns.shape
     if T < 2 or N == 0:
         return np.zeros((N, N))
@@ -105,10 +130,11 @@ def shrunk_covariance(returns: np.ndarray) -> np.ndarray:
     target = mean_corr * outer
     np.fill_diagonal(target, variances)
 
+    # Дисперсия оценок элементов ковариации.
     squared = (centred**2).T @ (centred**2) / T
     pi_matrix = squared - sample**2
     pi = float(pi_matrix.sum())
-    rho = float(np.trace(pi_matrix))
+    rho = float(np.trace(pi_matrix))  # диагональ цели совпадает с выборкой
     gamma = float(((target - sample) ** 2).sum())
     if gamma <= 0:
         return sample
@@ -123,6 +149,28 @@ def annualise_mean(returns: np.ndarray, periods_per_year: int = 252) -> np.ndarr
 def shrunk_mean(
     returns: np.ndarray, cov: np.ndarray, *, periods_per_year: int = 252
 ) -> np.ndarray:
+    """Ожидаемая доходность со сжатием к портфелю минимальной дисперсии.
+
+    Оценка Джориона (Bayes–Stein, 1986). Ковариацию мы сжимали с самого
+    начала, а среднее брали выборочным — и это была не мелочь, а
+    несимметричность в самом чувствительном месте. Выборочное среднее —
+    худший вход оптимизации: его стандартная ошибка убывает как корень из
+    длины окна, и на двух годах дневных данных разница «12% годовых» и «2%
+    годовых» статистически неразличима. Оптимизатор же принимает её за
+    факт и уводит вес туда, где среднее случайно оказалось выше.
+
+    Цель сжатия — доходность портфеля минимальной дисперсии, а не ноль и не
+    среднее по бумагам. Ноль был бы утверждением «все активы бесперспективны»,
+    среднее по бумагам зависит от того, сколько каких бумаг попало в отбор.
+    Портфель минимальной дисперсии — единственная точка, которую данные
+    задают сами и которая не зависит от состава выборки.
+
+    Интенсивность не подбирается: она выводится из данных. Чем больше бумаг
+    и короче окно — тем сильнее сжатие; чем сильнее бумаги разошлись
+    относительно ошибки оценки — тем слабее. Порядок бумаг сжатие сохраняет:
+    это выпуклая комбинация с общей точкой, и бумага, которая была выше
+    другой, выше и останется.
+    """
     T, N = returns.shape
     mu = annualise_mean(returns, periods_per_year)
     if T < 2 or N == 0:
@@ -132,8 +180,14 @@ def shrunk_mean(
     denominator = float(ones @ inv @ ones)
     if not np.isfinite(denominator) or abs(denominator) < 1e-12:
         return mu
+    # Доходность портфеля минимальной дисперсии — точка, к которой тянем.
     grand = float(ones @ inv @ mu) / denominator
     diff = mu - grand
+    # Квадратичная форма приводится к единицам одного периода. И среднее, и
+    # ковариация здесь годовые, а `T` считает дни: годовое расхождение,
+    # делённое на годовую дисперсию, даёт величину в 252 раза больше дневной,
+    # и сжатие обнулялось на любых данных. Ошибка была тихой — формула
+    # работала, просто всегда возвращала выборочное среднее.
     spread = float(diff @ inv @ diff) / periods_per_year
     if not np.isfinite(spread) or spread <= 0:
         return np.full(N, grand)
@@ -146,12 +200,24 @@ def annualise_cov(cov: np.ndarray, periods_per_year: int = 252) -> np.ndarray:
     return cov * periods_per_year
 
 
+# ── Проекции ─────────────────────────────────────────────────────────────
+
+
 def project_box_simplex(
     v: np.ndarray, lo: np.ndarray, hi: np.ndarray, *, total: float = 1.0
 ) -> np.ndarray:
+    """Ближайшая точка множества {сумма = total, lo ≤ w ≤ hi}.
+
+    Решение имеет вид clip(v − λ, lo, hi); сумма по λ монотонно убывает,
+    поэтому λ находится делением отрезка пополам. Точное решение, а не
+    «нормировать и обрезать»: нормировка после обрезки снова выводит за
+    границы и в цикле не сходится.
+    """
     if v.size == 0:
         return v
     if lo.sum() > total + 1e-9 or hi.sum() < total - 1e-9:
+        # Ограничения несовместимы с требуемой суммой. Молча вернуть что-то
+        # похожее нельзя: состав перестанет быть портфелем.
         raise ValueError("границы весов не допускают требуемой суммы")
     low = float((v - hi).min())
     high = float((v - lo).max())
@@ -174,11 +240,31 @@ def project_capped(
     hi: np.ndarray,
     groups: Sequence[tuple[np.ndarray, float]],
 ) -> np.ndarray:
-    """Точная проекция для непересекающихся групп; пересечения идут в Dykstra."""
+    """Точная проекция на бокс-симплекс с потолками по **непересекающимся** классам.
+
+    Работает разбором активного набора, и это не оптимизация ради скорости, а
+    следствие структуры задачи. Если известно, какие потолки упёрлись, задача
+    распадается: каждый упёршийся класс получает ровно свой потолок, остаток
+    делится между остальными бумагами. Блоки не пересекаются, значит каждый
+    проецируется отдельно — четыре дешёвых проекции вместо тысяч витков
+    поочерёдных приближений.
+
+    Активный набор находится за несколько проходов: сначала проверяется
+    решение без потолков, затем добавляются нарушенные. Проходов не больше,
+    чем классов, потому что снятым потолок уже не становится — освободить его
+    может только рост остальных, а они здесь только уменьшаются.
+
+    Классы обязаны быть непересекающимися: у бумаги один класс актива. Если
+    это перестанет быть правдой, разбор надо будет менять — поэтому проверка
+    стоит здесь, а не в комментарии.
+    """
     plain = project_box_simplex(v, lo, hi)
     if not groups:
         return plain
 
+    # Issuer-cap может быть вложен в группу класса акций. Активный разбор
+    # ниже корректен только для непересекающихся групп; для пересечений
+    # project_with_groups использует общий алгоритм Дейкстры.
     occupied = np.zeros(v.size, dtype=bool)
     for mask, _ in groups:
         if np.any(occupied & mask):
@@ -203,6 +289,8 @@ def project_capped(
             used |= mask
         rest_total = 1.0 - sum(cap for _, cap in binding)
         if rest_total < -1e-9:
+            # Потолки в сумме меньше единицы даже вместе — набрать 100%
+            # нечем. Пусть решает вызывающий: здесь честный отказ.
             raise ValueError("потолки классов не допускают суммы 1")
         candidate = np.empty_like(v)
         for mask, cap in binding:
@@ -228,6 +316,15 @@ def project_with_groups(
     *,
     iterations: int = 60,
 ) -> np.ndarray:
+    """Проекция на пересечение бокса-симплекса и потолков по классам.
+
+    Основной путь — точный разбор активного набора (`project_capped`): классы
+    активов не пересекаются, и задача распадается на независимые блоки.
+    Алгоритм Дейкстры остаётся запасным на случай, когда разбор невыполним:
+    поочерёдная проекция на каждое множество с поправкой на накопленное
+    смещение. Простое чередование сходится не к проекции, а к какой-то точке
+    пересечения — поправки Дейкстры это исправляют.
+    """
     if not groups:
         return project_box_simplex(v, lo, hi)
     try:
@@ -250,6 +347,9 @@ def project_with_groups(
                 z[mask] = y[mask] - (total - cap) / float(mask.sum())
             x = z
             corrections[k] = y - x
+        # У пересекающихся ограничений x может на несколько циклов
+        # стабилизироваться, пока продолжают меняться поправки Дейкстры.
+        # Остановка только по x завершала проекцию с суммой весов < 1.
         x_delta = float(np.abs(x - previous_x).max())
         correction_delta = max(
             float(np.abs(current - previous).max())
@@ -260,8 +360,13 @@ def project_with_groups(
     return x
 
 
+# ── Оптимизация ──────────────────────────────────────────────────────────
+
+
 @dataclass(frozen=True, slots=True)
 class Constraints:
+    """Границы состава. Всё, что ограничивает оптимизатор, — здесь."""
+
     lo: np.ndarray
     hi: np.ndarray
     groups: tuple[tuple[np.ndarray, float], ...] = ()
@@ -284,6 +389,16 @@ def _maximise(
     iterations: int = 250,
     start: np.ndarray | None = None,
 ) -> np.ndarray:
+    """Максимум mu'w − (λ/2)·w'Σw при ограничениях.
+
+    Ускоренный проекционный градиент (FISTA): та же задача, что у простого
+    проекционного спуска, но сходится за десятки шагов вместо сотен. Здесь
+    это не микрооптимизация — метод вызывается сто с лишним раз на каждый
+    пакет, и на простом спуске один пакет считался минутами.
+
+    Шаг обратен наибольшему собственному числу λΣ: гарантирует сходимость
+    без подбора скорости.
+    """
     n = mu.size
     hessian = risk_aversion * cov
     eig = float(np.linalg.eigvalsh(hessian).max()) if n else 0.0
@@ -311,9 +426,18 @@ def risk_aversion_for(
     target_volatility: float,
     steps: int = 24,
 ) -> float:
+    """Неприятие риска, при котором состав колеблется на целевую величину.
+
+    Целевая волатильность — это и есть профиль риска: «консервативный»
+    отличается от «агрессивного» не набором фондов, а тем, сколько колебаний
+    владелец согласен переносить. Возвращается параметр, а не веса: в
+    ресэмплинге он подбирается один раз по всей выборке и потом одинаково
+    применяется к каждой бутстрэп-выборке. Иначе усреднялись бы портфели
+    разных мест на границе эффективности — то есть разные по смыслу.
+    """
     low, high = 1e-3, 1e6
     if _volatility(_maximise(mu, cov, high, constraints), cov) > target_volatility:
-        return high
+        return high  # тише уже не сделать — ограничения не пускают
     for _ in range(steps):
         mid = (low * high) ** 0.5
         if _volatility(_maximise(mu, cov, mid, constraints), cov) > target_volatility:
@@ -330,6 +454,7 @@ def optimise_to_volatility(
     *,
     target_volatility: float,
 ) -> np.ndarray:
+    """Состав с волатильностью не выше целевой."""
     aversion = risk_aversion_for(
         mu, cov, constraints, target_volatility=target_volatility
     )
@@ -340,9 +465,18 @@ def _volatility(w: np.ndarray, cov: np.ndarray) -> float:
     return float(np.sqrt(max(0.0, w @ cov @ w)))
 
 
+# ── Ресэмплинг ───────────────────────────────────────────────────────────
+
+
 def block_bootstrap(
     returns: np.ndarray, rng: np.random.Generator, *, block: int
 ) -> np.ndarray:
+    """Выборка целыми блоками строк.
+
+    Блок берётся по кругу (circular block bootstrap): иначе хвост ряда
+    попадает в выборки реже начала, и последние месяцы — самые важные для
+    оценки текущего режима — систематически недопредставлены.
+    """
     T = returns.shape[0]
     if T == 0:
         return returns
@@ -356,7 +490,7 @@ def block_bootstrap(
 @dataclass(frozen=True, slots=True)
 class ResampleResult:
     weights: np.ndarray
-    dispersion: np.ndarray
+    dispersion: np.ndarray  # СКО веса по выборкам — устойчивость позиции
     draws: int
 
 
@@ -370,11 +504,21 @@ def resampled_weights(
     seed: int = 20260730,
     periods_per_year: int = 252,
 ) -> ResampleResult:
+    """Усреднённый состав по бутстрэп-выборкам (Michaud resampling).
+
+    Возвращается не только среднее, но и разброс веса по выборкам. Разброс —
+    это честная мера «насколько эта позиция вообще устойчива»: инструмент,
+    вес которого скачет от нуля до потолка, в пакет попадать не должен, даже
+    если в среднем выглядит прилично.
+    """
     rng = np.random.default_rng(seed)
     n = returns.shape[1]
     if n == 0 or returns.shape[0] < 30:
         return ResampleResult(np.zeros(n), np.zeros(n), 0)
 
+    # Место на границе эффективности выбирается один раз — по всей выборке.
+    # Подбирать его заново внутри каждой бутстрэп-выборки значило бы
+    # усреднять портфели разного риска, а Michaud усредняет одинаковые.
     try:
         full_cov = annualise_cov(shrunk_covariance(returns), periods_per_year)
         aversion = risk_aversion_for(
@@ -392,8 +536,13 @@ def resampled_weights(
     for _ in range(draws):
         sample = block_bootstrap(returns, rng, block=block)
         cov = annualise_cov(shrunk_covariance(sample), periods_per_year)
+        # Сжатие внутри каждой выборки, а не один раз снаружи: бутстрэп для
+        # того и нужен, чтобы показать, насколько оценка гуляет, — а гуляет
+        # именно она, среднее по выборке.
         mu = shrunk_mean(sample, cov, periods_per_year=periods_per_year)
         try:
+            # Тёплый старт с прошлой выборки: соседние решения близки, и
+            # спуск сходится за единицы шагов вместо десятков.
             collected[ok] = _maximise(mu, cov, aversion, constraints, start=warm)
         except ValueError:
             continue
@@ -403,12 +552,19 @@ def resampled_weights(
         return ResampleResult(np.zeros(n), np.zeros(n), 0)
     used = collected[:ok]
     mean = used.mean(axis=0)
+    # Усреднение по выборкам может слегка нарушить сумму из-за отброшенных
+    # решений — возвращаем на множество ограничений, а не нормируем делением.
     mean = project_with_groups(mean, constraints.lo, constraints.hi, constraints.groups)
     return ResampleResult(mean, used.std(axis=0), ok)
 
 
+# ── Метрики результата ───────────────────────────────────────────────────
+
+
 @dataclass(frozen=True, slots=True)
 class Performance:
+    """Что получилось на ряде доходностей портфеля."""
+
     periods: int
     cagr: float
     volatility: float
@@ -422,6 +578,7 @@ class Performance:
 
 
 def performance(series: np.ndarray, *, periods_per_year: int = 252) -> Performance:
+    """Метрики по ряду логарифмических доходностей портфеля."""
     if series.size == 0:
         return Performance(0, 0.0, 0.0, 0.0, 0.0, 0.0)
     equity = np.exp(np.cumsum(series))
