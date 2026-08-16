@@ -570,7 +570,7 @@ def _kill(card: fund.Fundamental) -> str:
 def _explicit_issuer_id(instrument: Instrument) -> str | None:
     """Только канонический source-backed issuer ID; догадок здесь нет."""
     value = (instrument.metadata_json or {}).get("issuer_id")
-    if isinstance(value, str) and value.startswith("MOEX:INN:"):
+    if isinstance(value, str) and value.startswith("MOEX:EMITTER:"):
         return value
     return None
 
