@@ -1,11 +1,19 @@
-"""Подписываемая политика долей выхода для server-paper.
+"""Подписываемая политика и runtime сопровождения server-paper.
 
 Risk Engine v2 сохраняет выбранный профиль прямо в immutable TradeIdea.
 Approve копирует его доли в PaperTrade. Поэтому еженедельный optimizer может
 улучшить только будущие сделки: уже подтверждённая никогда не меняет exit
 policy задним числом.
 
+Этот модуль также устанавливает единый ``advance_v2`` как фактический runtime
+для обоих execution sensors: обычного H1 tracker (FORTS) и минутного crypto
+tracker. Раньше v2 был реализован, но оба runtime продолжали вызывать legacy
+``advance``; TP3-runner, ATR/MFE trail и alpha-decay поэтому существовали в
+коде, но не в реально сопровождаемой сделке.
+
 Для идей старой версии без ``risk_policy`` сохраняется legacy 40/40/20.
+Сам ``advance_v2`` узнаёт legacy-план по сохранённым долям и оставляет прежнюю
+семантику, поэтому деплой не переписывает уже открытые старые сделки.
 """
 
 from __future__ import annotations
@@ -15,6 +23,7 @@ from typing import Any
 
 from ..config import EngineConfig, get_config
 from ..models import TradeIdea
+from ..risk.dynamic_exit import advance_v2
 from . import tracker
 
 
@@ -108,9 +117,22 @@ def signed_policy_for_shares(
 
 
 def install() -> None:
-    """Подменить legacy equal-share builder до создания новых PaperTrade."""
+    """Установить подписанный plan builder и единый dynamic-exit runtime.
+
+    ``live_tracker`` импортирует ``advance`` по значению, поэтому одной
+    подмены ``tracker.advance`` недостаточно: локальную ссылку minute tracker
+    тоже обновляем явно. Импорт внутри функции избегает цикла при загрузке
+    модулей и делает установку идемпотентной.
+    """
     if tracker._targets is not targets_with_policy:
         tracker._targets = targets_with_policy
+    if tracker.advance is not advance_v2:
+        tracker.advance = advance_v2
+
+    from . import live_tracker
+
+    if live_tracker.advance is not advance_v2:
+        live_tracker.advance = advance_v2
 
 
 __all__ = ["install", "signed_policy_for_shares", "targets_with_policy"]
