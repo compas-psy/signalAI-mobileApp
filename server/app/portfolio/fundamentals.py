@@ -41,6 +41,12 @@ from ..models import Bar, Instrument
 from ..models.enums import AssetClass, Timeframe
 from .research_evidence import PortfolioResearchEvidence, evidence_for
 
+# Один полностью сильный CONFIRMED thesis уже имеет эффективную силу .75
+# (state multiplier .75). Такой зрелый отрицательный факт не должен быть
+# просто скидкой к score: автоматическая покупка блокируется, пока thesis
+# остаётся актуальным. Более слабый негатив по-прежнему только штрафует score.
+NEGATIVE_RESEARCH_BLOCK = Decimal("-0.750000")
+
 
 class Measure(StrEnum):
     MEASURED = "measured"
@@ -127,8 +133,15 @@ def _ramp(value: float, bad: float, good: float) -> float:
     return _clamp((value - bad) / (good - bad))
 
 
-def _median_turnover(session: Session, instrument_id: str, *, days: int = 90) -> float | None:
-    since = datetime.now(UTC) - timedelta(days=days)
+def _median_turnover(
+    session: Session,
+    instrument_id: str,
+    *,
+    days: int = 90,
+    as_of: datetime | None = None,
+) -> float | None:
+    moment = as_of or datetime.now(UTC)
+    since = moment - timedelta(days=days)
     values = sorted(
         float(v)
         for v in session.execute(
@@ -137,6 +150,7 @@ def _median_turnover(session: Session, instrument_id: str, *, days: int = 90) ->
                 Bar.timeframe == Timeframe.D1,
                 Bar.is_closed.is_(True),
                 Bar.open_time >= since,
+                Bar.open_time <= moment,
             )
         ).scalars()
         if v is not None
@@ -149,33 +163,67 @@ def _median_turnover(session: Session, instrument_id: str, *, days: int = 90) ->
     return (values[middle - 1] + values[middle]) / 2
 
 
-def _last_close(session: Session, instrument_id: str) -> Decimal | None:
+def _last_close(
+    session: Session,
+    instrument_id: str,
+    *,
+    as_of: datetime | None = None,
+) -> Decimal | None:
+    moment = as_of or datetime.now(UTC)
     return session.execute(
         select(Bar.close)
         .where(
             Bar.instrument_id == instrument_id,
             Bar.timeframe == Timeframe.D1,
             Bar.is_closed.is_(True),
+            Bar.open_time <= moment,
         )
         .order_by(Bar.open_time.desc())
         .limit(1)
     ).scalar_one_or_none()
 
 
-def _history_days(session: Session, instrument_id: str) -> int:
-    rows = session.execute(
+def _last_close_at(
+    session: Session,
+    instrument_id: str,
+    *,
+    as_of: datetime | None = None,
+) -> datetime | None:
+    moment = as_of or datetime.now(UTC)
+    return session.execute(
         select(Bar.open_time)
         .where(
             Bar.instrument_id == instrument_id,
             Bar.timeframe == Timeframe.D1,
             Bar.is_closed.is_(True),
+            Bar.open_time <= moment,
+        )
+        .order_by(Bar.open_time.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+
+
+def _history_days(
+    session: Session,
+    instrument_id: str,
+    *,
+    as_of: datetime | None = None,
+) -> int:
+    moment = as_of or datetime.now(UTC)
+    first = session.execute(
+        select(Bar.open_time)
+        .where(
+            Bar.instrument_id == instrument_id,
+            Bar.timeframe == Timeframe.D1,
+            Bar.is_closed.is_(True),
+            Bar.open_time <= moment,
         )
         .order_by(Bar.open_time)
         .limit(1)
     ).scalar_one_or_none()
-    if rows is None:
+    if first is None:
         return 0
-    return max(0, (datetime.now(UTC) - rows).days)
+    return max(0, (moment - first).days)
 
 
 # ── Срезы по классам ─────────────────────────────────────────────────────
@@ -196,7 +244,6 @@ def _bond_metrics(instrument: Instrument, today: date) -> list[Metric]:
         metrics.append(
             Metric(
                 "yield", "Доходность к погашению", Measure.MEASURED,
-                # 8% годовых — слабо для ОФЗ, 20% — исключительно много.
                 value=_ramp(value, 8.0, 20.0),
                 text=f"доходность к погашению {value:.1f}%",
             )
@@ -208,8 +255,6 @@ def _bond_metrics(instrument: Instrument, today: date) -> list[Metric]:
             Metric("duration", "Дюрация", Measure.MISSING, text="дюрация не пришла")
         )
     else:
-        # Дюрация в днях. Короткая бумага предсказуемее — и это её плюс,
-        # а не недостаток: длинная переоценивается на каждом движении ставки.
         days = float(raw_duration)
         metrics.append(
             Metric(
@@ -242,11 +287,16 @@ def _bond_metrics(instrument: Instrument, today: date) -> list[Metric]:
 
 
 def _equity_metrics(
-    session: Session, instrument: Instrument, *, fetch=None
+    session: Session,
+    instrument: Instrument,
+    *,
+    fetch=None,
+    as_of: datetime | None = None,
 ) -> list[Metric]:
+    moment = as_of or datetime.now(UTC)
     meta = instrument.metadata_json or {}
     metrics: list[Metric] = []
-    price = _last_close(session, instrument.instrument_id)
+    price = _last_close(session, instrument.instrument_id, as_of=moment)
 
     payments: list[tuple[date, Decimal]] = []
     dividends_available = True
@@ -271,15 +321,13 @@ def _equity_metrics(
                    text="нет цены — доходность не считается")
         )
     elif not payments:
-        # Отсутствие выплат — это факт о бумаге, а не пробел в данных:
-        # компания не платит. Оценка ноль, статус «измерено».
         metrics.append(
             Metric("dividend_yield", "Дивидендная доходность", Measure.MEASURED,
                    value=0.0, text="дивидендов не платит")
         )
     else:
-        horizon = date.today() - timedelta(days=365)
-        recent = sum(float(v) for d, v in payments if d >= horizon)
+        horizon = moment.date() - timedelta(days=365)
+        recent = sum(float(v) for d, v in payments if horizon <= d <= moment.date())
         yield_pct = recent / float(price) * 100
         metrics.append(
             Metric(
@@ -304,7 +352,6 @@ def _equity_metrics(
         metrics.append(
             Metric(
                 "capitalisation", "Капитализация", Measure.MEASURED,
-                # 50 млрд — малая компания, 2 трлн — крупнейшие.
                 value=_ramp(cap, 5e10, 2e12),
                 text=f"капитализация {cap / 1e9:.0f} млрд ₽",
             )
@@ -315,12 +362,7 @@ def _equity_metrics(
 
 
 def _fund_metrics(instrument: Instrument) -> list[Metric]:
-    """У фонда фундаментала нет — есть его собственное поведение.
-
-    Комиссию фонда ISS не отдаёт, состав — тем более. Единственное, что о
-    фонде известно достоверно, — класс, измеренный по его ряду цен, и он
-    уже записан в примечании инструмента при классификации.
-    """
+    """У фонда фундаментала нет — есть его собственное поведение."""
     return [
         Metric("dividend_yield", "Дивидендная доходность", Measure.NOT_APPLICABLE),
         Metric("capitalisation", "Капитализация", Measure.NOT_APPLICABLE),
@@ -335,6 +377,7 @@ def screen(
     *,
     min_history_days: int = 120,
     min_turnover_rub: float = 5_000_000,
+    max_price_age_days: int = 7,
     fetch=None,
     as_of: datetime | None = None,
 ) -> list[Fundamental]:
@@ -366,12 +409,16 @@ def screen(
         elif instrument.asset_class is AssetClass.EQUITY and instrument.instrument_id.startswith(
             "MOEX:EQ:"
         ):
-            card.metrics = _equity_metrics(session, instrument, fetch=fetch)
+            card.metrics = _equity_metrics(session, instrument, fetch=fetch, as_of=moment)
         else:
             card.metrics = _fund_metrics(instrument)
 
-        history = _history_days(session, instrument.instrument_id)
-        turnover = _median_turnover(session, instrument.instrument_id)
+        history = _history_days(session, instrument.instrument_id, as_of=moment)
+        turnover = _median_turnover(session, instrument.instrument_id, as_of=moment)
+        last_close_at = _last_close_at(session, instrument.instrument_id, as_of=moment)
+        price_age_days = (
+            max(0, (moment - last_close_at).days) if last_close_at is not None else None
+        )
         if turnover is None:
             card.metrics.append(
                 Metric("liquidity", "Оборот", Measure.MISSING, text="оборота нет в базе")
@@ -390,6 +437,13 @@ def screen(
                 f"истории {history} дней при пороге {min_history_days} — "
                 "в пакет не берётся"
             )
+        elif last_close_at is None:
+            card.rejected = "закрытой D1-цены нет — актуальность оценки неизвестна"
+        elif price_age_days is not None and price_age_days > max_price_age_days:
+            card.rejected = (
+                f"D1-цена устарела на {price_age_days} дней при пороге "
+                f"{max_price_age_days} — в пакет не берётся"
+            )
         elif turnover is not None and turnover < min_turnover_rub:
             card.rejected = (
                 f"оборот {turnover / 1e6:.1f} млн ₽/день ниже порога "
@@ -397,5 +451,14 @@ def screen(
             )
         elif turnover is None:
             card.rejected = "оборот не измерен — ликвидность неизвестна"
+        elif (
+            card.asset_class is AssetClass.EQUITY
+            and card.research is not None
+            and card.research.signed_conviction <= NEGATIVE_RESEARCH_BLOCK
+        ):
+            card.rejected = (
+                "research guardrail: зрелый отрицательный thesis "
+                f"{card.research.signed_conviction:.2f} <= {NEGATIVE_RESEARCH_BLOCK:.2f}"
+            )
         result.append(card)
     return result
