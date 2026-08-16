@@ -244,6 +244,7 @@ def _bond_metrics(instrument: Instrument, today: date) -> list[Metric]:
         metrics.append(
             Metric(
                 "yield", "Доходность к погашению", Measure.MEASURED,
+                # 8% годовых — слабо для ОФЗ, 20% — исключительно много.
                 value=_ramp(value, 8.0, 20.0),
                 text=f"доходность к погашению {value:.1f}%",
             )
@@ -255,6 +256,8 @@ def _bond_metrics(instrument: Instrument, today: date) -> list[Metric]:
             Metric("duration", "Дюрация", Measure.MISSING, text="дюрация не пришла")
         )
     else:
+        # Дюрация в днях. Короткая бумага предсказуемее — и это её плюс,
+        # а не недостаток: длинная переоценивается на каждом движении ставки.
         days = float(raw_duration)
         metrics.append(
             Metric(
@@ -321,6 +324,8 @@ def _equity_metrics(
                    text="нет цены — доходность не считается")
         )
     elif not payments:
+        # Отсутствие выплат — это факт о бумаге, а не пробел в данных:
+        # компания не платит. Оценка ноль, статус «измерено».
         metrics.append(
             Metric("dividend_yield", "Дивидендная доходность", Measure.MEASURED,
                    value=0.0, text="дивидендов не платит")
@@ -352,6 +357,7 @@ def _equity_metrics(
         metrics.append(
             Metric(
                 "capitalisation", "Капитализация", Measure.MEASURED,
+                # 50 млрд — малая компания, 2 трлн — крупнейшие.
                 value=_ramp(cap, 5e10, 2e12),
                 text=f"капитализация {cap / 1e9:.0f} млрд ₽",
             )
@@ -362,7 +368,12 @@ def _equity_metrics(
 
 
 def _fund_metrics(instrument: Instrument) -> list[Metric]:
-    """У фонда фундаментала нет — есть его собственное поведение."""
+    """У фонда фундаментала нет — есть его собственное поведение.
+
+    Комиссию фонда ISS не отдаёт, состав — тем более. Единственное, что о
+    фонде известно достоверно, — класс, измеренный по его ряду цен, и он
+    уже записан в примечании инструмента при классификации.
+    """
     return [
         Metric("dividend_yield", "Дивидендная доходность", Measure.NOT_APPLICABLE),
         Metric("capitalisation", "Капитализация", Measure.NOT_APPLICABLE),
