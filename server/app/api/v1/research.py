@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session
 
 from ...db import get_db
 from ...models import (
+    AuditEvent,
     HypothesisEvidence,
     ResearchHypothesis,
     ResearchObservation,
@@ -261,6 +262,25 @@ _OBSERVATION_PREFIX = {
 }
 
 
+def _evaluation(session: Session, key: str) -> dict:
+    """Latest durable execution fact for owner diagnostics."""
+    row = session.execute(
+        select(AuditEvent)
+        .where(
+            AuditEvent.action == "research_engine_evaluated",
+            AuditEvent.subject == key,
+        )
+        .order_by(AuditEvent.occurred_at.desc(), AuditEvent.id.desc())
+        .limit(1)
+    ).scalars().first()
+    if row is None:
+        return {"evaluated": False, "signals": 0}
+    return {
+        "evaluated": True,
+        "signals": int((row.after_json or {}).get("signals", 0)),
+    }
+
+
 def _facts(session: Session, key: str) -> dict:
     """Что на самом деле происходит с движком.
 
@@ -268,9 +288,10 @@ def _facts(session: Session, key: str) -> dict:
     одном реально работающем — не преувеличение, а другое утверждение: там
     измерялось объявленное в реестре, а не сделанное.
     """
+    evaluation = _evaluation(session, key)
     prefix = _OBSERVATION_PREFIX.get(key, "")
     if not prefix:
-        return {"wired": False}
+        return {"wired": False, **evaluation}
     rows = session.execute(
         select(
             func.count(ResearchObservation.id),
@@ -288,6 +309,7 @@ def _facts(session: Session, key: str) -> dict:
                 "last_seen_at": last_seen,
                 "history_ready": False,
                 "history_note": "production baskets not configured",
+                **evaluation,
             }
 
         # SPREAD consumes complete quarter averages for every configured
@@ -330,6 +352,7 @@ def _facts(session: Session, key: str) -> dict:
             "last_seen_at": last_seen,
             "history_ready": ready,
             "history_note": "; ".join(notes),
+            **evaluation,
         }
 
     frequency = DEMAND_FREQUENCY if key == "DEMAND" else "quarterly"
@@ -341,6 +364,7 @@ def _facts(session: Session, key: str) -> dict:
         "last_seen_at": last_seen,
         "history_ready": enough,
         "history_note": why,
+        **evaluation,
     }
 
 
@@ -516,7 +540,6 @@ class HostReachOut(ApiModel):
     answered: bool = False
     status: int | None = None
     detail: str = ""
-
 
 class ReachabilityOut(ApiModel):
     """Дошёл ли запрос до источника.
