@@ -58,6 +58,26 @@ class PackageOut(ApiModel):
     positions: list[PositionOut] = Field(default_factory=list)
 
 
+class HeadlinePortfolioOut(ApiModel):
+    """Один из трёх owner-facing инвестиционных выборов.
+
+    Внутренний размер пакета остаётся деталью оптимизатора. Если текущего
+    состава нет, слот всё равно возвращается с явной причиной — экран не
+    должен превращать отсутствие данных в исчезнувший профиль.
+    """
+
+    profile: str
+    label: str
+    status: str
+    reason: str = ""
+    package: PackageOut | None = None
+
+
+class HeadlinePortfolioResponse(ApiModel):
+    horizon_years: int
+    portfolios: list[HeadlinePortfolioOut] = Field(default_factory=list)
+
+
 class StageOut(ApiModel):
     """Шаг конвейера: сделан или нет, и чем измеряется.
 
