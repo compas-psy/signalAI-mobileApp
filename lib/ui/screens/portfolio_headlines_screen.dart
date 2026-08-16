@@ -28,9 +28,15 @@ class PortfolioHeadlinesScreen extends StatefulWidget {
 }
 
 class _PortfolioHeadlinesScreenState extends State<PortfolioHeadlinesScreen> {
-  late final PortfolioHeadlinesClient _client =
-      widget.client ?? PortfolioHeadlinesClient();
-  late Future<PortfolioHeadlines> _future = _load();
+  late PortfolioHeadlinesClient _client;
+  late Future<PortfolioHeadlines> _future;
+
+  @override
+  void initState() {
+    super.initState();
+    _client = widget.client ?? PortfolioHeadlinesClient();
+    _future = _load();
+  }
 
   Future<PortfolioHeadlines> _load() =>
       _client.fetch(horizonYears: widget.horizonYears);
@@ -38,7 +44,11 @@ class _PortfolioHeadlinesScreenState extends State<PortfolioHeadlinesScreen> {
   @override
   void didUpdateWidget(covariant PortfolioHeadlinesScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.horizonYears != widget.horizonYears) {
+    if (oldWidget.client != widget.client) {
+      _client = widget.client ?? PortfolioHeadlinesClient();
+    }
+    if (oldWidget.horizonYears != widget.horizonYears ||
+        oldWidget.client != widget.client) {
       _future = _load();
     }
   }
