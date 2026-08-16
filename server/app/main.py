@@ -35,6 +35,7 @@ from .api.v1 import measurements as measurement_routes
 from .api.v1 import notifications as notification_routes
 from .api.v1 import paper as paper_routes
 from .api.v1 import portfolio as portfolio_routes
+from .api.v1 import portfolio_headlines as portfolio_headline_routes
 from .api.v1 import research as research_routes
 from .api.v1 import risk as risk_routes
 from .config import get_config
@@ -79,6 +80,7 @@ v1.include_router(ideas_routes.router)
 v1.include_router(idea_progress_routes.router)
 v1.include_router(risk_routes.router)
 v1.include_router(portfolio_routes.router)
+v1.include_router(portfolio_headline_routes.router)
 v1.include_router(research_routes.router)
 v1.include_router(equity_ranking_routes.router)
 v1.include_router(investment_signal_routes.router)
