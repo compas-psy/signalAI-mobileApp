@@ -34,6 +34,8 @@ FORTS_HISTORY = "history/engines/futures/markets/forts"
 PAGE_SIZE = 100
 MAX_PAGES = 40
 
+# Интервалы свечей ISS. Четырёхчасового у биржи нет — он строится склейкой
+# часовых, и подменять его молча нельзя (см. resample_hours).
 INTERVALS: dict[Timeframe, int] = {
     Timeframe.M10: 10,
     Timeframe.H1: 60,
@@ -43,6 +45,8 @@ INTERVALS: dict[Timeframe, int] = {
 
 @dataclass(frozen=True, slots=True)
 class FortsRow:
+    """Строка доски срочного рынка."""
+
     sec_id: str
     short_name: str
     last: Decimal | None
@@ -58,6 +62,12 @@ class FortsRow:
 
     @property
     def relative_spread(self) -> Decimal | None:
+        """Спред в долях цены — мера ликвидности §5.2.
+
+        Это **снимок**, а не медиана за 30 дней: ISS не отдаёт историю
+        котировок. Тот, кто принимает по нему решение, обязан знать разницу,
+        поэтому она названа здесь, а не спрятана в имени поля.
+        """
         if self.bid is None or self.ask is None or self.bid <= 0:
             return None
         mid = (self.bid + self.ask) / 2
@@ -77,6 +87,7 @@ class ShareRow:
 
 
 def _dec(value: Any) -> Decimal | None:
+    """Число из ответа биржи в Decimal — через строку, без float."""
     if value is None or value == "":
         return None
     try:
@@ -92,10 +103,24 @@ def _int(value: Any) -> int | None:
         return None
 
 
+# Биржа отдаёт время **по Москве** и без указания зоны. С 2014 года в России
+# нет перехода на летнее время, поэтому смещение постоянное.
 MOSCOW = timezone(timedelta(hours=3))
 
 
 def _moscow_to_utc(value: str) -> datetime:
+    """Время ISS в UTC.
+
+    Раньше здесь стояло ``replace(tzinfo=UTC)`` — то есть московское время
+    просто объявлялось UTC. Ряд MOEX уезжал на три часа вперёд, и на живых
+    данных это выглядело как бар из будущего: свежайший бар был помечен
+    19:00 UTC, когда на сервере было 16:29 UTC.
+
+    Сдвиг ломает не только вид. Склейка 4H с якорем на открытие сессии
+    попадала бы не на те свечи, «устарели ли данные» считалось бы с ошибкой в
+    три часа, а крипта и срочный рынок легли бы на одну шкалу времени
+    несовпадающими — то есть любое их сопоставление было бы ложным.
+    """
     naive = datetime.fromisoformat(value)
     if naive.tzinfo is not None:
         return naive.astimezone(UTC)
@@ -103,11 +128,23 @@ def _moscow_to_utc(value: str) -> datetime:
 
 
 def _open_time(begin: str, timeframe: Timeframe) -> datetime:
+    """Начало свечи в канонической шкале §4.4.
+
+    Внутридневная свеча — это момент, и он переводится в UTC.
+
+    Дневная свеча — это **торговая сессия**, а не момент. Перевод московской
+    полуночи в UTC дал бы 21:00 предыдущего дня, и дневной бар за 29 июля
+    оказался бы датирован 28-м: открытый интерес перестал бы находиться по
+    дате, а недельные и месячные склейки поехали бы на день. Поэтому день
+    остаётся днём — торговой датой в полночь UTC.
+    """
     moment = _moscow_to_utc(begin)
     if timeframe is not Timeframe.D1:
         return moment
     trading_day = datetime.fromisoformat(begin).date()
-    return datetime(trading_day.year, trading_day.month, trading_day.day, tzinfo=UTC)
+    return datetime(
+        trading_day.year, trading_day.month, trading_day.day, tzinfo=UTC
+    )
 
 
 def _day(value: Any) -> date | None:
@@ -120,6 +157,16 @@ def _day(value: Any) -> date | None:
 
 
 def _paged(url_for, block: str, *, fetch=http_json) -> tuple[list[dict], list[FetchReport]]:
+    """Обойти страницы ISS с защитой от игнорирования курсора.
+
+    Дедупликация нужна не для красоты: если биржа не соблюдает `start`, цикл
+    честно отработает все сорок запросов и склеит сорок копий одной страницы.
+
+    Ключ — **строка целиком**, а не её первая колонка. Первая колонка годится
+    для доски, где это `SECID`, и губительна для свечей, где это `open`: три
+    бара с одинаковой ценой открытия схлопнулись бы в один, и ряд молча
+    поредел бы. Одинаковые строки целиком — это и есть повтор страницы.
+    """
     collected: list[dict] = []
     reports: list[FetchReport] = []
     seen: set[tuple] = set()
@@ -139,14 +186,16 @@ def _paged(url_for, block: str, *, fetch=http_json) -> tuple[list[dict], list[Fe
             collected.append(row)
             fresh += 1
         if fresh == 0:
-            break
+            break            # биржа отдаёт ту же страницу — курсор не работает
         if len(rows) < PAGE_SIZE:
-            break
+            break            # неполная страница последняя, лишний запрос не нужен
         start += len(rows)
     return collected, reports
 
 
 def forts_board(*, fetch=http_json) -> tuple[list[FortsRow], list[FetchReport]]:
+    """Снимок доски FORTS вместе с открытым интересом."""
+
     def url(start: int) -> str:
         return (
             f"{BASE}/{FORTS}/securities.json"
@@ -159,6 +208,7 @@ def forts_board(*, fetch=http_json) -> tuple[list[FortsRow], list[FetchReport]]:
     securities, r1 = _paged(url, "securities", fetch=fetch)
     market, r2 = _paged(url, "marketdata", fetch=fetch)
     by_id = {row.get("SECID"): row for row in market}
+
     rows = []
     for sec in securities:
         sec_id = sec.get("SECID")
@@ -185,6 +235,8 @@ def forts_board(*, fetch=http_json) -> tuple[list[FortsRow], list[FetchReport]]:
 
 
 def shares_board(*, fetch=http_json) -> tuple[list[ShareRow], list[FetchReport]]:
+    """Снимок доски TQBR. Лот здесь настоящий и нужен для размера позиции."""
+
     def url(start: int) -> str:
         return (
             f"{BASE}/{SHARES}/securities.json"
@@ -197,6 +249,7 @@ def shares_board(*, fetch=http_json) -> tuple[list[ShareRow], list[FetchReport]]
     securities, r1 = _paged(url, "securities", fetch=fetch)
     market, r2 = _paged(url, "marketdata", fetch=fetch)
     by_id = {row.get("SECID"): row for row in market}
+
     rows = []
     for sec in securities:
         sec_id = sec.get("SECID")
@@ -218,6 +271,13 @@ def shares_board(*, fetch=http_json) -> tuple[list[ShareRow], list[FetchReport]]
 
 @dataclass(frozen=True, slots=True)
 class BoardRow:
+    """Строка любой доски фондового рынка: акции, фонды, облигации.
+
+    ``extra`` держит колонки, специфичные для рынка: доходность и дюрацию у
+    облигаций, размер выпуска у акций. Заводить под каждый рынок свой класс
+    незачем — различие ровно в наборе чисел, а не в устройстве строки.
+    """
+
     sec_id: str
     short_name: str
     board: str
@@ -232,6 +292,8 @@ class BoardRow:
         return _dec(self.extra.get(key))
 
 
+# Наборы колонок по рынкам. Перечислять обязательно: без `columns` ISS
+# отдаёт по сорок полей на бумагу, и запрос доски рвётся по таймауту.
 _SEC_COLUMNS = {
     "shares": "SECID,SHORTNAME,MINSTEP,DECIMALS,LOTSIZE,ISSUESIZE,SECTYPE",
     "bonds": (
@@ -243,14 +305,44 @@ _MD_COLUMNS = {
     "shares": "SECID,LAST,VALTODAY",
     "bonds": "SECID,LAST,VALTODAY,YIELD,DURATION",
 }
+
+# Набор колонок, который есть на любой доске рынка.
+#
+# Перечень колонок обязателен: без него ISS отдаёт по сорок полей на бумагу.
+# Но у него есть цена — если запросить колонку, которой на **этой** доске
+# нет, биржа не ругается, а возвращает блок пустым. Именно так пропала вся
+# доска фондов TQTF: она живёт на рынке shares, где у акций есть ISSUESIZE,
+# а у паёв фонда — нет. Ответ приходил с нулём строк, класс активов исчезал
+# целиком, и снаружи это выглядело как «фондов на бирже не нашлось».
 _SEC_MINIMAL = "SECID,SHORTNAME,MINSTEP,DECIMALS,LOTSIZE"
 _MD_MINIMAL = "SECID,LAST,VALTODAY"
+
+# Признак «не спрашивать колонки вовсе».
+#
+# Урезанный набор — тоже догадка: он перечисляет то, что мы **считаем**
+# общим для всех досок. Догадка уже подвела один раз, и доска фондов
+# продолжала приходить пустой после починки: значит лишней была не
+# ISSUESIZE, а что-то из оставшегося, и перебирать колонки по одной — это
+# гадание с деплоем на каждый ход.
+#
+# Последняя попытка не спрашивает ничего: ISS отдаёт все поля доски, какие
+# у неё есть, и промахнуться этим запросом нельзя в принципе. Цена — сорок
+# полей на бумагу вместо шести, и ровно поэтому попытка последняя: она
+# случается только там, где иначе не пришло бы ни одной строки, а сотня
+# фондов с полными полями всё равно легче, чем отсутствующий класс активов.
 _ALL_COLUMNS = ""
 
 
 def stock_board(
     market: str, board: str, *, fetch=http_json
 ) -> tuple[list[BoardRow], list[FetchReport]]:
+    """Снимок доски фондового рынка (акции TQBR, фонды TQTF, ОФЗ TQOB).
+
+    Один вход на все три рынка. Инвестиционный контур отличается от срочного
+    не способом получения данных, а тем, какие числа у бумаги есть: у
+    облигации — доходность и дюрация, у акции — размер выпуска. Оба набора
+    приезжают одним запросом и складываются в ``extra``.
+    """
     sec_columns = _SEC_COLUMNS.get(market)
     md_columns = _MD_COLUMNS.get(market)
     if sec_columns is None or md_columns is None:
@@ -258,6 +350,8 @@ def stock_board(
 
     def request(sec: str, md: str):
         def url(start: int) -> str:
+            # Пустая строка означает «колонки не сужаем»: параметр не
+            # добавляется вовсе, и ISS отдаёт всё, что есть на доске.
             columns = ""
             if sec:
                 columns += f"&securities.columns={sec}"
@@ -275,9 +369,18 @@ def stock_board(
 
     securities, market_data, reports = request(sec_columns, md_columns)
     if not securities:
+        # Пусто может значить и «доска закрыта», и «одной из колонок на этой
+        # доске нет». Второе неотличимо от первого по ответу, поэтому
+        # спрашиваем ещё раз тем набором, который есть везде. Дополнительные
+        # поля при этом теряются — но бумага без капитализации полезнее, чем
+        # отсутствующий класс активов.
         securities, market_data, retry = request(_SEC_MINIMAL, _MD_MINIMAL)
         reports = [*reports, *retry]
     if not securities:
+        # И этот набор — догадка. Она подвела: доска фондов приходила пустой
+        # и после починки. Спрашиваем последний раз, не сужая колонки вовсе:
+        # промахнуться таким запросом нельзя, потому что он ничего не
+        # утверждает о доске.
         securities, market_data, retry = request(_ALL_COLUMNS, _ALL_COLUMNS)
         reports = [*reports, *retry]
     by_id = {row.get("SECID"): row for row in market_data}
@@ -308,7 +411,7 @@ def stock_board(
 def security_issuer_id(
     sec_id: str, *, fetch=http_json
 ) -> tuple[str | None, FetchReport]:
-    """Вернуть source-backed identity эмитента, не угадывая по имени/тикеру."""
+    """Явный идентификатор эмитента MOEX; имена и тикеры не используются."""
     payload, report = fetch(
         f"{BASE}/securities/{sec_id}.json?iss.meta=off&iss.only=description"
     )
@@ -323,6 +426,12 @@ def security_issuer_id(
 
 
 def dividends(sec_id: str, *, fetch=http_json) -> tuple[list[tuple[date, Decimal]], FetchReport]:
+    """История дивидендов бумаги.
+
+    Единственный фундаментальный ряд, который ISS отдаёт без ключей и без
+    оговорок. Он и берётся: дивидендная доходность считается по фактическим
+    выплатам за последние 12 месяцев, а не по обещаниям аналитиков.
+    """
     payload, report = fetch(
         f"{BASE}/securities/{sec_id}/dividends.json?iss.meta=off&iss.only=dividends"
     )
@@ -345,6 +454,12 @@ def candles(
     path: str = FORTS,
     fetch=http_json,
 ) -> tuple[list[Candle], list[FetchReport]]:
+    """Свечи инструмента.
+
+    Четырёхчасовой таймфрейм у ISS отсутствует, и запрос его отклоняется
+    исключением, а не подменяется часовым: молчаливая подмена таймфрейма —
+    худший вид неверных данных, потому что результат выглядит правдоподобно.
+    """
     if timeframe not in INTERVALS:
         raise ValueError(
             f"MOEX ISS не отдаёт таймфрейм {timeframe.value}. "
@@ -365,6 +480,9 @@ def candles(
         begin = row.get("begin")
         close = _dec(row.get("close"))
         if not isinstance(begin, str) or close is None:
+            # Свеча без времени или без цены бесполезна. Подставлять «сейчас»
+            # вместо неразобранной даты нельзя — сдвиг ряда испортит всё,
+            # что по нему считается.
             continue
         try:
             open_time = _open_time(begin, timeframe)
@@ -379,7 +497,7 @@ def candles(
                 close=close,
                 volume_units=_dec(row.get("volume")),
                 volume_notional=_dec(row.get("value")),
-                open_interest=None,
+                open_interest=None,     # ISS не отдаёт OI в свечах — см. модуль
                 is_closed=True,
                 source="moex",
                 quality_flags=(QualityFlag.OI_UNAVAILABLE.value,),
@@ -392,6 +510,13 @@ def candles(
 def daily_open_interest(
     sec_id: str, since: date, *, fetch=http_json
 ) -> tuple[dict[date, Decimal], list[FetchReport]]:
+    """Дневной ряд открытого интереса из блока истории.
+
+    Единственный способ получить у ISS не одно число, а ряд. Внутри дня OI
+    по-прежнему недоступен, и фактор «Volume and OI» на часовом таймфрейме
+    остаётся неизмеренным — честно неизмеренным, а не нулевым.
+    """
+
     def url(start: int) -> str:
         return (
             f"{BASE}/{FORTS_HISTORY}/securities/{sec_id}.json"
@@ -413,6 +538,12 @@ def daily_open_interest(
 def attach_open_interest(
     daily: list[Candle], series: dict[date, Decimal]
 ) -> list[Candle]:
+    """Приклеить дневной OI к дневным свечам.
+
+    Свеча, для которой OI не нашёлся, остаётся без него и сохраняет флаг —
+    не «берём вчерашний»: перенос значения через дыру создаёт ряд, которого
+    не было.
+    """
     from dataclasses import replace
 
     out: list[Candle] = []
@@ -421,18 +552,24 @@ def attach_open_interest(
         if value is None:
             out.append(candle)
             continue
-        flags = tuple(
-            f for f in candle.quality_flags if f != QualityFlag.OI_UNAVAILABLE.value
-        )
+        flags = tuple(f for f in candle.quality_flags if f != QualityFlag.OI_UNAVAILABLE.value)
         out.append(replace(candle, open_interest=value, quality_flags=flags))
     return out
 
 
+# Месяцы поставки по стандарту фьючерсных кодов. Год — одна цифра, поэтому
+# `SiU6` читается как «Si, сентябрь, ...6 год».
 MONTH_CODES = "FGHJKMNQUVXZ"
 _SHORT_CODE = re.compile(rf"^(?P<root>.+?)(?P<month>[{MONTH_CODES}])(?P<year>\d)$")
 
 
 def root_of(sec_id: str) -> str | None:
+    """Корень контракта из короткого кода биржи: ``SiU6`` → ``Si``.
+
+    Разбор идёт с конца, а не по «первым буквам»: у ``SiU6`` первые буквы —
+    ``SiU``, и наивная эвристика склеила бы корень с месяцем поставки. Тогда
+    каждая серия выглядела бы отдельным корнем, а роллирование — невозможным.
+    """
     match = _SHORT_CODE.match(sec_id.strip())
     if match is None:
         return None
@@ -441,6 +578,11 @@ def root_of(sec_id: str) -> str | None:
 
 
 def series_by_root(rows: list[FortsRow]) -> dict[str, list[FortsRow]]:
+    """Разложить доску по корням, ближняя серия первой.
+
+    Серии без даты исполнения отбрасываются: без неё нельзя ни выбрать
+    ближнюю, ни проверить срок до экспирации §5.2.
+    """
     grouped: dict[str, list[FortsRow]] = {}
     for row in rows:
         root = root_of(row.sec_id)
@@ -453,10 +595,18 @@ def series_by_root(rows: list[FortsRow]) -> dict[str, list[FortsRow]]:
 
 
 def nearest_series(rows: list[FortsRow], root: str, today: date) -> FortsRow | None:
+    """Ближняя ликвидная серия корня.
+
+    Серия, до исполнения которой меньше порога §5.2, не берётся: держать
+    позицию в контракте, который вот-вот истечёт, — отдельный риск, не
+    имеющий отношения к сетапу.
+    """
+    # Регистр важен: у биржи secid ближнего фьючерса на доллар — `SiU6`, а
+    # корень в конфигурации записан `SI`. Прямое сравнение молча оставляло
+    # вселенную пустой, и планировщик работал вхолостую, не жалуясь.
     prefix = root.upper()
     candidates = [
-        r
-        for r in rows
+        r for r in rows
         if r.sec_id.upper().startswith(prefix)
         and r.last_trade_date is not None
         and (r.last_trade_date - today).days > 5
