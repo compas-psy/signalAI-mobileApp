@@ -166,6 +166,13 @@ def sync_investments(session: Session, *, fetch=None) -> list[str]:
         try:
             rows, _ = moex.stock_board(market, board, **kwargs)
         except (FetchError, ValueError) as exc:
+            # Доска недоступна — бумаги с неё остаются в справочнике такими,
+            # какими были. Обнулять вселенную из-за одного отказа сети нельзя.
+            #
+            # Но и молчать нельзя, и это была настоящая ошибка: доска фондов
+            # не доезжала неделю, во вселенной не было ни одного фонда, и
+            # экран сообщал лишь «в отборе только акции и ОФЗ» — про доску
+            # не знал никто. Целый класс активов пропал беззвучно.
             _note(
                 session, board,
                 f"доска не ответила: {type(exc).__name__}: {exc}"[:400],
@@ -187,6 +194,9 @@ def sync_investments(session: Session, *, fetch=None) -> list[str]:
         liquid = [r for r in rows if r.turnover and r.turnover >= floor and r.last]
         liquid.sort(key=lambda r: r.turnover or Decimal(0), reverse=True)
         if not liquid:
+            # Пустой отбор — это тоже событие, а не тишина. Причин ровно две,
+            # и они требуют разных действий: биржа не дала строк либо порог
+            # оборота отсёк всё. Из «фондов нет» ни одну из них не видно.
             with_price = sum(1 for r in rows if r.last)
             best = max((r.turnover or Decimal(0) for r in rows), default=Decimal(0))
             _note(
@@ -243,13 +253,23 @@ def sync_investments(session: Session, *, fetch=None) -> list[str]:
     return kept
 
 
+# ── Классификация фондов измерением ──────────────────────────────────────
+
+# Границы взяты по смыслу инструмента, а не подобраны под конкретный фонд:
+# денежный рынок не имеет просадок по построению, облигационный колеблется
+# единицами процентов, акционный — десятками.
 MONEY_MARKET_VOL = 0.015
 MONEY_MARKET_DRAWDOWN = 0.003
 BOND_FUND_VOL = 0.06
 
 
 def classify_funds(session: Session, *, min_days: int = 120) -> dict[str, str]:
-    """Уточнить класс биржевых фондов по их собственной истории."""
+    """Уточнить класс биржевых фондов по их собственной истории.
+
+    Возвращает карту «инструмент → чем оказался». Фонд, у которого истории
+    меньше порога, не переклассифицируется: угадывать класс по сорока дням
+    хуже, чем оставить предварительный и написать об этом.
+    """
     funds = list(
         session.execute(
             select(Instrument).where(
