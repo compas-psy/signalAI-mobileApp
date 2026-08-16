@@ -46,6 +46,8 @@ def _model(session, *, generated_at, suffix: str, weights: list[tuple[str, str, 
                     asset_class=AssetClass.EQUITY,
                     symbol=symbol,
                     title=symbol,
+                    tick_size=Decimal("0.01"),
+                    tick_value=Decimal("0.01"),
                     is_tradable=True,
                     in_universe=True,
                 )
