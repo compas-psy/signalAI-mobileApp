@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 from app.models import Bar, Instrument
 from app.models.enums import AssetClass, Timeframe, Venue
+from app.portfolio import build
 from app.portfolio import fundamentals as fund
 from app.portfolio.research_evidence import PortfolioResearchEvidence
 
@@ -82,6 +83,38 @@ def test_market_helpers_are_strictly_as_of_safe(session):
     assert fund._last_close_at(session, instrument.instrument_id, as_of=NOW) == NOW - timedelta(days=1)
     assert fund._history_days(session, instrument.instrument_id, as_of=NOW) == 30
     assert fund._median_turnover(session, instrument.instrument_id, as_of=NOW, days=90) == 15_000_000
+
+
+def test_optimizer_daily_closes_are_strictly_as_of_safe(session):
+    instrument = _instrument(session)
+    _bar(
+        session,
+        instrument.instrument_id,
+        NOW - timedelta(days=30),
+        close="90",
+        turnover="10000000",
+    )
+    _bar(
+        session,
+        instrument.instrument_id,
+        NOW - timedelta(days=1),
+        close="100",
+        turnover="20000000",
+    )
+    _bar(
+        session,
+        instrument.instrument_id,
+        NOW + timedelta(days=1),
+        close="999",
+        turnover="999000000",
+    )
+
+    series = build.daily_closes(session, [instrument.instrument_id], as_of=NOW)
+
+    assert series[instrument.instrument_id] == [
+        ((NOW - timedelta(days=30)).date(), 90.0),
+        ((NOW - timedelta(days=1)).date(), 100.0),
+    ]
 
 
 def test_stale_d1_price_rejects_candidate_explicitly(monkeypatch, session):
