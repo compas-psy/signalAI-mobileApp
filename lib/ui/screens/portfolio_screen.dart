@@ -53,7 +53,10 @@ class PortfolioScreen extends StatelessWidget {
       pill: switch (section) {
         PortfolioPill.packages => CapitalPill.packages.index,
         PortfolioPill.signals => CapitalPill.packages.index,
-        PortfolioPill.rebalance => CapitalPill.overview.index,
+        // Старый /packages здесь остаётся технической поверхностью: именно
+        // он загружает advisory-only сверку счёта с выбранной моделью.
+        // В основном chooser внутренние варианты больше не показываются.
+        PortfolioPill.rebalance => CapitalPill.packages.index,
         PortfolioPill.accounts => CapitalPill.accounts.index,
       },
     );
