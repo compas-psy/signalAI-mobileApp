@@ -3,10 +3,24 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
+import pytest
+from fastapi.testclient import TestClient
+
+from app.db import get_db
+from app.main import app
 from app.models.enums import PackageSize, RiskProfile
 from app.portfolio.headlines import HeadlineStatus, select_headlines
+from tests.conftest import DEVICE_HEADERS
 
 NOW = datetime(2026, 8, 16, 2, 0, tzinfo=UTC)
+
+
+@pytest.fixture
+def client(session):
+    app.dependency_overrides[get_db] = lambda: session
+    with TestClient(app, headers=DEVICE_HEADERS) as c:
+        yield c
+    app.dependency_overrides.clear()
 
 
 def _model(
@@ -149,3 +163,24 @@ def test_latest_version_of_same_internal_variant_wins_before_selection():
     item = select_headlines([older, latest], horizon_years=1, as_of=NOW)[1]
 
     assert item.model is latest
+
+
+def test_headlines_api_exposes_three_explicit_owner_slots(client):
+    response = client.get("/api/v1/portfolio/headlines?horizon_years=1")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["horizon_years"] == 1
+    assert [item["profile"] for item in body["portfolios"]] == [
+        "CONSERVATIVE",
+        "OPTIMAL",
+        "AGGRESSIVE",
+    ]
+    assert [item["label"] for item in body["portfolios"]] == [
+        "Консервативный",
+        "Сбалансированный",
+        "Доходный",
+    ]
+    assert all(item["status"] == "missing" for item in body["portfolios"])
+    assert all(item["package"] is None for item in body["portfolios"])
+    assert all(item["reason"] for item in body["portfolios"])
