@@ -1,7 +1,5 @@
 """Issuer identity for portfolio concentration must come from MOEX, never names."""
 
-from decimal import Decimal
-
 import numpy as np
 from sqlalchemy import select
 
@@ -17,20 +15,20 @@ def _report(url: str):
     return moex.FetchReport(url=url, status=200, elapsed_ms=1, bytes_read=1, ok=True)
 
 
-def test_moex_security_issuer_id_reads_explicit_emitent_inn():
+def test_moex_security_issuer_id_reads_explicit_emitter_id():
     def fetch(url: str):
         return {
             "description": {
                 "columns": ["name", "value"],
                 "data": [
-                    ["name", "Сбербанк"],
-                    ["emitent_inn", "7707083893"],
+                    ["NAME", "Сбербанк России ПАО ао"],
+                    ["EMITTER_ID", "484"],
                 ],
             }
         }, _report(url)
 
     issuer_id, _ = moex.security_issuer_id("SBER", fetch=fetch)
-    assert issuer_id == "MOEX:INN:7707083893"
+    assert issuer_id == "MOEX:EMITTER:484"
 
 
 def test_moex_security_issuer_id_does_not_guess_when_source_has_no_id():
@@ -38,7 +36,7 @@ def test_moex_security_issuer_id_does_not_guess_when_source_has_no_id():
         return {
             "description": {
                 "columns": ["name", "value"],
-                "data": [["name", "Сбербанк"]],
+                "data": [["NAME", "Сбербанк России ПАО ао"]],
             }
         }, _report(url)
 
@@ -62,7 +60,7 @@ def test_sync_persists_explicit_issuer_id_only(session):
             return {
                 "description": {
                     "columns": ["name", "value"],
-                    "data": [["emitent_inn", "7707083893"]],
+                    "data": [["EMITTER_ID", "484"]],
                 }
             }, _report(url)
         if "boards/TQBR" in url:
@@ -77,7 +75,7 @@ def test_sync_persists_explicit_issuer_id_only(session):
     instrument = session.execute(
         select(Instrument).where(Instrument.instrument_id == "MOEX:EQ:SBER")
     ).scalar_one()
-    assert instrument.metadata_json["issuer_id"] == "MOEX:INN:7707083893"
+    assert instrument.metadata_json["issuer_id"] == "MOEX:EMITTER:484"
 
 
 def _project(issuer_ids: list[str | None]) -> np.ndarray:
@@ -98,7 +96,7 @@ def _project(issuer_ids: list[str | None]) -> np.ndarray:
 
 
 def test_same_issuer_securities_share_single_name_cap():
-    weights = _project(["MOEX:INN:7707083893", "MOEX:INN:7707083893", None])
+    weights = _project(["MOEX:EMITTER:484", "MOEX:EMITTER:484", None])
     # positions=5 => existing single-name ceiling is 30%; two share classes
     # of one issuer must not turn that into 60% issuer exposure.
     assert float(weights[:2].sum()) <= 0.300001
@@ -106,7 +104,7 @@ def test_same_issuer_securities_share_single_name_cap():
 
 
 def test_distinct_issuers_remain_independent():
-    weights = _project(["MOEX:INN:1111111111", "MOEX:INN:2222222222", None])
+    weights = _project(["MOEX:EMITTER:111", "MOEX:EMITTER:222", None])
     assert float(weights[:2].sum()) > 0.300001
     assert abs(float(weights.sum()) - 1.0) <= 1e-8
 
