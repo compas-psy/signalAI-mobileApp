@@ -11,6 +11,7 @@ import '../../state/navigation.dart';
 import '../../theme/tokens.dart';
 import '../../theme/typography.dart';
 import '../tone.dart';
+import '../formatters/paper_position_origin.dart';
 import '../widgets/common.dart';
 import '../widgets/confluence_ring.dart';
 import '../widgets/idea_head.dart';
@@ -482,15 +483,11 @@ class PaperPositionCard extends StatelessWidget {
   /// устройства несёт идентификатор своего сигнала, а карточка искала его
   /// только среди идей движка — два разных множества. Позиция подписывалась
   /// «идей по ней нет» и не нажималась, хотя разбор существовал.
-  String _origin() {
-    final source = idea;
-    if (source != null) return 'из идеи ${source.strategy.label}';
-    if (trade.ideaId.isEmpty) {
-      return 'заведена расчётом на устройстве — идеи за ней не записано';
-    }
-    if (onOpenIdea != null) return 'из расчёта на устройстве — разбор открыт';
-    return 'идеи за ней нет в текущей выдаче — открывать нечего';
-  }
+  String _origin() => paperPositionOrigin(
+        trade,
+        idea: idea,
+        canOpenIdea: onOpenIdea != null,
+      );
 
   @override
   Widget build(BuildContext context) {
