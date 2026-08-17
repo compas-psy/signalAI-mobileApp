@@ -1,0 +1,82 @@
+name: Diagnose capital runtime
+
+on:
+  push:
+    branches:
+      - 'claude/debug-screenshot-capital'
+
+permissions:
+  contents: read
+
+jobs:
+  probe-vps:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out diagnostics
+        uses: actions/checkout@v4
+
+      - name: Prepare SSH
+        env:
+          KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          HOST_KEY_SHA256: ${{ secrets.VPS_SSH_HOST_KEY_SHA256 }}
+        run: |
+          set -euo pipefail
+          test -n "$KEY"
+          test -n "$HOST"
+          test -n "$HOST_KEY_SHA256"
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_diag
+          chmod 600 ~/.ssh/id_diag
+          bash .github/scripts/prepare_known_host.sh "$HOST" "$HOST_KEY_SHA256"
+
+      - name: Probe T-Invest from deployed API container
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/id_diag -o BatchMode=yes root@"$HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          cd "$HOME/signalai/server"
+          ENV_FILE='/etc/signalai/.env'
+          echo '--- host DNS ---'
+          getent ahosts invest-public-api.tbank.ru || true
+          echo '--- container DNS / TLS / urllib ---'
+          docker compose --env-file "$ENV_FILE" exec -T api python - <<'PY'
+          import socket, ssl, urllib.request, urllib.error
+          host='invest-public-api.tbank.ru'
+          print('python', ssl.OPENSSL_VERSION)
+          try:
+              print('addrinfo', [(x[0].name, x[4][0]) for x in socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)])
+          except Exception as exc:
+              print('addrinfo_error', type(exc).__name__, repr(exc))
+          try:
+              with urllib.request.urlopen('https://invest-public-api.tbank.ru/rest/', timeout=15) as response:
+                  print('urlopen_ok', response.status, response.geturl())
+          except urllib.error.HTTPError as exc:
+              print('urlopen_http', exc.code, exc.reason)
+          except urllib.error.URLError as exc:
+              print('urlopen_urlerror_reason', type(exc.reason).__name__, repr(exc.reason))
+          except Exception as exc:
+              print('urlopen_other', type(exc).__name__, repr(exc))
+          PY
+          echo '--- recent capital events ---'
+          docker compose --env-file "$ENV_FILE" exec -T api python - <<'PY'
+          from sqlalchemy import select
+          from app.db import SessionLocal
+          from app.models import DataQualityEvent
+          with SessionLocal() as db:
+              rows = db.execute(
+                  select(DataQualityEvent)
+                  .where(DataQualityEvent.source.in_(['capital_tinvest','capital_bybit']))
+                  .order_by(DataQualityEvent.occurred_at.desc())
+                  .limit(12)
+              ).scalars().all()
+              for row in rows:
+                  print(row.occurred_at.isoformat(), row.source, row.flag, row.detail)
+          PY
+          REMOTE
+
+      - name: Cleanup
+        if: always()
+        run: shred -u ~/.ssh/id_diag 2>/dev/null || rm -f ~/.ssh/id_diag
