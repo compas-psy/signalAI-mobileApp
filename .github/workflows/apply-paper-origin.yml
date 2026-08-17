@@ -1,0 +1,43 @@
+name: Apply paper origin label
+
+on:
+  push:
+    branches:
+      - 'claude/debug-screenshot-capital'
+
+permissions:
+  contents: write
+
+jobs:
+  patch-feature:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/fix-owner-cockpit-acceptance
+          fetch-depth: 0
+      - name: Use explicit server/device origin formatter
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('lib/ui/screens/ideas_screen.dart')
+          text=p.read_text()
+          old="import '../tone.dart';\nimport '../widgets/common.dart';"
+          new="import '../tone.dart';\nimport '../formatters/paper_position_origin.dart';\nimport '../widgets/common.dart';"
+          if text.count(old) != 1:
+              raise SystemExit('import anchor mismatch')
+          text=text.replace(old,new,1)
+
+          start=text.index('  String _origin() {')
+          end=text.index('\n  @override\n  Widget build', start)
+          replacement="""  String _origin() => paperPositionOrigin(\n        trade,\n        idea: idea,\n        canOpenIdea: onOpenIdea != null,\n      );\n"""
+          text=text[:start]+replacement+text[end:]
+          p.write_text(text)
+          PY
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add lib/ui/screens/ideas_screen.dart
+          git commit -m 'fix: label server paper origin truthfully'
+          git push origin HEAD:claude/fix-owner-cockpit-acceptance
