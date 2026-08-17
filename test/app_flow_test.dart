@@ -151,20 +151,17 @@ void main() {
     expect(find.text('SiU6'), findsWidgets);
   });
 
-  testWidgets('«Сегодня» отвечает на три вопроса: деньги, риск, решения',
-      (tester) async {
-    // ТЗ §6.1: экран не дублирует терминал. Ровно капитал, лимиты риска и
-    // счётчик решений — всё остальное живёт в своих разделах.
+  testWidgets('«Сегодня» — cockpit денег и торгового lifecycle', (tester) async {
     await pumpApp(tester);
 
-    // Четыре числа дня стоят плитками наверху — прототип открывает экран
-    // ими, а не тремя карточками во всю ширину.
     expect(find.text('Капитал'.toUpperCase()), findsOneWidget);
-    expect(find.text('Риск дня'.toUpperCase()), findsOneWidget);
-    expect(find.text('Нужны решения'.toUpperCase()), findsOneWidget);
-    // И то, ради чего экран существует: что решать сегодня.
-    expect(find.text('Идеи на контроле'.toUpperCase()), findsOneWidget);
-    expect(find.text('Все идеи →'), findsOneWidget);
+    expect(find.textContaining('НУЖНО РЕШИТЬ'), findsOneWidget);
+    expect(find.textContaining('ФОРМИРУЮТСЯ'), findsOneWidget);
+
+    // Старые большие KPI и абстрактный общий список больше не занимают экран.
+    expect(find.text('Нужны решения'.toUpperCase()), findsNothing);
+    expect(find.text('Идеи на контроле'.toUpperCase()), findsNothing);
+    expect(find.text('Все идеи →'), findsNothing);
   });
 
   testWidgets('разделы и подразделы переключаются', (tester) async {
