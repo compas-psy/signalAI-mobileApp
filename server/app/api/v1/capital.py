@@ -58,7 +58,16 @@ def capital_snapshot(db: Session = Depends(get_db)) -> CapitalOut:
                 synced_at=source.synced_at,
                 note=source.note,
                 equity_by_currency=source.equity_by_currency,
-                accounts=[CapitalAccountOut(**account.__dict__) for account in source.accounts],
+                accounts=[
+                    CapitalAccountOut(
+                        external_id=account.external_id,
+                        title=account.title,
+                        currency=account.currency,
+                        equity=account.equity,
+                        free_margin=account.free_margin,
+                    )
+                    for account in source.accounts
+                ],
             )
             for source in snapshot.sources
         ],
