@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:signal_ai/data/api/sandbox_mirror_delivery.dart';
+import 'package:signalai/data/api/sandbox_mirror_delivery.dart';
 
 void main() {
   test('completed sandbox mirror persists protection verification audit', () {
