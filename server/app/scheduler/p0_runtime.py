@@ -41,7 +41,9 @@ def _replace_scan_job(scheduler) -> None:
                 f"{lane}={stamp.isoformat()}#{count}"
                 for lane, (stamp, count) in sorted(current.items())
             )
-            return f"новых баров по контурам нет ({detail}) — скан пропущен"
+            # Keep the long-standing operator/test phrase while adding the
+            # per-lane evidence that explains *which* markets did not move.
+            return f"новых баров нет по контурам ({detail}) — скан пропущен"
 
         # Resolve the scan function at execution time. Scheduler bootstrap
         # installs the configured-owner-equity/risk runtime *after* this
