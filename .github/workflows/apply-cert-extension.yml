@@ -1,0 +1,37 @@
+name: Apply public CRT filename
+
+on:
+  push:
+    branches:
+      - 'claude/debug-screenshot-capital'
+
+permissions:
+  contents: write
+
+jobs:
+  patch-feature:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/fix-owner-cockpit-acceptance
+          fetch-depth: 0
+      - name: Switch runtime to public CRT file
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('server/app/capital/runtime.py')
+          text=p.read_text()
+          old='TINVEST_CA_FILE = Path(__file__).with_name("RussianTrustedRootCA.pem")'
+          new='TINVEST_CA_FILE = Path(__file__).with_name("RussianTrustedRootCA.crt")'
+          if text.count(old) != 1:
+              raise SystemExit('CA path anchor mismatch')
+          p.write_text(text.replace(old,new,1))
+          PY
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add server/app/capital/runtime.py
+          git commit -m 'fix: load tracked public TBank CRT'
+          git push origin HEAD:claude/fix-owner-cockpit-acceptance
