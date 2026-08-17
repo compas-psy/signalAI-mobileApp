@@ -56,12 +56,10 @@ jobs:
 
           echo '--- force capital refresh with deployed code ---'
           docker compose --env-file "$ENV_FILE" exec -T api python - <<'PY'
-          from app.db import SessionLocal
+          from app.db import session_scope
           from app.capital.runtime import refresh
-          with SessionLocal() as db:
-              result = refresh(db)
-              db.commit()
-              print(result)
+          with session_scope() as db:
+              print(refresh(db))
           PY
 
           TOKEN="$(sed -n 's/^SIGNALAI_DEVICE_TOKEN=//p' "$ENV_FILE" | tail -1)"
