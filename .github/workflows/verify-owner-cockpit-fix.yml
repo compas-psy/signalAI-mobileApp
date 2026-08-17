@@ -1,0 +1,47 @@
+name: Verify owner cockpit fix
+
+on:
+  push:
+    branches:
+      - 'claude/verify-owner-cockpit-fix-2'
+
+permissions:
+  contents: read
+
+jobs:
+  tls:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify certificate identity and live strict TLS handshake
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib, ssl, urllib.error, urllib.request
+
+          pem = Path('server/app/capital/RussianTrustedRootCA.pem')
+          der = ssl.PEM_cert_to_DER_cert(pem.read_text(encoding='utf-8'))
+          assert hashlib.sha256(der).hexdigest() == 'd26d2d0231b7c39f92cc738512ba54103519e4405d68b5bd703e9788ca8ecf31'
+
+          context = ssl.create_default_context()
+          context.load_verify_locations(cafile=str(pem))
+          assert context.verify_mode == ssl.CERT_REQUIRED
+          assert context.check_hostname
+
+          request = urllib.request.Request(
+              'https://invest-public-api.tbank.ru/rest/tinkoff.public.invest.api.contract.v1.UsersService/GetAccounts',
+              data=b'{"status":"ACCOUNT_STATUS_OPEN"}',
+              method='POST',
+              headers={'Content-Type': 'application/json'},
+          )
+          try:
+              urllib.request.urlopen(request, timeout=20, context=context)
+          except urllib.error.HTTPError as exc:
+              print('strict_tls_ok_http_status', exc.code)
+              assert exc.code in {400, 401, 403}
+          except urllib.error.URLError as exc:
+              raise SystemExit(f'TLS/network verification failed: {exc.reason!r}')
+          else:
+              print('strict_tls_ok_http_status 2xx')
+          PY
