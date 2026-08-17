@@ -22,7 +22,13 @@ enum AppSection {
         AppSection.today => const [],
         AppSection.portfolio =>
           const ['Пакеты', 'Сигналы', 'Ребалансировка', 'Счета'],
-        AppSection.ideas => const ['Решения', 'Наблюдение', 'В работе', 'Все'],
+        AppSection.ideas => const [
+            'Все',
+            'Нужно решить',
+            'Формируются',
+            'Ждут входа',
+            'Позиции открыты',
+          ],
         AppSection.journal => const ['Сделки', 'Пропуски', 'Метрики'],
         // Thin-клиент не показывает справочные вкладки под видом настроек.
         // Execution mode и security gates видны в контексте риска/сделки;
@@ -45,8 +51,10 @@ enum AppSection {
 /// Подразделы «Портфеля» (ТЗ §7).
 enum PortfolioPill { packages, signals, rebalance, accounts }
 
-/// Разрез ленты идей (ТЗ §8.2).
-enum IdeasPill { decisions, watch, active, all }
+/// Разрез единой воронки идей. Нулевой индекс — полный lifecycle, поэтому
+/// вход в раздел больше не приводит пользователя на потенциально пустой
+/// фильтр «Решения».
+enum IdeasPill { all, decisions, forming, pending, open }
 
 /// Подразделы «Журнала» (ТЗ §12).
 enum JournalPill { trades, skips, metrics }
