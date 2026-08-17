@@ -11,7 +11,7 @@ import os
 from datetime import timedelta
 
 from ..capital.runtime import refresh as refresh_capital
-from ..pipeline.scan import scan as run_scan
+from ..pipeline import scan as scan_module
 from . import runner
 from .market_watermark import changed_lanes, snapshot
 
@@ -43,8 +43,12 @@ def _replace_scan_job(scheduler) -> None:
             )
             return f"новых баров по контурам нет ({detail}) — скан пропущен"
 
-        result = run_scan(session)
-        # Advance only after a successful scan.  If run_scan raises, Scheduler
+        # Resolve the scan function at execution time. Scheduler bootstrap
+        # installs the configured-owner-equity/risk runtime *after* this
+        # package is imported; capturing scan() here would silently bypass
+        # that safety wrapper and restore the old 100k fallback.
+        result = scan_module.scan(session)
+        # Advance only after a successful scan. If scan raises, Scheduler
         # rolls the DB transaction back and the same market state is retried.
         previous = dict(current)
         lanes = changed or tuple(sorted(current))
