@@ -28,7 +28,7 @@ jobs:
           chmod 600 ~/.ssh/id_verify
           bash .github/scripts/prepare_known_host.sh "$HOST" "$HOST_KEY_SHA256"
 
-      - name: Verify scoped T-Invest capital in production
+      - name: Inspect futures margin truth in production
         env:
           HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
         run: |
@@ -39,15 +39,10 @@ jobs:
           ENV_FILE='/etc/signalai/.env'
           EXPECTED_SHA='8fa7f919abe15a04e352f1639531aeec55f6f0e4'
 
-          echo '--- deployed source ---'
           test "$(cat "$HOME/signalai/.signalai-source-sha")" = "$EXPECTED_SHA"
-          cat "$HOME/signalai/.signalai-source-sha"
-
-          echo '--- health ---'
           curl --fail --silent --show-error http://127.0.0.1:8000/health | python3 -c '
           import json,sys
           d=json.load(sys.stdin)
-          print(d)
           assert d["status"]=="ok"
           assert d["execution_mode"]=="PAPER"
           assert d["paper_only"] is True
@@ -55,36 +50,52 @@ jobs:
           assert d["database"]=="ok"
           '
 
-          echo '--- force capital refresh ---'
           docker compose --env-file "$ENV_FILE" exec -T api python - <<'PY'
+          import json
           from app.db import session_scope
-          from app.capital.runtime import refresh
+          from app.capital import runtime
+          from app.integration_secrets import load_secret
+
+          def money(raw):
+              if not isinstance(raw, dict):
+                  return None
+              units = int(raw.get("units") or 0)
+              nano = int(raw.get("nano") or 0)
+              return {"value": units + nano / 1_000_000_000, "currency": str(raw.get("currency") or "").upper()}
+
           with session_scope() as db:
-              print(refresh(db))
+              trade = load_secret(db, "tinvest_trade")
+              read = load_secret(db, "tinvest_invest_read")
+              assert trade and trade.get("token")
+              assert read and read.get("token")
+              accounts = runtime._tinvest_post(
+                  trade["token"], "UsersService", "GetAccounts", {"status": "ACCOUNT_STATUS_OPEN"}
+              ).get("accounts") or []
+              assert len(accounts) == 1, accounts
+              account = accounts[0]
+              account_id = str(account.get("id") or "")
+              margin = runtime._tinvest_post(
+                  read["token"], "UsersService", "GetMarginAttributes", {"accountId": account_id}
+              )
+              portfolio = runtime._tinvest_post(
+                  read["token"], "OperationsService", "GetPortfolio", {"accountId": account_id, "currency": "RUB"}
+              )
+              print("ACCOUNT", {"name": account.get("name"), "type": account.get("type"), "accessLevel": account.get("accessLevel")})
+              print("MARGIN", json.dumps({
+                  "liquidPortfolio": money(margin.get("liquidPortfolio")),
+                  "startingMargin": money(margin.get("startingMargin")),
+                  "minimalMargin": money(margin.get("minimalMargin")),
+                  "amountOfMissingFunds": money(margin.get("amountOfMissingFunds")),
+                  "correctedMargin": money(margin.get("correctedMargin")),
+                  "guaranteeForFutures": money(margin.get("guaranteeForFutures")),
+                  "fundsSufficiencyLevel": margin.get("fundsSufficiencyLevel"),
+              }, ensure_ascii=False))
+              print("PORTFOLIO", json.dumps({
+                  "totalAmountPortfolio": money(portfolio.get("totalAmountPortfolio")),
+                  "totalAmountFutures": money(portfolio.get("totalAmountFutures")),
+                  "expectedYield": portfolio.get("expectedYield"),
+              }, ensure_ascii=False))
           PY
-
-          TOKEN="$(sed -n 's/^SIGNALAI_DEVICE_TOKEN=//p' "$ENV_FILE" | tail -1)"
-          test -n "$TOKEN"
-
-          echo '--- scoped capital truth ---'
-          curl --fail --silent --show-error -H "Authorization: Bearer $TOKEN" \
-            http://127.0.0.1:8000/api/v1/capital | python3 -c '
-          import json,sys
-          d=json.load(sys.stdin)
-          states={s["source"]:s for s in d["sources"]}
-          t=states["tinvest"]
-          print("tinvest status:", t["status"])
-          print("tinvest total:", t["equity_by_currency"])
-          print("tinvest account count:", len(t["accounts"]))
-          for a in t["accounts"]:
-              print("trading account:", a["title"], a["currency"], a["equity"])
-          assert t["status"] == "fresh", t
-          assert len(t["accounts"]) == 1, t
-          account=t["accounts"][0]
-          currency=account["currency"]
-          assert t["equity_by_currency"] == {currency: account["equity"]}, t
-          '
-          unset TOKEN
           REMOTE
 
       - name: Cleanup
