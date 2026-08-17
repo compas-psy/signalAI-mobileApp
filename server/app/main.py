@@ -21,6 +21,7 @@ from fastapi import APIRouter, FastAPI
 from fastapi.responses import HTMLResponse
 from sqlalchemy import text
 
+from .api.v1 import capital as capital_routes
 from .api.v1 import control as control_routes
 from .api.v1 import diagnostics as diagnostics_routes
 from .api.v1 import equity_rankings as equity_ranking_routes
@@ -86,6 +87,7 @@ v1.include_router(equity_ranking_routes.router)
 v1.include_router(investment_signal_routes.router)
 v1.include_router(paper_routes.router)
 v1.include_router(integrations_routes.router)
+v1.include_router(capital_routes.router)
 v1.include_router(journal_routes.router)
 v1.include_router(notification_routes.router)
 v1.include_router(control_routes.router)
