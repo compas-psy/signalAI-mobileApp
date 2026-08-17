@@ -51,10 +51,14 @@ enum AppSection {
 /// Подразделы «Портфеля» (ТЗ §7).
 enum PortfolioPill { packages, signals, rebalance, accounts }
 
-/// Разрез единой воронки идей. Нулевой индекс — полный lifecycle, поэтому
+/// Исторический фильтр локальной ленты. Оставлен отдельно, чтобы UX thin-
+/// клиента не заставлял переписывать legacy-анализатор и его тесты.
+enum IdeasPill { decisions, watch, active, all }
+
+/// Видимые разрезы единой воронки. Нулевой индекс — полный lifecycle, поэтому
 /// вход в раздел больше не приводит пользователя на потенциально пустой
 /// фильтр «Решения».
-enum IdeasPill { all, decisions, forming, pending, open }
+enum IdeaFunnelPill { all, decisions, forming, pending, open }
 
 /// Подразделы «Журнала» (ТЗ §12).
 enum JournalPill { trades, skips, metrics }
