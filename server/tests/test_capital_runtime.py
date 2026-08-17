@@ -1,9 +1,12 @@
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
+from sqlalchemy import select
 
 from app.capital import runtime
 from app.capital.runtime import parse_bybit_wallet, parse_tinvest_portfolio_equity
+from app.models import Account
 
 
 def test_tinvest_portfolio_equity_reads_money_value_in_rubles():
@@ -97,3 +100,54 @@ def test_tinvest_capital_fails_closed_if_trade_token_does_not_identify_one_accou
 
     with pytest.raises(runtime.CapitalSourceError, match="ровно один торговый счёт"):
         runtime._read_tinvest(object())
+
+
+def test_tinvest_success_prunes_old_nontrading_accounts(session):
+    moment = datetime(2026, 8, 17, 13, 30, tzinfo=UTC)
+    session.add_all(
+        [
+            Account(
+                broker="tinvest",
+                external_id="old-brokerage",
+                title="Основной",
+                currency="RUB",
+                circuit="investment",
+                equity=Decimal("3000000"),
+                synced_at=moment,
+            ),
+            Account(
+                broker="tinvest",
+                external_id="futures-account",
+                title="Фьючерсы",
+                currency="RUB",
+                circuit="investment",
+                equity=Decimal("700000"),
+                synced_at=moment,
+            ),
+        ]
+    )
+    session.flush()
+
+    runtime._upsert_accounts(
+        session,
+        broker="tinvest",
+        circuit="investment",
+        accounts=(
+            runtime.SourceAccount(
+                external_id="futures-account",
+                title="Фьючерсы",
+                currency="RUB",
+                equity=Decimal("735000.5"),
+            ),
+        ),
+        now=moment,
+    )
+
+    rows = tuple(
+        session.execute(
+            select(Account).where(Account.broker == "tinvest").order_by(Account.external_id)
+        ).scalars()
+    )
+    assert [(row.external_id, Decimal(row.equity)) for row in rows] == [
+        ("futures-account", Decimal("735000.5"))
+    ]
