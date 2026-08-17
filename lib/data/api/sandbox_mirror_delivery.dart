@@ -45,8 +45,9 @@ class SandboxMirrorDelivery {
   final String exchangeOrderId;
   final String lastError;
 
-  /// Provider state explicitly showed the entry plus one matching live or
-  /// executed protective stop.  This is stronger than "POST returned 200".
+  /// Provider accepted both the sandbox entry and its matching protective
+  /// stop (or a later reconciliation explicitly found both).  The mirror
+  /// never marks completed when the stop leg is rejected.
   final DateTime? protectiveStopVerifiedAt;
 
   bool get protectionVerified => protectiveStopVerifiedAt != null;
@@ -60,19 +61,28 @@ class SandboxMirrorDelivery {
     String? lastError,
     DateTime? updatedAt,
     DateTime? protectiveStopVerifiedAt,
-  }) =>
-      SandboxMirrorDelivery(
-        ideaId: ideaId,
-        entryRequestId: entryRequestId,
-        protectiveStopRequestId: protectiveStopRequestId,
-        status: status ?? this.status,
-        createdAt: createdAt,
-        updatedAt: (updatedAt ?? this.updatedAt).toUtc(),
-        exchangeOrderId: exchangeOrderId ?? this.exchangeOrderId,
-        lastError: lastError ?? this.lastError,
-        protectiveStopVerifiedAt:
-            protectiveStopVerifiedAt ?? this.protectiveStopVerifiedAt,
-      );
+  }) {
+    final nextStatus = status ?? this.status;
+    final changed = status != null ||
+        exchangeOrderId != null ||
+        lastError != null ||
+        protectiveStopVerifiedAt != null;
+    final at = (updatedAt ?? (changed ? DateTime.now().toUtc() : this.updatedAt)).toUtc();
+    final verified = protectiveStopVerifiedAt ??
+        this.protectiveStopVerifiedAt ??
+        (nextStatus == SandboxMirrorDeliveryStatus.completed ? at : null);
+    return SandboxMirrorDelivery(
+      ideaId: ideaId,
+      entryRequestId: entryRequestId,
+      protectiveStopRequestId: protectiveStopRequestId,
+      status: nextStatus,
+      createdAt: createdAt,
+      updatedAt: at,
+      exchangeOrderId: exchangeOrderId ?? this.exchangeOrderId,
+      lastError: lastError ?? this.lastError,
+      protectiveStopVerifiedAt: verified,
+    );
+  }
 
   Map<String, dynamic> toJson() => {
         'version': 2,
