@@ -19,7 +19,7 @@ import 'ideas_screen.dart';
 /// Production owner cockpit.
 ///
 /// Capital comes from the server read model; trading lifecycle remains the
-/// server PAPER ledger.  T-Invest Sandbox proof is deliberately read from the
+/// server PAPER ledger. T-Invest Sandbox proof is deliberately read from the
 /// device-local durable delivery journal because the sandbox token never
 /// leaves Android Keystore.
 class ServerTodayScreen extends StatefulWidget {
@@ -198,7 +198,11 @@ class _ServerCapitalCard extends StatelessWidget {
                 onTap: loading ? null : () => onRefresh(silent: false),
                 child: Text(
                   loading ? 'сверяем…' : 'обновить ↻',
-                  style: T.body(10.5, color: loading ? C.info : C.accent, weight: 700),
+                  style: T.body(
+                    10.5,
+                    color: loading ? C.info : C.accent,
+                    weight: 700,
+                  ),
                 ),
               ),
             ],
@@ -209,7 +213,11 @@ class _ServerCapitalCard extends StatelessWidget {
               error == null
                   ? 'Получаем брокерский снимок с сервера…'
                   : 'Серверный снимок капитала недоступен. Последняя ошибка: $error',
-              style: T.body(11.5, color: error == null ? C.muted : C.warning, height: 1.45),
+              style: T.body(
+                11.5,
+                color: error == null ? C.muted : C.warning,
+                height: 1.45,
+              ),
             ),
           ] else ...[
             for (var i = 0; i < data.sources.length; i++) ...[
@@ -243,7 +251,7 @@ class _CapitalSourceRow extends StatelessWidget {
       'not_configured' => 'не настроено',
       _ => 'недоступно',
     };
-    final tone = source.fresh ? C.success : (source.stale ? C.warning : C.muted);
+    final tone = source.fresh ? C.green : (source.stale ? C.warning : C.muted);
     final totals = source.equityByCurrency.entries.toList();
     final value = totals.isEmpty
         ? '—'
@@ -394,7 +402,7 @@ class _AuditedTradeCard extends StatelessWidget {
             children: [
               Text(
                 'SignalAI PAPER · ${_paperState(trade)}',
-                style: T.body(10.5, weight: 700, color: C.success),
+                style: T.body(10.5, weight: 700, color: C.green),
               ),
               const SizedBox(height: 3),
               Text(
@@ -464,7 +472,7 @@ class _SandboxAuditState extends State<_SandboxAudit> {
       SandboxMirrorDeliveryStatus.notApplicable => 'не применяется',
     };
     final tone = delivery.status == SandboxMirrorDeliveryStatus.completed
-        ? C.success
+        ? C.green
         : delivery.status == SandboxMirrorDeliveryStatus.repairRequired
             ? C.warning
             : C.muted;
