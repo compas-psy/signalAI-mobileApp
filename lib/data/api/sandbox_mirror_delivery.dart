@@ -15,25 +15,41 @@ class SandboxMirrorDelivery {
     required this.protectiveStopRequestId,
     required this.status,
     required this.createdAt,
+    required this.updatedAt,
     this.exchangeOrderId = '',
     this.lastError = '',
+    this.protectiveStopVerifiedAt,
   });
 
-  factory SandboxMirrorDelivery.pending(String ideaId) => SandboxMirrorDelivery(
-        ideaId: ideaId,
-        entryRequestId: stableTInvestRequestId(ideaId, 'entry'),
-        protectiveStopRequestId: stableTInvestRequestId(ideaId, 'protective-stop'),
-        status: SandboxMirrorDeliveryStatus.pending,
-        createdAt: DateTime.now().toUtc(),
-      );
+  factory SandboxMirrorDelivery.pending(String ideaId) {
+    final now = DateTime.now().toUtc();
+    return SandboxMirrorDelivery(
+      ideaId: ideaId,
+      entryRequestId: stableTInvestRequestId(ideaId, 'entry'),
+      protectiveStopRequestId: stableTInvestRequestId(ideaId, 'protective-stop'),
+      status: SandboxMirrorDeliveryStatus.pending,
+      createdAt: now,
+      updatedAt: now,
+    );
+  }
 
   final String ideaId;
   final String entryRequestId;
   final String protectiveStopRequestId;
   final SandboxMirrorDeliveryStatus status;
   final DateTime createdAt;
+
+  /// Last durable change/reconciliation of this delivery record.
+  final DateTime updatedAt;
+
   final String exchangeOrderId;
   final String lastError;
+
+  /// Provider state explicitly showed the entry plus one matching live or
+  /// executed protective stop.  This is stronger than "POST returned 200".
+  final DateTime? protectiveStopVerifiedAt;
+
+  bool get protectionVerified => protectiveStopVerifiedAt != null;
 
   bool get terminal => status == SandboxMirrorDeliveryStatus.completed ||
       status == SandboxMirrorDeliveryStatus.notApplicable;
@@ -42,6 +58,8 @@ class SandboxMirrorDelivery {
     SandboxMirrorDeliveryStatus? status,
     String? exchangeOrderId,
     String? lastError,
+    DateTime? updatedAt,
+    DateTime? protectiveStopVerifiedAt,
   }) =>
       SandboxMirrorDelivery(
         ideaId: ideaId,
@@ -49,19 +67,26 @@ class SandboxMirrorDelivery {
         protectiveStopRequestId: protectiveStopRequestId,
         status: status ?? this.status,
         createdAt: createdAt,
+        updatedAt: (updatedAt ?? this.updatedAt).toUtc(),
         exchangeOrderId: exchangeOrderId ?? this.exchangeOrderId,
         lastError: lastError ?? this.lastError,
+        protectiveStopVerifiedAt:
+            protectiveStopVerifiedAt ?? this.protectiveStopVerifiedAt,
       );
 
   Map<String, dynamic> toJson() => {
-        'version': 1,
+        'version': 2,
         'idea_id': ideaId,
         'entry_request_id': entryRequestId,
         'protective_stop_request_id': protectiveStopRequestId,
         'status': status.name,
         'created_at': createdAt.toIso8601String(),
+        'updated_at': updatedAt.toIso8601String(),
         'exchange_order_id': exchangeOrderId,
         'last_error': lastError,
+        if (protectiveStopVerifiedAt != null)
+          'protective_stop_verified_at':
+              protectiveStopVerifiedAt!.toIso8601String(),
       };
 
   static SandboxMirrorDelivery? fromJson(Map<String, dynamic>? json) {
@@ -78,15 +103,22 @@ class SandboxMirrorDelivery {
       (value) => value.name == rawStatus,
       orElse: () => SandboxMirrorDeliveryStatus.repairRequired,
     );
+    final created = DateTime.tryParse(json['created_at'] as String? ?? '')?.toUtc() ??
+        DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
     return SandboxMirrorDelivery(
       ideaId: ideaId,
       entryRequestId: entryRequestId,
       protectiveStopRequestId: protectiveStopRequestId,
       status: status,
-      createdAt: DateTime.tryParse(json['created_at'] as String? ?? '')?.toUtc() ??
-          DateTime.fromMillisecondsSinceEpoch(0, isUtc: true),
+      createdAt: created,
+      // v1 records had no update timestamp.  created_at is the honest lower
+      // bound; inventing "now" would make an old unresolved delivery look fresh.
+      updatedAt: DateTime.tryParse(json['updated_at'] as String? ?? '')?.toUtc() ?? created,
       exchangeOrderId: json['exchange_order_id'] as String? ?? '',
       lastError: json['last_error'] as String? ?? '',
+      protectiveStopVerifiedAt: DateTime.tryParse(
+        json['protective_stop_verified_at'] as String? ?? '',
+      )?.toUtc(),
     );
   }
 }
