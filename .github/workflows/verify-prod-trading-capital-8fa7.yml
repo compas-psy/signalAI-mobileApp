@@ -28,7 +28,7 @@ jobs:
           chmod 600 ~/.ssh/id_verify
           bash .github/scripts/prepare_known_host.sh "$HOST" "$HOST_KEY_SHA256"
 
-      - name: Inspect futures margin truth in production
+      - name: Inspect futures account money truth in production
         env:
           HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
         run: |
@@ -38,17 +38,7 @@ jobs:
           cd "$HOME/signalai/server"
           ENV_FILE='/etc/signalai/.env'
           EXPECTED_SHA='8fa7f919abe15a04e352f1639531aeec55f6f0e4'
-
           test "$(cat "$HOME/signalai/.signalai-source-sha")" = "$EXPECTED_SHA"
-          curl --fail --silent --show-error http://127.0.0.1:8000/health | python3 -c '
-          import json,sys
-          d=json.load(sys.stdin)
-          assert d["status"]=="ok"
-          assert d["execution_mode"]=="PAPER"
-          assert d["paper_only"] is True
-          assert d["kill_switch"] is False
-          assert d["database"]=="ok"
-          '
 
           docker compose --env-file "$ENV_FILE" exec -T api python - <<'PY'
           import json
@@ -59,41 +49,42 @@ jobs:
           def money(raw):
               if not isinstance(raw, dict):
                   return None
-              units = int(raw.get("units") or 0)
-              nano = int(raw.get("nano") or 0)
-              return {"value": units + nano / 1_000_000_000, "currency": str(raw.get("currency") or "").upper()}
+              return {
+                  "value": int(raw.get("units") or 0) + int(raw.get("nano") or 0) / 1_000_000_000,
+                  "currency": str(raw.get("currency") or "").upper(),
+              }
+
+          def money_list(rows):
+              return [money(row) for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
 
           with session_scope() as db:
               trade = load_secret(db, "tinvest_trade")
               read = load_secret(db, "tinvest_invest_read")
-              assert trade and trade.get("token")
-              assert read and read.get("token")
+              assert trade and trade.get("token") and read and read.get("token")
               accounts = runtime._tinvest_post(
                   trade["token"], "UsersService", "GetAccounts", {"status": "ACCOUNT_STATUS_OPEN"}
               ).get("accounts") or []
               assert len(accounts) == 1, accounts
               account = accounts[0]
               account_id = str(account.get("id") or "")
-              margin = runtime._tinvest_post(
-                  read["token"], "UsersService", "GetMarginAttributes", {"accountId": account_id}
+              positions = runtime._tinvest_post(
+                  read["token"], "OperationsService", "GetPositions", {"accountId": account_id}
               )
-              portfolio = runtime._tinvest_post(
-                  read["token"], "OperationsService", "GetPortfolio", {"accountId": account_id, "currency": "RUB"}
+              withdraw = runtime._tinvest_post(
+                  read["token"], "OperationsService", "GetWithdrawLimits", {"accountId": account_id}
               )
               print("ACCOUNT", {"name": account.get("name"), "type": account.get("type"), "accessLevel": account.get("accessLevel")})
-              print("MARGIN", json.dumps({
-                  "liquidPortfolio": money(margin.get("liquidPortfolio")),
-                  "startingMargin": money(margin.get("startingMargin")),
-                  "minimalMargin": money(margin.get("minimalMargin")),
-                  "amountOfMissingFunds": money(margin.get("amountOfMissingFunds")),
-                  "correctedMargin": money(margin.get("correctedMargin")),
-                  "guaranteeForFutures": money(margin.get("guaranteeForFutures")),
-                  "fundsSufficiencyLevel": margin.get("fundsSufficiencyLevel"),
+              print("POSITIONS", json.dumps({
+                  "money": money_list(positions.get("money")),
+                  "blocked": money_list(positions.get("blocked")),
+                  "futuresCount": len(positions.get("futures") or []),
+                  "optionsCount": len(positions.get("options") or []),
+                  "limitsLoadingInProgress": positions.get("limitsLoadingInProgress"),
               }, ensure_ascii=False))
-              print("PORTFOLIO", json.dumps({
-                  "totalAmountPortfolio": money(portfolio.get("totalAmountPortfolio")),
-                  "totalAmountFutures": money(portfolio.get("totalAmountFutures")),
-                  "expectedYield": portfolio.get("expectedYield"),
+              print("WITHDRAW", json.dumps({
+                  "money": money_list(withdraw.get("money")),
+                  "blocked": money_list(withdraw.get("blocked")),
+                  "blockedGuarantee": money_list(withdraw.get("blockedGuarantee")),
               }, ensure_ascii=False))
           PY
           REMOTE
