@@ -17,6 +17,7 @@ from app.models.enums import (
     IdeaStatus,
     PaperStatus,
     QualityStatus,
+    Strategy,
     Venue,
 )
 from tests.conftest import DEVICE_HEADERS, idea_kwargs
@@ -145,6 +146,7 @@ def test_forts_radar_links_active_setup_and_server_paper_lifecycle(client, sessi
         **idea_kwargs(
             instrument.instrument_id,
             now - timedelta(hours=2),
+            strategy=Strategy.TREND_PULLBACK,
             status=IdeaStatus.TRIGGERED,
             quality_status=QualityStatus.ACTIVE,
             expires_at=now + timedelta(days=2),
