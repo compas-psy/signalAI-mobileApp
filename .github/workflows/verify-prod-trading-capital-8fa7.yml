@@ -1,0 +1,92 @@
+name: Verify production trading-account capital 8fa7
+
+on:
+  push:
+    branches:
+      - 'claude/verify-prod-trading-capital-8fa7'
+
+permissions:
+  contents: read
+
+jobs:
+  verify-vps:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare SSH
+        env:
+          KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          HOST_KEY_SHA256: ${{ secrets.VPS_SSH_HOST_KEY_SHA256 || 'SHA256:cUfeWKyHoFIhKsV17Bpk076calxUaxd90XhuETb4vng' }}
+        run: |
+          set -euo pipefail
+          test -n "$KEY"
+          test -n "$HOST"
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_verify
+          chmod 600 ~/.ssh/id_verify
+          bash .github/scripts/prepare_known_host.sh "$HOST" "$HOST_KEY_SHA256"
+
+      - name: Verify scoped T-Invest capital in production
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/id_verify -o BatchMode=yes root@"$HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          cd "$HOME/signalai/server"
+          ENV_FILE='/etc/signalai/.env'
+          EXPECTED_SHA='8fa7f919abe15a04e352f1639531aeec55f6f0e4'
+
+          echo '--- deployed source ---'
+          test "$(cat "$HOME/signalai/.signalai-source-sha")" = "$EXPECTED_SHA"
+          cat "$HOME/signalai/.signalai-source-sha"
+
+          echo '--- health ---'
+          curl --fail --silent --show-error http://127.0.0.1:8000/health | python3 -c '
+          import json,sys
+          d=json.load(sys.stdin)
+          print(d)
+          assert d["status"]=="ok"
+          assert d["execution_mode"]=="PAPER"
+          assert d["paper_only"] is True
+          assert d["kill_switch"] is False
+          assert d["database"]=="ok"
+          '
+
+          echo '--- force capital refresh ---'
+          docker compose --env-file "$ENV_FILE" exec -T api python - <<'PY'
+          from app.db import session_scope
+          from app.capital.runtime import refresh
+          with session_scope() as db:
+              print(refresh(db))
+          PY
+
+          TOKEN="$(sed -n 's/^SIGNALAI_DEVICE_TOKEN=//p' "$ENV_FILE" | tail -1)"
+          test -n "$TOKEN"
+
+          echo '--- scoped capital truth ---'
+          curl --fail --silent --show-error -H "Authorization: Bearer $TOKEN" \
+            http://127.0.0.1:8000/api/v1/capital | python3 -c '
+          import json,sys
+          d=json.load(sys.stdin)
+          states={s["source"]:s for s in d["sources"]}
+          t=states["tinvest"]
+          print("tinvest status:", t["status"])
+          print("tinvest total:", t["equity_by_currency"])
+          print("tinvest account count:", len(t["accounts"]))
+          for a in t["accounts"]:
+              print("trading account:", a["title"], a["currency"], a["equity"])
+          assert t["status"] == "fresh", t
+          assert len(t["accounts"]) == 1, t
+          account=t["accounts"][0]
+          currency=account["currency"]
+          assert t["equity_by_currency"] == {currency: account["equity"]}, t
+          '
+          unset TOKEN
+          REMOTE
+
+      - name: Cleanup
+        if: always()
+        run: shred -u ~/.ssh/id_verify 2>/dev/null || rm -f ~/.ssh/id_verify
