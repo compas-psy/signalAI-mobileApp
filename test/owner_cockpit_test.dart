@@ -33,13 +33,13 @@ void main() {
     await pumpApp(tester);
 
     expect(find.text('Капитал'.toUpperCase()), findsWidgets);
-    expect(find.text('Нужно решить'.toUpperCase()), findsOneWidget);
-    expect(find.text('Формируются'.toUpperCase()), findsOneWidget);
+    expect(find.textContaining('НУЖНО РЕШИТЬ'), findsOneWidget);
+    expect(find.textContaining('ФОРМИРУЮТСЯ'), findsOneWidget);
 
     // Старый нулевой KPI не должен занимать большую карточку.
     expect(find.text('Нужны решения'.toUpperCase()), findsNothing);
     // В демо нет paper-сделок: пустые секции также не занимают экран.
-    expect(find.text('Ждут входа'.toUpperCase()), findsNothing);
-    expect(find.text('Позиции открыты'.toUpperCase()), findsNothing);
+    expect(find.textContaining('ЖДУТ ВХОДА'), findsNothing);
+    expect(find.textContaining('ПОЗИЦИИ ОТКРЫТЫ'), findsNothing);
   });
 }
