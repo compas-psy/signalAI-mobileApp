@@ -15,31 +15,6 @@ jobs:
       - name: Check out diagnostics
         uses: actions/checkout@v4
 
-      - name: Inspect official TBank Python SDK certificate bundle
-        run: |
-          set -euo pipefail
-          python -m pip install --quiet --target /tmp/tbank-sdk \
-            --index-url https://opensource.tbank.ru/api/v4/projects/238/packages/pypi/simple \
-            't-tech-investments==1.49.2'
-          python - <<'PY'
-          from pathlib import Path
-          import hashlib
-          root = Path('/tmp/tbank-sdk/t_tech/invest/certs')
-          files = sorted(p for p in root.rglob('*') if p.is_file())
-          print('cert_files', [str(p.relative_to(root)) for p in files])
-          for path in files:
-              data = path.read_bytes()
-              print('CERT', path.name, 'SHA256', hashlib.sha256(data).hexdigest())
-              try:
-                  text = data.decode('utf-8')
-              except UnicodeDecodeError:
-                  continue
-              if 'BEGIN CERTIFICATE' in text:
-                  print(f'---BEGIN {path.name}---')
-                  print(text.strip())
-                  print(f'---END {path.name}---')
-          PY
-
       - name: Prepare SSH
         env:
           KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
@@ -47,15 +22,12 @@ jobs:
           HOST_KEY_SHA256: ${{ secrets.VPS_SSH_HOST_KEY_SHA256 || 'SHA256:cUfeWKyHoFIhKsV17Bpk076calxUaxd90XhuETb4vng' }}
         run: |
           set -euo pipefail
-          test -n "$KEY"
-          test -n "$HOST"
-          test -n "$HOST_KEY_SHA256"
           install -d -m 700 ~/.ssh
           printf '%s\n' "$KEY" > ~/.ssh/id_diag
           chmod 600 ~/.ssh/id_diag
           bash .github/scripts/prepare_known_host.sh "$HOST" "$HOST_KEY_SHA256"
 
-      - name: Probe deployed runtime
+      - name: Read deployed runtime state
         env:
           HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
         run: |
@@ -64,39 +36,16 @@ jobs:
           set -euo pipefail
           cd "$HOME/signalai/server"
           ENV_FILE='/etc/signalai/.env'
-          echo '--- host DNS ---'
-          getent ahosts invest-public-api.tbank.ru || true
-          echo '--- container DNS / TLS / urllib ---'
-          docker compose --env-file "$ENV_FILE" exec -T api python - <<'PY'
-          import socket, ssl, urllib.request, urllib.error
-          host='invest-public-api.tbank.ru'
-          print('python', ssl.OPENSSL_VERSION)
-          try:
-              print('addrinfo', [(x[0].name, x[4][0]) for x in socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)])
-          except Exception as exc:
-              print('addrinfo_error', type(exc).__name__, repr(exc))
-          try:
-              with urllib.request.urlopen('https://invest-public-api.tbank.ru/rest/', timeout=15) as response:
-                  print('urlopen_ok', response.status, response.geturl())
-          except urllib.error.HTTPError as exc:
-              print('urlopen_http', exc.code, exc.reason)
-          except urllib.error.URLError as exc:
-              print('urlopen_urlerror_reason', type(exc.reason).__name__, repr(exc.reason))
-          except Exception as exc:
-              print('urlopen_other', type(exc).__name__, repr(exc))
-          PY
           TOKEN="$(sed -n 's/^SIGNALAI_DEVICE_TOKEN=//p' "$ENV_FILE" | tail -1)"
           test -n "$TOKEN"
           echo '--- capital API ---'
-          curl --fail --silent --show-error \
-            -H "Authorization: Bearer $TOKEN" \
+          curl --fail --silent --show-error -H "Authorization: Bearer $TOKEN" \
             http://127.0.0.1:8000/api/v1/capital \
-            | python -c 'import json,sys; d=json.load(sys.stdin); print(json.dumps(d, ensure_ascii=False))'
+            | python3 -c 'import json,sys; d=json.load(sys.stdin); [(print(s.get("source"), s.get("status"), s.get("equity_by_currency"), s.get("note"))) for s in d.get("sources",[])]'
           echo '--- live paper API ---'
-          curl --fail --silent --show-error \
-            -H "Authorization: Bearer $TOKEN" \
+          curl --fail --silent --show-error -H "Authorization: Bearer $TOKEN" \
             'http://127.0.0.1:8000/api/v1/paper/trades?live_only=true&limit=20' \
-            | python -c 'import json,sys; rows=json.load(sys.stdin); [print(r.get("id"), r.get("idea_id"), r.get("instrument_id"), r.get("status"), r.get("opened_at")) for r in rows]'
+            | python3 -c 'import json,sys; rows=json.load(sys.stdin); print("count", len(rows)); [print(r.get("id"), r.get("idea_id"), r.get("instrument_id"), r.get("status"), r.get("opened_at")) for r in rows]'
           unset TOKEN
           REMOTE
 
