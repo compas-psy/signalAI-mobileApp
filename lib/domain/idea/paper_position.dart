@@ -34,6 +34,7 @@ class PaperPosition {
     required this.tpPrices,
     required this.tpsTaken,
     this.ideaId = '',
+    this.instrumentId = '',
     this.breakevenAt,
     this.resultR,
     this.resultRealized = false,
@@ -55,10 +56,21 @@ class PaperPosition {
   /// журнал ведёт и скринер на устройстве, у которого сигналы свои.
   final String ideaId;
 
+  /// Канонический серверный идентификатор инструмента.
+  ///
+  /// Сделка живёт дольше карточки идеи, поэтому площадку нельзя восстанавливать
+  /// поиском текущей идеи: после её ухода из today-feed пропадал Sandbox audit
+  /// у всё ещё открытого FORTS-трейда.
+  final String instrumentId;
+
   final String symbol;
   final bool long;
   final bool pending;
   final PaperPositionStatus status;
+
+  /// Источник истины для venue-sensitive UI. Тикер намеренно не угадываем:
+  /// одинаковые коды могут существовать на разных площадках.
+  bool get isForts => instrumentId.toUpperCase().startsWith('MOEX:FUT:');
 
   final double entry;
   final double initialStop;

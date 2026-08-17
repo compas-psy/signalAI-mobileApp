@@ -13,6 +13,7 @@ import '../../state/app_scope.dart';
 import '../../state/navigation.dart';
 import '../../theme/tokens.dart';
 import '../../theme/typography.dart';
+import '../formatters/capital_amount.dart';
 import '../widgets/common.dart';
 import 'ideas_screen.dart';
 
@@ -256,7 +257,7 @@ class _CapitalSourceRow extends StatelessWidget {
     final value = totals.isEmpty
         ? '—'
         : totals
-            .map((entry) => '${_money(entry.value)} ${entry.key}')
+            .map((entry) => '${formatCapitalAmount(entry.value)} ${entry.key}')
             .join(' · ');
     final age = source.syncedAt == null ? '' : ' · ${_age(source.syncedAt!)}';
 
@@ -282,11 +283,6 @@ class _CapitalSourceRow extends StatelessWidget {
     );
   }
 
-  static String _money(double value) {
-    if (value.abs() >= 1000000) return value.toStringAsFixed(0);
-    if (value.abs() >= 1000) return value.toStringAsFixed(0);
-    return value.toStringAsFixed(2);
-  }
 
   static String _age(DateTime at) {
     final diff = DateTime.now().difference(at);
@@ -390,7 +386,7 @@ class _AuditedTradeCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final forts = idea?.instrumentId.startsWith('MOEX:FUT:') ?? false;
+    final forts = trade.isForts;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [

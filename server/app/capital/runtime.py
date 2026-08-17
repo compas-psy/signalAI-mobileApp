@@ -15,10 +15,12 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import ssl
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -33,6 +35,7 @@ TINVEST_SLOT = "tinvest_invest_read"
 BYBIT_SLOT = "bybit_read"
 TINVEST_SOURCE = "capital_tinvest"
 BYBIT_SOURCE = "capital_bybit"
+TINVEST_CA_FILE = Path(__file__).with_name("RussianTrustedRootCA.crt")
 
 _FRESH_FOR = timedelta(minutes=10)
 _TIMEOUT_SECONDS = 20
@@ -124,6 +127,7 @@ def _request_json(
     method: str = "GET",
     headers: dict[str, str] | None = None,
     body: dict | None = None,
+    ssl_context: ssl.SSLContext | None = None,
 ) -> dict:
     data = None if body is None else json.dumps(body).encode("utf-8")
     request = Request(url, data=data, method=method)
@@ -133,15 +137,33 @@ def _request_json(
     for key, value in (headers or {}).items():
         request.add_header(key, value)
     try:
-        with urlopen(request, timeout=_TIMEOUT_SECONDS) as response:  # noqa: S310 - fixed broker hosts
+        with urlopen(  # noqa: S310 - fixed broker hosts
+            request, timeout=_TIMEOUT_SECONDS, context=ssl_context
+        ) as response:
             decoded = json.loads(response.read().decode("utf-8") or "{}")
     except HTTPError as exc:
         raise CapitalSourceError(f"HTTP {exc.code}") from exc
-    except (URLError, TimeoutError, json.JSONDecodeError) as exc:
+    except URLError as exc:
+        reason = exc.reason
+        detail = type(reason).__name__ if isinstance(reason, BaseException) else type(exc).__name__
+        raise CapitalSourceError(detail) from exc
+    except (TimeoutError, json.JSONDecodeError) as exc:
         raise CapitalSourceError(type(exc).__name__) from exc
     if not isinstance(decoded, dict):
         raise CapitalSourceError("неожиданный формат ответа")
     return decoded
+
+
+def _tinvest_ssl_context() -> ssl.SSLContext:
+    """Default public CAs plus T-Bank's official Russian Trusted Root.
+
+    The extra root is scoped to T-Invest requests only; TLS verification and
+    hostname checks remain enabled.  The PEM is the file embedded in the
+    official T-Bank Python SDK 1.49.2.
+    """
+    context = ssl.create_default_context()
+    context.load_verify_locations(cafile=str(TINVEST_CA_FILE))
+    return context
 
 
 def _tinvest_post(token: str, service: str, method: str, body: dict) -> dict:
@@ -152,6 +174,7 @@ def _tinvest_post(token: str, service: str, method: str, body: dict) -> dict:
         method="POST",
         headers={"Authorization": f"Bearer {token}"},
         body=body,
+        ssl_context=_tinvest_ssl_context(),
     )
 
 
