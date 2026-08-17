@@ -57,7 +57,7 @@ EquityRankingState _state() => EquityRankingState.fromJson({
     });
 
 class _FakeSource extends EquityRankingSource {
-  _FakeSource(this.state);
+  const _FakeSource(this.state);
   final EquityRankingState state;
 
   @override
@@ -75,13 +75,26 @@ Future<void> _pump(WidgetTester tester) async {
   await tester.pumpAndSettle();
 }
 
+Future<void> _scrollTo(WidgetTester tester, Finder finder) async {
+  await tester.scrollUntilVisible(
+    finder,
+    300,
+    scrollable: find.byType(Scrollable).first,
+  );
+  await tester.pumpAndSettle();
+}
+
 void main() {
-  testWidgets('default Все view renders the complete server-ranked universe', (tester) async {
+  testWidgets('default Все view exposes the complete server-ranked universe', (tester) async {
     await _pump(tester);
 
     expect(find.text('T01'), findsOneWidget);
+    expect(find.textContaining('Показано 12 из 12'), findsOneWidget);
+
+    // ListView is intentionally lazy: prove the tail is reachable instead of
+    // requiring every off-screen row to be instantiated at the same time.
+    await _scrollTo(tester, find.text('T12'));
     expect(find.text('T12'), findsOneWidget);
-    expect(find.textContaining('12 из 12'), findsOneWidget);
   });
 
   testWidgets('expanded row shows early evidence, confirmation, invalidation and safe null', (tester) async {
@@ -90,9 +103,9 @@ void main() {
     await tester.tap(find.text('T01'));
     await tester.pumpAndSettle();
 
-    expect(find.text('Почему сейчас'), findsOneWidget);
-    expect(find.text('Подтверждение'), findsOneWidget);
-    expect(find.text('Инвалидация'), findsOneWidget);
+    expect(find.text('ПОЧЕМУ СЕЙЧАС'), findsOneWidget);
+    expect(find.text('ПОДТВЕРЖДЕНИЕ'), findsOneWidget);
+    expect(find.text('ИНВАЛИДАЦИЯ'), findsOneWidget);
     expect(find.textContaining('оборот последних 5 сессий'), findsOneWidget);
     expect(find.textContaining('5 дней · —'), findsOneWidget);
   });
@@ -102,18 +115,24 @@ void main() {
 
     await tester.tap(find.text('Ранние'));
     await tester.pumpAndSettle();
+    expect(find.textContaining('Показано 2 из 12'), findsOneWidget);
     expect(find.text('T01'), findsOneWidget);
     expect(find.text('T02'), findsOneWidget);
     expect(find.text('T12'), findsNothing);
 
     await tester.tap(find.text('Поздно'));
     await tester.pumpAndSettle();
+    expect(find.textContaining('Показано 1 из 12'), findsOneWidget);
+    await _scrollTo(tester, find.text('T12'));
     expect(find.text('T12'), findsOneWidget);
     expect(find.text('T01'), findsNothing);
 
+    // Return to the filter strip before selecting the full universe again.
+    await _scrollTo(tester, find.text('Все'));
     await tester.tap(find.text('Все'));
     await tester.pumpAndSettle();
-    expect(find.text('T01'), findsOneWidget);
+    expect(find.textContaining('Показано 12 из 12'), findsOneWidget);
+    await _scrollTo(tester, find.text('T12'));
     expect(find.text('T12'), findsOneWidget);
   });
 }
