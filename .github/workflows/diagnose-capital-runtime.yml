@@ -15,6 +15,31 @@ jobs:
       - name: Check out diagnostics
         uses: actions/checkout@v4
 
+      - name: Inspect official TBank Python SDK certificate bundle
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet --target /tmp/tbank-sdk \
+            --index-url https://opensource.tbank.ru/api/v4/projects/238/packages/pypi/simple \
+            't-tech-investments==1.49.2'
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib
+          root = Path('/tmp/tbank-sdk/t_tech/invest/certs')
+          files = sorted(p for p in root.rglob('*') if p.is_file())
+          print('cert_files', [str(p.relative_to(root)) for p in files])
+          for path in files:
+              data = path.read_bytes()
+              print('CERT', path.name, 'SHA256', hashlib.sha256(data).hexdigest())
+              try:
+                  text = data.decode('utf-8')
+              except UnicodeDecodeError:
+                  continue
+              if 'BEGIN CERTIFICATE' in text:
+                  print(f'---BEGIN {path.name}---')
+                  print(text.strip())
+                  print(f'---END {path.name}---')
+          PY
+
       - name: Prepare SSH
         env:
           KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
@@ -30,7 +55,7 @@ jobs:
           chmod 600 ~/.ssh/id_diag
           bash .github/scripts/prepare_known_host.sh "$HOST" "$HOST_KEY_SHA256"
 
-      - name: Probe T-Invest from deployed API container
+      - name: Probe deployed runtime
         env:
           HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
         run: |
@@ -60,21 +85,19 @@ jobs:
           except Exception as exc:
               print('urlopen_other', type(exc).__name__, repr(exc))
           PY
-          echo '--- recent capital events ---'
-          docker compose --env-file "$ENV_FILE" exec -T api python - <<'PY'
-          from sqlalchemy import select
-          from app.db import SessionLocal
-          from app.models import DataQualityEvent
-          with SessionLocal() as db:
-              rows = db.execute(
-                  select(DataQualityEvent)
-                  .where(DataQualityEvent.source.in_(['capital_tinvest','capital_bybit']))
-                  .order_by(DataQualityEvent.occurred_at.desc())
-                  .limit(12)
-              ).scalars().all()
-              for row in rows:
-                  print(row.occurred_at.isoformat(), row.source, row.flag, row.detail)
-          PY
+          TOKEN="$(sed -n 's/^SIGNALAI_DEVICE_TOKEN=//p' "$ENV_FILE" | tail -1)"
+          test -n "$TOKEN"
+          echo '--- capital API ---'
+          curl --fail --silent --show-error \
+            -H "Authorization: Bearer $TOKEN" \
+            http://127.0.0.1:8000/api/v1/capital \
+            | python -c 'import json,sys; d=json.load(sys.stdin); print(json.dumps(d, ensure_ascii=False))'
+          echo '--- live paper API ---'
+          curl --fail --silent --show-error \
+            -H "Authorization: Bearer $TOKEN" \
+            'http://127.0.0.1:8000/api/v1/paper/trades?live_only=true&limit=20' \
+            | python -c 'import json,sys; rows=json.load(sys.stdin); [print(r.get("id"), r.get("idea_id"), r.get("instrument_id"), r.get("status"), r.get("opened_at")) for r in rows]'
+          unset TOKEN
           REMOTE
 
       - name: Cleanup
