@@ -1,0 +1,53 @@
+name: Apply capital formatter
+
+on:
+  push:
+    branches:
+      - 'claude/debug-screenshot-capital'
+
+permissions:
+  contents: write
+
+jobs:
+  patch-feature:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out fix branch
+        uses: actions/checkout@v4
+        with:
+          ref: claude/fix-owner-cockpit-acceptance
+          fetch-depth: 0
+
+      - name: Wire formatter
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('lib/ui/screens/server_today_screen.dart')
+          text = p.read_text()
+          old = "import '../widgets/common.dart';\nimport 'ideas_screen.dart';"
+          new = "import '../formatters/capital_amount.dart';\nimport '../widgets/common.dart';\nimport 'ideas_screen.dart';"
+          if text.count(old) != 1:
+              raise SystemExit('import anchor mismatch')
+          text = text.replace(old, new, 1)
+          old = ".map((entry) => '${_money(entry.value)} ${entry.key}')"
+          new = ".map((entry) => '${formatCapitalAmount(entry.value)} ${entry.key}')"
+          if text.count(old) != 1:
+              raise SystemExit('money call anchor mismatch')
+          text = text.replace(old, new, 1)
+          old = "\n  static String _money(double value) {\n    if (value.abs() >= 1000000) return value.toStringAsFixed(0);\n    if (value.abs() >= 1000) return value.toStringAsFixed(0);\n    return value.toStringAsFixed(2);\n  }\n"
+          if text.count(old) != 1:
+              raise SystemExit('money method anchor mismatch')
+          text = text.replace(old, '\n', 1)
+          p.write_text(text)
+          PY
+          git diff --check
+
+      - name: Commit to fix branch
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add lib/ui/screens/server_today_screen.dart
+          git commit -m 'fix: show tiny nonzero broker balances'
+          git push origin HEAD:claude/fix-owner-cockpit-acceptance
