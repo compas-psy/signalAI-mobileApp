@@ -16,6 +16,7 @@ import 'screens/server_ideas_screen.dart';
 import 'screens/server_integrations_screen.dart';
 import 'screens/server_journal_screen.dart';
 import 'screens/server_risk_screen.dart';
+import 'screens/server_today_screen.dart';
 import 'screens/settings_screen.dart';
 import 'screens/strategies_screen.dart';
 import 'screens/today_screen.dart';
@@ -257,7 +258,9 @@ class AppShell extends StatelessWidget {
     }
 
     return switch (controller.section) {
-      AppSection.today => const TodayScreen(),
+      AppSection.today => controller.thinMode
+          ? const ServerTodayScreen()
+          : const TodayScreen(),
       AppSection.portfolio => PortfolioScreen(pill: controller.pill),
       AppSection.ideas => controller.thinMode
           ? ServerIdeasScreen(controller: controller, pill: controller.pill)
