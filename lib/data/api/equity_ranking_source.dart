@@ -7,19 +7,20 @@ import 'api_client.dart';
 /// address/token changed in Settings is picked up without a second settings
 /// store or controller field.
 class EquityRankingSource {
-  EquityRankingSource({ApiClient? client}) : _api = client ?? ApiClient();
+  const EquityRankingSource({ApiClient? client}) : _api = client;
 
-  final ApiClient _api;
+  final ApiClient? _api;
 
   Future<EquityRankingState> load() async {
-    if (_api.baseUrl.isEmpty) {
+    final api = _api ?? ApiClient();
+    if (api.baseUrl.isEmpty) {
       return const EquityRankingState.unavailable(
         'Адрес движка не задан. Рейтинг компаний считает сервер.',
       );
     }
     try {
       return EquityRankingState.fromJson(
-        await _api.get('/api/v1/research/equity-ranking'),
+        await api.get('/api/v1/research/equity-ranking'),
       );
     } catch (error) {
       final text = error.toString();
