@@ -35,7 +35,7 @@ TINVEST_SLOT = "tinvest_invest_read"
 BYBIT_SLOT = "bybit_read"
 TINVEST_SOURCE = "capital_tinvest"
 BYBIT_SOURCE = "capital_bybit"
-TINVEST_CA_FILE = Path(__file__).with_name("RussianTrustedRootCA.pem")
+TINVEST_CA_FILE = Path(__file__).with_name("RussianTrustedRootCA.crt")
 
 _FRESH_FOR = timedelta(minutes=10)
 _TIMEOUT_SECONDS = 20
