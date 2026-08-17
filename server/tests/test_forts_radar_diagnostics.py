@@ -11,7 +11,14 @@ from fastapi.testclient import TestClient
 from app.db import get_db
 from app.main import app
 from app.models import Instrument, PaperTrade, TradeIdea
-from app.models.enums import AssetClass, IdeaStatus, PaperStatus, QualityStatus, Venue
+from app.models.enums import (
+    AssetClass,
+    Direction,
+    IdeaStatus,
+    PaperStatus,
+    QualityStatus,
+    Venue,
+)
 from tests.conftest import DEVICE_HEADERS, idea_kwargs
 
 
@@ -149,7 +156,7 @@ def test_forts_radar_links_active_setup_and_server_paper_lifecycle(client, sessi
     trade = PaperTrade(
         idea_id=idea.id,
         instrument_id=instrument.instrument_id,
-        direction="LONG",
+        direction=Direction.LONG,
         status=PaperStatus.OPEN,
         entry=Decimal("90100"),
         initial_stop=Decimal("89400"),
