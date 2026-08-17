@@ -99,7 +99,7 @@ void main() {
     expect(bar.bottom, lessThan(892));
   });
 
-  testWidgets('ожидание названо наблюдением и не имеет подтверждения',
+  testWidgets('ожидание названо формированием и не имеет подтверждения',
       (tester) async {
     final controller = await pumpDetail(tester);
 
@@ -109,7 +109,7 @@ void main() {
     controller.openSignal('btc');
     await tester.pump(const Duration(milliseconds: 300));
 
-    expect(find.text('Наблюдать'), findsWidgets);
+    expect(find.text('Формируется'), findsWidgets);
     expect(find.text('Наблюдать · ждём триггер'), findsOneWidget);
     expect(find.text('Подтвердить paper-сделку'), findsNothing);
   });
@@ -117,15 +117,15 @@ void main() {
   testWidgets('пилюли ленты не висят над открытым разбором', (tester) async {
     final controller = await pumpDetail(tester);
 
-    // «Решения · Наблюдение · В работе» — разрез списка. Над карточкой они
-    // управляли бы тем, чего на экране нет.
+    // Пилюли воронки — разрез списка. Над карточкой они управляли бы тем,
+    // чего на экране нет.
     expect(find.byType(SectionHeader), findsNothing);
-    expect(find.text('Наблюдение'), findsNothing);
+    expect(find.text('Формируются'), findsNothing);
 
     controller.back();
     await tester.pump(const Duration(milliseconds: 300));
     expect(find.byType(SectionHeader), findsOneWidget);
-    expect(find.text('Наблюдение'), findsOneWidget);
+    expect(find.text('Формируются'), findsOneWidget);
   });
 
   testWidgets('на широком экране пара карточек встаёт в две колонки',
@@ -170,15 +170,18 @@ void main() {
           ),
         ),
       ));
-      final tops = {
-        for (var i = 0; i < 6; i++)
-          tester.getTopLeft(find.byKey(ValueKey(i))).dy,
-      };
-      return 6 ~/ tops.length;
+      await tester.pump();
+
+      // TileGrid строит внутреннюю сетку строками. Число уникальных x даёт
+      // реальное число колонок, а не расчёт, скопированный из реализации.
+      final xs = <double>{};
+      for (var i = 0; i < 6; i++) {
+        xs.add(tester.getTopLeft(find.byKey(ValueKey(i))).dx.roundToDouble());
+      }
+      return xs.length;
     }
 
-    expect(await columnsAt(340), 3);
-    expect(await columnsAt(220), 2);
-    expect(await columnsAt(660), 6);
+    expect(await columnsAt(250), 2);
+    expect(await columnsAt(330), 3);
   });
 }

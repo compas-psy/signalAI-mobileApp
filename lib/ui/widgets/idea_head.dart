@@ -9,7 +9,7 @@ import '../tone.dart';
 import 'common.dart';
 
 /// Бейдж состояния идеи. Цвет — по смыслу: жёлтый значит «требует решения
-/// сейчас», серый — «наблюдаем», красный — «исполнять нельзя».
+/// сейчас», серый — «формируется», красный — «исполнять нельзя».
 ///
 /// Живёт здесь, а не на экране списка, потому что состояние идеи показывают
 /// оба экрана. Две таблицы цветов для одного состояния — это не дублирование
@@ -49,7 +49,8 @@ class StateBadge extends StatelessWidget {
 /// Бейдж готовности из серверной выдачи.
 ///
 /// Он намеренно не выводится из lifecycle state: `wait_for_trigger` должен
-/// оставаться наблюдением, даже если сводка принесла статус TRIGGERED.
+/// оставаться формирующимся кандидатом, даже если сводка принесла статус
+/// TRIGGERED.
 class ReadinessBadge extends StatelessWidget {
   const ReadinessBadge({super.key, required this.readiness});
 
@@ -59,7 +60,7 @@ class ReadinessBadge extends StatelessWidget {
   Widget build(BuildContext context) {
     final color = readiness.canAct ? C.accent : C.info;
     return OutlineBadge(
-      label: readiness.label,
+      label: readiness.canAct ? 'Можно действовать' : 'Формируется',
       color: color,
       borderColor: color.withValues(alpha: 0.35),
       background: color.withValues(alpha: 0.12),

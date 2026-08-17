@@ -1,5 +1,6 @@
 import 'package:flutter/widgets.dart';
 
+import '../domain/idea/idea_funnel.dart';
 import '../state/app_controller.dart';
 import '../state/app_scope.dart';
 import '../theme/tokens.dart';
@@ -133,7 +134,7 @@ class AppShell extends StatelessWidget {
                   width: 400,
                   child: controller.thinMode
                       ? ServerIdeasScreen(controller: controller, pill: controller.pill)
-                      : IdeasScreen(pill: controller.pill),
+                      : IdeasScreen(pill: _legacyIdeasPill(controller.pill)),
                 ),
                 const VerticalDivider(),
                 Expanded(
@@ -155,7 +156,9 @@ class AppShell extends StatelessWidget {
         Expanded(child: _screen(controller)),
       ],
     );
-    return pane.isCompact ? screen : ReadableColumn(maxWidth: pane.contentWidth, child: screen);
+    return pane.isCompact
+        ? screen
+        : ReadableColumn(maxWidth: pane.contentWidth, child: screen);
   }
 
   Widget _header(AppController controller) => SectionHeader(
@@ -166,17 +169,50 @@ class AppShell extends StatelessWidget {
         dataAt: controller.dataFreshness,
         health: controller.dataHealth,
         healthDetail: controller.dataHealthDetail,
+        pillCounts: _ideaPillCounts(controller),
         onHealth: () => controller.showToast(
           controller.dataHealthDetail,
           tone: ToastTone.warning,
         ),
       );
 
+  List<int>? _ideaPillCounts(AppController controller) {
+    if (controller.section != AppSection.ideas) return null;
+    final funnel = IdeaFunnelSnapshot.from(
+      ideas: controller.ideas,
+      trades: controller.paperPositions,
+    );
+    return [
+      funnel.total,
+      funnel.decisions.length,
+      funnel.forming.length,
+      funnel.pending.length,
+      funnel.open.length,
+    ];
+  }
+
+  /// Legacy local/demo feed still uses the historical four-state filter. The
+  /// visible navigation belongs to the owner-facing five-stage funnel, so the
+  /// adapter stays here at the UI boundary rather than leaking into domain
+  /// logic. Production thin mode never uses this mapping.
+  int _legacyIdeasPill(int visibleIndex) {
+    final visible = IdeaFunnelPill
+        .values[visibleIndex.clamp(0, IdeaFunnelPill.values.length - 1)];
+    return switch (visible) {
+      IdeaFunnelPill.all => IdeasPill.all.index,
+      IdeaFunnelPill.decisions => IdeasPill.decisions.index,
+      IdeaFunnelPill.forming => IdeasPill.watch.index,
+      IdeaFunnelPill.pending || IdeaFunnelPill.open => IdeasPill.active.index,
+    };
+  }
+
   Widget _screen(AppController controller) {
     if (controller.isDetailOpen) {
       final signal = controller.currentSignal;
       final risk = controller.risk;
-      if (signal != null && risk != null) return IdeaDetailScreen(signal: signal, risk: risk);
+      if (signal != null && risk != null) {
+        return IdeaDetailScreen(signal: signal, risk: risk);
+      }
     }
 
     if (controller.section == AppSection.settings) {
@@ -225,7 +261,7 @@ class AppShell extends StatelessWidget {
       AppSection.portfolio => PortfolioScreen(pill: controller.pill),
       AppSection.ideas => controller.thinMode
           ? ServerIdeasScreen(controller: controller, pill: controller.pill)
-          : IdeasScreen(pill: controller.pill),
+          : IdeasScreen(pill: _legacyIdeasPill(controller.pill)),
       AppSection.journal => controller.thinMode
           ? ServerJournalScreen(pill: controller.pill)
           : JournalScreen(pill: controller.pill, summary: controller.trades!),
@@ -254,7 +290,10 @@ class AppShell extends StatelessWidget {
         curve: Curves.easeOut,
         builder: (context, t, child) => Opacity(
           opacity: t,
-          child: Transform.translate(offset: Offset(0, 40 * (1 - t)), child: child),
+          child: Transform.translate(
+            offset: Offset(0, 40 * (1 - t)),
+            child: child,
+          ),
         ),
         child: pane.isCompact
             ? sheet
@@ -302,7 +341,8 @@ class _PickIdea extends StatelessWidget {
 class VerticalDivider extends StatelessWidget {
   const VerticalDivider({super.key});
   @override
-  Widget build(BuildContext context) => Container(width: 1, color: C.dividerSoft);
+  Widget build(BuildContext context) =>
+      Container(width: 1, color: C.dividerSoft);
 }
 
 class _LoadingState extends StatelessWidget {
@@ -319,7 +359,9 @@ class _LoadingState extends StatelessWidget {
               Text.rich(TextSpan(
                 text: 'Signal',
                 style: T.jost(22),
-                children: [TextSpan(text: 'AI', style: T.jost(22, color: C.accent))],
+                children: [
+                  TextSpan(text: 'AI', style: T.jost(22, color: C.accent)),
+                ],
               )),
             ],
           ),
@@ -351,12 +393,18 @@ class _ErrorState extends StatelessWidget {
                   GestureDetector(
                     onTap: onRetry,
                     child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 13),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 22,
+                        vertical: 13,
+                      ),
                       decoration: BoxDecoration(
                         color: C.accent,
                         borderRadius: BorderRadius.circular(R.button),
                       ),
-                      child: Text('Повторить', style: T.body(14, weight: 800, color: C.onAccent)),
+                      child: Text(
+                        'Повторить',
+                        style: T.body(14, weight: 800, color: C.onAccent),
+                      ),
                     ),
                   ),
                 ],

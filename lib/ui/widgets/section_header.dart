@@ -4,7 +4,6 @@ import '../../state/navigation.dart';
 import '../../theme/tokens.dart';
 import '../../theme/typography.dart';
 
-
 /// Постоянная шапка раздела: заголовок, время данных, режим движка, пилюли.
 ///
 /// Время данных стоит рядом с заголовком, а не прячется в настройках: число
@@ -22,12 +21,18 @@ class SectionHeader extends StatelessWidget {
     this.healthDetail = '',
     this.onHealth,
     this.trailing,
+    this.pillCounts,
   });
 
   final AppSection section;
   final int pill;
   final ValueChanged<int> onPill;
   final RiskMode mode;
+
+  /// Optional counters rendered next to the stable pill labels. Keeping label
+  /// and count as separate Text widgets preserves accessibility/search by the
+  /// semantic name while still showing the owner how much is inside.
+  final List<int>? pillCounts;
 
   /// Подпись со временем данных: «данные 12:40 МСК».
   final String? dataAt;
@@ -104,6 +109,9 @@ class SectionHeader extends StatelessWidget {
                     if (i > 0) const SizedBox(width: 6),
                     _Pill(
                       label: pills[i],
+                      count: pillCounts != null && i < pillCounts!.length
+                          ? pillCounts![i]
+                          : null,
                       active: i == pill,
                       onTap: () => onPill(i),
                     ),
@@ -118,31 +126,46 @@ class SectionHeader extends StatelessWidget {
 }
 
 class _Pill extends StatelessWidget {
-  const _Pill({required this.label, required this.active, required this.onTap});
+  const _Pill({
+    required this.label,
+    required this.active,
+    required this.onTap,
+    this.count,
+  });
 
   final String label;
+  final int? count;
   final bool active;
   final VoidCallback onTap;
 
   @override
-  Widget build(BuildContext context) => GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: onTap,
-        child: Container(
-          constraints: const BoxConstraints(minHeight: 34),
-          alignment: Alignment.center,
-          padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 8),
-          decoration: BoxDecoration(
-            color: active ? C.accentFaint : C.card,
-            border: Border.all(color: active ? C.accentBorder : C.border),
-            borderRadius: BorderRadius.circular(R.pill),
-          ),
-          child: Text(
-            label,
-            style: T.body(11.5, weight: 700, color: active ? C.accent : C.muted),
-          ),
+  Widget build(BuildContext context) {
+    final color = active ? C.accent : C.muted;
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: onTap,
+      child: Container(
+        constraints: const BoxConstraints(minHeight: 34),
+        alignment: Alignment.center,
+        padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 8),
+        decoration: BoxDecoration(
+          color: active ? C.accentFaint : C.card,
+          border: Border.all(color: active ? C.accentBorder : C.border),
+          borderRadius: BorderRadius.circular(R.pill),
         ),
-      );
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(label, style: T.body(11.5, weight: 700, color: color)),
+            if (count != null) ...[
+              const SizedBox(width: 5),
+              Text('$count', style: T.mono(10, color: color)),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 /// Индикатор режима риск-движка. Не переключатель: режим назначает движок.
@@ -171,7 +194,7 @@ class RiskModeChip extends StatelessWidget {
   }
 }
 
-/// Индикатор здоровья данных: на чём посчитано то, что на экране.
+/// Индикатор здоровья данных: на чём посчитано то, что сейчас на экране.
 ///
 /// Отдельный чип, а не оттенок [RiskModeChip]. `CAUTION` означает «допуск к
 /// живым деньгам урезан» — утверждение про риск; молчащая биржа риском не

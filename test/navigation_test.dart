@@ -32,12 +32,14 @@ void main() {
 
     test('индексы пилюль совпадают с видимыми перечислениями', () {
       // SettingsPill.values содержит mode/security только для legacy-миграции.
-      // В UI настроек ровно пять реально управляемых разделов, и их порядок
-      // обязан совпадать с thinValues.
+      // IdeasPill — тоже legacy-фильтр локального анализатора. Видимый thin UX
+      // использует отдельную пятиступенчатую IdeaFunnelPill.
       expect(AppSection.portfolio.pills.length, PortfolioPill.values.length);
-      expect(AppSection.ideas.pills.length, IdeasPill.values.length);
+      expect(AppSection.ideas.pills.length, IdeaFunnelPill.values.length);
       expect(AppSection.journal.pills.length, JournalPill.values.length);
       expect(AppSection.settings.pills.length, SettingsPill.thinValues.length);
+      expect(AppSection.ideas.pills,
+          ['Все', 'Нужно решить', 'Формируются', 'Ждут входа', 'Позиции открыты']);
       expect(AppSection.settings.pills,
           ['Риск', 'Подключения', 'Стратегии', 'Уведомления', 'Данные']);
     });
