@@ -32,6 +32,13 @@ void main() {
     );
   });
 
+  test('server trade without idea id is still not called device-calculated', () {
+    expect(
+      paperPositionOrigin(serverTrade(ideaId: ''), idea: null, canOpenIdea: false),
+      'серверный PAPER',
+    );
+  });
+
   test('local trade keeps explicit device origin', () {
     final local = PaperPosition(
       id: 'local-1',
