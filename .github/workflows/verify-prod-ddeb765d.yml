@@ -1,0 +1,103 @@
+name: Verify production owner cockpit ddeb765d
+
+on:
+  push:
+    branches:
+      - 'claude/verify-prod-ddeb765d'
+
+permissions:
+  contents: read
+
+jobs:
+  verify-vps:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare SSH
+        env:
+          KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          HOST_KEY_SHA256: ${{ secrets.VPS_SSH_HOST_KEY_SHA256 || 'SHA256:cUfeWKyHoFIhKsV17Bpk076calxUaxd90XhuETb4vng' }}
+        run: |
+          set -euo pipefail
+          test -n "$KEY"
+          test -n "$HOST"
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_verify
+          chmod 600 ~/.ssh/id_verify
+          bash .github/scripts/prepare_known_host.sh "$HOST" "$HOST_KEY_SHA256"
+
+      - name: Force capital refresh and verify runtime truth
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/id_verify -o BatchMode=yes root@"$HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          cd "$HOME/signalai/server"
+          ENV_FILE='/etc/signalai/.env'
+
+          echo '--- deployed source ---'
+          test "$(cat "$HOME/signalai/.signalai-source-sha")" = 'ddeb765dfd1f86898889cded8bf9987fed0d5b0d'
+          cat "$HOME/signalai/.signalai-source-sha"
+
+          echo '--- health ---'
+          curl --fail --silent --show-error http://127.0.0.1:8000/health | python3 -c '
+          import json,sys
+          d=json.load(sys.stdin)
+          print(d)
+          assert d["status"]=="ok"
+          assert d["execution_mode"]=="PAPER"
+          assert d["paper_only"] is True
+          assert d["kill_switch"] is False
+          assert d["database"]=="ok"
+          '
+
+          echo '--- force capital refresh with deployed code ---'
+          docker compose --env-file "$ENV_FILE" exec -T api python - <<'PY'
+          from app.db import SessionLocal
+          from app.capital.runtime import refresh
+          with SessionLocal() as db:
+              result = refresh(db)
+              db.commit()
+              print(result)
+          PY
+
+          TOKEN="$(sed -n 's/^SIGNALAI_DEVICE_TOKEN=//p' "$ENV_FILE" | tail -1)"
+          test -n "$TOKEN"
+
+          echo '--- capital truth ---'
+          curl --fail --silent --show-error -H "Authorization: Bearer $TOKEN" \
+            http://127.0.0.1:8000/api/v1/capital | python3 -c '
+          import json,sys
+          d=json.load(sys.stdin)
+          states={s["source"]:s for s in d["sources"]}
+          for name,s in states.items():
+              print(name, s["status"], s.get("equity_by_currency"), s.get("note"), s.get("synced_at"))
+          assert states["tinvest"]["status"] == "fresh", states["tinvest"]
+          assert states["tinvest"].get("accounts"), states["tinvest"]
+          assert states["bybit"]["status"] == "fresh", states["bybit"]
+          usd = float(states["bybit"]["equity_by_currency"]["USD"])
+          assert usd != 0.0, states["bybit"]
+          '
+
+          echo '--- paper truth ---'
+          curl --fail --silent --show-error -H "Authorization: Bearer $TOKEN" \
+            'http://127.0.0.1:8000/api/v1/paper/trades?live_only=true&limit=20' | python3 -c '
+          import json,sys
+          rows=json.load(sys.stdin)
+          for r in rows:
+              print(r["symbol"], r["instrument_id"], r["status"], r["id"])
+          assert len(rows) == 3, rows
+          assert len({r["id"] for r in rows}) == len(rows)
+          assert sum(1 for r in rows if r["symbol"] == "DOGEUSDT") == 1, rows
+          expected={("PXU6","OPEN"),("BTQ6","PENDING"),("DOGEUSDT","PENDING")}
+          assert {(r["symbol"],r["status"]) for r in rows} == expected, rows
+          '
+          unset TOKEN
+          REMOTE
+
+      - name: Cleanup
+        if: always()
+        run: shred -u ~/.ssh/id_verify 2>/dev/null || rm -f ~/.ssh/id_verify
