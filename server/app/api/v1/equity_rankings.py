@@ -23,6 +23,7 @@ router = APIRouter(prefix="/research", tags=["research"])
 
 class EquityRankingItemOut(ApiModel):
     rank: int
+    rank_change: int | None = None
     instrument_id: str
     symbol: str
     title: str
@@ -31,9 +32,25 @@ class EquityRankingItemOut(ApiModel):
     eligible: bool
     fundamental_score: float
     technical_score: float
+    early_score: float | None = None
+    early_state: str = ""
+    early_eligible: bool = False
+    chase_penalty: float | None = None
+    why_now: list[str] = Field(default_factory=list)
+    confirmation: str = ""
+    invalidation: str = ""
+    return_5d: float | None = None
+    return_20d: float | None = None
+    return_3m: float | None = None
+    return_6m: float | None = None
+    breakout_distance: float | None = None
+    turnover_ratio: float | None = None
+    accumulation_score: float | None = None
+    compression_ratio: float | None = None
     catalyst_adjustment: float = 0
     technical_state: str = ""
     price: float | None = None
+    # Retained for backwards compatibility with the earlier ranking client.
     momentum_3m: float | None = None
     momentum_6m: float | None = None
     drawdown_6m: float | None = None
@@ -55,8 +72,27 @@ class EquityRankingOut(ApiModel):
     reason: str = ""
 
 
+def _item_out(item: dict) -> EquityRankingItemOut:
+    """Map persisted ranking fields to the owner API without recalculation."""
+    early_state = str(item.get("early_state") or "")
+    payload = dict(item)
+    payload.update(
+        {
+            "early_eligible": early_state in {"ранняя подготовка", "формируется"},
+            "return_5d": item.get("momentum_5d"),
+            "return_20d": item.get("momentum_20d"),
+            "return_3m": item.get("momentum_3m"),
+            "return_6m": item.get("momentum_6m"),
+            "breakout_distance": item.get("breakout_distance_63d"),
+            "turnover_ratio": item.get("turnover_ratio_5v20"),
+            "accumulation_score": item.get("accumulation_share"),
+        }
+    )
+    return EquityRankingItemOut(**payload)
+
+
 def _out(snapshot) -> EquityRankingOut:
-    items = [EquityRankingItemOut(**item) for item in (snapshot.items_json or [])]
+    items = [_item_out(item) for item in (snapshot.items_json or [])]
     reason = ""
     if not items:
         reason = (
