@@ -1,0 +1,101 @@
+name: Apply owner cockpit acceptance fix
+
+on:
+  push:
+    branches:
+      - 'claude/debug-screenshot-capital'
+
+permissions:
+  contents: write
+
+jobs:
+  patch-feature:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out fix branch
+        uses: actions/checkout@v4
+        with:
+          ref: claude/fix-owner-cockpit-acceptance
+          fetch-depth: 0
+
+      - name: Apply surgical source patches
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{path}: expected one match, got {count}')
+              p.write_text(text.replace(old, new, 1))
+
+          replace_once(
+              'lib/data/api/engine_contract.dart',
+              "        ideaId: '${item['idea_id'] ?? ''}',\n        symbol: '${item['symbol'] ?? item['instrument_id'] ?? ''}',",
+              "        ideaId: '${item['idea_id'] ?? ''}',\n        instrumentId: '${item['instrument_id'] ?? ''}',\n        symbol: '${item['symbol'] ?? item['instrument_id'] ?? ''}',",
+          )
+
+          replace_once(
+              'lib/ui/screens/server_today_screen.dart',
+              "    final forts = idea?.instrumentId.startsWith('MOEX:FUT:') ?? false;",
+              "    final forts = trade.isForts;",
+          )
+
+          replace_once(
+              'server/app/capital/runtime.py',
+              "import json\nimport time\nfrom dataclasses import dataclass",
+              "import json\nimport ssl\nimport time\nfrom dataclasses import dataclass",
+          )
+          replace_once(
+              'server/app/capital/runtime.py',
+              "from decimal import Decimal, InvalidOperation\nfrom urllib.error import HTTPError, URLError",
+              "from decimal import Decimal, InvalidOperation\nfrom pathlib import Path\nfrom urllib.error import HTTPError, URLError",
+          )
+          replace_once(
+              'server/app/capital/runtime.py',
+              "BYBIT_SOURCE = \"capital_bybit\"\n\n_FRESH_FOR",
+              "BYBIT_SOURCE = \"capital_bybit\"\nTINVEST_CA_FILE = Path(__file__).with_name(\"RussianTrustedRootCA.pem\")\n\n_FRESH_FOR",
+          )
+          replace_once(
+              'server/app/capital/runtime.py',
+              "    headers: dict[str, str] | None = None,\n    body: dict | None = None,\n) -> dict:",
+              "    headers: dict[str, str] | None = None,\n    body: dict | None = None,\n    ssl_context: ssl.SSLContext | None = None,\n) -> dict:",
+          )
+          replace_once(
+              'server/app/capital/runtime.py',
+              "        with urlopen(request, timeout=_TIMEOUT_SECONDS) as response:  # noqa: S310 - fixed broker hosts",
+              "        with urlopen(  # noqa: S310 - fixed broker hosts\n            request, timeout=_TIMEOUT_SECONDS, context=ssl_context\n        ) as response:",
+          )
+          replace_once(
+              'server/app/capital/runtime.py',
+              "    except HTTPError as exc:\n        raise CapitalSourceError(f\"HTTP {exc.code}\") from exc\n    except (URLError, TimeoutError, json.JSONDecodeError) as exc:\n        raise CapitalSourceError(type(exc).__name__) from exc",
+              "    except HTTPError as exc:\n        raise CapitalSourceError(f\"HTTP {exc.code}\") from exc\n    except URLError as exc:\n        reason = exc.reason\n        detail = type(reason).__name__ if isinstance(reason, BaseException) else type(exc).__name__\n        raise CapitalSourceError(detail) from exc\n    except (TimeoutError, json.JSONDecodeError) as exc:\n        raise CapitalSourceError(type(exc).__name__) from exc",
+          )
+          replace_once(
+              'server/app/capital/runtime.py',
+              "\ndef _tinvest_post(token: str, service: str, method: str, body: dict) -> dict:\n",
+              "\ndef _tinvest_ssl_context() -> ssl.SSLContext:\n    \"\"\"Default public CAs plus T-Bank's official Russian Trusted Root.\n\n    The extra root is scoped to T-Invest requests only; TLS verification and\n    hostname checks remain enabled.  The PEM is the file embedded in the\n    official T-Bank Python SDK 1.49.2.\n    \"\"\"\n    context = ssl.create_default_context()\n    context.load_verify_locations(cafile=str(TINVEST_CA_FILE))\n    return context\n\n\ndef _tinvest_post(token: str, service: str, method: str, body: dict) -> dict:\n",
+          )
+          replace_once(
+              'server/app/capital/runtime.py',
+              "        headers={\"Authorization\": f\"Bearer {token}\"},\n        body=body,\n    )\n\n\ndef _read_tinvest",
+              "        headers={\"Authorization\": f\"Bearer {token}\"},\n        body=body,\n        ssl_context=_tinvest_ssl_context(),\n    )\n\n\ndef _read_tinvest",
+          )
+          PY
+
+          git diff --check
+          git diff -- lib/data/api/engine_contract.dart lib/ui/screens/server_today_screen.dart server/app/capital/runtime.py
+
+      - name: Commit to fix branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add lib/data/api/engine_contract.dart lib/ui/screens/server_today_screen.dart server/app/capital/runtime.py
+          git commit -m 'fix: restore T-Invest TLS and durable FORTS audit'
+          git push origin HEAD:claude/fix-owner-cockpit-acceptance
