@@ -1,0 +1,1 @@
+"""Owner capital read model."""
