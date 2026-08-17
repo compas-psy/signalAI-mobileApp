@@ -636,6 +636,7 @@ abstract final class EngineContract {
       out.add(PaperPosition(
         id: '${item['id']}',
         ideaId: '${item['idea_id'] ?? ''}',
+        instrumentId: '${item['instrument_id'] ?? ''}',
         symbol: '${item['symbol'] ?? item['instrument_id'] ?? ''}',
         long: '${item['direction']}'.toUpperCase() == 'LONG',
         pending: status == PaperPositionStatus.pending,

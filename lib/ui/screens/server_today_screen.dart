@@ -390,7 +390,7 @@ class _AuditedTradeCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final forts = idea?.instrumentId.startsWith('MOEX:FUT:') ?? false;
+    final forts = trade.isForts;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
