@@ -4,7 +4,6 @@ import '../../state/navigation.dart';
 import '../../theme/tokens.dart';
 import '../../theme/typography.dart';
 
-
 /// Постоянная шапка раздела: заголовок, время данных, режим движка, пилюли.
 ///
 /// Время данных стоит рядом с заголовком, а не прячется в настройках: число
@@ -22,12 +21,17 @@ class SectionHeader extends StatelessWidget {
     this.healthDetail = '',
     this.onHealth,
     this.trailing,
+    this.pillLabels,
   });
 
   final AppSection section;
   final int pill;
   final ValueChanged<int> onPill;
   final RiskMode mode;
+
+  /// Optional dynamic labels, e.g. `Формируются 3`. Other sections keep the
+  /// static vocabulary owned by [AppSection].
+  final List<String>? pillLabels;
 
   /// Подпись со временем данных: «данные 12:40 МСК».
   final String? dataAt;
@@ -43,7 +47,7 @@ class SectionHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final pills = section.pills;
+    final pills = pillLabels ?? section.pills;
     return Container(
       width: double.infinity,
       padding: EdgeInsets.fromLTRB(S.screen, 14, S.screen, pills.isEmpty ? 10 : 0),
