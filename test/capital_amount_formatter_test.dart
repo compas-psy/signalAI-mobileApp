@@ -4,6 +4,7 @@ import 'package:signalai/ui/formatters/capital_amount.dart';
 void main() {
   test('tiny nonzero broker capital stays visibly nonzero', () {
     expect(formatCapitalAmount(0.00234039), '0.002340');
+    expect(formatCapitalAmount(-0.00234039), '-0.002340');
   });
 
   test('normal balances keep compact formatting', () {
