@@ -29,7 +29,7 @@ def test_trade_card_metrics_use_immutable_idea_values(instrument, now) -> None:
         "score": "82.5/100",
         "probability": "63%",
         "position": "3",
-        "risk": "1 250 ₽",
+        "risk": "1 250 RUB",
     }
 
 
