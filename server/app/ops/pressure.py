@@ -53,6 +53,11 @@ class PressurePolicy:
     queue_lag_pressure_seconds: float = 120.0
     queue_depth_watch: int = 1
     queue_depth_pressure: int = 8
+    # There is no portable safe default for Postgres saturation: deployment
+    # max_connections/pool budgets vary. Keep this signal disabled unless both
+    # explicit operational thresholds are configured by the caller.
+    postgres_connections_watch: int | None = None
+    postgres_connections_pressure: int | None = None
     memory_trend_delta: float = 0.03
     disk_trend_delta: float = 0.03
     inode_trend_delta: float = 0.03
@@ -103,6 +108,17 @@ class PressurePolicy:
             raise ValueError("queue pressure lag must be >= watch lag")
         if self.queue_depth_watch < 0 or self.queue_depth_pressure < self.queue_depth_watch:
             raise ValueError("queue depth thresholds are invalid")
+        pg_watch = self.postgres_connections_watch
+        pg_pressure = self.postgres_connections_pressure
+        if (pg_watch is None) != (pg_pressure is None):
+            raise ValueError(
+                "postgres connection thresholds must be both set or both disabled"
+            )
+        if pg_watch is not None and pg_pressure is not None:
+            if pg_watch <= 0 or pg_pressure <= pg_watch:
+                raise ValueError(
+                    "postgres connection thresholds must satisfy 0 < watch < pressure"
+                )
         if self.pressure_score <= 0:
             raise ValueError("pressure_score must be positive")
         if self.recovery_window <= timedelta(0):
@@ -217,6 +233,15 @@ class PressureClassifier:
             and system.swap_used_bytes >= self.policy.swap_watch_bytes
         ):
             add("swap_in_use", 1, "headroom")
+
+        pg_watch = self.policy.postgres_connections_watch
+        pg_pressure = self.policy.postgres_connections_pressure
+        if pg_watch is not None and pg_pressure is not None:
+            connections = max(0, snapshot.postgres.connections)
+            if connections >= pg_pressure:
+                add("postgres_connections_pressure", 2, "database_headroom")
+            elif connections >= pg_watch:
+                add("postgres_connections_watch", 1, "database_headroom")
 
         scheduler_lag = max(0.0, snapshot.postgres.scheduler_lag_seconds)
         if scheduler_lag >= self.policy.scheduler_lag_pressure_seconds:
