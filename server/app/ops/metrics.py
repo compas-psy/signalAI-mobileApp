@@ -1,7 +1,7 @@
 """Owner-only Prometheus exposition and low-overhead request metrics.
 
 The exposition format is intentionally implemented in a tiny local module
-instead of adding a runtime dependency for a single trusted endpoint.  Metric
+instead of adding a runtime dependency for a single trusted endpoint. Metric
 state is process-local; resource probes read authoritative system/dependency
 state at scrape time and fail open when an optional dependency is unavailable.
 """
@@ -13,9 +13,8 @@ import os
 import threading
 import time
 from collections import defaultdict
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
 
 from fastapi import Request
 from fastapi.responses import Response
@@ -34,6 +33,7 @@ class _HttpState:
     duration_sum: float = 0.0
     duration_buckets: list[int] = field(default_factory=lambda: [0] * len(_BUCKETS))
     websocket_disconnects: int = 0
+    disk_baseline_used_bytes: int | None = None
 
 
 _STATE = _HttpState()
@@ -112,6 +112,15 @@ def _sample(name: str, value: int | float, *, metric_type: str = "gauge") -> lis
     return [f"# TYPE {name} {metric_type}", f"{name} {float(value)}"]
 
 
+def _disk_growth_bytes(current_used: int) -> int:
+    with _LOCK:
+        baseline = _STATE.disk_baseline_used_bytes
+        if baseline is None:
+            _STATE.disk_baseline_used_bytes = current_used
+            return 0
+        return current_used - baseline
+
+
 def _resource_lines(snapshot: ResourceSnapshot) -> list[str]:
     s = snapshot.system
     p = snapshot.postgres
@@ -128,6 +137,11 @@ def _resource_lines(snapshot: ResourceSnapshot) -> list[str]:
         ("signalai_system_load15", s.load15, "gauge"),
         ("signalai_disk_used_bytes", s.disk_used_bytes, "gauge"),
         ("signalai_disk_total_bytes", s.disk_total_bytes, "gauge"),
+        (
+            "signalai_disk_growth_bytes_since_process_start",
+            _disk_growth_bytes(s.disk_used_bytes),
+            "gauge",
+        ),
         ("signalai_inode_used", s.inode_used, "gauge"),
         ("signalai_inode_total", s.inode_total, "gauge"),
         ("signalai_postgres_connections", p.connections, "gauge"),
@@ -152,7 +166,10 @@ def _resource_lines(snapshot: ResourceSnapshot) -> list[str]:
 
     failed = {item.split(":", 1)[0] for item in snapshot.probe_errors}
     for probe in ("system", "postgres", "redis", "ollama"):
-        lines.append(f'signalai_resource_probe_up{{probe="{probe}"}} {0.0 if probe in failed else 1.0}')
+        lines.append(
+            f'signalai_resource_probe_up{{probe="{probe}"}} '
+            f'{0.0 if probe in failed else 1.0}'
+        )
     lines.append(f"signalai_resource_probe_errors {float(len(snapshot.probe_errors))}")
     return lines
 
@@ -170,24 +187,31 @@ def _http_lines() -> list[str]:
     if requests:
         for (method, group), value in sorted(requests.items()):
             lines.append(
-                f'signalai_http_requests_total{{method="{method}",status_class="{group}"}} {float(value)}'
+                f'signalai_http_requests_total{{method="{method}",status_class="{group}"}} '
+                f'{float(value)}'
             )
     else:
-        lines.append('signalai_http_requests_total{method="NONE",status_class="none"} 0.0')
+        lines.append(
+            'signalai_http_requests_total{method="NONE",status_class="none"} 0.0'
+        )
 
     lines.append("# TYPE signalai_http_errors_total counter")
     if errors:
         for (method, group), value in sorted(errors.items()):
             lines.append(
-                f'signalai_http_errors_total{{method="{method}",status_class="{group}"}} {float(value)}'
+                f'signalai_http_errors_total{{method="{method}",status_class="{group}"}} '
+                f'{float(value)}'
             )
     else:
-        lines.append('signalai_http_errors_total{method="NONE",status_class="none"} 0.0')
+        lines.append(
+            'signalai_http_errors_total{method="NONE",status_class="none"} 0.0'
+        )
 
     lines.append("# TYPE signalai_http_request_duration_seconds histogram")
     for boundary, value in zip(_BUCKETS, buckets, strict=True):
         lines.append(
-            f'signalai_http_request_duration_seconds_bucket{{le="{boundary}"}} {float(value)}'
+            f'signalai_http_request_duration_seconds_bucket{{le="{boundary}"}} '
+            f'{float(value)}'
         )
     lines.append(
         f'signalai_http_request_duration_seconds_bucket{{le="+Inf"}} {float(count)}'
@@ -219,9 +243,15 @@ def render_metrics(
 
 
 def metrics_response(request: Request) -> Response:
-    expected = os.environ.get("SIGNALAI_METRICS_TOKEN", "").strip()
+    expected = (
+        os.environ.get("SIGNALAI_METRICS_TOKEN", "").strip()
+        or os.environ.get("SIGNALAI_DEVICE_TOKEN", "").strip()
+    )
     if not expected:
-        return Response(status_code=503, content="metrics token is not configured")
+        return Response(
+            status_code=503,
+            content="owner metrics token is not configured",
+        )
     raw = request.headers.get("authorization", "")
     scheme, _, token = raw.partition(" ")
     if scheme.lower() != "bearer" or not hmac.compare_digest(token.strip(), expected):
