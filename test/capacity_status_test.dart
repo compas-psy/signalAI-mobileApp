@@ -25,8 +25,8 @@ Map<String, dynamic> _json({
 }) =>
     {
       'collected_at': '2026-08-18T18:30:00+00:00',
-      'system': {
-        'memory': {
+      'system': <String, dynamic>{
+        'memory': <String, dynamic>{
           'used_bytes': 6442450944,
           'limit_bytes': 8589934592,
           'used_ratio': 0.75,
@@ -35,12 +35,12 @@ Map<String, dynamic> _json({
         'load1': 1.25,
         'load5': 0.75,
         'load15': 0.5,
-        'disk': {
+        'disk': <String, dynamic>{
           'used_bytes': 66571993088,
           'total_bytes': 107374182400,
           'used_ratio': 0.62,
         },
-        'inodes': {
+        'inodes': <String, dynamic>{
           'used': 300000,
           'total': 1000000,
           'used_ratio': 0.30,
