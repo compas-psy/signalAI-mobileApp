@@ -28,6 +28,7 @@ import 'widgets/vector_icon.dart';
 import 'widgets/bottom_nav.dart';
 import 'widgets/section_header.dart';
 import 'widgets/side_nav.dart';
+import 'widgets/strategy_comparison_panel.dart';
 import 'layout.dart';
 
 class AppShell extends StatelessWidget {
@@ -225,11 +226,13 @@ class AppShell extends StatelessWidget {
         return switch (selected) {
           SettingsPill.risk => const ServerRiskScreen(),
           SettingsPill.connections => const ServerIntegrationsScreen(),
-          SettingsPill.strategies => StrategiesScreen(
-              snapshot: controller.strategies!,
-              backtestRunning: controller.backtestRunning,
-              optimizing: controller.optimizing,
-              backtestStage: controller.analysisStage,
+          SettingsPill.strategies => StrategyComparisonPanel(
+              child: StrategiesScreen(
+                snapshot: controller.strategies!,
+                backtestRunning: controller.backtestRunning,
+                optimizing: controller.optimizing,
+                backtestStage: controller.analysisStage,
+              ),
             ),
           // Старый экран уже содержит реальные тумблеры уведомлений; передаём
           // исторический enum-index, а не видимый индекс.
