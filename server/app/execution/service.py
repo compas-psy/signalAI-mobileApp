@@ -13,9 +13,9 @@ from decimal import Decimal
 from typing import Iterable, Protocol
 from uuid import UUID
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..models.enums import Direction
 from ..models.execution import (
     ExecutionFill,
     ExecutionIntent,
@@ -23,6 +23,7 @@ from ..models.execution import (
     ExecutionProtection,
     ExecutionReconciliationEvent,
 )
+from ..models.ideas import TradeIdea
 from .domain import transition_execution_state
 from .enums import ExecutionState
 
@@ -164,6 +165,11 @@ def process_execution_intent(
             pre.reason or f"pre-submit reconciliation outcome: {pre.outcome}",
         )
 
+    idea = db.get(TradeIdea, intent.idea_id)
+    if idea is None:
+        return ExecutionProcessOutcome(False, "execution idea disappeared")
+    side = "BUY" if idea.direction == Direction.LONG else "SELL"
+
     client_order_id = f"e-{intent.id.hex}"
     _advance(intent, ExecutionState.SUBMITTING)
     ack = port.submit(intent, client_order_id=client_order_id)
@@ -171,7 +177,7 @@ def process_execution_intent(
         intent_id=intent.id,
         client_order_id=client_order_id,
         provider_order_id=ack.provider_order_id,
-        side="BUY",
+        side=side,
         order_type="ENTRY",
         status=ack.status,
         quantity=intent.planned_quantity,
