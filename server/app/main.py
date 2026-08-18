@@ -17,7 +17,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import UUID
 
-from fastapi import APIRouter, FastAPI
+from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import HTMLResponse
 from sqlalchemy import text
 
@@ -43,6 +43,7 @@ from .config import get_config
 from .db import get_engine
 from .models.enums import ExecutionMode
 from .operational_guard import OperationalLifecycleMiddleware
+from .ops.metrics import ObservabilityMiddleware, metrics_response
 from .paper.management_policy import install as install_paper_management
 from .request_context import RequestIdMiddleware
 from .schemas.common import HealthResponse
@@ -65,14 +66,15 @@ app = FastAPI(
     ),
 )
 # add_middleware inserts the newest middleware outside the previous one.
-# RequestId is deliberately outermost so even fail-closed auth 401/503
-# responses carry a correlation id. It never reads body or credentials.
-# DeviceToken remains the business-API authorization boundary; lifecycle
-# repair only sees authenticated owner calls. The guard also checks auth on
-# its own so this invariant stays safe if middleware order changes later.
+# RequestId is deliberately outside business middleware so even fail-closed
+# auth responses carry a correlation id. Observability is outermost and only
+# measures transport latency/status; it never changes request bodies or
+# trading decisions. /metrics itself is skipped by the middleware and has a
+# separate dedicated owner token inside metrics_response().
 app.add_middleware(OperationalLifecycleMiddleware)
 app.add_middleware(DeviceTokenMiddleware)
 app.add_middleware(RequestIdMiddleware)
+app.add_middleware(ObservabilityMiddleware)
 
 v1 = APIRouter(prefix="/api/v1")
 v1.include_router(market_routes.router)
@@ -112,6 +114,12 @@ def open_idea(idea_id: UUID) -> HTMLResponse:
         f'<script>location.replace("{target}")</script>'
         "</body></html>"
     )
+
+
+@app.get("/metrics", include_in_schema=False)
+def metrics(request: Request):
+    """Prometheus text for the trusted owner boundary only."""
+    return metrics_response(request)
 
 
 @app.get("/health", response_model=HealthResponse, tags=["service"])
