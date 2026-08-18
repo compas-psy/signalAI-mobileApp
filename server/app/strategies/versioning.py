@@ -1,8 +1,9 @@
 """Immutable strategy provenance for champion/challenger measurement.
 
-This module deliberately does not alter strategy mathematics.  It pins the
-current three-strategy suite to the exact source snapshot that becomes the
-counterfactual control for every later candidate.
+This module deliberately does not alter strategy mathematics or runtime
+eligibility.  ``legacy_control_v1`` is a measurement identity only: the
+existing strategy suite remains enabled and operational for scanning, signal
+generation, notification, and the paper lifecycle exactly as before.
 """
 
 from __future__ import annotations
@@ -40,7 +41,7 @@ class TradingStage(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class ControlManifest:
-    """Pinned source/config identity of an immutable strategy control suite."""
+    """Pinned source/config identity; never a runtime enable/disable switch."""
 
     version: str
     role: StrategyRole
@@ -54,7 +55,7 @@ class ControlManifest:
 
 @dataclass(frozen=True, slots=True)
 class StrategyDescriptor:
-    """Per-family view used by idea provenance and the future registry."""
+    """Per-family provenance; role/stage are metadata, not execution gates."""
 
     family: str
     version: str
