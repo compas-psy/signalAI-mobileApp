@@ -137,9 +137,10 @@ def test_legacy_control_identity_cannot_be_promoted_retired_or_deleted(session):
     version_row = registry.version_row(
         Strategy.TREND_PULLBACK.value, LEGACY_CONTROL_VERSION
     )
-    session.execute(delete(type(version_row)).where(type(version_row).id == version_row.id))
     with pytest.raises(DBAPIError):
-        session.flush()
+        session.execute(
+            delete(type(version_row)).where(type(version_row).id == version_row.id)
+        )
 
 
 def test_ui_visibility_is_audited_but_does_not_disable_control_or_replay(session):
@@ -184,16 +185,15 @@ def test_promotion_history_is_append_only_at_database_level(session):
     event = registry.history(candidate.family, candidate.version)[-1]
 
     event_type = type(event)
-    session.execute(
-        update(event_type)
-        .where(event_type.id == event.id)
-        .values(reason="rewrite history")
-    )
     with pytest.raises(DBAPIError):
-        session.flush()
+        session.execute(
+            update(event_type)
+            .where(event_type.id == event.id)
+            .values(reason="rewrite history")
+        )
 
 
-def test_registry_history_has_database_backing_and_current_revision(session):
+def test_registry_history_has_database_backing(session):
     registry = StrategyRegistry(session)
     candidate = _candidate("candidate_db_backed")
     registry.register(candidate, actor="system", reason="database backing")
