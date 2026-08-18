@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import 'package:flutter/widgets.dart';
+import 'package:flutter/material.dart';
 
 import '../../data/api/sandbox_mirror_delivery.dart';
 import '../../data/api/server_capital.dart';
@@ -75,6 +75,13 @@ class _ServerTodayScreenState extends State<ServerTodayScreen> {
     }
   }
 
+  Future<void> _refresh(AppController controller) async {
+    await Future.wait<void>([
+      controller.refreshIdeas(),
+      _loadCapital(silent: true),
+    ]);
+  }
+
   @override
   Widget build(BuildContext context) {
     final controller = AppScope.of(context);
@@ -85,89 +92,93 @@ class _ServerTodayScreenState extends State<ServerTodayScreen> {
       now: now,
     );
 
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(S.screen, 12, S.screen, 90),
-      children: [
-        _ServerCapitalCard(
-          snapshot: _capital,
-          loading: _capitalLoading,
-          error: _capitalError,
-          onRefresh: _loadCapital,
-        ),
-        const SizedBox(height: 12),
-        _DayStrip(controller: controller, funnel: funnel),
-        if (funnel.open.isNotEmpty) ...[
-          const SizedBox(height: 18),
-          _TradeGroup(
-            title: 'Позиции открыты',
-            note: 'Вход исполнен. Позиции сопровождает сервер.',
-            trades: funnel.open,
-            ideas: controller.ideas,
-            controller: controller,
+    return RefreshIndicator(
+      onRefresh: () => _refresh(controller),
+      child: ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.fromLTRB(S.screen, 12, S.screen, 90),
+        children: [
+          _ServerCapitalCard(
+            snapshot: _capital,
+            loading: _capitalLoading,
+            error: _capitalError,
+            onRefresh: _loadCapital,
           ),
-        ],
-        if (funnel.pending.isNotEmpty) ...[
-          const SizedBox(height: 18),
-          _TradeGroup(
-            title: 'Ждут входа',
-            note: 'Решение принято, но цена ещё не дошла до входа.',
-            trades: funnel.pending,
-            ideas: controller.ideas,
-            controller: controller,
-          ),
-        ],
-        if (funnel.decisions.isNotEmpty) ...[
-          const SizedBox(height: 18),
-          _IdeaGroup(
-            title: 'Нужно решить',
-            ideas: funnel.decisions,
-            now: now,
-            controller: controller,
-          ),
-        ],
-        if (funnel.forming.isNotEmpty) ...[
-          const SizedBox(height: 18),
-          _IdeaGroup(
-            title: 'Формируются',
-            note: 'Кандидат уже есть, но вход не разрешён: сервер ждёт триггер.',
-            ideas: funnel.forming.take(3).toList(),
-            now: now,
-            controller: controller,
-          ),
-        ],
-        if (funnel.total > 0) ...[
-          const SizedBox(height: 10),
-          Align(
-            alignment: Alignment.centerRight,
-            child: Pressable(
-              onTap: () {
-                controller.goSection(AppSection.ideas);
-                controller.goPill(IdeaFunnelPill.all.index);
-              },
-              child: Text(
-                'Вся воронка · ${funnel.total} →',
-                style: T.body(11.5, weight: 700, color: C.accent),
+          const SizedBox(height: 12),
+          _DayStrip(controller: controller, funnel: funnel),
+          if (funnel.open.isNotEmpty) ...[
+            const SizedBox(height: 18),
+            _TradeGroup(
+              title: 'Позиции открыты',
+              note: 'Вход исполнен. Позиции сопровождает сервер.',
+              trades: funnel.open,
+              ideas: controller.ideas,
+              controller: controller,
+            ),
+          ],
+          if (funnel.pending.isNotEmpty) ...[
+            const SizedBox(height: 18),
+            _TradeGroup(
+              title: 'Ждут входа',
+              note: 'Решение принято, но цена ещё не дошла до входа.',
+              trades: funnel.pending,
+              ideas: controller.ideas,
+              controller: controller,
+            ),
+          ],
+          if (funnel.decisions.isNotEmpty) ...[
+            const SizedBox(height: 18),
+            _IdeaGroup(
+              title: 'Нужно решить',
+              ideas: funnel.decisions,
+              now: now,
+              controller: controller,
+            ),
+          ],
+          if (funnel.forming.isNotEmpty) ...[
+            const SizedBox(height: 18),
+            _IdeaGroup(
+              title: 'Формируются',
+              note: 'Кандидат уже есть, но вход не разрешён: сервер ждёт триггер.',
+              ideas: funnel.forming.take(3).toList(),
+              now: now,
+              controller: controller,
+            ),
+          ],
+          if (funnel.total > 0) ...[
+            const SizedBox(height: 10),
+            Align(
+              alignment: Alignment.centerRight,
+              child: Pressable(
+                onTap: () {
+                  controller.goSection(AppSection.ideas);
+                  controller.goPill(IdeaFunnelPill.all.index);
+                },
+                child: Text(
+                  'Вся воронка · ${funnel.total} →',
+                  style: T.body(11.5, weight: 700, color: C.accent),
+                ),
               ),
             ),
-          ),
-        ] else if (controller.ideasUnavailableReason != null) ...[
-          const SizedBox(height: 18),
-          SectionCard(
-            child: Text(
-              controller.ideasUnavailableReason!,
-              style: T.body(11.5, color: C.warning, height: 1.5),
+          ] else if (controller.ideasUnavailableReason != null) ...[
+            const SizedBox(height: 18),
+            SectionCard(
+              child: Text(
+                controller.ideasUnavailableReason!,
+                style: T.body(11.5, color: C.warning, height: 1.5),
+              ),
             ),
-          ),
-        ] else if (controller.noSetupsReason != null) ...[
-          const SizedBox(height: 18),
-          SectionCard(
-            child: Text(
-              controller.noSetupsReason!,
-              style: T.body(11.5, color: C.muted, height: 1.5),
+          ] else if (controller.noSetupsReason != null) ...[
+            const SizedBox(height: 18),
+            SectionCard(
+              child: Text(
+                controller.noSetupsReason!,
+                style: T.body(11.5, color: C.muted, height: 1.5),
+              ),
             ),
-          ),
+          ],
         ],
-      ],
+      ),
     );
   }
 }
@@ -282,7 +293,6 @@ class _CapitalSourceRow extends StatelessWidget {
       ],
     );
   }
-
 
   static String _age(DateTime at) {
     final diff = DateTime.now().difference(at);
