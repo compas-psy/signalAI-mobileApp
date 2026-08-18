@@ -3,7 +3,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import Numeric
+from sqlalchemy import Numeric, text
 
 from app.execution.domain import InvalidExecutionTransition, transition_execution_state
 from app.execution.enums import ExecutionLifecycleMode, ExecutionState
@@ -170,3 +170,29 @@ def test_decimal_payloads_are_not_coerced_to_float_before_persistence():
     assert isinstance(intent.planned_quantity, Decimal)
     assert isinstance(intent.planned_entry_price, Decimal)
     assert isinstance(intent.planned_stop_price, Decimal)
+
+
+def test_forensic_execution_facts_have_database_append_only_triggers(session):
+    rows = session.execute(
+        text(
+            """
+            SELECT c.relname, t.tgname
+            FROM pg_trigger t
+            JOIN pg_class c ON c.oid = t.tgrelid
+            WHERE NOT t.tgisinternal
+              AND t.tgname IN (
+                'execution_mode_events_append_only',
+                'execution_fills_append_only',
+                'execution_reconciliation_events_append_only'
+              )
+            """
+        )
+    ).all()
+    assert set(rows) == {
+        ("execution_mode_events", "execution_mode_events_append_only"),
+        ("execution_fills", "execution_fills_append_only"),
+        (
+            "execution_reconciliation_events",
+            "execution_reconciliation_events_append_only",
+        ),
+    }
