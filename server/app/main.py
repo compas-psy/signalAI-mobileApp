@@ -25,6 +25,7 @@ from .api.v1 import capital as capital_routes
 from .api.v1 import control as control_routes
 from .api.v1 import diagnostics as diagnostics_routes
 from .api.v1 import equity_rankings as equity_ranking_routes
+from .api.v1 import experiments as experiment_routes
 from .api.v1 import idea_progress as idea_progress_routes
 from .api.v1 import ideas as ideas_routes
 from .api.v1 import integrations as integrations_routes
@@ -95,6 +96,7 @@ v1.include_router(notification_routes.router)
 v1.include_router(control_routes.router)
 v1.include_router(diagnostics_routes.router)
 v1.include_router(measurement_routes.router)
+v1.include_router(experiment_routes.router)
 app.include_router(v1)
 
 
