@@ -10,7 +10,16 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, ForeignKey, Index, Integer, String, Text, UniqueConstraint, text
+from sqlalchemy import (
+    Boolean,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -50,7 +59,7 @@ class StrategyPromotionEvent(Base):
     """Append-only snapshot of a strategy governance decision.
 
     Role, enabled stages and UI visibility are reconstructed from the latest
-    event.  There is intentionally no mutable `current_role` column that an
+    event. There is intentionally no mutable `current_role` column that an
     environment flag or ad-hoc UPDATE could silently change.
     """
 
@@ -63,7 +72,11 @@ class StrategyPromotionEvent(Base):
     )
     strategy_version_id: Mapped[uuid.UUID] = mapped_column(
         PgUUID(as_uuid=True),
-        ForeignKey("strategy_versions.id", ondelete="RESTRICT"),
+        ForeignKey(
+            "strategy_versions.id",
+            name="fk_strategy_promotion_events_version",
+            ondelete="RESTRICT",
+        ),
         nullable=False,
     )
     sequence: Mapped[int] = mapped_column(Integer, nullable=False)
