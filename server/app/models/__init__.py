@@ -6,6 +6,7 @@
 """
 
 from .base import Base
+from .datasets import DatasetSnapshot
 from .enums import (
     AssetClass,
     BarrierOutcome,
@@ -66,6 +67,8 @@ from .strategies import StrategyPromotionEvent, StrategyVersion
 
 __all__ = [
     "Base",
+    # dataset lineage
+    "DatasetSnapshot",
     # market
     "Instrument",
     "Bar",
