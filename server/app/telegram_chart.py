@@ -71,7 +71,7 @@ def _trade_card_metrics(idea: TradeIdea) -> dict[str, str]:
         "score": f"{_decimal_text(score)}/100",
         "probability": f"{probability.quantize(Decimal('1'))}%",
         "position": _decimal_text(Decimal(idea.quantity)),
-        "risk": f"{risk} ₽",
+        "risk": f"{risk} RUB",
     }
 
 
@@ -93,7 +93,8 @@ def _gradient(image) -> None:
     for yy in range(_CARD_TOP):
         ratio = yy / max(_CARD_TOP - 1, 1)
         color = tuple(
-            round(a + (b - a) * ratio) for a, b in zip(_BG_TOP, _BG_BOTTOM, strict=True)
+            round(a + (b - a) * ratio)
+            for a, b in zip(_BG_TOP, _BG_BOTTOM, strict=True)
         )
         draw.line((0, yy, _WIDTH, yy), fill=color)
 
@@ -219,7 +220,12 @@ def render_idea_chart(
         text_fill="#FFFFFF",
         font=small_font,
     )
-    draw.text((64, 113), "H1 · SMART MONEY + TRADE PLAN", fill=_MUTED, font=small_font)
+    draw.text(
+        (64, 113),
+        "H1 | SMART MONEY + TRADE PLAN",
+        fill=_MUTED,
+        font=small_font,
+    )
     draw.text((835, 34), "SCORE", fill=_MUTED, font=tiny_font)
     draw.text((835, 54), metrics["score"], fill=_TEXT, font=title_font)
     draw.text((1004, 34), "H1 CLOSE", fill=_MUTED, font=tiny_font)
@@ -238,7 +244,12 @@ def render_idea_chart(
         yy = top + (bottom - top) * i / 5
         price = hi - (hi - lo) * i / 5
         draw.line((left, yy, right, yy), fill=_GRID, width=1)
-        draw.text((right + 14, yy - 8), _price(price), fill=_MUTED, font=small_font)
+        draw.text(
+            (right + 14, yy - 8),
+            _price(price),
+            fill=_MUTED,
+            font=small_font,
+        )
 
     for i in range(7):
         xx = left + (right - left) * i / 6
@@ -258,7 +269,12 @@ def render_idea_chart(
         if abs(y2 - y1) < 2:
             y2 = y1 + (2 if rising else -2)
         draw.rounded_rectangle(
-            (xx - candle_width / 2, min(y1, y2), xx + candle_width / 2, max(y1, y2)),
+            (
+                xx - candle_width / 2,
+                min(y1, y2),
+                xx + candle_width / 2,
+                max(y1, y2),
+            ),
             radius=1,
             fill=color,
         )
@@ -277,7 +293,12 @@ def render_idea_chart(
             outline=color,
             width=1,
         )
-        draw.text((left + 16, yy - h / 2 + 4), text, fill=color, font=label_font)
+        draw.text(
+            (left + 16, yy - h / 2 + 4),
+            text,
+            fill=color,
+            font=label_font,
+        )
 
     entry_low, entry_high = float(idea.entry_low), float(idea.entry_high)
     draw.rectangle(
@@ -296,7 +317,11 @@ def render_idea_chart(
     last_price = float(rows[-1].close)
     current_y = y(last_price)
     for xx in range(left, right, 16):
-        draw.line((xx, current_y, min(xx + 7, right), current_y), fill="#D5DEEA90", width=1)
+        draw.line(
+            (xx, current_y, min(xx + 7, right), current_y),
+            fill="#D5DEEA90",
+            width=1,
+        )
     draw.text(
         (right + 14, current_y - 8),
         f"NOW {_price(last_price)}",
@@ -350,7 +375,7 @@ def render_idea_chart(
     draw.rounded_rectangle(_PLOT, radius=10, outline="#334155", width=1)
     draw.text(
         (left, 664),
-        f"{rows[0].open_time:%d.%m %H:%M}  →  {rows[-1].open_time:%d.%m %H:%M} UTC",
+        f"{rows[0].open_time:%d.%m %H:%M} -> {rows[-1].open_time:%d.%m %H:%M} UTC",
         fill="#738198",
         font=tiny_font,
     )
@@ -359,7 +384,7 @@ def render_idea_chart(
     draw.line((0, _CARD_TOP, _WIDTH, _CARD_TOP), fill="#DCE4EE", width=1)
 
     draw.text((64, 732), "TRADE CARD", fill="#64748B", font=small_font)
-    draw.text((64, 757), f"{symbol} · {direction}", fill=_DARK, font=title_font)
+    draw.text((64, 757), f"{symbol} | {direction}", fill=_DARK, font=title_font)
 
     metric_columns = [
         (64, "PROB TP1>SL", metrics["probability"]),
@@ -380,12 +405,17 @@ def render_idea_chart(
     ]
     for xx, label, value, color in plan_items:
         draw.text((xx, 869), label, fill="#64748B", font=tiny_font)
-        display = "—" if value is None else _price(float(value))
+        display = "-" if value is None else _price(float(value))
         draw.text((xx, 888), display, fill=color, font=label_font)
 
     cta_box = (64, 919, 820, 948)
     draw.rounded_rectangle(cta_box, radius=14, fill=_DARK)
-    draw.text((89, 925), "OPEN IDEA IN SIGNALAI  →", fill="#FFFFFF", font=small_font)
+    draw.text(
+        (89, 925),
+        "OPEN IDEA IN SIGNALAI  >",
+        fill="#FFFFFF",
+        font=small_font,
+    )
 
     if deeplink:
         qr = _qr_image(deeplink)
@@ -399,7 +429,12 @@ def render_idea_chart(
             outline="#CBD5E1",
             width=1,
         )
-        draw.text((qr_x, min(qr_y + qr_h + 12, 924)), "SCAN TO OPEN", fill="#64748B", font=tiny_font)
+        draw.text(
+            (qr_x, min(qr_y + qr_h + 12, 924)),
+            "SCAN TO OPEN",
+            fill="#64748B",
+            font=tiny_font,
+        )
 
     out = BytesIO()
     image.save(out, format="PNG", optimize=True)
