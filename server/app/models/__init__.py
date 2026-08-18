@@ -62,6 +62,7 @@ from .portfolio import (
     RebalanceDraft,
 )
 from .risk import AuditEvent, BacktestRun, ModelRegistry, RiskSnapshot, RiskState
+from .strategies import StrategyPromotionEvent, StrategyVersion
 
 __all__ = [
     "Base",
@@ -88,12 +89,14 @@ __all__ = [
     "PortfolioRun",
     "PortfolioWeight",
     "RebalanceDraft",
-    # risk / research
+    # risk / research / strategy governance
     "RiskSnapshot",
     "RiskState",
     "AuditEvent",
     "BacktestRun",
     "ModelRegistry",
+    "StrategyVersion",
+    "StrategyPromotionEvent",
     # early signals
     "CollectionPermit",
     "HypothesisEvidence",
