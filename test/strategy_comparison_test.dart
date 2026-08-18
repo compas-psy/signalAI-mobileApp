@@ -1,12 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:signalai/data/api/api_client.dart';
-import 'package:signalai/data/api/engine_client.dart';
-import 'package:signalai/data/mock/demo_repository.dart';
+import 'package:signalai/data/api/experiment_comparison_client.dart';
 import 'package:signalai/domain/models/experiment_comparison.dart';
-import 'package:signalai/state/app_controller.dart';
-import 'package:signalai/state/navigation.dart';
-import 'package:signalai/ui/screens/strategies_screen.dart';
+import 'package:signalai/ui/widgets/strategy_comparison_panel.dart';
 
 class _ExperimentApi extends ApiClient {
   _ExperimentApi({
@@ -31,19 +28,6 @@ class _ExperimentApi extends ApiClient {
   }
 }
 
-class _ComparisonEngine extends EngineClient {
-  _ComparisonEngine(this.value) : super(client: _ExperimentApi(experiments: const []));
-
-  final ExperimentComparison value;
-  int calls = 0;
-
-  @override
-  Future<ExperimentComparison> strategyComparison() async {
-    calls += 1;
-    return value;
-  }
-}
-
 ExperimentComparison _readyComparison() => const ExperimentComparison.ready(
       experimentId: 'exp-1',
       name: 'trend-v2 vs legacy',
@@ -61,11 +45,11 @@ ExperimentComparison _readyComparison() => const ExperimentComparison.ready(
     );
 
 void main() {
-  group('EngineClient strategy comparison', () {
+  group('ExperimentComparisonClient', () {
     test('empty experiment list is an explicit no-experiments state', () async {
       final api = _ExperimentApi(experiments: const []);
 
-      final result = await EngineClient(client: api).strategyComparison();
+      final result = await ExperimentComparisonClient(api).latest();
 
       expect(result.status, ExperimentComparisonStatus.noExperiments);
       expect(api.paths, ['/api/v1/experiments?limit=1']);
@@ -152,7 +136,7 @@ void main() {
         },
       );
 
-      final result = await EngineClient(client: api).strategyComparison();
+      final result = await ExperimentComparisonClient(api).latest();
 
       expect(result.status, ExperimentComparisonStatus.ready);
       expect(result.controlVersion, 'legacy_control_v1');
@@ -230,23 +214,31 @@ void main() {
     });
   });
 
-  test('Settings → Strategies lazily prefetches comparison once', () async {
-    final engine = _ComparisonEngine(const ExperimentComparison.noExperiments());
-    final controller = AppController(
-      DemoRepository(),
-      engine: engine,
-      thinMode: true,
+  testWidgets('comparison panel lazily loads once when the strategies route builds',
+      (tester) async {
+    var calls = 0;
+    Future<ExperimentComparison> loader() async {
+      calls += 1;
+      return _readyComparison();
+    }
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: StrategyComparisonPanel(
+            loader: loader,
+            child: const SizedBox.expand(child: Text('existing strategies')),
+          ),
+        ),
+      ),
     );
-    addTearDown(controller.dispose);
+    expect(calls, 1);
 
-    controller.goSection(AppSection.settings);
-    expect(engine.calls, 0);
+    await tester.pumpAndSettle();
+    expect(find.text('КОНТРОЛЬ VS КАНДИДАТ'), findsOneWidget);
+    expect(find.text('existing strategies'), findsOneWidget);
 
-    controller.goPill(SettingsPill.strategies.index);
-    await Future<void>.delayed(Duration.zero);
-
-    expect(engine.calls, 1);
-    expect(controller.experimentComparison?.status,
-        ExperimentComparisonStatus.noExperiments);
+    await tester.pump();
+    expect(calls, 1);
   });
 }
