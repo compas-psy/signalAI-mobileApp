@@ -75,6 +75,10 @@ class ExecutionModeEvent(UuidPk, Base):
 class ExecutionIntent(UuidPk, Base):
     __tablename__ = "execution_intents"
 
+    # Content-addressed stable identity from B5.2. The hash deliberately covers
+    # decision identity (idea/strategy/risk/venue/account), not mutable delivery
+    # state. PostgreSQL uniqueness is the final retry/concurrency guard.
+    identity_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     idea_id: Mapped[uuid.UUID] = mapped_column(
         PgUUID(as_uuid=True),
         ForeignKey("trade_ideas.id", ondelete="RESTRICT"),
@@ -112,6 +116,7 @@ class ExecutionIntent(UuidPk, Base):
     updated_at: Mapped[datetime] = utcnow_column()
 
     __table_args__ = (
+        UniqueConstraint("identity_hash", name="uq_execution_intents_identity_hash"),
         Index("ix_execution_intents_state", "state"),
         Index("ix_execution_intents_idea", "idea_id"),
         Index(
