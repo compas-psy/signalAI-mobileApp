@@ -34,6 +34,7 @@ def main() -> int:
     sideload = read("android-sideload.yml")
     deploy_release = read("deploy-release.yml")
     deploy_server = read("deploy-server.yml")
+    release_command = read("runtime-release-command.yml")
     build_script = (ROOT / "tool" / "build_apk.sh").read_text(encoding="utf-8")
     bootstrap = (ROOT / "server" / "deploy" / "bootstrap.sh").read_text(
         encoding="utf-8"
@@ -90,6 +91,31 @@ def main() -> int:
         "SIGNALAI_MODE=local",
     ):
         forbid(sideload, needle, "android-sideload.yml")
+
+    # Chat/connector-accessible runtime commands are deliberately narrow. Only
+    # the repository owner, on the dedicated runtime issue, may dispatch an APK
+    # build or the canonical cumulative release. The workflow resolves the
+    # immutable current default SHA before dispatching either delivery path.
+    for needle in (
+        "issue_comment:",
+        "github.event.issue.number == 1",
+        "github.actor == github.repository_owner",
+        "github.event.comment.body == '/build-apk'",
+        "github.event.comment.body == '/release-full'",
+        "actions: write",
+        "repos.getBranch",
+        "branch.data.commit.sha",
+        "workflow_id: 'android-sideload.yml'",
+        "workflow_id: 'release-cumulative.yml'",
+        "source_ref: sourceSha",
+    ):
+        require(release_command, needle, "runtime-release-command.yml")
+    for needle in (
+        "pull_request:",
+        "push:",
+        "schedule:",
+    ):
+        forbid(release_command, needle, "runtime-release-command.yml")
 
     for needle in (
         'BUILD_MODE="${SIGNALAI_MODE:-thin}"',
