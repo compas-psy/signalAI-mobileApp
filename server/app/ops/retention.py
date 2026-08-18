@@ -120,24 +120,25 @@ def run_safe_retention(
         for candidate in candidates:
             if target_deleted_files >= target.max_delete_files:
                 break
-            if target_deleted_bytes + candidate.size > target.max_delete_bytes:
+            remaining_bytes = target.max_delete_bytes - target_deleted_bytes
+            if remaining_bytes <= 0 or candidate.size > remaining_bytes:
                 # Oldest-first means we do not skip an oversized older file to
                 # remove younger data behind it.
                 break
 
-            size, delete_error = _safe_unlink(candidate.path, root=root)
+            size, delete_error = _safe_unlink(
+                candidate.path,
+                root=root,
+                max_bytes=remaining_bytes,
+            )
             if delete_error is not None:
                 errors.append(delete_error)
                 continue
-            assert size is not None
-
-            # Re-check the byte budget against the current file size in case it
-            # grew after discovery. Never exceed the configured hard cap.
-            if target_deleted_bytes + size > target.max_delete_bytes:
-                errors.append(
-                    f"candidate changed size beyond deletion budget: {candidate.path}"
-                )
-                continue
+            if size is None:
+                # The file grew after discovery and no longer fits. It was not
+                # unlinked; stop to preserve both the budget and oldest-first
+                # ordering.
+                break
 
             target_deleted_files += 1
             target_deleted_bytes += size
@@ -236,13 +237,20 @@ def _collect_candidates(root: Path, *, cutoff: float) -> tuple[_Candidate, ...]:
     return tuple(candidates)
 
 
-def _safe_unlink(path: Path, *, root: Path) -> tuple[int | None, str | None]:
+def _safe_unlink(
+    path: Path,
+    *,
+    root: Path,
+    max_bytes: int,
+) -> tuple[int | None, str | None]:
     try:
         info = path.lstat()
     except OSError as exc:
         return None, f"retention candidate disappeared: {path}: {type(exc).__name__}"
     if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
         return None, f"retention candidate is no longer a regular file: {path}"
+    if info.st_size > max_bytes:
+        return None, None
 
     try:
         resolved = path.resolve(strict=True)
@@ -251,11 +259,24 @@ def _safe_unlink(path: Path, *, root: Path) -> tuple[int | None, str | None]:
     if not resolved.is_relative_to(root) or resolved != path:
         return None, f"retention candidate escaped marked root: {path}"
 
+    # One final lstat immediately before unlink closes the common scan/delete
+    # race: a path replaced with a symlink or a larger file is not removed.
+    try:
+        final_info = path.lstat()
+    except OSError as exc:
+        return None, f"retention candidate disappeared: {path}: {type(exc).__name__}"
+    if stat.S_ISLNK(final_info.st_mode) or not stat.S_ISREG(final_info.st_mode):
+        return None, f"retention candidate changed type before delete: {path}"
+    if final_info.st_size > max_bytes:
+        return None, None
+    if (final_info.st_dev, final_info.st_ino) != (info.st_dev, info.st_ino):
+        return None, f"retention candidate changed inode before delete: {path}"
+
     try:
         path.unlink()
     except OSError as exc:
         return None, f"retention delete failed: {path}: {type(exc).__name__}"
-    return info.st_size, None
+    return final_info.st_size, None
 
 
 __all__ = [
