@@ -35,6 +35,13 @@ from .enums import (
     VolatilityRegime,
 )
 from .equity_ranking import EquityRankingSnapshot
+from .experiments import (
+    Experiment,
+    ExperimentArm,
+    ExperimentMetric,
+    ExperimentRun,
+    PromotionDecision,
+)
 from .ideas import IdeaEvent, IdeaOutcome, IdeaSkip, TradeIdea
 from .notifications import NotificationOutbox
 from .paper import PaperTrade
@@ -97,7 +104,7 @@ __all__ = [
     "PortfolioRun",
     "PortfolioWeight",
     "RebalanceDraft",
-    # risk / research / strategy governance
+    # risk / research / strategy governance / experiments
     "RiskSnapshot",
     "RiskState",
     "AuditEvent",
@@ -108,6 +115,11 @@ __all__ = [
     "ResearchSearchCampaign",
     "ResearchTrial",
     "ResearchTrialOutcome",
+    "Experiment",
+    "ExperimentArm",
+    "ExperimentRun",
+    "ExperimentMetric",
+    "PromotionDecision",
     # early signals
     "CollectionPermit",
     "HypothesisEvidence",
