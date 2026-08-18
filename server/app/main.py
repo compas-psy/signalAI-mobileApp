@@ -22,6 +22,7 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy import text
 
 from .api.v1 import capital as capital_routes
+from .api.v1 import capacity as capacity_routes
 from .api.v1 import control as control_routes
 from .api.v1 import diagnostics as diagnostics_routes
 from .api.v1 import equity_rankings as equity_ranking_routes
@@ -97,6 +98,7 @@ v1.include_router(control_routes.router)
 v1.include_router(diagnostics_routes.router)
 v1.include_router(measurement_routes.router)
 v1.include_router(experiment_routes.router)
+v1.include_router(capacity_routes.router)
 app.include_router(v1)
 
 
