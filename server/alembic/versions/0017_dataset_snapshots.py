@@ -46,7 +46,7 @@ def upgrade() -> None:
         ),
         sa.CheckConstraint(
             "row_count >= 0",
-            name="ck_dataset_snapshots_row_count_non_negative",
+            name=op.f("ck_dataset_snapshots_row_count_non_negative"),
         ),
         sa.PrimaryKeyConstraint("id", name="pk_dataset_snapshots"),
         sa.UniqueConstraint(
