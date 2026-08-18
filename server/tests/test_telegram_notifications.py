@@ -98,7 +98,13 @@ def test_idea_notification_contains_trade_plan_chart_and_deeplink(
     )
 
     png = b"\x89PNG\r\n\x1a\ntelegram-chart"
-    monkeypatch.setattr(telegram, "render_idea_chart", lambda *_: png)
+    rendered: dict[str, str] = {}
+
+    def fake_render(*_, **kwargs):
+        rendered["deeplink"] = kwargs["deeplink"]
+        return png
+
+    monkeypatch.setattr(telegram, "render_idea_chart", fake_render)
     sent: list[tuple[str, dict[str, str], bytes | None]] = []
 
     def fake_request(method, fields, *, photo=None):
@@ -127,6 +133,7 @@ def test_idea_notification_contains_trade_plan_chart_and_deeplink(
     assert "+" in caption
     assert "−500 ₽" in caption
     assert f"/open/idea/{idea.id}" in fields["reply_markup"]
+    assert rendered["deeplink"].endswith(f"/open/idea/{idea.id}")
     assert telegram.deliver(session) == 0
 
 
