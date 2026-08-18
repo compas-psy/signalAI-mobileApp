@@ -20,6 +20,7 @@ import 'screens/server_today_screen.dart';
 import 'screens/settings_screen.dart';
 import 'screens/strategies_screen.dart';
 import 'screens/today_screen.dart';
+import 'widgets/capacity_status_panel.dart';
 import 'widgets/confirm_sheet.dart';
 import 'widgets/engine_address_sheet.dart';
 import 'widgets/engine_setup_gate.dart';
@@ -240,7 +241,9 @@ class AppShell extends StatelessWidget {
               snapshot: controller.settings!,
               pill: SettingsPill.notifications.index,
             ),
-          SettingsPill.data => const ServerDataScreen(),
+          SettingsPill.data => const CapacityStatusPanel(
+              child: ServerDataScreen(),
+            ),
           _ => const ServerRiskScreen(),
         };
       }
