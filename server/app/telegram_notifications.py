@@ -238,6 +238,7 @@ def _send_idea(session: Session, event: NotificationEvent) -> None:
             f"R:R: {rr:.2f}",
         ]
     )
+    link = _deeplink(idea_id)
     _telegram_request(
         "sendPhoto",
         {
@@ -245,7 +246,7 @@ def _send_idea(session: Session, event: NotificationEvent) -> None:
             "caption": caption,
             "reply_markup": _keyboard(idea_id),
         },
-        photo=render_idea_chart(session, idea),
+        photo=render_idea_chart(session, idea, deeplink=link),
     )
 
 
