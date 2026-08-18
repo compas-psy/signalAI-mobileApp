@@ -77,22 +77,26 @@ def test_purge_removes_train_labels_overlapping_validation_boundary():
 def test_validation_is_purged_before_test_and_embargo_gap_is_empty():
     samples = tuple(sample(day, horizon_days=2) for day in range(30))
     first = purged_walk_forward(samples, config())[0]
+    used = (*first.train, *first.validation, *first.test)
 
     assert all(item.label_end_at < first.test_start for item in first.validation)
     assert first.validation_start - first.train_end == timedelta(days=1)
     assert first.test_start - first.validation_end == timedelta(days=1)
     assert not any(
-        first.train_end <= item.observed_at < first.validation_start for item in samples
+        first.train_end <= item.observed_at < first.validation_start for item in used
     )
     assert not any(
-        first.validation_end <= item.observed_at < first.test_start for item in samples
+        first.validation_end <= item.observed_at < first.test_start for item in used
     )
 
 
 def test_market_closures_do_not_create_synthetic_samples_or_reorder_data():
     # Deliberate calendar gaps represent weekends/closures. Splitter works on
     # actual available observations and never backfills missing days.
-    samples = tuple(sample(day) for day in (0, 1, 2, 5, 6, 9, 10, 13, 14, 17, 18, 21, 22, 25, 26, 29))
+    samples = tuple(
+        sample(day)
+        for day in (0, 1, 2, 5, 6, 9, 10, 13, 14, 17, 18, 21, 22, 25, 26, 29)
+    )
 
     folds = purged_walk_forward(
         samples,
@@ -107,14 +111,20 @@ def test_market_closures_do_not_create_synthetic_samples_or_reorder_data():
 
     observed_ids = {item.sample_id for item in samples}
     for fold in folds:
-        assert {item.sample_id for item in (*fold.train, *fold.validation, *fold.test)} <= observed_ids
+        assert {
+            item.sample_id for item in (*fold.train, *fold.validation, *fold.test)
+        } <= observed_ids
 
 
 def test_contract_roll_crossing_labels_are_excluded_fail_closed():
     roll_at = BASE + timedelta(days=12)
     samples = [sample(day) for day in range(30)]
-    samples[10] = sample(10, horizon_days=4, segment="RIU6", segment_valid_until=roll_at)
-    samples[11] = sample(11, horizon_days=1, segment="RIU6", segment_valid_until=roll_at)
+    samples[10] = sample(
+        10, horizon_days=4, segment="RIU6", segment_valid_until=roll_at
+    )
+    samples[11] = sample(
+        11, horizon_days=1, segment="RIU6", segment_valid_until=roll_at
+    )
 
     folds = purged_walk_forward(tuple(samples), config())
 
