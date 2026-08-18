@@ -1,0 +1,72 @@
+name: Runtime release command
+
+on:
+  issue_comment:
+    types:
+      - created
+
+permissions:
+  actions: write
+  contents: read
+  issues: write
+
+jobs:
+  dispatch:
+    name: Dispatch owner release command
+    if: >-
+      github.event.issue.number == 1 &&
+      github.actor == github.repository_owner &&
+      (github.event.comment.body == '/build-apk' || github.event.comment.body == '/release-full')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve exact current default SHA and dispatch
+        uses: actions/github-script@v7
+        env:
+          COMMAND: ${{ github.event.comment.body }}
+        with:
+          script: |
+            const command = process.env.COMMAND;
+            const repo = await github.rest.repos.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+            });
+            const defaultBranch = repo.data.default_branch;
+            const branch = await github.rest.repos.getBranch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              branch: defaultBranch,
+            });
+            const sourceSha = branch.data.commit.sha;
+
+            if (command === '/build-apk') {
+              await github.rest.actions.createWorkflowDispatch({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                workflow_id: 'android-sideload.yml',
+                ref: defaultBranch,
+                inputs: {
+                  source_ref: sourceSha,
+                  mode: 'thin',
+                  api_base_url: '',
+                  backup_api_base_url: '',
+                },
+              });
+            } else if (command === '/release-full') {
+              await github.rest.actions.createWorkflowDispatch({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                workflow_id: 'release-cumulative.yml',
+                ref: defaultBranch,
+                inputs: { source_ref: sourceSha },
+              });
+            } else {
+              core.setFailed(`Unsupported command: ${command}`);
+              return;
+            }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: 1,
+              body: `🚀 **Release command accepted**\n\nCommand: \`${command}\`\nSource: \`${sourceSha}\``,
+            });
