@@ -84,9 +84,10 @@ def test_prometheus_render_contains_minimum_resource_and_operational_metrics():
     assert "signalai_websocket_disconnects_total" in text
 
 
-def test_metrics_endpoint_fails_closed_and_health_remains_public(monkeypatch):
+def test_metrics_endpoint_fails_closed_without_any_owner_secret_and_health_stays_public(monkeypatch):
     reset_http_metrics_for_tests()
     monkeypatch.delenv("SIGNALAI_METRICS_TOKEN", raising=False)
+    monkeypatch.delenv("SIGNALAI_DEVICE_TOKEN", raising=False)
     client = TestClient(app)
 
     response = client.get("/metrics")
@@ -96,18 +97,36 @@ def test_metrics_endpoint_fails_closed_and_health_remains_public(monkeypatch):
     assert health.status_code == 200
 
 
-def test_metrics_endpoint_requires_dedicated_bearer_token(monkeypatch):
+def test_metrics_endpoint_reuses_existing_owner_device_token_by_default(monkeypatch):
     reset_http_metrics_for_tests()
-    monkeypatch.setenv("SIGNALAI_METRICS_TOKEN", "metrics-secret")
+    monkeypatch.delenv("SIGNALAI_METRICS_TOKEN", raising=False)
+    monkeypatch.setenv("SIGNALAI_DEVICE_TOKEN", "owner-device-secret")
     client = TestClient(app)
 
     denied = client.get("/metrics", headers={"Authorization": "Bearer wrong"})
     assert denied.status_code == 401
 
     allowed = client.get(
-        "/metrics", headers={"Authorization": "Bearer metrics-secret"}
+        "/metrics", headers={"Authorization": "Bearer owner-device-secret"}
     )
     assert allowed.status_code == 200
     assert allowed.headers["content-type"].startswith("text/plain")
     assert "signalai_http_request_duration_seconds" in allowed.text
     assert "signalai_http_requests_total" in allowed.text
+
+
+def test_dedicated_metrics_token_overrides_device_token_when_configured(monkeypatch):
+    reset_http_metrics_for_tests()
+    monkeypatch.setenv("SIGNALAI_DEVICE_TOKEN", "owner-device-secret")
+    monkeypatch.setenv("SIGNALAI_METRICS_TOKEN", "metrics-secret")
+    client = TestClient(app)
+
+    old_owner_token = client.get(
+        "/metrics", headers={"Authorization": "Bearer owner-device-secret"}
+    )
+    assert old_owner_token.status_code == 401
+
+    dedicated = client.get(
+        "/metrics", headers={"Authorization": "Bearer metrics-secret"}
+    )
+    assert dedicated.status_code == 200
