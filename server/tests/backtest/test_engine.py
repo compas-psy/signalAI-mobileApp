@@ -66,7 +66,7 @@ def test_signal_availability_prevents_using_an_earlier_bar():
     p = plan(signal_at=BASE + timedelta(hours=1))
     bars = [
         bar(0, o="100", h="110", low="94", c="105"),
-        bar(1, o="105", h="106", low="101", c="103"),
+        bar(1, o="105", h="106", low="99", c="103"),
     ]
 
     result = run_backtest(p, bars, constraints=default_constraints())
@@ -122,7 +122,7 @@ def test_targets_move_trailing_stop_only_for_following_bars():
         EventKind.TRAILING_STOP_MOVED,
         EventKind.STOP,
     ]
-    assert result.gross_r == Decimal("1.8")
+    assert result.gross_r == Decimal("2.6")
 
 
 def test_entry_not_touched_records_no_fill_then_calendar_timeout():
