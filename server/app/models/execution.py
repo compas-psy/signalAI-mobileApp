@@ -112,6 +112,20 @@ class ExecutionIntent(UuidPk, Base):
     planned_entry_price: Mapped[Price] = mapped_column(nullable=False)
     planned_stop_price: Mapped[Price] = mapped_column(nullable=False)
 
+    # SAI-027 durable delivery metadata. These fields are operational state,
+    # not strategy/risk inputs: they only control when and by whom the same
+    # content-addressed execution intent may be replayed after uncertainty.
+    retry_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    next_retry_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    lease_owner: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     created_at: Mapped[datetime] = utcnow_column()
     updated_at: Mapped[datetime] = utcnow_column()
 
@@ -119,6 +133,8 @@ class ExecutionIntent(UuidPk, Base):
         UniqueConstraint("identity_hash", name="uq_execution_intents_identity_hash"),
         Index("ix_execution_intents_state", "state"),
         Index("ix_execution_intents_idea", "idea_id"),
+        Index("ix_execution_intents_retry_due", "state", "next_retry_at"),
+        Index("ix_execution_intents_lease_expiry", "lease_expires_at"),
         Index(
             "ix_execution_intents_venue_account_instrument",
             "venue",
