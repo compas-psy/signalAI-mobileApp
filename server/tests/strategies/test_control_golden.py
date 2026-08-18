@@ -22,11 +22,17 @@ from app.strategies.base import Candidate, Rejection, SetupContext
 from tests import test_strategies as legacy
 
 
-FIXTURE_PATH = Path(__file__).parent / "fixtures" / "control" / "control_cases.json"
+FIXTURE_DIR = Path(__file__).parent / "fixtures" / "control"
+FIXTURE_PATH = FIXTURE_DIR / "control_cases.json"
+PLAN_PATH = FIXTURE_DIR / "control_candidate_plans.json"
 
 
 def _load_fixture() -> dict:
     return json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+
+
+def _load_plans() -> dict:
+    return json.loads(PLAN_PATH.read_text(encoding="utf-8"))
 
 
 def _short_pullback() -> SetupContext:
@@ -209,7 +215,20 @@ def _actual_bars(ctx: SetupContext, series_name: str) -> list[tuple]:
     ]
 
 
-def _assert_expected(result: Candidate | Rejection, expected: dict) -> None:
+def _assert_plan(result: Candidate, plan: dict) -> None:
+    assert result.entry_low == Decimal(plan["entry_low"])
+    assert result.entry_high == Decimal(plan["entry_high"])
+    assert result.entry_reference == Decimal(plan["entry_reference"])
+    assert result.stop == Decimal(plan["stop"])
+    assert [target.price for target in result.targets] == [
+        Decimal(price) for price in plan["targets"]
+    ]
+    assert result.risk_multiplier == Decimal(plan["risk_multiplier"])
+
+
+def _assert_expected(
+    result: Candidate | Rejection, expected: dict, plan: dict | None
+) -> None:
     assert result.strategy.value == expected["strategy"]
     if expected["kind"] == "candidate":
         assert isinstance(result, Candidate)
@@ -221,8 +240,11 @@ def _assert_expected(result: Candidate | Rejection, expected: dict) -> None:
         if "trigger_passed" in expected:
             trigger = next(check for check in result.checks if check.name == "triggers")
             assert trigger.passed is expected["trigger_passed"]
+        assert plan is not None
+        _assert_plan(result, plan)
         return
 
+    assert plan is None
     assert isinstance(result, Rejection)
     assert expected["failed_check"] in {check.name for check in result.failed}
 
@@ -246,6 +268,7 @@ def test_control_fixture_catalog_is_large_and_representative():
 @pytest.mark.parametrize("case", _load_fixture()["cases"], ids=lambda case: case["name"])
 def test_legacy_control_golden(case: dict):
     fixture = _load_fixture()
+    plans = _load_plans()
     module, ctx = _scenario(case["variant"])
     ctx = replace(
         ctx,
@@ -258,4 +281,4 @@ def test_legacy_control_golden(case: dict):
         assert _actual_bars(ctx, series_name) == _expanded_bar_set(bar_set, series_name)
 
     result = module.build(ctx)
-    _assert_expected(result, case["expected"])
+    _assert_expected(result, case["expected"], plans.get(case["name"]))
