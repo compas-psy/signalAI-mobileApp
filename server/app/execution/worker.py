@@ -1,9 +1,8 @@
-"""Server execution worker for SAI-026 / B5.3.
+"""Server execution worker for SAI-026 / B5.3 and SAI-027 / B5.4.
 
-The worker can claim and serialize execution work today, but production venue
-I/O remains deliberately disabled until SAI-036 installs a real VenueAdapter.
-Running the Docker ``execution`` profile before then is therefore safe: it
-stays idle and cannot submit an order.
+The worker serializes venue/account/instrument work with a PostgreSQL advisory
+lock and now also persists a short worker lease plus retry due-time. Production
+venue I/O remains deliberately disabled until SAI-036 installs a real adapter.
 """
 
 from __future__ import annotations
@@ -12,10 +11,11 @@ import hashlib
 import logging
 import time
 from contextlib import contextmanager
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Iterator
 
-from sqlalchemy import select, text
+from sqlalchemy import or_, select, text
 from sqlalchemy.orm import Session
 
 from ..db import session_scope
@@ -28,16 +28,22 @@ from .service import (
     ExecutionProtectionAck,
     ExecutionSubmitAck,
     PreSubmitReconciliation,
+    SubmissionReconciliation,
     process_execution_intent,
 )
 
 
 log = logging.getLogger(__name__)
 
+_LEASE_FOR = timedelta(seconds=30)
 _CLAIMABLE = (
     ExecutionState.INTENT_CREATED,
     ExecutionState.RISK_APPROVED,
     ExecutionState.READY_TO_SUBMIT,
+    ExecutionState.SUBMITTING,
+    ExecutionState.AMBIGUOUS,
+    ExecutionState.RECONCILING,
+    ExecutionState.ACKNOWLEDGED,
 )
 
 
@@ -86,6 +92,13 @@ class DisabledExecutionPort(ExecutionPort):
     def reconcile_before_submit(self, intent: ExecutionIntent) -> PreSubmitReconciliation:
         return PreSubmitReconciliation.unknown(self.reason)
 
+    def reconcile_submission(
+        self,
+        intent: ExecutionIntent,
+        order: ExecutionOrder,
+    ) -> SubmissionReconciliation:
+        return SubmissionReconciliation.unknown(self.reason)
+
     def submit(
         self, intent: ExecutionIntent, *, client_order_id: str
     ) -> ExecutionSubmitAck:
@@ -112,35 +125,84 @@ class DisabledExecutionPort(ExecutionPort):
         raise RuntimeError(self.reason)
 
 
-def claim_next_intent(db: Session) -> ExecutionIntent | None:
-    """Return the oldest locally claimable intent.
+def claim_next_intent(
+    db: Session,
+    *,
+    worker_id: str = "execution-worker",
+    now: datetime | None = None,
+    lease_for: timedelta = _LEASE_FOR,
+) -> ExecutionIntent | None:
+    """Atomically claim the oldest due intent with an expiring durable lease."""
 
-    The tuple advisory lock, not a volatile in-memory flag, is the actual
-    concurrency claim. SAI-027 adds durable retry scheduling/ambiguous leases.
-    """
-
-    return db.execute(
+    now = now or datetime.now(UTC)
+    intent = db.execute(
         select(ExecutionIntent)
-        .where(ExecutionIntent.state.in_(_CLAIMABLE))
+        .where(
+            ExecutionIntent.state.in_(_CLAIMABLE),
+            or_(
+                ExecutionIntent.next_retry_at.is_(None),
+                ExecutionIntent.next_retry_at <= now,
+            ),
+            or_(
+                ExecutionIntent.lease_expires_at.is_(None),
+                ExecutionIntent.lease_expires_at <= now,
+            ),
+        )
         .order_by(ExecutionIntent.created_at, ExecutionIntent.id)
+        .with_for_update(skip_locked=True)
         .limit(1)
     ).scalar_one_or_none()
+    if intent is None:
+        return None
+
+    intent.lease_owner = worker_id
+    intent.lease_expires_at = now + lease_for
+    db.flush()
+    return intent
 
 
-def process_next_intent(db: Session, *, port: ExecutionPort) -> ExecutionProcessOutcome:
-    intent = claim_next_intent(db)
+def _release_lease(db: Session, *, intent_id, worker_id: str) -> None:
+    intent = db.get(ExecutionIntent, intent_id)
+    if intent is None or intent.lease_owner != worker_id:
+        return
+    intent.lease_owner = None
+    intent.lease_expires_at = None
+    db.flush()
+
+
+def process_next_intent(
+    db: Session,
+    *,
+    port: ExecutionPort,
+    worker_id: str = "execution-worker",
+) -> ExecutionProcessOutcome:
+    intent = claim_next_intent(db, worker_id=worker_id)
     if intent is None:
         return ExecutionProcessOutcome(False, "no claimable execution intent")
 
-    with execution_tuple_lock(
-        db,
-        venue=intent.venue,
-        account=intent.account,
-        instrument_id=intent.instrument_id,
-    ) as acquired:
-        if not acquired:
-            return ExecutionProcessOutcome(False, "execution tuple is already claimed")
-        return process_execution_intent(db, intent_id=intent.id, port=port)
+    intent_id = intent.id
+    venue = intent.venue
+    account = intent.account
+    instrument_id = intent.instrument_id
+
+    # Persist the lease before any network-capable work. A crashed worker leaves
+    # a bounded lease that another worker may reclaim after expiry.
+    db.commit()
+    try:
+        with execution_tuple_lock(
+            db,
+            venue=venue,
+            account=account,
+            instrument_id=instrument_id,
+        ) as acquired:
+            if not acquired:
+                return ExecutionProcessOutcome(
+                    False, "execution tuple is already claimed"
+                )
+            return process_execution_intent(db, intent_id=intent_id, port=port)
+    finally:
+        _release_lease(db, intent_id=intent_id, worker_id=worker_id)
+        db.commit()
 
 
 def main() -> None:
