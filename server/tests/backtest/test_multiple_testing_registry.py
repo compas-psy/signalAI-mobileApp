@@ -195,24 +195,30 @@ def test_campaign_trial_and_outcome_history_are_append_only_in_database(session)
         primary_metric=None,
         outcome={"reason": "fixture"},
     )
-    session.commit()
+    session.flush()
     search_id = search.id
     trial_id = trial.id
     outcome_id = outcome.id
 
-    stored_search = session.get(ResearchSearchCampaign, search_id)
-    stored_search.planned_variant_count = 2
+    # The shared test fixture owns one outer transaction. Expected PostgreSQL
+    # failures therefore run in SAVEPOINTs, so rolling a failed mutation back
+    # never erases the setup rows needed by the next independent assertion.
     with pytest.raises(DBAPIError):
-        session.flush()
-    session.rollback()
+        with session.begin_nested():
+            stored_search = session.get(ResearchSearchCampaign, search_id)
+            stored_search.planned_variant_count = 2
+            session.flush()
+    session.expire_all()
 
-    stored_trial = session.get(ResearchTrial, trial_id)
-    stored_trial.parameter_json = {"x": 999}
     with pytest.raises(DBAPIError):
-        session.flush()
-    session.rollback()
+        with session.begin_nested():
+            stored_trial = session.get(ResearchTrial, trial_id)
+            stored_trial.parameter_json = {"x": 999}
+            session.flush()
+    session.expire_all()
 
-    stored_outcome = session.get(ResearchTrialOutcome, outcome_id)
-    stored_outcome.outcome_json = {"reason": "rewritten"}
     with pytest.raises(DBAPIError):
-        session.flush()
+        with session.begin_nested():
+            stored_outcome = session.get(ResearchTrialOutcome, outcome_id)
+            stored_outcome.outcome_json = {"reason": "rewritten"}
+            session.flush()
