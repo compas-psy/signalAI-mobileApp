@@ -12,6 +12,7 @@ import '../tone.dart';
 import '../widgets/common.dart';
 import '../widgets/segmented.dart';
 import '../widgets/sparkline.dart';
+import '../widgets/strategy_comparison_card.dart';
 
 /// Экран «Стратегии»: пакеты, их параметры и бэктест (ТЗ §5.5).
 class StrategiesScreen extends StatelessWidget {
@@ -44,6 +45,7 @@ class StrategiesScreen extends StatelessWidget {
             children: [
               CardGrid(
                 children: [
+                  if (controller.thinMode) const StrategyComparisonCard(),
                   // Методика движка стоит первой: именно по ней считаются
                   // идеи, которые видит владелец. Пакеты ниже — скринер на
                   // устройстве, он ленту больше не наполняет, и путать их
