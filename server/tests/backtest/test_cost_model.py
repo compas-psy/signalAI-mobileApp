@@ -5,8 +5,9 @@ from decimal import Decimal
 
 import pytest
 
+from app.backtest.costed_engine import run_costed_backtest
 from app.backtest.costs import CostModel, HistoricalCostOverride, VenueCostProfile
-from app.backtest.engine import BacktestPlan, Target, run_backtest
+from app.backtest.engine import BacktestPlan, Target
 from app.backtest.events import EventKind, MarketBar
 from app.backtest.execution_model import VenueConstraints
 from app.models.enums import Direction
@@ -106,7 +107,7 @@ def test_negative_execution_cost_inputs_are_rejected():
         model(entry_slippage_bps=Decimal("-0.1"))
 
 
-def test_golden_engine_accounts_for_model_fees_slippage_spread_and_funding():
+def test_cost_overlay_accounts_for_fees_slippage_spread_and_funding():
     plan = BacktestPlan(
         direction=Direction.LONG,
         signal_available_at=BASE,
@@ -122,7 +123,7 @@ def test_golden_engine_accounts_for_model_fees_slippage_spread_and_funding():
         MarketBar(BASE + timedelta(hours=16), Decimal("105"), Decimal("111"), Decimal("104"), Decimal("110")),
     ]
 
-    result = run_backtest(
+    result = run_costed_backtest(
         plan,
         bars,
         constraints=VenueConstraints(quantity_step=Decimal("1"), min_quantity=Decimal("1")),
@@ -139,9 +140,7 @@ def test_golden_engine_accounts_for_model_fees_slippage_spread_and_funding():
     assert kinds.count(EventKind.FUNDING) == 2
 
 
-def test_explicit_schedule_and_cost_model_cannot_be_mixed():
-    from app.backtest.costs import ExplicitCostSchedule
-
+def test_cost_overlay_preserves_execution_event_order():
     plan = BacktestPlan(
         direction=Direction.LONG,
         signal_available_at=BASE,
@@ -151,11 +150,24 @@ def test_explicit_schedule_and_cost_model_cannot_be_mixed():
         requested_quantity=Decimal("1"),
         expires_at=BASE + timedelta(days=1),
     )
-    with pytest.raises(ValueError, match="either explicit costs or cost_model"):
-        run_backtest(
-            plan,
-            [],
-            constraints=VenueConstraints(quantity_step=Decimal("1"), min_quantity=Decimal("1")),
-            costs=ExplicitCostSchedule(entry_fee_r=Decimal("0.1")),
-            cost_model=model(),
-        )
+    execution_bar = MarketBar(
+        BASE, Decimal("100"), Decimal("115"), Decimal("94"), Decimal("105")
+    )
+
+    result = run_costed_backtest(
+        plan,
+        [execution_bar],
+        constraints=VenueConstraints(quantity_step=Decimal("1"), min_quantity=Decimal("1")),
+        cost_model=model(funding_bps_per_interval=Decimal("0")),
+    )
+
+    execution_kinds = [
+        event.kind
+        for event in result.events
+        if event.kind not in {EventKind.FEE, EventKind.SLIPPAGE, EventKind.FUNDING}
+    ]
+    assert execution_kinds == [
+        EventKind.SIGNAL_AVAILABLE,
+        EventKind.ENTRY_FILL,
+        EventKind.STOP,
+    ]
