@@ -21,6 +21,14 @@ from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from ..strategy_identity import (
+    LEGACY_CONTROL_CONFIG_HASH,
+    LEGACY_CONTROL_GENERATED_STAGE,
+    LEGACY_CONTROL_ROLE,
+    LEGACY_CONTROL_SOURCE_SHA,
+    LEGACY_CONTROL_VERSION,
+    LEGACY_RISK_POLICY_VERSION,
+)
 from .base import (
     Base,
     Money,
@@ -43,6 +51,13 @@ from .enums import (
 )
 
 
+def _strategy_family_default(context) -> str:
+    """Copy the already-selected family into provenance without gating runtime."""
+
+    value = context.get_current_parameters().get("strategy")
+    return value.value if isinstance(value, Strategy) else str(value)
+
+
 class TradeIdea(UuidPk, Versioned, Base):
     """Идея со всем, что нужно, чтобы её исполнить и потом оспорить.
 
@@ -62,6 +77,35 @@ class TradeIdea(UuidPk, Versioned, Base):
         String(64), ForeignKey("instruments.instrument_id"), nullable=False
     )
     strategy: Mapped[Strategy] = mapped_column(StrEnumColumn(Strategy, 24), nullable=False)
+
+    # ── Стратегическая provenance ───────────────────────────────────────
+    # Эти поля описывают, какой именно код/конфиг создал идею. Они НЕ
+    # участвуют в eligibility, admission или execution и потому не могут
+    # выключить legacy path. Для текущего runtime defaults идентичны
+    # legacy_control_v1; будущие candidates обязаны передавать свои значения
+    # явно, не меняя baseline defaults.
+    strategy_family: Mapped[str] = mapped_column(
+        String(32), nullable=False, default=_strategy_family_default
+    )
+    strategy_version: Mapped[str] = mapped_column(
+        String(64), nullable=False, default=LEGACY_CONTROL_VERSION
+    )
+    strategy_role: Mapped[str] = mapped_column(
+        String(16), nullable=False, default=LEGACY_CONTROL_ROLE
+    )
+    strategy_config_hash: Mapped[str] = mapped_column(
+        String(64), nullable=False, default=LEGACY_CONTROL_CONFIG_HASH
+    )
+    strategy_code_ref: Mapped[str] = mapped_column(
+        String(64), nullable=False, default=LEGACY_CONTROL_SOURCE_SHA
+    )
+    risk_policy_version: Mapped[str] = mapped_column(
+        String(64), nullable=False, default=LEGACY_RISK_POLICY_VERSION
+    )
+    generated_stage: Mapped[str] = mapped_column(
+        String(24), nullable=False, default=LEGACY_CONTROL_GENERATED_STAGE
+    )
+
     direction: Mapped[Direction] = mapped_column(StrEnumColumn(Direction, 8), nullable=False)
     status: Mapped[IdeaStatus] = mapped_column(StrEnumColumn(IdeaStatus, 24), nullable=False)
     quality_status: Mapped[QualityStatus] = mapped_column(StrEnumColumn(QualityStatus, 12), nullable=False)

@@ -1,8 +1,9 @@
 """Immutable strategy provenance for champion/challenger measurement.
 
-This module deliberately does not alter strategy mathematics.  It pins the
-current three-strategy suite to the exact source snapshot that becomes the
-counterfactual control for every later candidate.
+This module deliberately does not alter strategy mathematics or runtime
+eligibility. ``legacy_control_v1`` is a measurement identity only: the
+existing strategy suite remains enabled and operational for scanning, signal
+generation, notification, and the paper lifecycle exactly as before.
 """
 
 from __future__ import annotations
@@ -11,14 +12,14 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from ..models.enums import Strategy
-
-
-LEGACY_CONTROL_VERSION = "legacy_control_v1"
-LEGACY_CONTROL_SOURCE_SHA = "74de570dcaf90900ece5c8e8c6c5f558ca4f49d7"
-LEGACY_CONTROL_CONFIG_HASH = (
-    "110d5b5d29560e762f2ee15528bd03ed6ae30b0e6a652b94a40b40eeabd51ada"
+from ..strategy_identity import (
+    LEGACY_CONTROL_CONFIG_HASH,
+    LEGACY_CONTROL_GENERATED_STAGE,
+    LEGACY_CONTROL_ROLE,
+    LEGACY_CONTROL_SOURCE_SHA,
+    LEGACY_CONTROL_VERSION,
+    LEGACY_RISK_POLICY_VERSION,
 )
-LEGACY_RISK_POLICY_VERSION = "legacy_risk_policy@74de570dcaf9"
 
 
 class StrategyRole(StrEnum):
@@ -40,7 +41,7 @@ class TradingStage(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class ControlManifest:
-    """Pinned source/config identity of an immutable strategy control suite."""
+    """Pinned source/config identity; never a runtime enable/disable switch."""
 
     version: str
     role: StrategyRole
@@ -54,7 +55,7 @@ class ControlManifest:
 
 @dataclass(frozen=True, slots=True)
 class StrategyDescriptor:
-    """Per-family view used by idea provenance and the future registry."""
+    """Per-family provenance; role/stage are metadata, not execution gates."""
 
     family: str
     version: str
@@ -67,11 +68,11 @@ class StrategyDescriptor:
 
 LEGACY_CONTROL_MANIFEST = ControlManifest(
     version=LEGACY_CONTROL_VERSION,
-    role=StrategyRole.CONTROL,
+    role=StrategyRole(LEGACY_CONTROL_ROLE),
     source_sha=LEGACY_CONTROL_SOURCE_SHA,
     config_hash=LEGACY_CONTROL_CONFIG_HASH,
     risk_policy_version=LEGACY_RISK_POLICY_VERSION,
-    generated_stage=TradingStage.PAPER,
+    generated_stage=TradingStage(LEGACY_CONTROL_GENERATED_STAGE),
     families=tuple(strategy.value for strategy in Strategy),
     source_blobs=(
         (

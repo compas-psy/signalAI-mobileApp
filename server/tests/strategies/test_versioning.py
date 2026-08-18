@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import FrozenInstanceError
+from pathlib import Path
 
 import pytest
 
@@ -22,6 +24,13 @@ CONTROL_BLOBS = {
     "server/app/strategies/trend_pullback.py": "69be92ff5b79b3ff8b788bff631c9052fd890ba1",
     "server/app/strategies/wyckoff_reversal.py": "c28c15ff2a9056a40996eaa80dac5fd1dbcb52ba",
 }
+REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+def _git_blob_sha(path: Path) -> str:
+    data = path.read_bytes()
+    payload = b"blob " + str(len(data)).encode("ascii") + b"\0" + data
+    return hashlib.sha1(payload).hexdigest()
 
 
 def test_legacy_control_manifest_is_pinned_to_exact_source_snapshot():
@@ -34,6 +43,16 @@ def test_legacy_control_manifest_is_pinned_to_exact_source_snapshot():
     assert dict(manifest.source_blobs) == CONTROL_BLOBS
     assert manifest.generated_stage is TradingStage.PAPER
     assert manifest.risk_policy_version
+
+
+def test_live_legacy_strategy_modules_still_match_frozen_baseline():
+    """Baseline identity must not silently turn into different runtime logic."""
+    actual = {
+        relative: _git_blob_sha(REPO_ROOT / relative)
+        for relative in CONTROL_BLOBS
+    }
+
+    assert actual == CONTROL_BLOBS
 
 
 def test_legacy_control_manifest_covers_all_current_strategy_families():
