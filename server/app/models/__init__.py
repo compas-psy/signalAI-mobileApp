@@ -46,6 +46,11 @@ from .research import (
     ResearchSignal,
     ResearchSource,
 )
+from .research_trials import (
+    ResearchSearchCampaign,
+    ResearchTrial,
+    ResearchTrialOutcome,
+)
 from .market import (
     Bar,
     DataQualityEvent,
@@ -100,6 +105,9 @@ __all__ = [
     "ModelRegistry",
     "StrategyVersion",
     "StrategyPromotionEvent",
+    "ResearchSearchCampaign",
+    "ResearchTrial",
+    "ResearchTrialOutcome",
     # early signals
     "CollectionPermit",
     "HypothesisEvidence",
