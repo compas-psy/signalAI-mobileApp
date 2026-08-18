@@ -128,7 +128,7 @@ class StrategyComparisonCard extends StatelessWidget {
   Widget _header({Widget? trailing}) => Row(
         children: [
           const Expanded(child: SectionLabel('Контроль vs кандидат')),
-          if (trailing != null) trailing,
+          ?trailing,
         ],
       );
 
