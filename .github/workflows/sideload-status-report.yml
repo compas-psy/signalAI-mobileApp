@@ -1,0 +1,32 @@
+name: Sideload status reporter
+
+on:
+  workflow_run:
+    workflows:
+      - Android sideload APK
+    types:
+      - completed
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  report:
+    name: Report sideload delivery result
+    runs-on: ubuntu-latest
+    steps:
+      - name: Comment runtime status issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESULT: ${{ github.event.workflow_run.conclusion }}
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+        run: |
+          set -euo pipefail
+          if [ "$RESULT" = success ]; then icon='✅'; else icon='❌'; fi
+          gh issue comment 1 --repo "$GITHUB_REPOSITORY" --body "$icon **Sideload APK: $RESULT**
+
+          Commit: \`$SOURCE_SHA\`
+          Run: $RUN_URL
+          APK: https://github.com/$GITHUB_REPOSITORY/releases/tag/sideload"
