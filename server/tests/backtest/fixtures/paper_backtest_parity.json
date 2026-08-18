@@ -1,0 +1,78 @@
+{
+  "cost_model": {
+    "maker_fee_bps": "1",
+    "taker_fee_bps": "2",
+    "entry_slippage_bps": "3",
+    "exit_slippage_bps": "4",
+    "funding_bps_per_interval": "0.5",
+    "spread_bps": "2"
+  },
+  "funding_interval_hours": 8,
+  "cases": [
+    {
+      "name": "long_same_bar_entry_stop_precedes_target",
+      "direction": "LONG",
+      "signal_available_at": "2026-08-18T09:00:00+00:00",
+      "entry": "100",
+      "stop": "95",
+      "targets": ["110", "120"],
+      "quantity": "1",
+      "expires_at": "2026-08-23T09:00:00+00:00",
+      "bars": [
+        {"open_time": "2026-08-18T10:00:00+00:00", "open": "100", "high": "115", "low": "94", "close": "105"}
+      ],
+      "expected_execution": ["ENTRY_FILL", "STOP"],
+      "expected_close_reason": "STOP"
+    },
+    {
+      "name": "long_tp1_tp2_trailing_then_stop",
+      "direction": "LONG",
+      "signal_available_at": "2026-08-18T09:00:00+00:00",
+      "entry": "100",
+      "stop": "95",
+      "targets": ["110", "120", "130"],
+      "quantity": "1",
+      "expires_at": "2026-08-23T09:00:00+00:00",
+      "bars": [
+        {"open_time": "2026-08-18T10:00:00+00:00", "open": "100", "high": "111", "low": "99", "close": "110"},
+        {"open_time": "2026-08-18T11:00:00+00:00", "open": "111", "high": "121", "low": "109", "close": "120"},
+        {"open_time": "2026-08-18T12:00:00+00:00", "open": "112", "high": "115", "low": "109", "close": "110"}
+      ],
+      "expected_execution": ["ENTRY_FILL", "TARGET", "TRAILING_STOP_MOVED", "TARGET", "TRAILING_STOP_MOVED", "STOP"],
+      "expected_close_reason": "STOP"
+    },
+    {
+      "name": "short_all_targets",
+      "direction": "SHORT",
+      "signal_available_at": "2026-08-18T09:00:00+00:00",
+      "entry": "100",
+      "stop": "105",
+      "targets": ["95", "90"],
+      "quantity": "1",
+      "expires_at": "2026-08-23T09:00:00+00:00",
+      "bars": [
+        {"open_time": "2026-08-18T10:00:00+00:00", "open": "100", "high": "101", "low": "94", "close": "95"},
+        {"open_time": "2026-08-18T11:00:00+00:00", "open": "95", "high": "96", "low": "89", "close": "90"}
+      ],
+      "expected_execution": ["ENTRY_FILL", "TARGET", "TRAILING_STOP_MOVED", "TARGET", "TRAILING_STOP_MOVED"],
+      "expected_close_reason": "TARGETS"
+    },
+    {
+      "name": "funding_before_late_target",
+      "direction": "LONG",
+      "signal_available_at": "2026-08-18T09:00:00+00:00",
+      "entry": "100",
+      "stop": "95",
+      "targets": ["110"],
+      "quantity": "1",
+      "expires_at": "2026-08-23T09:00:00+00:00",
+      "bars": [
+        {"open_time": "2026-08-18T10:00:00+00:00", "open": "100", "high": "103", "low": "99", "close": "102"},
+        {"open_time": "2026-08-18T18:00:00+00:00", "open": "102", "high": "105", "low": "101", "close": "104"},
+        {"open_time": "2026-08-19T02:00:00+00:00", "open": "104", "high": "111", "low": "103", "close": "110"}
+      ],
+      "expected_execution": ["ENTRY_FILL", "TARGET", "TRAILING_STOP_MOVED"],
+      "expected_close_reason": "TARGETS"
+    }
+  ]
+}
