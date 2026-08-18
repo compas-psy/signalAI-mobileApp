@@ -12,7 +12,6 @@ void main() {
       DemoRepository(),
       thinMode: true,
     );
-    addTearDown(controller.dispose);
 
     await tester.pumpWidget(
       MaterialApp(
@@ -40,5 +39,11 @@ void main() {
     // Production thin mode uses the exact same AppController.refreshIdeas path,
     // which requests /today + data status + paper trades from the server.
     expect(controller.ideas, isNotEmpty);
+
+    // Dispose both the screen's capital timer and AppController's periodic
+    // refresh timer before Flutter verifies that widget tests leave no timers.
+    await tester.pumpWidget(const SizedBox.shrink());
+    controller.dispose();
+    await tester.pump();
   });
 }
