@@ -24,12 +24,7 @@ def _require_non_negative(name: str, value: Decimal) -> None:
         raise ValueError(f"{name} must be non-negative")
 
 
-def _notional_cost_r(
-    *,
-    price: Decimal,
-    risk_per_unit: Decimal,
-    bps: Decimal,
-) -> Decimal:
+def _notional_cost_r(*, price: Decimal, risk_per_unit: Decimal, bps: Decimal) -> Decimal:
     if price <= 0:
         raise ValueError("price must be positive")
     if risk_per_unit <= 0:
@@ -42,10 +37,8 @@ def _notional_cost_r(
 class CostModel:
     """Auditable bps assumptions for one venue/time regime.
 
-    ``spread_bps`` is a full quoted spread. The model allocates half of that
-    spread to each side of the round trip. Funding is represented as a
-    conservative non-negative charge per interval; signed carry attribution can
-    be introduced separately once point-in-time venue funding data is available.
+    ``spread_bps`` is a full quoted spread. Half is charged on entry and half
+    on exit. Funding is a conservative non-negative charge per interval.
     """
 
     maker_fee_bps: Decimal
@@ -67,8 +60,6 @@ class CostModel:
             _require_non_negative(name, getattr(self, name))
 
     def stressed(self, multiplier: Decimal) -> "CostModel":
-        """Return a new scenario with every cost component scaled equally."""
-
         if multiplier <= 0:
             raise ValueError("stress multiplier must be positive")
         return replace(
@@ -81,42 +72,39 @@ class CostModel:
             spread_bps=self.spread_bps * multiplier,
         )
 
-    def _fee_bps(self, *, maker: bool) -> Decimal:
-        return self.maker_fee_bps if maker else self.taker_fee_bps
+    def fee_cost_r(
+        self, *, price: Decimal, risk_per_unit: Decimal, maker: bool
+    ) -> Decimal:
+        fee_bps = self.maker_fee_bps if maker else self.taker_fee_bps
+        return _notional_cost_r(price=price, risk_per_unit=risk_per_unit, bps=fee_bps)
+
+    def entry_friction_r(self, *, price: Decimal, risk_per_unit: Decimal) -> Decimal:
+        return _notional_cost_r(
+            price=price,
+            risk_per_unit=risk_per_unit,
+            bps=self.entry_slippage_bps + self.spread_bps * _HALF,
+        )
+
+    def exit_friction_r(self, *, price: Decimal, risk_per_unit: Decimal) -> Decimal:
+        return _notional_cost_r(
+            price=price,
+            risk_per_unit=risk_per_unit,
+            bps=self.exit_slippage_bps + self.spread_bps * _HALF,
+        )
 
     def entry_cost_r(
-        self,
-        *,
-        price: Decimal,
-        risk_per_unit: Decimal,
-        maker: bool,
+        self, *, price: Decimal, risk_per_unit: Decimal, maker: bool
     ) -> Decimal:
-        return _notional_cost_r(
-            price=price,
-            risk_per_unit=risk_per_unit,
-            bps=(
-                self._fee_bps(maker=maker)
-                + self.entry_slippage_bps
-                + self.spread_bps * _HALF
-            ),
-        )
+        return self.fee_cost_r(
+            price=price, risk_per_unit=risk_per_unit, maker=maker
+        ) + self.entry_friction_r(price=price, risk_per_unit=risk_per_unit)
 
     def exit_cost_r(
-        self,
-        *,
-        price: Decimal,
-        risk_per_unit: Decimal,
-        maker: bool,
+        self, *, price: Decimal, risk_per_unit: Decimal, maker: bool
     ) -> Decimal:
-        return _notional_cost_r(
-            price=price,
-            risk_per_unit=risk_per_unit,
-            bps=(
-                self._fee_bps(maker=maker)
-                + self.exit_slippage_bps
-                + self.spread_bps * _HALF
-            ),
-        )
+        return self.fee_cost_r(
+            price=price, risk_per_unit=risk_per_unit, maker=maker
+        ) + self.exit_friction_r(price=price, risk_per_unit=risk_per_unit)
 
     def funding_cost_r(
         self,
