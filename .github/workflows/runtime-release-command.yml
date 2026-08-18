@@ -16,16 +16,43 @@ jobs:
     if: >-
       github.event.issue.number == 1 &&
       github.actor == github.repository_owner &&
-      (github.event.comment.body == '/build-apk' || github.event.comment.body == '/release-full')
+      (github.event.comment.body == '/build-apk' ||
+       github.event.comment.body == '/release-full' ||
+       github.event.comment.body == '/apk-status')
     runs-on: ubuntu-latest
     steps:
-      - name: Resolve exact current default SHA and dispatch
+      - name: Run owner release command
         uses: actions/github-script@v7
         env:
           COMMAND: ${{ github.event.comment.body }}
         with:
           script: |
             const command = process.env.COMMAND;
+
+            if (command === '/apk-status') {
+              const response = await github.rest.actions.listWorkflowRuns({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                workflow_id: 'android-sideload.yml',
+                per_page: 5,
+              });
+              const runs = response.data.workflow_runs;
+              const lines = runs.length
+                ? runs.map((run) => [
+                    `- run \`${run.id}\`: **${run.status}** / ${run.conclusion ?? 'pending'}`,
+                    `  source: \`${run.head_sha}\``,
+                    `  event: \`${run.event}\` · ${run.html_url}`,
+                  ].join('\n')).join('\n')
+                : '- no Android sideload runs found';
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: 1,
+                body: `🔎 **APK workflow status**\n\n${lines}`,
+              });
+              return;
+            }
+
             const repo = await github.rest.repos.get({
               owner: context.repo.owner,
               repo: context.repo.repo,
