@@ -1,6 +1,6 @@
 """Append-only registry of research search campaigns, variants and outcomes.
 
-The registry preserves the denominator behind a selected backtest result.  A
+The registry preserves the denominator behind a selected backtest result. A
 promising variant therefore remains auditable as "best of N registered
 variants" instead of being presented later as one independent experiment.
 """
@@ -11,12 +11,20 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import CheckConstraint, ForeignKey, Index, Integer, Numeric, String, UniqueConstraint
+from sqlalchemy import (
+    CheckConstraint,
+    ForeignKey,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from .base import Base, UuidPk, utcnow_column
+from .base import Base, Timestamp, UuidPk, utcnow_column
 
 
 class ResearchSearchCampaign(UuidPk, Base):
@@ -29,7 +37,7 @@ class ResearchSearchCampaign(UuidPk, Base):
     strategy_version: Mapped[str] = mapped_column(String(64), nullable=False)
     config_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     planned_variant_count: Mapped[int] = mapped_column(Integer, nullable=False)
-    started_at: Mapped[datetime] = mapped_column(nullable=False)
+    started_at: Mapped[Timestamp] = mapped_column(nullable=False)
     created_at: Mapped[datetime] = utcnow_column()
 
     __table_args__ = (
@@ -53,7 +61,7 @@ class ResearchTrial(UuidPk, Base):
     ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
     parameter_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     parameter_json: Mapped[dict] = mapped_column(JSONB, nullable=False)
-    started_at: Mapped[datetime] = mapped_column(nullable=False)
+    started_at: Mapped[Timestamp] = mapped_column(nullable=False)
     created_at: Mapped[datetime] = utcnow_column()
 
     __table_args__ = (
@@ -81,7 +89,7 @@ class ResearchTrialOutcome(UuidPk, Base):
         nullable=False,
     )
     status: Mapped[str] = mapped_column(String(16), nullable=False)
-    completed_at: Mapped[datetime] = mapped_column(nullable=False)
+    completed_at: Mapped[Timestamp] = mapped_column(nullable=False)
     primary_metric: Mapped[Decimal | None] = mapped_column(
         Numeric(28, 12), nullable=True
     )
