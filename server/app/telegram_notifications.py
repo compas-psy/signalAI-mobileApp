@@ -261,7 +261,7 @@ def _send_text(event: NotificationEvent) -> None:
 
 
 def deliver(session: Session, *, limit: int = 20) -> int:
-    """Deliver new IDEA/PAPER outbox events once, in outbox order."""
+    """Deliver new IDEA/PAPER/RESOURCE outbox events once, in outbox order."""
     state = status(session)
     if not state["enabled"] or not state["configured"]:
         return 0
@@ -279,7 +279,7 @@ def deliver(session: Session, *, limit: int = 20) -> int:
         if event.kind == "IDEA":
             _send_idea(session, event)
             delivered += 1
-        elif event.kind == "PAPER":
+        elif event.kind in {"PAPER", "RESOURCE"}:
             _send_text(event)
             delivered += 1
         _advance(session, event.id)
