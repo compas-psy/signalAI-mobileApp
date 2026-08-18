@@ -232,6 +232,7 @@ def test_explicit_cost_hooks_emit_fee_slippage_funding_and_net_r():
         EventKind.FEE,
         EventKind.FUNDING,
         EventKind.TARGET,
+        EventKind.TRAILING_STOP_MOVED,
         EventKind.SLIPPAGE,
         EventKind.FEE,
     ]
