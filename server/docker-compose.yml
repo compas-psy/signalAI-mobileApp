@@ -7,10 +7,20 @@
 # reverse proxy с TLS. База и Redis не имеют публикуемых портов вовсе —
 # ходить к ним можно лишь из этой сети.
 
+# Все долгоживущие контейнеры ограничивают локальные json-логи. Это
+# профилактика дискового давления: вместо аварийного удаления Docker storage
+# старые chunks ротируются самим Docker. Named volumes этим не затрагиваются.
+x-signalai-logging: &signalai-bounded-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
 services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
+    logging: *signalai-bounded-logging
     environment:
       POSTGRES_USER: ${POSTGRES_USER:?нужен POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?нужен POSTGRES_PASSWORD}
@@ -26,6 +36,7 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    logging: *signalai-bounded-logging
     command: ["redis-server", "--save", "60", "1", "--appendonly", "no"]
     volumes:
       - redisdata:/data
@@ -33,6 +44,7 @@ services:
   api:
     build: .
     restart: unless-stopped
+    logging: *signalai-bounded-logging
     depends_on:
       postgres:
         condition: service_healthy
@@ -85,6 +97,7 @@ services:
   ollama:
     image: ollama/ollama:latest
     restart: unless-stopped
+    logging: *signalai-bounded-logging
     profiles: ["llm"]
     environment:
       # Один запрос за раз и одна модель в памяти. На четырёх ядрах вторая
@@ -126,6 +139,7 @@ services:
   scheduler:
     build: .
     restart: unless-stopped
+    logging: *signalai-bounded-logging
     depends_on:
       postgres:
         condition: service_healthy
@@ -169,6 +183,7 @@ services:
   execution:
     build: .
     restart: unless-stopped
+    logging: *signalai-bounded-logging
     profiles: ["execution"]
     depends_on:
       postgres:
