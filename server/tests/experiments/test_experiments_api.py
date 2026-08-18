@@ -43,7 +43,13 @@ def client(session):
 
 
 def _register_candidate(session) -> None:
-    StrategyRegistry(session).register(
+    registry = StrategyRegistry(session)
+    try:
+        registry.get(Strategy.TREND_PULLBACK.value, CANDIDATE_VERSION)
+        return
+    except KeyError:
+        pass
+    registry.register(
         StrategyDescriptor(
             family=Strategy.TREND_PULLBACK.value,
             version=CANDIDATE_VERSION,
