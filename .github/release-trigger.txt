@@ -1,4 +1,0 @@
-SignalAI cumulative release trigger.
-
-Requested from ChatGPT on 2026-08-18.
-Release includes Telegram premium H1 trade card merged as 6ca9fd83efdb3f18a1ec45266a63b1d6bd19412a.
