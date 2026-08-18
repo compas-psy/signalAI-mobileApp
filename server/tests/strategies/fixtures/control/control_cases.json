@@ -1,0 +1,140 @@
+{
+  "schema_version": 1,
+  "control_version": "legacy_control_v1",
+  "source_sha": "74de570dcaf90900ece5c8e8c6c5f558ca4f49d7",
+  "bar_sets": {
+    "pullback_base": {
+      "start": "2026-07-01T00:00:00+00:00",
+      "step_hours": 1,
+      "series": {
+        "context": [{"start_index": 0, "count": 50, "ohlcv": ["100", "102", "98", "101", "100"]}],
+        "setup": [{"start_index": 0, "count": 50, "ohlcv": ["100", "102", "98", "101", "100"]}],
+        "trigger": [{"start_index": 0, "count": 50, "ohlcv": ["109", "111", "108", "110", "100"]}]
+      }
+    },
+    "pullback_deep": {
+      "start": "2026-07-01T00:00:00+00:00",
+      "step_hours": 1,
+      "series": {
+        "context": [{"start_index": 0, "count": 50, "ohlcv": ["100", "102", "98", "101", "100"]}],
+        "setup": [{"start_index": 0, "count": 50, "ohlcv": ["100", "102", "98", "101", "100"]}],
+        "trigger": [{"start_index": 0, "count": 50, "ohlcv": ["101", "103", "100", "102", "100"]}]
+      }
+    },
+    "breakout_base": {
+      "start": "2026-07-01T00:00:00+00:00",
+      "step_hours": 1,
+      "series": {
+        "context": [
+          {"start_index": 0, "count": 40, "ohlcv": ["104", "106", "102", "105", "100"]},
+          {"start_index": 40, "count": 1, "ohlcv": ["110", "116", "109", "115", "500"]},
+          {"start_index": 41, "count": 1, "ohlcv": ["115", "116", "110", "111", "100"]}
+        ],
+        "setup": [
+          {"start_index": 0, "count": 40, "ohlcv": ["104", "106", "102", "105", "100"]},
+          {"start_index": 40, "count": 1, "ohlcv": ["110", "116", "109", "115", "500"]},
+          {"start_index": 41, "count": 1, "ohlcv": ["115", "116", "110", "111", "100"]}
+        ],
+        "trigger": [
+          {"start_index": 0, "count": 40, "ohlcv": ["104", "106", "102", "105", "100"]},
+          {"start_index": 40, "count": 1, "ohlcv": ["110", "116", "109", "115", "500"]},
+          {"start_index": 41, "count": 1, "ohlcv": ["115", "116", "110", "111", "100"]}
+        ]
+      }
+    },
+    "breakout_weak_body": {
+      "start": "2026-07-01T00:00:00+00:00",
+      "step_hours": 1,
+      "series": {
+        "context": [
+          {"start_index": 0, "count": 40, "ohlcv": ["104", "106", "102", "105", "100"]},
+          {"start_index": 40, "count": 1, "ohlcv": ["110", "116", "109", "111", "500"]},
+          {"start_index": 41, "count": 1, "ohlcv": ["115", "116", "110", "111", "100"]}
+        ],
+        "setup": [
+          {"start_index": 0, "count": 40, "ohlcv": ["104", "106", "102", "105", "100"]},
+          {"start_index": 40, "count": 1, "ohlcv": ["110", "116", "109", "111", "500"]},
+          {"start_index": 41, "count": 1, "ohlcv": ["115", "116", "110", "111", "100"]}
+        ],
+        "trigger": [
+          {"start_index": 0, "count": 40, "ohlcv": ["104", "106", "102", "105", "100"]},
+          {"start_index": 40, "count": 1, "ohlcv": ["110", "116", "109", "115", "500"]},
+          {"start_index": 41, "count": 1, "ohlcv": ["115", "116", "110", "111", "100"]}
+        ]
+      }
+    },
+    "breakout_false": {
+      "start": "2026-07-01T00:00:00+00:00",
+      "step_hours": 1,
+      "series": {
+        "context": [
+          {"start_index": 0, "count": 40, "ohlcv": ["104", "106", "102", "105", "100"]},
+          {"start_index": 40, "count": 1, "ohlcv": ["110", "116", "109", "115", "500"]},
+          {"start_index": 41, "count": 1, "ohlcv": ["115", "116", "104", "105", "100"]}
+        ],
+        "setup": [
+          {"start_index": 0, "count": 40, "ohlcv": ["104", "106", "102", "105", "100"]},
+          {"start_index": 40, "count": 1, "ohlcv": ["110", "116", "109", "115", "500"]},
+          {"start_index": 41, "count": 1, "ohlcv": ["115", "116", "104", "105", "100"]}
+        ],
+        "trigger": [
+          {"start_index": 0, "count": 40, "ohlcv": ["104", "106", "102", "105", "100"]},
+          {"start_index": 40, "count": 1, "ohlcv": ["110", "116", "109", "115", "500"]},
+          {"start_index": 41, "count": 1, "ohlcv": ["115", "116", "110", "111", "100"]}
+        ]
+      }
+    },
+    "reversal_base": {
+      "start": "2026-07-01T00:00:00+00:00",
+      "step_hours": 1,
+      "series": {
+        "context": [
+          {"start_index": 0, "count": 25, "ohlcv": ["140", "142", "138", "139", "100"]},
+          {"start_index": 25, "count": 37, "ohlcv": ["105", "108", "102", "106", "100"]}
+        ],
+        "setup": [
+          {"start_index": 0, "count": 25, "ohlcv": ["140", "142", "138", "139", "100"]},
+          {"start_index": 25, "count": 37, "ohlcv": ["105", "108", "102", "106", "100"]}
+        ],
+        "trigger": [
+          {"start_index": 0, "count": 25, "ohlcv": ["140", "142", "138", "139", "100"]},
+          {"start_index": 25, "count": 37, "ohlcv": ["105", "108", "102", "106", "100"]}
+        ]
+      }
+    },
+    "reversal_flat": {
+      "start": "2026-07-01T00:00:00+00:00",
+      "step_hours": 1,
+      "series": {
+        "context": [{"start_index": 0, "count": 62, "ohlcv": ["105", "107", "103", "106", "100"]}],
+        "setup": [{"start_index": 0, "count": 62, "ohlcv": ["105", "107", "103", "106", "100"]}],
+        "trigger": [{"start_index": 0, "count": 62, "ohlcv": ["105", "107", "103", "106", "100"]}]
+      }
+    }
+  },
+  "cases": [
+    {"name": "pullback_long_forts", "variant": "pullback_base", "bar_set": "pullback_base", "instrument": "MOEX:FUT:SIU6", "tick_size": "1", "expected": {"kind": "candidate", "strategy": "TREND_PULLBACK", "direction": "LONG"}},
+    {"name": "pullback_long_crypto", "variant": "pullback_crypto", "bar_set": "pullback_base", "instrument": "CRYPTO:BTCUSDT", "tick_size": "0.1", "expected": {"kind": "candidate", "strategy": "TREND_PULLBACK", "direction": "LONG"}},
+    {"name": "pullback_short_forts", "variant": "pullback_short", "bar_set": "pullback_base", "instrument": "MOEX:FUT:SIU6", "tick_size": "1", "expected": {"kind": "candidate", "strategy": "TREND_PULLBACK", "direction": "SHORT"}},
+    {"name": "pullback_watch_no_trigger", "variant": "pullback_no_trigger", "bar_set": "pullback_base", "instrument": "MOEX:FUT:SIU6", "tick_size": "1", "expected": {"kind": "candidate", "strategy": "TREND_PULLBACK", "direction": "LONG", "trigger_passed": false}},
+    {"name": "pullback_reject_range", "variant": "pullback_range", "bar_set": "pullback_base", "instrument": "MOEX:FUT:SIU6", "tick_size": "1", "expected": {"kind": "rejection", "strategy": "TREND_PULLBACK", "failed_check": "context_trend"}},
+    {"name": "pullback_reject_weak_trend", "variant": "pullback_weak_trend", "bar_set": "pullback_base", "instrument": "MOEX:FUT:SIU6", "tick_size": "1", "expected": {"kind": "rejection", "strategy": "TREND_PULLBACK", "failed_check": "trend_score"}},
+    {"name": "pullback_reject_extreme_vol", "variant": "pullback_extreme_vol", "bar_set": "pullback_base", "instrument": "MOEX:FUT:SIU6", "tick_size": "1", "expected": {"kind": "rejection", "strategy": "TREND_PULLBACK", "failed_check": "volatility"}},
+    {"name": "pullback_reject_untradeable", "variant": "pullback_untradeable", "bar_set": "pullback_base", "instrument": "MOEX:FUT:SIU6", "tick_size": "1", "expected": {"kind": "rejection", "strategy": "TREND_PULLBACK", "failed_check": "tradable"}},
+    {"name": "pullback_reject_insufficient_structure", "variant": "pullback_no_impulse", "bar_set": "pullback_base", "instrument": "MOEX:FUT:SIU6", "tick_size": "1", "expected": {"kind": "rejection", "strategy": "TREND_PULLBACK", "failed_check": "impulse"}},
+    {"name": "pullback_reject_deep_retracement", "variant": "pullback_deep", "bar_set": "pullback_deep", "instrument": "MOEX:FUT:SIU6", "tick_size": "1", "expected": {"kind": "rejection", "strategy": "TREND_PULLBACK", "failed_check": "retracement_depth"}},
+    {"name": "breakout_long_forts", "variant": "breakout_base", "bar_set": "breakout_base", "instrument": "MOEX:FUT:SIU6", "tick_size": "1", "expected": {"kind": "candidate", "strategy": "BREAKOUT_RETEST", "direction": "LONG"}},
+    {"name": "breakout_long_crypto", "variant": "breakout_crypto", "bar_set": "breakout_base", "instrument": "CRYPTO:ETHUSDT", "tick_size": "0.1", "expected": {"kind": "candidate", "strategy": "BREAKOUT_RETEST", "direction": "LONG"}},
+    {"name": "breakout_reject_no_range", "variant": "breakout_no_range", "bar_set": "breakout_base", "instrument": "MOEX:FUT:SIU6", "tick_size": "1", "expected": {"kind": "rejection", "strategy": "BREAKOUT_RETEST", "failed_check": "range"}},
+    {"name": "breakout_reject_weak_body", "variant": "breakout_weak_body", "bar_set": "breakout_weak_body", "instrument": "MOEX:FUT:SIU6", "tick_size": "1", "expected": {"kind": "rejection", "strategy": "BREAKOUT_RETEST", "failed_check": "breakout_body"}},
+    {"name": "breakout_reject_no_volume", "variant": "breakout_no_volume", "bar_set": "breakout_base", "instrument": "MOEX:FUT:SIU6", "tick_size": "1", "expected": {"kind": "rejection", "strategy": "BREAKOUT_RETEST", "failed_check": "breakout_volume"}},
+    {"name": "breakout_reject_false_breakout", "variant": "breakout_false", "bar_set": "breakout_false", "instrument": "MOEX:FUT:SIU6", "tick_size": "1", "expected": {"kind": "rejection", "strategy": "BREAKOUT_RETEST", "failed_check": "retest_held"}},
+    {"name": "reversal_long_forts", "variant": "reversal_base", "bar_set": "reversal_base", "instrument": "MOEX:FUT:SIU6", "tick_size": "1", "expected": {"kind": "candidate", "strategy": "WYCKOFF_REVERSAL", "direction": "LONG", "risk_multiplier": "0.75"}},
+    {"name": "reversal_long_crypto", "variant": "reversal_crypto", "bar_set": "reversal_base", "instrument": "CRYPTO:BTCUSDT", "tick_size": "0.1", "expected": {"kind": "candidate", "strategy": "WYCKOFF_REVERSAL", "direction": "LONG", "risk_multiplier": "0.75"}},
+    {"name": "reversal_reject_no_climax", "variant": "reversal_no_climax", "bar_set": "reversal_base", "instrument": "MOEX:FUT:SIU6", "tick_size": "1", "expected": {"kind": "rejection", "strategy": "WYCKOFF_REVERSAL", "failed_check": "climax"}},
+    {"name": "reversal_reject_no_spring", "variant": "reversal_no_spring", "bar_set": "reversal_base", "instrument": "MOEX:FUT:SIU6", "tick_size": "1", "expected": {"kind": "rejection", "strategy": "WYCKOFF_REVERSAL", "failed_check": "spring"}},
+    {"name": "reversal_reject_no_lps", "variant": "reversal_no_lps", "bar_set": "reversal_base", "instrument": "MOEX:FUT:SIU6", "tick_size": "1", "expected": {"kind": "rejection", "strategy": "WYCKOFF_REVERSAL", "failed_check": "test"}},
+    {"name": "reversal_reject_early_choch", "variant": "reversal_early_choch", "bar_set": "reversal_base", "instrument": "MOEX:FUT:SIU6", "tick_size": "1", "expected": {"kind": "rejection", "strategy": "WYCKOFF_REVERSAL", "failed_check": "choch"}},
+    {"name": "reversal_reject_no_prior_move", "variant": "reversal_no_prior_move", "bar_set": "reversal_flat", "instrument": "MOEX:FUT:SIU6", "tick_size": "1", "expected": {"kind": "rejection", "strategy": "WYCKOFF_REVERSAL", "failed_check": "prior_move"}}
+  ]
+}
