@@ -93,9 +93,8 @@ def test_report_rejects_non_chronological_or_inconsistent_cost_rows():
     with pytest.raises(ValueError, match="chronological"):
         compute_robustness_report((good, earlier), periods_per_year=Decimal("252"))
 
-    impossible = observation(1, gross="0.01", net="0.02", turnover="0", mae="-0.01", mfe="0.02", regime="TREND")
     with pytest.raises(ValueError, match="net_return cannot exceed gross_return"):
-        compute_robustness_report((impossible,), periods_per_year=Decimal("252"))
+        observation(1, gross="0.01", net="0.02", turnover="0", mae="-0.01", mfe="0.02", regime="TREND")
 
 
 def test_deflated_sharpe_matches_bailey_lopez_de_prado_equation_two_reference_case():
