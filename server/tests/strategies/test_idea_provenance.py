@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-import pytest
 from sqlalchemy import inspect, text
 
 from app.models import TradeIdea
@@ -30,6 +29,16 @@ PROVENANCE_COLUMNS = {
 }
 
 
+def _assert_legacy_control_provenance(idea: TradeIdea) -> None:
+    assert idea.strategy_family == Strategy.TREND_PULLBACK.value
+    assert idea.strategy_version == LEGACY_CONTROL_VERSION
+    assert idea.strategy_role == StrategyRole.CONTROL.value
+    assert idea.strategy_config_hash == LEGACY_CONTROL_CONFIG_HASH
+    assert idea.strategy_code_ref == LEGACY_CONTROL_SOURCE_SHA
+    assert idea.risk_policy_version == LEGACY_RISK_POLICY_VERSION
+    assert idea.generated_stage == TradingStage.PAPER.value
+
+
 def test_trade_idea_requires_strategy_provenance_columns():
     columns = {column.name: column for column in TradeIdea.__table__.columns}
 
@@ -38,7 +47,7 @@ def test_trade_idea_requires_strategy_provenance_columns():
         assert columns[name].nullable is False
 
 
-def test_new_legacy_control_idea_can_persist_exact_manifest_provenance(session, instrument):
+def test_new_legacy_control_idea_can_persist_explicit_manifest_provenance(session, instrument):
     descriptor = manifest_for(Strategy.TREND_PULLBACK)
     moment = datetime(2026, 8, 18, 10, 0, tzinfo=UTC)
     idea = TradeIdea(
@@ -59,22 +68,19 @@ def test_new_legacy_control_idea_can_persist_exact_manifest_provenance(session, 
     session.flush()
     session.refresh(idea)
 
-    assert idea.strategy_family == Strategy.TREND_PULLBACK.value
-    assert idea.strategy_version == LEGACY_CONTROL_VERSION
-    assert idea.strategy_role == StrategyRole.CONTROL.value
-    assert idea.strategy_config_hash == LEGACY_CONTROL_CONFIG_HASH
-    assert idea.strategy_code_ref == LEGACY_CONTROL_SOURCE_SHA
-    assert idea.risk_policy_version == LEGACY_RISK_POLICY_VERSION
-    assert idea.generated_stage == TradingStage.PAPER.value
+    _assert_legacy_control_provenance(idea)
 
 
-def test_database_rejects_new_idea_without_strategy_provenance(session, instrument):
+def test_current_runtime_defaults_to_exact_legacy_control_identity(session, instrument):
+    """Metadata defaults must not require a new execution path or gate scanning."""
+
     moment = datetime(2026, 8, 18, 10, 0, tzinfo=UTC)
     idea = TradeIdea(**idea_kwargs(instrument.instrument_id, moment))
     session.add(idea)
+    session.flush()
+    session.refresh(idea)
 
-    with pytest.raises(Exception):
-        session.flush()
+    _assert_legacy_control_provenance(idea)
 
 
 def test_migration_schema_has_no_nullable_strategy_provenance(engine):
@@ -85,8 +91,7 @@ def test_migration_schema_has_no_nullable_strategy_provenance(engine):
     assert all(columns[name]["nullable"] is False for name in PROVENANCE_COLUMNS)
 
 
-def test_legacy_backfill_policy_is_explicitly_unknown_not_fabricated(engine):
-    """Migration must not claim an exact strategy version for historical rows."""
+def test_schema_is_at_strategy_provenance_revision(engine):
     with engine.connect() as connection:
         revision = connection.execute(
             text("SELECT version_num FROM alembic_version")
