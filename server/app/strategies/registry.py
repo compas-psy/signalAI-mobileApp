@@ -1,7 +1,7 @@
 """Audited strategy registry for champion/challenger governance.
 
 The registry is deliberately not wired into the production scan/admission or
-paper lifecycle paths.  It answers measurement/governance questions and makes
+paper lifecycle paths. It answers measurement/governance questions and makes
 role changes auditable; it is not a runtime kill/enable switch.
 """
 
@@ -14,11 +14,7 @@ from sqlalchemy.orm import Session
 
 from ..models import StrategyPromotionEvent, StrategyVersion
 from ..models.enums import Strategy
-from .versioning import (
-    LEGACY_CONTROL_VERSION,
-    StrategyRole,
-    TradingStage,
-)
+from .versioning import LEGACY_CONTROL_VERSION, StrategyRole, TradingStage
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,12 +62,16 @@ class StrategyRegistry:
         return row.events[-1]
 
     @staticmethod
-    def _descriptor(row: StrategyVersion, event: StrategyPromotionEvent) -> StrategyDescriptor:
+    def _descriptor(
+        row: StrategyVersion, event: StrategyPromotionEvent
+    ) -> StrategyDescriptor:
         return StrategyDescriptor(
             family=row.family,
             version=row.version,
             role=StrategyRole(event.to_role),
-            enabled_stages=frozenset(TradingStage(stage) for stage in event.enabled_stages),
+            enabled_stages=frozenset(
+                TradingStage(stage) for stage in event.enabled_stages
+            ),
             config_hash=row.config_hash,
         )
 
@@ -92,7 +92,9 @@ class StrategyRegistry:
     def version_row(self, family: str, version: str) -> StrategyVersion:
         return self._row(family, version)
 
-    def history(self, family: str, version: str) -> tuple[StrategyPromotionEvent, ...]:
+    def history(
+        self, family: str, version: str
+    ) -> tuple[StrategyPromotionEvent, ...]:
         row = self._row(family, version)
         return tuple(row.events)
 
@@ -133,22 +135,25 @@ class StrategyRegistry:
         )
         self.session.add(row)
         self.session.flush()
-        event = StrategyPromotionEvent(
-            strategy_version_id=row.id,
-            sequence=1,
-            actor=actor,
-            event_type="REGISTERED",
-            from_role=None,
-            to_role=descriptor.role.value,
-            enabled_stages=sorted(stage.value for stage in descriptor.enabled_stages),
-            ui_visible=True,
-            decision_ref=None,
-            reason=reason,
-            detail_json={},
+        self.session.add(
+            StrategyPromotionEvent(
+                strategy_version_id=row.id,
+                sequence=1,
+                actor=actor,
+                event_type="REGISTERED",
+                from_role=None,
+                to_role=descriptor.role.value,
+                enabled_stages=sorted(
+                    stage.value for stage in descriptor.enabled_stages
+                ),
+                ui_visible=True,
+                decision_ref=None,
+                reason=reason,
+                detail_json={},
+            )
         )
-        self.session.add(event)
         self.session.flush()
-        self.session.refresh(row)
+        self.session.expire(row, ["events"])
         return self.get(row.family, row.version)
 
     def _append_state(
@@ -170,22 +175,23 @@ class StrategyRegistry:
         if not enabled_stages:
             raise ValueError("enabled_stages must not be empty")
         current = self._latest(row)
-        event = StrategyPromotionEvent(
-            strategy_version_id=row.id,
-            sequence=current.sequence + 1,
-            actor=actor,
-            event_type=event_type,
-            from_role=current.to_role,
-            to_role=to_role.value,
-            enabled_stages=sorted(stage.value for stage in enabled_stages),
-            ui_visible=ui_visible,
-            decision_ref=decision_ref or None,
-            reason=reason,
-            detail_json={},
+        self.session.add(
+            StrategyPromotionEvent(
+                strategy_version_id=row.id,
+                sequence=current.sequence + 1,
+                actor=actor,
+                event_type=event_type,
+                from_role=current.to_role,
+                to_role=to_role.value,
+                enabled_stages=sorted(stage.value for stage in enabled_stages),
+                ui_visible=ui_visible,
+                decision_ref=decision_ref or None,
+                reason=reason,
+                detail_json={},
+            )
         )
-        self.session.add(event)
         self.session.flush()
-        self.session.refresh(row)
+        self.session.expire(row, ["events"])
         latest = self._latest(row)
         return StrategyRegistryState(
             descriptor=self._descriptor(row, latest),
@@ -207,11 +213,15 @@ class StrategyRegistry:
         current = self._latest(row)
         current_role = StrategyRole(current.to_role)
 
-        if version == LEGACY_CONTROL_VERSION and family in {item.value for item in Strategy}:
+        if version == LEGACY_CONTROL_VERSION and family in {
+            item.value for item in Strategy
+        }:
             if to_role is not StrategyRole.CONTROL:
                 raise ValueError("legacy control role is immutable in SAI-003")
         if to_role is StrategyRole.CHAMPION and not decision_ref.strip():
-            raise ValueError("decision_ref is required to promote a strategy to CHAMPION")
+            raise ValueError(
+                "decision_ref is required to promote a strategy to CHAMPION"
+            )
 
         stages = enabled_stages or frozenset(
             TradingStage(stage) for stage in current.enabled_stages
@@ -219,7 +229,9 @@ class StrategyRegistry:
         state = self._append_state(
             row,
             actor=actor,
-            event_type="ROLE_CHANGED" if to_role is not current_role else "ROLE_CONFIRMED",
+            event_type=(
+                "ROLE_CHANGED" if to_role is not current_role else "ROLE_CONFIRMED"
+            ),
             to_role=to_role,
             enabled_stages=stages,
             ui_visible=current.ui_visible,
@@ -261,7 +273,9 @@ class StrategyRegistry:
         ui_only: bool,
     ) -> tuple[StrategyDescriptor, ...]:
         rows = self.session.execute(
-            select(StrategyVersion).order_by(StrategyVersion.family, StrategyVersion.version)
+            select(StrategyVersion).order_by(
+                StrategyVersion.family, StrategyVersion.version
+            )
         ).scalars().all()
         result: list[StrategyDescriptor] = []
         for row in rows:
@@ -280,12 +294,16 @@ class StrategyRegistry:
     ) -> tuple[StrategyDescriptor, ...]:
         """Return governance-active versions; UI visibility does not disable them."""
 
-        return self._active(stage=stage, venue=venue, instrument=instrument, ui_only=False)
+        return self._active(
+            stage=stage, venue=venue, instrument=instrument, ui_only=False
+        )
 
     def visible_for_ui(
         self, *, stage: TradingStage, venue: str, instrument: str
     ) -> tuple[StrategyDescriptor, ...]:
-        return self._active(stage=stage, venue=venue, instrument=instrument, ui_only=True)
+        return self._active(
+            stage=stage, venue=venue, instrument=instrument, ui_only=True
+        )
 
     def for_replay(self, family: str, version: str) -> StrategyDescriptor:
         """Historical experiment replay ignores UI visibility by design."""
