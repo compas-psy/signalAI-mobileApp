@@ -1,0 +1,10 @@
+{
+  "pullback_long_forts": {"entry_low": "108", "entry_high": "112", "entry_reference": "110", "stop": "106", "targets": ["114", "118", "122"], "risk_multiplier": "1"},
+  "pullback_long_crypto": {"entry_low": "108.0", "entry_high": "112.0", "entry_reference": "110", "stop": "107.2", "targets": ["112.8", "115.6", "118.4"], "risk_multiplier": "1"},
+  "pullback_short_forts": {"entry_low": "108", "entry_high": "112", "entry_reference": "110", "stop": "114", "targets": ["106", "102", "98"], "risk_multiplier": "1"},
+  "pullback_watch_no_trigger": {"entry_low": "108", "entry_high": "112", "entry_reference": "110", "stop": "106", "targets": ["114", "118", "122"], "risk_multiplier": "1"},
+  "breakout_long_forts": {"entry_low": "109", "entry_high": "111", "entry_reference": "110", "stop": "108", "targets": ["112", "120", "126"], "risk_multiplier": "1"},
+  "breakout_long_crypto": {"entry_low": "109.0", "entry_high": "111.0", "entry_reference": "110", "stop": "109.6", "targets": ["110.4", "120", "126.1"], "risk_multiplier": "1"},
+  "reversal_long_forts": {"entry_low": "100", "entry_high": "102", "entry_reference": "101", "stop": "96", "targets": ["110", "120", "140"], "risk_multiplier": "0.75"},
+  "reversal_long_crypto": {"entry_low": "100.0", "entry_high": "102.0", "entry_reference": "101", "stop": "97.6", "targets": ["110.0", "120.0", "140.0"], "risk_multiplier": "0.75"}
+}
