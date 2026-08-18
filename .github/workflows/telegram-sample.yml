@@ -1,0 +1,124 @@
+name: Telegram sample trade card
+run-name: Telegram sample · ${{ inputs.source_ref }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: 'Exact current default-branch commit requesting the sample'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: signalai-telegram-sample
+  cancel-in-progress: false
+
+jobs:
+  send:
+    name: Send one stored idea through production Telegram renderer
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out exact command source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+          fetch-depth: 1
+
+      - name: Validate SSH access secrets
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
+          HOST_KEY_SHA256: ${{ secrets.VPS_SSH_HOST_KEY_SHA256 }}
+        run: |
+          set -euo pipefail
+          [ -n "$HOST" ] || { echo '::error::missing VPS_HOST|SERVER_HOST'; exit 1; }
+          [ -n "$KEY" ] || { echo '::error::missing VPS_SSH_KEY|SSH_SECRET'; exit 1; }
+          [ -n "$HOST_KEY_SHA256" ] || { echo '::error::missing VPS_SSH_HOST_KEY_SHA256'; exit 1; }
+
+      - name: Prepare pinned SSH identity
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
+          HOST_KEY_SHA256: ${{ secrets.VPS_SSH_HOST_KEY_SHA256 }}
+        run: |
+          set -euo pipefail
+          umask 077
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          bash .github/scripts/prepare_known_host.sh "$HOST" "$HOST_KEY_SHA256"
+
+      - name: Send latest renderable stored idea
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          USER_NAME: ${{ secrets.VPS_USER || 'root' }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$USER_NAME@$HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          ENV_FILE='/etc/signalai/.env'
+          SUDO=''
+          [ "$(id -u)" -eq 0 ] || SUDO='sudo'
+          test -f "$ENV_FILE"
+          cd "$HOME/signalai/server"
+          $SUDO docker compose --env-file "$ENV_FILE" exec -T scheduler python - <<'PY'
+          from datetime import UTC, datetime
+
+          from sqlalchemy import select
+
+          from app.db import get_session_factory
+          from app.models import TradeIdea
+          from app.notification_outbox import NotificationEvent
+          from app.telegram_chart import render_idea_chart
+          from app.telegram_notifications import _send_idea, configured
+
+          if not configured():
+              raise RuntimeError('Telegram is not configured in production runtime')
+
+          session = get_session_factory()()
+          try:
+              ideas = list(
+                  session.execute(
+                      select(TradeIdea)
+                      .where(TradeIdea.was_presented.is_(True))
+                      .order_by(TradeIdea.signal_time.desc())
+                      .limit(100)
+                  ).scalars()
+              )
+              for idea in ideas:
+                  try:
+                      preview = render_idea_chart(session, idea)
+                  except RuntimeError:
+                      continue
+                  if not preview.startswith(b'\x89PNG\r\n\x1a\n'):
+                      continue
+                  event = NotificationEvent(
+                      id=0,
+                      created_at=datetime.now(UTC),
+                      key=f'manual:telegram-sample:{idea.id}',
+                      kind='IDEA',
+                      title='SignalAI Telegram sample',
+                      body='Owner-requested renderer verification',
+                      payload=f'idea:{idea.id}',
+                  )
+                  _send_idea(session, event)
+                  print(
+                      'Telegram sample sent: '
+                      f'idea={idea.id} instrument={idea.instrument_id} '
+                      f'signal_time={idea.signal_time.isoformat()}'
+                  )
+                  break
+              else:
+                  raise RuntimeError('no presented idea with renderable H1 bars found')
+          finally:
+              session.close()
+          PY
+          REMOTE
+
+      - name: Cleanup SSH material
+        if: always()
+        run: |
+          shred -u ~/.ssh/id_deploy 2>/dev/null || rm -f ~/.ssh/id_deploy

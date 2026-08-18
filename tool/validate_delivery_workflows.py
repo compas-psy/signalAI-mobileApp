@@ -35,6 +35,7 @@ def main() -> int:
     deploy_release = read("deploy-release.yml")
     deploy_server = read("deploy-server.yml")
     release_command = read("runtime-release-command.yml")
+    telegram_sample = read("telegram-sample.yml")
     build_script = (ROOT / "tool" / "build_apk.sh").read_text(encoding="utf-8")
     bootstrap = (ROOT / "server" / "deploy" / "bootstrap.sh").read_text(
         encoding="utf-8"
@@ -94,8 +95,9 @@ def main() -> int:
 
     # Chat/connector-accessible runtime commands are deliberately narrow. Only
     # the repository owner, on the dedicated runtime issue, may dispatch an APK
-    # build or the canonical cumulative release, or inspect recent APK runs.
-    # Delivery commands resolve the immutable current default SHA first.
+    # build, the canonical cumulative release, one Telegram sample, or inspect
+    # recent APK runs. Delivery commands resolve the immutable current default
+    # SHA first.
     for needle in (
         "issue_comment:",
         "github.event.issue.number == 1",
@@ -103,12 +105,14 @@ def main() -> int:
         "github.event.comment.body == '/build-apk'",
         "github.event.comment.body == '/release-full'",
         "github.event.comment.body == '/apk-status'",
+        "github.event.comment.body == '/telegram-sample'",
         "actions: write",
         "actions.listWorkflowRuns",
         "workflow_id: 'android-sideload.yml'",
         "repos.getBranch",
         "branch.data.commit.sha",
         "workflow_id: 'release-cumulative.yml'",
+        "workflow_id: 'telegram-sample.yml'",
         "source_ref: sourceSha",
     ):
         require(release_command, needle, "runtime-release-command.yml")
@@ -118,6 +122,32 @@ def main() -> int:
         "schedule:",
     ):
         forbid(release_command, needle, "runtime-release-command.yml")
+
+    # Telegram sample is an explicit owner ops action. It uses the production
+    # container's already-provisioned Telegram environment, reads stored ideas,
+    # verifies the H1 PNG renderer and sends exactly one idea without changing
+    # idea/paper/database state or exposing Bot credentials to Actions.
+    for needle in (
+        "workflow_dispatch:",
+        "source_ref:",
+        "group: signalai-telegram-sample",
+        "prepare_known_host.sh",
+        "docker compose --env-file",
+        "TradeIdea.was_presented.is_(True)",
+        "render_idea_chart",
+        "NotificationEvent",
+        "_send_idea(session, event)",
+        "no presented idea with renderable H1 bars found",
+    ):
+        require(telegram_sample, needle, "telegram-sample.yml")
+    for needle in (
+        "secrets.TELEGRAM_TOKEN",
+        "secrets.TELEGRAM_CHATID",
+        "session.commit",
+        "session.flush",
+        "docker compose --env-file \"$ENV_FILE\" up",
+    ):
+        forbid(telegram_sample, needle, "telegram-sample.yml")
 
     for needle in (
         'BUILD_MODE="${SIGNALAI_MODE:-thin}"',
