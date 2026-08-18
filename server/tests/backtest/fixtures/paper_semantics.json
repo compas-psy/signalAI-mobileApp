@@ -1,0 +1,75 @@
+{
+  "cases": [
+    {
+      "name": "same_bar_entry_stop_precedes_target",
+      "direction": "LONG",
+      "signal_available_at": "2026-08-18T09:00:00+00:00",
+      "entry": "100",
+      "stop": "95",
+      "targets": [
+        {"price": "110", "share": "0.5"},
+        {"price": "120", "share": "0.5"}
+      ],
+      "quantity": "2",
+      "expires_at": "2026-08-23T09:00:00+00:00",
+      "bars": [
+        {
+          "open_time": "2026-08-18T10:00:00+00:00",
+          "open": "100",
+          "high": "115",
+          "low": "94",
+          "close": "105"
+        }
+      ],
+      "expected_kinds": ["SIGNAL_AVAILABLE", "ENTRY_FILL", "STOP"],
+      "expected_outcome": "STOP"
+    },
+    {
+      "name": "tp1_tp2_trailing_then_stop",
+      "direction": "LONG",
+      "signal_available_at": "2026-08-18T09:00:00+00:00",
+      "entry": "100",
+      "stop": "95",
+      "targets": [
+        {"price": "110", "share": "0.4"},
+        {"price": "120", "share": "0.3"},
+        {"price": "130", "share": "0.3"}
+      ],
+      "quantity": "2",
+      "expires_at": "2026-08-23T09:00:00+00:00",
+      "bars": [
+        {
+          "open_time": "2026-08-18T10:00:00+00:00",
+          "open": "100",
+          "high": "111",
+          "low": "99",
+          "close": "110"
+        },
+        {
+          "open_time": "2026-08-18T11:00:00+00:00",
+          "open": "111",
+          "high": "121",
+          "low": "109",
+          "close": "120"
+        },
+        {
+          "open_time": "2026-08-18T12:00:00+00:00",
+          "open": "112",
+          "high": "115",
+          "low": "109",
+          "close": "110"
+        }
+      ],
+      "expected_kinds": [
+        "SIGNAL_AVAILABLE",
+        "ENTRY_FILL",
+        "TARGET",
+        "TRAILING_STOP_MOVED",
+        "TARGET",
+        "TRAILING_STOP_MOVED",
+        "STOP"
+      ],
+      "expected_outcome": "STOP"
+    }
+  ]
+}
