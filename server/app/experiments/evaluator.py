@@ -55,7 +55,9 @@ class ArmObservation:
             raise ValueError("signal outcome cannot exist when no signal was emitted")
         if self.signal_emitted and self.label_usable and self.net_r is None:
             raise ValueError("usable emitted signal requires a signal outcome")
-        if self.confidence is not None and not (Decimal(0) <= self.confidence <= Decimal(1)):
+        if self.confidence is not None and not (
+            Decimal(0) <= self.confidence <= Decimal(1)
+        ):
             raise ValueError("confidence must be between 0 and 1")
 
 
@@ -82,7 +84,9 @@ class PairedEvaluationResult:
 
 
 def _sha256_identity(name: str, value: str) -> None:
-    if len(value) != 64 or any(char not in "0123456789abcdefABCDEF" for char in value):
+    if len(value) != 64 or any(
+        char not in "0123456789abcdefABCDEF" for char in value
+    ):
         raise ValueError(f"{name} must be a 64-character SHA-256 identity")
 
 
@@ -127,14 +131,6 @@ def _decision_return(row: ArmObservation) -> float | None:
     if not row.signal_emitted:
         return 0.0
     return float(row.net_r) if row.net_r is not None else None
-
-
-def _calibration_error(metrics: dict) -> float | None:
-    buckets = metrics.get("confidence_calibration") or []
-    total = sum(int(bucket["count"]) for bucket in buckets)
-    if total == 0:
-        return None
-    return sum(float(bucket["absolute_error"]) * int(bucket["count"]) for bucket in buckets) / total
 
 
 def _same_data_hash(pairs: list[tuple[ArmObservation, ArmObservation]]) -> str:
@@ -190,9 +186,13 @@ def evaluate_paired(
     for control_row, candidate_row in pairs:
         _require_same_context(control_row, candidate_row)
 
-    cost_hashes = {row.cost_model_hash.lower() for pair in pairs for row in pair}
+    cost_hashes = {
+        row.cost_model_hash.lower() for pair in pairs for row in pair
+    }
     if len(cost_hashes) != 1:
-        raise ValueError("paired evaluator requires a single cost model for the entire run")
+        raise ValueError(
+            "paired evaluator requires a single cost model for the entire run"
+        )
     cost_model_hash = next(iter(cost_hashes))
 
     measurement_rows: list[StrategyMeasurementRecord] = []
@@ -213,13 +213,20 @@ def evaluate_paired(
                     venue=row.venue,
                     regime=row.regime,
                     outcome_r=_decision_return(row),
-                    confidence=float(row.confidence) if row.confidence is not None else None,
+                    confidence=(
+                        float(row.confidence)
+                        if row.confidence is not None
+                        else None
+                    ),
                     label_usable=pair_usable,
+                    signal_emitted=row.signal_emitted,
                 )
             )
 
     start = min(_utc(row.decision_at) for pair in pairs for row in pair)
-    end = max(_utc(row.decision_at) for pair in pairs for row in pair) + timedelta(microseconds=1)
+    end = max(_utc(row.decision_at) for pair in pairs for row in pair) + timedelta(
+        microseconds=1
+    )
     report = build_strategy_measurement_report(
         measurement_rows,
         from_time=start,
@@ -229,74 +236,24 @@ def evaluate_paired(
         min_sample=min_sample,
     )
     paired = report["comparison"]["datasets"][dataset.value]
-    control_metrics = paired["champion"]
-    candidate_metrics = paired["candidate"]
+    delta = paired["incremental_control_delta"]
 
-    control_dd = control_metrics["max_drawdown_r"]
-    candidate_dd = candidate_metrics["max_drawdown_r"]
-    incremental_dd = (
-        candidate_dd - control_dd
-        if candidate_dd is not None and control_dd is not None
-        else None
-    )
-    control_hit = control_metrics["win_rate"]
-    candidate_hit = candidate_metrics["win_rate"]
-    hit_rate_delta = (
-        candidate_hit - control_hit
-        if candidate_hit is not None and control_hit is not None
-        else None
-    )
-    control_calibration = _calibration_error(control_metrics)
-    candidate_calibration = _calibration_error(candidate_metrics)
-    calibration_delta = (
-        candidate_calibration - control_calibration
-        if candidate_calibration is not None and control_calibration is not None
-        else None
-    )
-
-    both = sum(control_row.signal_emitted and candidate_row.signal_emitted for control_row, candidate_row in pairs)
-    either = sum(control_row.signal_emitted or candidate_row.signal_emitted for control_row, candidate_row in pairs)
-    opportunity_overlap = both / either if either else 1.0
-
-    def only_count(*, owner: ArmObservation, other: ArmObservation, winning: bool) -> bool:
-        if not owner.signal_emitted or other.signal_emitted or not owner.label_usable or owner.net_r is None:
-            return False
-        return owner.net_r > 0 if winning else owner.net_r < 0
-
-    candidate_only_wins = sum(
-        only_count(owner=candidate_row, other=control_row, winning=True)
-        for control_row, candidate_row in pairs
-    )
-    candidate_only_losses = sum(
-        only_count(owner=candidate_row, other=control_row, winning=False)
-        for control_row, candidate_row in pairs
-    )
-    control_only_wins = sum(
-        only_count(owner=control_row, other=candidate_row, winning=True)
-        for control_row, candidate_row in pairs
-    )
-    control_only_losses = sum(
-        only_count(owner=control_row, other=candidate_row, winning=False)
-        for control_row, candidate_row in pairs
-    )
-
-    paired_usable = int(paired["paired_usable_sample_size"])
     return PairedEvaluationResult(
         control_version=control_version,
         candidate_version=candidate_version,
         dataset=dataset,
-        paired_sample_size=len(pairs),
-        paired_usable_sample_size=paired_usable,
-        sample_adequate=paired_usable >= min_sample,
-        incremental_net_expectancy_r=paired["delta_expectancy_r"],
-        incremental_max_drawdown_r=incremental_dd,
-        hit_rate_delta=hit_rate_delta,
-        calibration_delta=calibration_delta,
-        opportunity_overlap=opportunity_overlap,
-        candidate_only_wins=candidate_only_wins,
-        candidate_only_losses=candidate_only_losses,
-        control_only_wins=control_only_wins,
-        control_only_losses=control_only_losses,
+        paired_sample_size=int(delta["paired_sample_size"]),
+        paired_usable_sample_size=int(delta["paired_usable_sample_size"]),
+        sample_adequate=bool(delta["sample_adequate"]),
+        incremental_net_expectancy_r=delta["incremental_net_expectancy_r"],
+        incremental_max_drawdown_r=delta["incremental_max_drawdown_r"],
+        hit_rate_delta=delta["hit_rate_delta"],
+        calibration_delta=delta["calibration_delta"],
+        opportunity_overlap=float(delta["opportunity_overlap"]),
+        candidate_only_wins=int(delta["candidate_only_wins"]),
+        candidate_only_losses=int(delta["candidate_only_losses"]),
+        control_only_wins=int(delta["control_only_wins"]),
+        control_only_losses=int(delta["control_only_losses"]),
         same_data_hash=_same_data_hash(pairs),
         cost_model_hash=cost_model_hash,
         measurement_report=report,
