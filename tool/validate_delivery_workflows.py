@@ -94,18 +94,20 @@ def main() -> int:
 
     # Chat/connector-accessible runtime commands are deliberately narrow. Only
     # the repository owner, on the dedicated runtime issue, may dispatch an APK
-    # build or the canonical cumulative release. The workflow resolves the
-    # immutable current default SHA before dispatching either delivery path.
+    # build or the canonical cumulative release, or inspect recent APK runs.
+    # Delivery commands resolve the immutable current default SHA first.
     for needle in (
         "issue_comment:",
         "github.event.issue.number == 1",
         "github.actor == github.repository_owner",
         "github.event.comment.body == '/build-apk'",
         "github.event.comment.body == '/release-full'",
+        "github.event.comment.body == '/apk-status'",
         "actions: write",
+        "actions.listWorkflowRuns",
+        "workflow_id: 'android-sideload.yml'",
         "repos.getBranch",
         "branch.data.commit.sha",
-        "workflow_id: 'android-sideload.yml'",
         "workflow_id: 'release-cumulative.yml'",
         "source_ref: sourceSha",
     ):
