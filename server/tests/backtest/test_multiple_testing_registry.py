@@ -195,20 +195,24 @@ def test_campaign_trial_and_outcome_history_are_append_only_in_database(session)
         primary_metric=None,
         outcome={"reason": "fixture"},
     )
-    session.flush()
+    session.commit()
+    search_id = search.id
+    trial_id = trial.id
+    outcome_id = outcome.id
 
-    search.planned_variant_count = 2
+    stored_search = session.get(ResearchSearchCampaign, search_id)
+    stored_search.planned_variant_count = 2
     with pytest.raises(DBAPIError):
         session.flush()
     session.rollback()
 
-    stored_trial = session.get(ResearchTrial, trial.id)
+    stored_trial = session.get(ResearchTrial, trial_id)
     stored_trial.parameter_json = {"x": 999}
     with pytest.raises(DBAPIError):
         session.flush()
     session.rollback()
 
-    stored_outcome = session.get(ResearchTrialOutcome, outcome.id)
+    stored_outcome = session.get(ResearchTrialOutcome, outcome_id)
     stored_outcome.outcome_json = {"reason": "rewritten"}
     with pytest.raises(DBAPIError):
         session.flush()
