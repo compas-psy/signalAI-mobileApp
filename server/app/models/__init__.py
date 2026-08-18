@@ -35,6 +35,15 @@ from .enums import (
     VolatilityRegime,
 )
 from .equity_ranking import EquityRankingSnapshot
+from .execution import (
+    ExecutionFill,
+    ExecutionIntent,
+    ExecutionModeEvent,
+    ExecutionModeState,
+    ExecutionOrder,
+    ExecutionProtection,
+    ExecutionReconciliationEvent,
+)
 from .experiments import (
     Experiment,
     ExperimentArm,
@@ -94,6 +103,14 @@ __all__ = [
     "IdeaEvent",
     "IdeaOutcome",
     "IdeaSkip",
+    # durable execution domain
+    "ExecutionModeState",
+    "ExecutionModeEvent",
+    "ExecutionIntent",
+    "ExecutionOrder",
+    "ExecutionFill",
+    "ExecutionProtection",
+    "ExecutionReconciliationEvent",
     # delivery
     "NotificationOutbox",
     # portfolio
