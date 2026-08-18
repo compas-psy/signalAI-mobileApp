@@ -92,7 +92,7 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(
             ["strategy_version_id"],
             ["strategy_versions.id"],
-            name="fk_strategy_promotion_events_strategy_version_id_strategy_versions",
+            name="fk_strategy_promotion_events_version",
             ondelete="RESTRICT",
         ),
         sa.PrimaryKeyConstraint("id", name="pk_strategy_promotion_events"),
@@ -179,7 +179,9 @@ def downgrade() -> None:
     op.execute(
         "DROP TRIGGER IF EXISTS strategy_versions_append_only ON strategy_versions;"
     )
-    op.drop_index("ix_strategy_promotion_events_time", table_name="strategy_promotion_events")
+    op.drop_index(
+        "ix_strategy_promotion_events_time", table_name="strategy_promotion_events"
+    )
     op.drop_table("strategy_promotion_events")
     op.drop_index("ix_strategy_versions_family", table_name="strategy_versions")
     op.drop_table("strategy_versions")
