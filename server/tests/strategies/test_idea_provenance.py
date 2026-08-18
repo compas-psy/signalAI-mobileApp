@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import inspect, text
 
 from app.models import TradeIdea
@@ -37,6 +39,26 @@ def _assert_legacy_control_provenance(idea: TradeIdea) -> None:
     assert idea.strategy_code_ref == LEGACY_CONTROL_SOURCE_SHA
     assert idea.risk_policy_version == LEGACY_RISK_POLICY_VERSION
     assert idea.generated_stage == TradingStage.PAPER.value
+
+
+def _revision_lineage(script: ScriptDirectory, revision: str) -> set[str]:
+    pending = [revision]
+    seen: set[str] = set()
+    while pending:
+        current_id = pending.pop()
+        if current_id in seen:
+            continue
+        seen.add(current_id)
+        current = script.get_revision(current_id)
+        assert current is not None
+        down = current.down_revision
+        if down is None:
+            continue
+        if isinstance(down, tuple):
+            pending.extend(down)
+        else:
+            pending.append(down)
+    return seen
 
 
 def test_trade_idea_requires_strategy_provenance_columns():
@@ -91,10 +113,11 @@ def test_migration_schema_has_no_nullable_strategy_provenance(engine):
     assert all(columns[name]["nullable"] is False for name in PROVENANCE_COLUMNS)
 
 
-def test_schema_is_at_strategy_provenance_revision(engine):
+def test_database_head_descends_from_strategy_provenance_revision(engine):
     with engine.connect() as connection:
         revision = connection.execute(
             text("SELECT version_num FROM alembic_version")
         ).scalar_one()
 
-    assert revision == "0015_strategy_idea_provenance"
+    script = ScriptDirectory.from_config(Config("alembic.ini"))
+    assert "0015_strategy_idea_provenance" in _revision_lineage(script, revision)
