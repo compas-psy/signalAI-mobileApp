@@ -24,7 +24,7 @@ from app.execution.service import (
 )
 from app.execution.worker import process_next_intent
 from app.models import AuditEvent, ExecutionIntent, ExecutionOrder
-from app.models.enums import Direction, ExecutionMode
+from app.models.enums import ExecutionMode
 from app.models.ideas import TradeIdea
 from app.models.risk import RiskSnapshot, RiskState
 from tests.conftest import idea_kwargs
@@ -203,7 +203,7 @@ def test_halt_keeps_ambiguous_reconciliation_and_protection_alive(session, instr
         intent_id=intent.id,
         client_order_id=f"e-{intent.id.hex}",
         provider_order_id=None,
-        side="BUY" if Direction.LONG else "SELL",
+        side="BUY",
         order_type="ENTRY",
         status="SUBMITTING",
         quantity=Decimal("1"),
@@ -283,3 +283,22 @@ def test_clear_resets_level_and_legacy_boolean(session):
     assert state.kill_switch_level == _level("CLEAR")
     assert state.kill_switch is False
     assert state.kill_switch_reason == ""
+
+
+def test_risk_api_accepts_and_returns_exact_kill_switch_level(session):
+    risk_api = importlib.import_module("app.api.v1.risk")
+    request_type = getattr(risk_api, "KillSwitchRequest", None)
+    endpoint = getattr(risk_api, "set_kill_switch", None)
+
+    assert request_type is not None
+    assert endpoint is not None
+    request = request_type(
+        level=_level("CANCEL_PENDING_ENTRIES"),
+        reason="owner cancel request",
+        confirm_flatten_all=False,
+    )
+
+    dashboard = endpoint(request=request, db=session)
+
+    assert dashboard.kill_switch is True
+    assert dashboard.kill_switch_level == _level("CANCEL_PENDING_ENTRIES")
