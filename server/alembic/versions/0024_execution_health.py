@@ -44,7 +44,7 @@ def upgrade() -> None:
         ),
         sa.CheckConstraint(
             "stale_after_seconds > 0",
-            name="ck_execution_venue_health_positive_stale_after_seconds",
+            name="positive_stale_after_seconds",
         ),
         sa.PrimaryKeyConstraint("venue", "account"),
     )
