@@ -178,6 +178,7 @@ def halt(
             level=ExecutionKillSwitchLevel.HALT_NEW_ENTRIES,
             actor="owner",
             reason=reason,
+            audit_action="kill_switch_on",
         )
     except ExecutionKillSwitchError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -189,5 +190,10 @@ def resume(
     reason: str = Body("", embed=True),
     db: Session = Depends(get_db),
 ) -> RiskDashboard:
-    clear_execution_kill_switch(db, actor="owner", reason=reason)
+    clear_execution_kill_switch(
+        db,
+        actor="owner",
+        reason=reason,
+        audit_action="kill_switch_off",
+    )
     return dashboard(db)
