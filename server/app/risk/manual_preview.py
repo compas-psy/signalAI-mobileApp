@@ -1,8 +1,8 @@
 """SAI-043 authoritative manual-risk preview.
 
-This module is read-only: it calculates and signs the exact economics shown to
-the owner but does not persist an override or move money. SAI-044 consumes the
-signed preview token and performs the write after a fresh server recalculation.
+This module is deliberately read-only: it calculates and signs the exact
+owner-visible economics but does not persist an override or move money.
+SAI-044 will consume the signed preview token and add the write path.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ import os
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -22,18 +22,24 @@ from sqlalchemy.orm import Session
 from ..config import ConfigError, EngineConfig, get_config
 from ..execution.enums import ExecutionLifecycleMode
 from ..execution.mode import get_execution_mode
-from ..execution.risk_on import (
-    RiskOnPreviewRejected,
-    _instrument_spec,
-    _latest_snapshot,
-    _limits,
-    _risk_state,
-    _strategy_multiplier,
-)
+from ..market.fx import rate_to_rub
+from ..models.enums import AssetClass
 from ..models.ideas import TradeIdea
 from ..models.market import Instrument
+from ..models.risk import RiskSnapshot
 from .manual_override import ManualRiskEnvelope, get_manual_risk_envelope
-from .sizing import RiskBudget, RiskLimits, compute_budget, size_position
+from .sizing import (
+    InstrumentSpec,
+    RiskBudget,
+    RiskLimits,
+    RiskState,
+    compute_budget,
+    size_position,
+)
+
+
+class ManualRiskPreviewRejected(ValueError):
+    """The server cannot produce an authoritative manual-risk preview."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,8 +71,24 @@ class ManualRiskPreview:
     preview_hash: str
 
 
+def _engine_limits(cfg: EngineConfig) -> RiskLimits:
+    return RiskLimits(
+        base_risk_per_trade=cfg.decimal("risk.base_risk_per_trade"),
+        max_risk_per_trade=cfg.decimal("risk.max_risk_per_trade"),
+        max_total_open_risk=cfg.decimal("risk.max_total_open_risk"),
+        max_cluster_risk=cfg.decimal("risk.max_cluster_risk"),
+        daily_loss_limit=cfg.decimal("risk.daily_loss_limit"),
+        weekly_loss_limit=cfg.decimal("risk.weekly_loss_limit"),
+        monthly_loss_limit=cfg.decimal("risk.monthly_loss_limit"),
+        min_liquidation_distance_ratio=cfg.decimal(
+            "risk.min_liquidation_distance_ratio"
+        ),
+        max_leverage=cfg.decimal("risk.max_crypto_leverage"),
+    )
+
+
 def _bounded_limits(cfg: EngineConfig, envelope: ManualRiskEnvelope) -> RiskLimits:
-    base = _limits(cfg)
+    base = _engine_limits(cfg)
     return RiskLimits(
         base_risk_per_trade=base.base_risk_per_trade,
         max_risk_per_trade=min(base.max_risk_per_trade, envelope.max_risk_per_trade),
@@ -80,6 +102,73 @@ def _bounded_limits(cfg: EngineConfig, envelope: ManualRiskEnvelope) -> RiskLimi
             envelope.min_liquidation_distance_ratio,
         ),
         max_leverage=min(base.max_leverage, envelope.max_leverage),
+    )
+
+
+def _latest_snapshot(db: Session) -> RiskSnapshot:
+    rows = db.execute(
+        select(RiskSnapshot).order_by(RiskSnapshot.taken_at.desc()).limit(2)
+    ).scalars().all()
+    if not rows:
+        raise ManualRiskPreviewRejected("no server risk snapshot is available")
+    if len(rows) > 1 and rows[0].taken_at == rows[1].taken_at:
+        raise ManualRiskPreviewRejected(
+            "latest server risk snapshot is ambiguous; refresh risk state"
+        )
+    return rows[0]
+
+
+def _decimal_json(value: object, *, default: Decimal = Decimal(0)) -> Decimal:
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return default
+
+
+def _strategy_multiplier(cfg: EngineConfig, idea: TradeIdea) -> Decimal:
+    raw = getattr(idea.strategy, "value", idea.strategy)
+    key = str(raw).strip().lower()
+    return Decimal(str(cfg.get(f"strategies.{key}.risk_multiplier", 1)))
+
+
+def _risk_state(snapshot: RiskSnapshot, idea: TradeIdea) -> RiskState:
+    cluster = str(idea.correlation_cluster or "")
+    cluster_risk = _decimal_json((snapshot.cluster_risk_json or {}).get(cluster, 0))
+    return RiskState(
+        risk_equity=Decimal(snapshot.risk_equity),
+        day_pnl_pct=Decimal(snapshot.day_pnl_pct),
+        week_pnl_pct=Decimal(snapshot.week_pnl_pct),
+        month_pnl_pct=Decimal(snapshot.month_pnl_pct),
+        open_risk_pct=Decimal(snapshot.open_risk),
+        cluster_risk_pct=cluster_risk,
+        current_drawdown=Decimal(snapshot.current_drawdown),
+    )
+
+
+def _instrument_spec(
+    db: Session,
+    instrument: Instrument,
+    *,
+    now: datetime,
+) -> InstrumentSpec:
+    quote_currency = str(instrument.currency or "RUB")
+    quote_rate = rate_to_rub(db, quote_currency, now=now)
+    asset = getattr(instrument.asset_class, "value", instrument.asset_class)
+    is_linear = str(asset) == AssetClass.CRYPTO.value
+    return InstrumentSpec(
+        tick_size=Decimal(instrument.tick_size),
+        tick_value=Decimal(instrument.tick_value),
+        quantity_step=Decimal(instrument.quantity_step),
+        min_quantity=Decimal(instrument.min_quantity),
+        min_notional=(
+            Decimal(instrument.min_notional)
+            if instrument.min_notional is not None
+            else None
+        ),
+        contract_multiplier=Decimal(instrument.contract_multiplier),
+        is_linear=is_linear,
+        quote_currency=quote_currency,
+        quote_to_account=quote_rate,
     )
 
 
@@ -97,7 +186,7 @@ def _preview_signing_key() -> bytes:
     else:
         device = os.environ.get("SIGNALAI_DEVICE_TOKEN", "").strip()
         if not device:
-            raise RiskOnPreviewRejected(
+            raise ManualRiskPreviewRejected(
                 "server risk-preview signing secret is not configured"
             )
         source = device.encode("utf-8")
@@ -170,11 +259,11 @@ def preview_manual_risk(
     config = cfg or get_config()
     policy = envelope or get_manual_risk_envelope()
     if not policy.enabled:
-        raise RiskOnPreviewRejected("manual risk override is disabled")
+        raise ManualRiskPreviewRejected("manual risk override is disabled")
 
     server_mode = get_execution_mode(db).mode
     if current_mode != server_mode:
-        raise RiskOnPreviewRejected(
+        raise ManualRiskPreviewRejected(
             f"execution mode changed from {current_mode.value} to {server_mode.value}; refresh"
         )
 
@@ -182,16 +271,16 @@ def preview_manual_risk(
     try:
         multiplier = policy.multiplier(preset)
     except ConfigError as exc:
-        raise RiskOnPreviewRejected(str(exc)) from exc
+        raise ManualRiskPreviewRejected(str(exc)) from exc
 
     idea = db.get(TradeIdea, idea_id)
     if idea is None:
-        raise RiskOnPreviewRejected("idea does not exist")
+        raise ManualRiskPreviewRejected("idea does not exist")
     instrument = db.execute(
         select(Instrument).where(Instrument.instrument_id == idea.instrument_id)
     ).scalar_one_or_none()
     if instrument is None:
-        raise RiskOnPreviewRejected("idea instrument does not exist")
+        raise ManualRiskPreviewRejected("idea instrument does not exist")
 
     snapshot = _latest_snapshot(db)
     state = _risk_state(snapshot, idea)
@@ -305,4 +394,8 @@ def preview_manual_risk(
     )
 
 
-__all__ = ["ManualRiskPreview", "preview_manual_risk"]
+__all__ = [
+    "ManualRiskPreview",
+    "ManualRiskPreviewRejected",
+    "preview_manual_risk",
+]
