@@ -6,13 +6,19 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import func, select
 
+from app.execution.enums import ExecutionLifecycleMode
 from app.execution.intent_service import (
     ExecutionIntentGate,
     ExecutionIntentRequest,
     ExecutionIntentRejected,
     create_execution_intent,
 )
-from app.models import ExecutionIntent, RiskSnapshot, TradeIdea
+from app.models import (
+    ExecutionIntent,
+    ExecutionModeState,
+    RiskSnapshot,
+    TradeIdea,
+)
 from tests.conftest import idea_kwargs
 
 
@@ -47,6 +53,16 @@ def _approved_gate() -> ExecutionIntentGate:
         kill_switch_clear=True,
         venue_capability_verified=True,
     )
+
+
+def _set_mode(session, mode: ExecutionLifecycleMode) -> None:
+    state = session.get(ExecutionModeState, 1)
+    if state is None:
+        state = ExecutionModeState(id=1, mode=mode)
+        session.add(state)
+    else:
+        state.mode = mode
+    session.flush()
 
 
 @pytest.mark.parametrize(
@@ -125,3 +141,54 @@ def test_identity_changes_when_execution_destination_changes(session, instrument
     assert first.intent.id != second.intent.id
     assert first.intent.identity_hash != second.intent.identity_hash
     assert session.scalar(select(func.count()).select_from(ExecutionIntent)) == 2
+
+
+def test_intent_snapshots_authoritative_server_execution_mode(session, instrument, now):
+    idea, risk = _fixtures(session, instrument, now)
+    _set_mode(session, ExecutionLifecycleMode.SANDBOX)
+
+    result = create_execution_intent(
+        session,
+        request=_request(idea, risk),
+        gate=_approved_gate(),
+    )
+
+    assert result.intent.execution_mode_snapshot == ExecutionLifecycleMode.SANDBOX
+
+
+def test_execution_mode_snapshot_is_part_of_stable_identity(session, instrument, now):
+    idea, risk = _fixtures(session, instrument, now)
+    request = _request(idea, risk)
+
+    _set_mode(session, ExecutionLifecycleMode.SANDBOX)
+    sandbox = create_execution_intent(session, request=request, gate=_approved_gate())
+
+    _set_mode(session, ExecutionLifecycleMode.CANARY)
+    canary = create_execution_intent(session, request=request, gate=_approved_gate())
+
+    assert sandbox.intent.id != canary.intent.id
+    assert sandbox.intent.identity_hash != canary.intent.identity_hash
+    assert sandbox.intent.execution_mode_snapshot == ExecutionLifecycleMode.SANDBOX
+    assert canary.intent.execution_mode_snapshot == ExecutionLifecycleMode.CANARY
+    assert session.scalar(select(func.count()).select_from(ExecutionIntent)) == 2
+
+
+def test_existing_intent_keeps_original_mode_after_server_mode_changes(
+    session, instrument, now
+):
+    idea, risk = _fixtures(session, instrument, now)
+    _set_mode(session, ExecutionLifecycleMode.SANDBOX)
+
+    created = create_execution_intent(
+        session,
+        request=_request(idea, risk),
+        gate=_approved_gate(),
+    )
+    intent_id = created.intent.id
+
+    _set_mode(session, ExecutionLifecycleMode.PAPER)
+    session.expire_all()
+
+    row = session.get(ExecutionIntent, intent_id)
+    assert row is not None
+    assert row.execution_mode_snapshot == ExecutionLifecycleMode.SANDBOX

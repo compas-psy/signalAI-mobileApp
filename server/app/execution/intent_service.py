@@ -21,7 +21,8 @@ from sqlalchemy.orm import Session
 from ..models.execution import ExecutionIntent
 from ..models.ideas import TradeIdea
 from ..models.risk import RiskSnapshot
-from .enums import ExecutionState
+from .enums import ExecutionLifecycleMode, ExecutionState
+from .mode import get_execution_mode
 
 
 class ExecutionIntentRejected(ValueError):
@@ -66,16 +67,25 @@ _REQUIRED_GATES = (
 )
 
 
-def execution_intent_identity_hash(request: ExecutionIntentRequest) -> str:
+def execution_intent_identity_hash(
+    request: ExecutionIntentRequest,
+    *,
+    execution_mode_snapshot: ExecutionLifecycleMode,
+) -> str:
     """Content address the stable B5.2 execution identity.
 
-    Plan values are intentionally excluded. A retry of the same approved
-    decision must resolve to the same intent; if a caller presents a different
+    The authoritative server-owned lifecycle mode is part of identity: the same
+    approved decision under SANDBOX and LIVE must never collapse into one
+    money-bearing intent. Plan values remain intentionally excluded. A retry in
+    the same mode resolves to the same intent; if a caller presents a different
     plan for that identity, creation fails instead of silently mutating it.
     """
 
     payload = {
         "account": request.account,
+        "execution_mode_snapshot": ExecutionLifecycleMode(
+            execution_mode_snapshot
+        ).value,
         "idea_id": str(request.idea_id),
         "risk_override_id": (
             str(request.risk_override_id) if request.risk_override_id is not None else None
@@ -119,9 +129,15 @@ def _validate_request(db: Session, request: ExecutionIntentRequest) -> None:
         raise ExecutionIntentRejected("risk snapshot blocks new entries")
 
 
-def _same_plan(intent: ExecutionIntent, request: ExecutionIntentRequest) -> bool:
+def _same_plan(
+    intent: ExecutionIntent,
+    request: ExecutionIntentRequest,
+    *,
+    execution_mode_snapshot: ExecutionLifecycleMode,
+) -> bool:
     return (
         intent.instrument_id == request.instrument_id
+        and intent.execution_mode_snapshot == execution_mode_snapshot
         and intent.planned_quantity == request.planned_quantity
         and intent.planned_entry_price == request.planned_entry_price
         and intent.planned_stop_price == request.planned_stop_price
@@ -158,12 +174,17 @@ def create_execution_intent(
     PostgreSQL ``ON CONFLICT DO NOTHING`` makes duplicate retry/concurrency
     safe without turning a timeout into a second money-bearing intent. SAI-029
     additionally increments a durable counter only after the conflicting row
-    is proven to carry the exact same execution plan.
+    is proven to carry the exact same execution plan. SAI-035 snapshots the
+    authoritative server lifecycle mode; callers cannot supply or spoof it.
     """
 
     _validate_gate(gate)
     _validate_request(db, request)
-    identity_hash = execution_intent_identity_hash(request)
+    execution_mode_snapshot = get_execution_mode(db).mode
+    identity_hash = execution_intent_identity_hash(
+        request,
+        execution_mode_snapshot=execution_mode_snapshot,
+    )
 
     stmt = (
         insert(ExecutionIntent)
@@ -176,6 +197,7 @@ def create_execution_intent(
             risk_override_id=request.risk_override_id,
             venue=request.venue,
             account=request.account,
+            execution_mode_snapshot=execution_mode_snapshot.value,
             state=ExecutionState.INTENT_CREATED.value,
             planned_quantity=request.planned_quantity,
             planned_entry_price=request.planned_entry_price,
@@ -196,7 +218,11 @@ def create_execution_intent(
 
     if intent is None:  # Defensive: conflict target must always resolve.
         raise RuntimeError("execution intent conflict did not resolve to a durable row")
-    if not _same_plan(intent, request):
+    if not _same_plan(
+        intent,
+        request,
+        execution_mode_snapshot=execution_mode_snapshot,
+    ):
         raise ExecutionIntentRejected(
             "stable execution identity already exists with a different plan"
         )
