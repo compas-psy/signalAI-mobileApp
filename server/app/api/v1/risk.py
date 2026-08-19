@@ -5,13 +5,20 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from fastapi import APIRouter, Body, Depends
+from fastapi import APIRouter, Body, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ...config import get_config
 from ...db import get_db
-from ...models import AuditEvent, RiskSnapshot, RiskState
+from ...execution.enums import ExecutionKillSwitchLevel
+from ...execution.kill_switch import (
+    ExecutionKillSwitchError,
+    clear_execution_kill_switch,
+    effective_execution_kill_switch_level,
+    set_execution_kill_switch,
+)
+from ...models import RiskSnapshot, RiskState
 from ...models.enums import ExecutionMode
 from ...schemas.common import ApiModel, Money
 
@@ -29,11 +36,20 @@ class LimitOut(ApiModel):
     breached: bool
 
 
+class KillSwitchRequest(ApiModel):
+    """One explicit SAI-028 kill-switch action."""
+
+    level: ExecutionKillSwitchLevel
+    reason: str
+    confirm_flatten_all: bool = False
+
+
 class RiskDashboard(ApiModel):
     taken_at: datetime
     execution_mode: ExecutionMode
     paper_only: bool
     kill_switch: bool
+    kill_switch_level: ExecutionKillSwitchLevel
     kill_switch_reason: str
     entries_blocked: bool
     halted: bool
@@ -101,6 +117,7 @@ def dashboard(db: Session = Depends(get_db)) -> RiskDashboard:
         execution_mode=state.execution_mode,
         paper_only=bool(cfg.get("risk.paper_only")),
         kill_switch=state.kill_switch,
+        kill_switch_level=effective_execution_kill_switch_level(state),
         kill_switch_reason=state.kill_switch_reason,
         entries_blocked=snap.entries_blocked if snap else False,
         halted=snap.halted if snap else False,
@@ -119,33 +136,51 @@ def dashboard(db: Session = Depends(get_db)) -> RiskDashboard:
     )
 
 
+@router.post("/risk/kill-switch", response_model=RiskDashboard)
+def set_kill_switch(
+    request: KillSwitchRequest,
+    db: Session = Depends(get_db),
+) -> RiskDashboard:
+    """Set one exact execution stop level.
+
+    ``FLATTEN_ALL`` requires ``confirm_flatten_all=true``. The API records the
+    deliberate request but does not pretend that provider-side flattening exists
+    before SAI-036 supplies a venue adapter with that capability.
+    """
+
+    try:
+        set_execution_kill_switch(
+            db,
+            level=request.level,
+            actor="owner",
+            reason=request.reason,
+            confirm_flatten_all=request.confirm_flatten_all,
+        )
+    except ExecutionKillSwitchError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return dashboard(db)
+
+
 @router.post("/risk/halt", response_model=RiskDashboard)
 def halt(
     reason: str = Body(..., embed=True),
     db: Session = Depends(get_db),
 ) -> RiskDashboard:
-    """Аварийная остановка (§21).
+    """Backward-compatible alias for ``HALT_NEW_ENTRIES``.
 
-    Останавливает **новые** входы. Защитные заявки у брокера не снимаются:
-    UX-ТЗ §13.1 — «Kill switch отключает новые execution requests, но не
-    удаляет защитные заявки у брокера». Снятая защита превращает аварийную
-    остановку в неограниченный риск.
+    Protective/reconciliation work is deliberately not stopped. Removing
+    protection during an emergency halt would increase rather than reduce risk.
     """
-    state = _state(db)
-    before = {"kill_switch": state.kill_switch, "reason": state.kill_switch_reason}
-    state.kill_switch = True
-    state.kill_switch_reason = reason
-    db.add(
-        AuditEvent(
+
+    try:
+        set_execution_kill_switch(
+            db,
+            level=ExecutionKillSwitchLevel.HALT_NEW_ENTRIES,
             actor="owner",
-            action="kill_switch_on",
-            subject="risk_state",
-            detail=reason,
-            before_json=before,
-            after_json={"kill_switch": True, "reason": reason},
+            reason=reason,
         )
-    )
-    db.flush()
+    except ExecutionKillSwitchError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return dashboard(db)
 
 
@@ -154,19 +189,5 @@ def resume(
     reason: str = Body("", embed=True),
     db: Session = Depends(get_db),
 ) -> RiskDashboard:
-    state = _state(db)
-    before = {"kill_switch": state.kill_switch, "reason": state.kill_switch_reason}
-    state.kill_switch = False
-    state.kill_switch_reason = ""
-    db.add(
-        AuditEvent(
-            actor="owner",
-            action="kill_switch_off",
-            subject="risk_state",
-            detail=reason,
-            before_json=before,
-            after_json={"kill_switch": False},
-        )
-    )
-    db.flush()
+    clear_execution_kill_switch(db, actor="owner", reason=reason)
     return dashboard(db)
