@@ -7,6 +7,7 @@ class _RiskOnApi extends ApiClient {
 
   final List<({String path, Map<String, dynamic>? body, String? key})> posts = [];
   bool failNextConfirm = false;
+  bool blockedPreview = false;
 
   @override
   Future<Map<String, dynamic>> post(
@@ -21,18 +22,20 @@ class _RiskOnApi extends ApiClient {
         'risk_snapshot_id': '11111111-1111-1111-1111-111111111111',
         'venue': body?['venue'],
         'account': body?['account'],
-        'allowed': true,
-        'blockers': <dynamic>[],
+        'allowed': !blockedPreview,
+        'blockers': blockedPreview
+            ? <dynamic>['risk snapshot blocks new entries']
+            : <dynamic>[],
         'base_risk_pct': '0.005',
-        'effective_risk_pct': '0.0075',
+        'effective_risk_pct': blockedPreview ? '0.005' : '0.0075',
         'hard_cap_risk_pct': '0.0075',
         'base_quantity': '1',
-        'effective_quantity': '2',
-        'effective_risk_amount': '1400',
+        'effective_quantity': blockedPreview ? '0' : '2',
+        'effective_risk_amount': blockedPreview ? '0' : '1400',
         'effective_leverage': null,
         'hard_cap_leverage': '3.0',
-        'binding_limit': 'max_risk_per_trade',
-        'preview_hash': 'a' * 64,
+        'binding_limit': blockedPreview ? 'risk_snapshot' : 'max_risk_per_trade',
+        'preview_hash': blockedPreview ? '' : 'a' * 64,
       };
     }
     if (path.endsWith('/risk-on/confirm')) {
@@ -83,6 +86,44 @@ void main() {
     expect(preview.effectiveRiskPct, '0.0075');
     expect(preview.effectiveQuantity, '2');
     expect(preview.hardCapLeverage, '3.0');
+  });
+
+  test('blocked preview with no hash remains visible but cannot be confirmed',
+      () async {
+    final api = _RiskOnApi()..blockedPreview = true;
+    final controller = RiskOnController(
+      ideaId: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+      api: api,
+    );
+
+    final preview = await controller.preview(
+      venue: 'TINVEST',
+      account: 'sandbox-main',
+    );
+
+    expect(preview.allowed, isFalse);
+    expect(preview.previewHash, isEmpty);
+    expect(preview.blockers, contains('risk snapshot blocks new entries'));
+    expect(controller.previewData, same(preview));
+    await expectLater(controller.confirm(), throwsStateError);
+    expect(api.posts.where((item) => item.path.endsWith('/confirm')), isEmpty);
+  });
+
+  test('missing scope becomes a visible client error without a server write',
+      () async {
+    final api = _RiskOnApi();
+    final controller = RiskOnController(
+      ideaId: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+      api: api,
+    );
+
+    await expectLater(
+      controller.preview(venue: '', account: ''),
+      throwsStateError,
+    );
+
+    expect(controller.error, contains('Укажите площадку и счёт'));
+    expect(api.posts, isEmpty);
   });
 
   test('confirm sends shown hash only and retries with the same idempotency key',
