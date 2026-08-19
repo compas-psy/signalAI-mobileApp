@@ -1,8 +1,10 @@
-"""Server execution worker for SAI-026 / B5.3 and SAI-027 / B5.4.
+"""Server execution worker for SAI-026–SAI-028 / B5.3–B5.5.
 
 The worker serializes venue/account/instrument work with a PostgreSQL advisory
-lock and now also persists a short worker lease plus retry due-time. Production
-venue I/O remains deliberately disabled until SAI-036 installs a real adapter.
+lock, persists a short worker lease plus retry due-time, and now enforces the
+durable execution kill switch before any new entry can cross the venue boundary.
+Production venue I/O remains deliberately disabled until SAI-036 installs a
+real adapter.
 """
 
 from __future__ import annotations
@@ -20,7 +22,14 @@ from sqlalchemy.orm import Session
 
 from ..db import session_scope
 from ..models.execution import ExecutionIntent, ExecutionOrder
-from .enums import ExecutionState
+from ..models.risk import RiskState
+from .domain import transition_execution_state
+from .enums import ExecutionKillSwitchLevel, ExecutionState
+from .kill_switch import (
+    effective_execution_kill_switch_level,
+    execution_control_lock,
+    get_execution_kill_switch_level,
+)
 from .service import (
     ExecutionFillSnapshot,
     ExecutionPort,
@@ -36,15 +45,18 @@ from .service import (
 log = logging.getLogger(__name__)
 
 _LEASE_FOR = timedelta(seconds=30)
-_CLAIMABLE = (
+_PRE_SUBMIT = (
     ExecutionState.INTENT_CREATED,
     ExecutionState.RISK_APPROVED,
     ExecutionState.READY_TO_SUBMIT,
+)
+_SAFETY_CLAIMABLE = (
     ExecutionState.SUBMITTING,
     ExecutionState.AMBIGUOUS,
     ExecutionState.RECONCILING,
     ExecutionState.ACKNOWLEDGED,
 )
+_CLAIMABLE = _PRE_SUBMIT + _SAFETY_CLAIMABLE
 
 
 def execution_tuple_lock_key(*, venue: str, account: str, instrument_id: str) -> int:
@@ -131,6 +143,7 @@ def claim_next_intent(
     worker_id: str = "execution-worker",
     now: datetime | None = None,
     lease_for: timedelta = _LEASE_FOR,
+    states: tuple[ExecutionState, ...] = _CLAIMABLE,
 ) -> ExecutionIntent | None:
     """Atomically claim the oldest due intent with an expiring durable lease."""
 
@@ -138,7 +151,7 @@ def claim_next_intent(
     intent = db.execute(
         select(ExecutionIntent)
         .where(
-            ExecutionIntent.state.in_(_CLAIMABLE),
+            ExecutionIntent.state.in_(states),
             or_(
                 ExecutionIntent.next_retry_at.is_(None),
                 ExecutionIntent.next_retry_at <= now,
@@ -170,14 +183,129 @@ def _release_lease(db: Session, *, intent_id, worker_id: str) -> None:
     db.flush()
 
 
+def _fresh_kill_switch_level(db: Session) -> ExecutionKillSwitchLevel:
+    """Read the exact current level without holding a long transaction row lock."""
+
+    state = db.execute(
+        select(RiskState)
+        .where(RiskState.id == 1)
+        .execution_options(populate_existing=True)
+    ).scalar_one()
+    return effective_execution_kill_switch_level(state)
+
+
+def _apply_pre_submit_kill_switch(
+    db: Session,
+    *,
+    intent: ExecutionIntent,
+) -> ExecutionProcessOutcome | None:
+    if intent.state not in _PRE_SUBMIT:
+        return None
+
+    level = _fresh_kill_switch_level(db)
+    if level == ExecutionKillSwitchLevel.CLEAR:
+        return None
+    if level == ExecutionKillSwitchLevel.HALT_NEW_ENTRIES:
+        return ExecutionProcessOutcome(
+            False,
+            f"{ExecutionKillSwitchLevel.HALT_NEW_ENTRIES.value}: new entries are halted",
+        )
+
+    # CANCEL_PENDING_ENTRIES and FLATTEN_ALL both cancel an intent that has not
+    # crossed the venue boundary. In-flight/provider-side actions are not
+    # invented here: SAI-036 owns cancel/flatten venue capabilities.
+    intent.state = transition_execution_state(intent.state, ExecutionState.CANCELLED)
+    db.flush()
+    return ExecutionProcessOutcome(True, None)
+
+
+class _KillSwitchGuardedPort(ExecutionPort):
+    """Delegate venue work, guarding only the money-crossing entry submit.
+
+    Reconciliation, fill capture and protection intentionally remain available
+    while the switch is active. Blocking those safety operations could turn an
+    emergency halt into an unprotected position.
+    """
+
+    def __init__(self, db: Session, inner: ExecutionPort) -> None:
+        self._db = db
+        self._inner = inner
+
+    def reconcile_before_submit(self, intent: ExecutionIntent) -> PreSubmitReconciliation:
+        return self._inner.reconcile_before_submit(intent)
+
+    def reconcile_submission(
+        self,
+        intent: ExecutionIntent,
+        order: ExecutionOrder,
+    ) -> SubmissionReconciliation:
+        return self._inner.reconcile_submission(intent, order)
+
+    def submit(
+        self,
+        intent: ExecutionIntent,
+        *,
+        client_order_id: str,
+    ) -> ExecutionSubmitAck:
+        with execution_control_lock(self._db):
+            level = _fresh_kill_switch_level(self._db)
+            if level != ExecutionKillSwitchLevel.CLEAR:
+                # SAI-027 already treats ConnectionError after durable SUBMITTING
+                # as ambiguous and reconciles before any later retry. Reuse that
+                # fail-closed path instead of inventing a second state machine.
+                raise ConnectionError(
+                    f"{level.value}: submit blocked before provider I/O"
+                )
+            return self._inner.submit(intent, client_order_id=client_order_id)
+
+    def consume_fills(
+        self,
+        intent: ExecutionIntent,
+        order: ExecutionOrder,
+    ) -> tuple[ExecutionFillSnapshot, ...] | list[ExecutionFillSnapshot]:
+        return self._inner.consume_fills(intent, order)
+
+    def arm_protection(
+        self,
+        intent: ExecutionIntent,
+        order: ExecutionOrder,
+        *,
+        filled_quantity: Decimal,
+    ) -> ExecutionProtectionAck:
+        return self._inner.arm_protection(
+            intent,
+            order,
+            filled_quantity=filled_quantity,
+        )
+
+    def reconcile(self, intent: ExecutionIntent) -> None:
+        self._inner.reconcile(intent)
+
+    def manage_until_close(self, intent: ExecutionIntent) -> None:
+        self._inner.manage_until_close(intent)
+
+
 def process_next_intent(
     db: Session,
     *,
     port: ExecutionPort,
     worker_id: str = "execution-worker",
 ) -> ExecutionProcessOutcome:
-    intent = claim_next_intent(db, worker_id=worker_id)
+    # Ensure the singleton exists before claiming work. A legacy boolean halt
+    # is interpreted fail-closed as HALT_NEW_ENTRIES by the service helper.
+    initial_level = get_execution_kill_switch_level(db)
+    claimable = (
+        _SAFETY_CLAIMABLE
+        if initial_level == ExecutionKillSwitchLevel.HALT_NEW_ENTRIES
+        else _CLAIMABLE
+    )
+    intent = claim_next_intent(db, worker_id=worker_id, states=claimable)
     if intent is None:
+        if initial_level == ExecutionKillSwitchLevel.HALT_NEW_ENTRIES:
+            return ExecutionProcessOutcome(
+                False,
+                f"{ExecutionKillSwitchLevel.HALT_NEW_ENTRIES.value}: new entries are halted",
+            )
         return ExecutionProcessOutcome(False, "no claimable execution intent")
 
     intent_id = intent.id
@@ -199,7 +327,24 @@ def process_next_intent(
                 return ExecutionProcessOutcome(
                     False, "execution tuple is already claimed"
                 )
-            return process_execution_intent(db, intent_id=intent_id, port=port)
+
+            intent = db.get(ExecutionIntent, intent_id)
+            if intent is None:
+                return ExecutionProcessOutcome(False, "execution intent disappeared")
+            kill_outcome = _apply_pre_submit_kill_switch(db, intent=intent)
+            if kill_outcome is not None:
+                return kill_outcome
+
+            # SUBMITTING/AMBIGUOUS/RECONCILING/ACKNOWLEDGED intentionally bypass
+            # the early new-entry halt so they can finish reconciliation, fill
+            # capture and protection. The wrapped port independently guards the
+            # actual provider submit after SAI-027's durable SUBMITTING commit.
+            guarded_port = _KillSwitchGuardedPort(db, port)
+            return process_execution_intent(
+                db,
+                intent_id=intent_id,
+                port=guarded_port,
+            )
     finally:
         _release_lease(db, intent_id=intent_id, worker_id=worker_id)
         db.commit()

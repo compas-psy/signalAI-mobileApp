@@ -40,4 +40,22 @@ class ExecutionLifecycleMode(StrEnum):
     LIVE = "LIVE"
 
 
-__all__ = ["ExecutionLifecycleMode", "ExecutionState"]
+class ExecutionKillSwitchLevel(StrEnum):
+    """Server-owned execution stop level from SAI-028 / B5.5.
+
+    ``CLEAR`` is the persisted inactive state. The three active values are
+    deliberately different actions: stopping new entries must never be
+    confused with cancelling pending entries or an explicit emergency flatten.
+    """
+
+    CLEAR = "CLEAR"
+    HALT_NEW_ENTRIES = "HALT_NEW_ENTRIES"
+    CANCEL_PENDING_ENTRIES = "CANCEL_PENDING_ENTRIES"
+    FLATTEN_ALL = "FLATTEN_ALL"
+
+
+__all__ = [
+    "ExecutionKillSwitchLevel",
+    "ExecutionLifecycleMode",
+    "ExecutionState",
+]
