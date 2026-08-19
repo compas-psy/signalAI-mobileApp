@@ -1,6 +1,6 @@
 """Snapshot lifecycle mode on every execution intent.
 
-revision = 0026_execution_intent_mode_snapshot
+revision = 0026_execution_intent_mode
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ import json
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0026_execution_intent_mode_snapshot"
+revision = "0026_execution_intent_mode"
 down_revision = "0025_execution_live_activation"
 branch_labels = None
 depends_on = None
