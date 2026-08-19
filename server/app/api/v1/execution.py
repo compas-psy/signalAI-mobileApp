@@ -1,4 +1,4 @@
-"""Server-owned execution lifecycle mode API (SAI-030–032 / B6.1–B6.3)."""
+"""Server-owned execution lifecycle mode API (SAI-030–034 / B6.1–B6.5)."""
 
 from __future__ import annotations
 
@@ -75,6 +75,34 @@ class LiveActivationResultOut(ApiModel):
     blockers: list[str]
 
 
+def _live_idempotency_key(
+    idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
+    x_idempotency_key: str | None = Header(None, alias="X-Idempotency-Key"),
+) -> str:
+    """Accept the historical mobile header without breaking standard callers.
+
+    ApiClient has long used ``X-Idempotency-Key`` across owner write endpoints,
+    while SAI-032 initially exposed only ``Idempotency-Key``. Supporting both at
+    this boundary keeps replay safety intact and avoids changing unrelated API
+    clients. Conflicting dual headers fail closed instead of choosing one.
+    """
+
+    standard = (idempotency_key or "").strip()
+    mobile = (x_idempotency_key or "").strip()
+    if standard and mobile and standard != mobile:
+        raise HTTPException(
+            status_code=409,
+            detail="conflicting Idempotency-Key and X-Idempotency-Key headers",
+        )
+    resolved = mobile or standard
+    if not resolved:
+        raise HTTPException(
+            status_code=422,
+            detail="Idempotency-Key or X-Idempotency-Key is required",
+        )
+    return resolved
+
+
 @router.get("/execution/mode", response_model=ExecutionModeOut)
 def get_execution_mode(db: Session = Depends(get_db)) -> ExecutionModeOut:
     snapshot = read_execution_mode(db)
@@ -144,7 +172,7 @@ def preview_live_activation(
 )
 def confirm_live_activation(
     request: LiveActivationConfirmRequest,
-    idempotency_key: str = Header(..., alias="Idempotency-Key"),
+    idempotency_key: str = Depends(_live_idempotency_key),
     db: Session = Depends(get_db),
 ) -> LiveActivationResultOut:
     """Step 2: explicit owner confirmation followed by fresh server recheck."""

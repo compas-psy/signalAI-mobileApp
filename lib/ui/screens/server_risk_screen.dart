@@ -1,12 +1,14 @@
 import 'package:flutter/widgets.dart';
 
 import '../../data/api/api_client.dart';
+import '../../state/execution_mode_controller.dart';
 import '../../theme/tokens.dart';
 import '../../theme/typography.dart';
 import '../widgets/common.dart';
 import '../widgets/execution_health_panel.dart';
+import '../widgets/execution_mode_panel.dart';
 
-/// Риск thin-клиента читает и меняет именно серверный risk-state.
+/// Риск thin-клиента читает и меняет именно server-owned state.
 class ServerRiskScreen extends StatefulWidget {
   const ServerRiskScreen({super.key, this.api});
 
@@ -162,11 +164,11 @@ class _ServerRiskScreenState extends State<ServerRiskScreen> {
     return data['kill_switch'] == true ? 'HALT_NEW_ENTRIES' : 'CLEAR';
   }
 
-  String _badge(String level, Map<String, dynamic> data) => switch (level) {
+  String _badge(String level) => switch (level) {
         'HALT_NEW_ENTRIES' => 'HALT',
         'CANCEL_PENDING_ENTRIES' => 'CANCEL',
         'FLATTEN_ALL' => 'FLATTEN',
-        _ => '${data['execution_mode'] ?? 'PAPER'}',
+        _ => 'ВХОДЫ ON',
       };
 
   String _levelText(String level) => switch (level) {
@@ -203,12 +205,17 @@ class _ServerRiskScreenState extends State<ServerRiskScreen> {
       );
     }
 
+    final modeController = ExecutionModeScope.maybeOf(context);
     final level = _level(data);
     final kill = level != 'CLEAR';
     final limits = data['limits'] is List ? data['limits'] as List : const [];
     return ListView(
       padding: const EdgeInsets.fromLTRB(S.screen, 12, S.screen, 90),
       children: [
+        if (modeController != null) ...[
+          ExecutionModePanel(controller: modeController),
+          const SizedBox(height: 10),
+        ],
         SectionCard(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -217,7 +224,7 @@ class _ServerRiskScreenState extends State<ServerRiskScreen> {
                 children: [
                   const Expanded(child: SectionLabel('Исполнение и защита')),
                   OutlineBadge(
-                    label: _badge(level, data),
+                    label: _badge(level),
                     color: kill ? C.red : C.green,
                     borderColor: kill ? C.redBorder : C.greenBorder,
                     fontWeight: 700,
