@@ -154,7 +154,10 @@ def _instrument_spec(
     quote_currency = str(instrument.currency or "RUB")
     quote_rate = rate_to_rub(db, quote_currency, now=now)
     asset = getattr(instrument.asset_class, "value", instrument.asset_class)
-    is_linear = str(asset) == AssetClass.CRYPTO.value
+    is_linear = str(asset) in {
+        AssetClass.CRYPTO_SPOT.value,
+        AssetClass.CRYPTO_PERPETUAL.value,
+    }
     return InstrumentSpec(
         tick_size=Decimal(instrument.tick_size),
         tick_value=Decimal(instrument.tick_value),
