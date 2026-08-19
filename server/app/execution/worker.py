@@ -217,7 +217,7 @@ def _apply_pre_submit_kill_switch(
     # CANCEL_PENDING_ENTRIES and FLATTEN_ALL both cancel an intent that has not
     # crossed the venue boundary. In-flight/provider-side actions are not
     # invented here: SAI-036 owns cancel/flatten venue capabilities.
-    transition_execution_state(intent, ExecutionState.CANCELLED)
+    intent.state = transition_execution_state(intent.state, ExecutionState.CANCELLED)
     db.flush()
     return ExecutionProcessOutcome(True, None)
 
