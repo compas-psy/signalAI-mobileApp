@@ -96,7 +96,7 @@ class ExecutionModeController extends ChangeNotifier {
       : _api = api ?? ApiClient(),
         _ownsApi = api == null;
 
-  final ApiClient _api;
+  ApiClient _api;
   final bool _ownsApi;
 
   ServerExecutionMode _mode = ServerExecutionMode.unknown;
@@ -131,6 +131,20 @@ class ExecutionModeController extends ChangeNotifier {
       _loading = false;
       notifyListeners();
     }
+  }
+
+  /// Recreate the default API client after owner changes engine address/token.
+  /// Injected test clients are intentionally never replaced.
+  Future<void> reconnect() async {
+    if (_ownsApi) {
+      _api.close();
+      _api = ApiClient();
+    }
+    _mode = ServerExecutionMode.unknown;
+    _preview = null;
+    _livePreview = null;
+    _liveResult = null;
+    await load();
   }
 
   Future<ExecutionModePreview> previewMode(ServerExecutionMode target) async {
