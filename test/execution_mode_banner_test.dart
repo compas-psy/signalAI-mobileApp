@@ -5,16 +5,15 @@ import 'package:signalai/state/execution_mode_controller.dart';
 import 'package:signalai/ui/widgets/execution_mode_banner.dart';
 
 class _BannerApi extends ApiClient {
-  _BannerApi({this.mode = 'CANARY', this.fail = false})
+  _BannerApi({this.fail = false})
       : super(baseUrl: 'https://engine.test', deviceToken: '');
 
-  final String mode;
   final bool fail;
 
   @override
   Future<Map<String, dynamic>> get(String path) async {
     if (fail) throw ApiException('mode unavailable', statusCode: 503);
-    return {'mode': mode, 'updated_at': '2026-08-19T08:00:00Z'};
+    return {'mode': 'CANARY', 'updated_at': '2026-08-19T08:00:00Z'};
   }
 }
 
