@@ -102,13 +102,6 @@ void main() {
 
   testWidgets('server blocker is visible and confirm action is absent',
       (tester) async {
-    final api = _RiskOnPanelApi();
-    final controller = RiskOnController(
-      ideaId: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
-      api: api,
-    );
-    api.previewCalls = 0;
-
     final blockedApi = _BlockedRiskOnApi();
     final blockedController = RiskOnController(
       ideaId: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
