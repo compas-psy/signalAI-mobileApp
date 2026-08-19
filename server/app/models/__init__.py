@@ -44,6 +44,7 @@ from .execution import (
     ExecutionOrder,
     ExecutionProtection,
     ExecutionReconciliationEvent,
+    ExecutionRiskOverride,
     ExecutionVenueHealth,
 )
 from .experiments import (
@@ -109,6 +110,7 @@ __all__ = [
     "ExecutionModeState",
     "ExecutionModeEvent",
     "ExecutionModeActivationRequest",
+    "ExecutionRiskOverride",
     "ExecutionIntent",
     "ExecutionOrder",
     "ExecutionFill",
