@@ -167,7 +167,9 @@ def _build(
     idea = db.get(TradeIdea, idea_id)
     if idea is None:
         raise RiskOnPreviewRejected("idea does not exist")
-    instrument = db.get(Instrument, idea.instrument_id)
+    instrument = db.execute(
+        select(Instrument).where(Instrument.instrument_id == idea.instrument_id)
+    ).scalar_one_or_none()
     if instrument is None:
         raise RiskOnPreviewRejected("idea instrument does not exist")
     snapshot = _latest_snapshot(db)
