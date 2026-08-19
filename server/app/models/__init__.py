@@ -38,6 +38,7 @@ from .equity_ranking import EquityRankingSnapshot
 from .execution import (
     ExecutionFill,
     ExecutionIntent,
+    ExecutionModeActivationRequest,
     ExecutionModeEvent,
     ExecutionModeState,
     ExecutionOrder,
@@ -107,6 +108,7 @@ __all__ = [
     # durable execution domain
     "ExecutionModeState",
     "ExecutionModeEvent",
+    "ExecutionModeActivationRequest",
     "ExecutionIntent",
     "ExecutionOrder",
     "ExecutionFill",
