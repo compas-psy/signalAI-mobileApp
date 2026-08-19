@@ -1,8 +1,8 @@
-"""Provider-neutral execution venue adapter contract for SAI-036.
+"""Provider-neutral execution venue adapter contract for SAI-036/039.
 
-The adapter deliberately mirrors the proven SAI-026/027 ``ExecutionPort``
-seam. It defines what provider integrations must implement without choosing a
-venue, storing credentials, issuing network calls or enabling LIVE execution.
+The adapter defines provider I/O behind the durable execution state machine.
+SAI-039 extends the seam with explicit protection read-back and a dedicated
+emergency-close primitive; neither method selects credentials or enables LIVE.
 """
 
 from __future__ import annotations
@@ -11,12 +11,13 @@ from abc import ABC, abstractmethod
 from decimal import Decimal
 from typing import Iterable, TypeVar
 
-from ...models.execution import ExecutionIntent, ExecutionOrder
+from ...models.execution import ExecutionIntent, ExecutionOrder, ExecutionProtection
 from ..service import (
     ExecutionFillSnapshot,
     ExecutionProtectionAck,
     ExecutionSubmitAck,
     PreSubmitReconciliation,
+    ProtectionReconciliation,
     SubmissionReconciliation,
 )
 from .capabilities import (
@@ -85,6 +86,31 @@ class VenueAdapter(ABC):
         *,
         filled_quantity: Decimal,
     ) -> ExecutionProtectionAck: ...
+
+    @abstractmethod
+    def reconcile_protection(
+        self,
+        intent: ExecutionIntent,
+        order: ExecutionOrder,
+        protection: ExecutionProtection,
+    ) -> ProtectionReconciliation: ...
+
+    @abstractmethod
+    def emergency_flatten(
+        self,
+        intent: ExecutionIntent,
+        order: ExecutionOrder,
+        *,
+        filled_quantity: Decimal,
+        client_order_id: str,
+    ) -> ExecutionSubmitAck: ...
+
+    @abstractmethod
+    def reconcile_emergency_flatten(
+        self,
+        intent: ExecutionIntent,
+        order: ExecutionOrder,
+    ) -> SubmissionReconciliation: ...
 
     @abstractmethod
     def reconcile(self, intent: ExecutionIntent) -> None: ...
