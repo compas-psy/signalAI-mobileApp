@@ -68,6 +68,14 @@ class _PanelApi extends ApiClient {
   }
 }
 
+Widget _host(ExecutionModeController controller) => MaterialApp(
+      home: Scaffold(
+        body: ListView(
+          children: [ExecutionModePanel(controller: controller)],
+        ),
+      ),
+    );
+
 void main() {
   testWidgets('allowed downshift needs a visible second confirmation',
       (tester) async {
@@ -75,9 +83,7 @@ void main() {
     final controller = ExecutionModeController(api: api);
     await controller.load();
 
-    await tester.pumpWidget(
-      MaterialApp(home: Scaffold(body: ExecutionModePanel(controller: controller))),
-    );
+    await tester.pumpWidget(_host(controller));
     await tester.pumpAndSettle();
 
     expect(find.textContaining('Текущий режим · CANARY'), findsOneWidget);
@@ -106,9 +112,7 @@ void main() {
     final controller = ExecutionModeController(api: api);
     await controller.load();
 
-    await tester.pumpWidget(
-      MaterialApp(home: Scaffold(body: ExecutionModePanel(controller: controller))),
-    );
+    await tester.pumpWidget(_host(controller));
     await tester.pumpAndSettle();
 
     await tester.tap(find.text('SANDBOX'));
@@ -125,9 +129,7 @@ void main() {
     final controller = ExecutionModeController(api: api);
     await controller.load();
 
-    await tester.pumpWidget(
-      MaterialApp(home: Scaffold(body: ExecutionModePanel(controller: controller))),
-    );
+    await tester.pumpWidget(_host(controller));
     await tester.pumpAndSettle();
 
     await tester.tap(find.text('LIVE'));
@@ -135,7 +137,8 @@ void main() {
 
     expect(find.textContaining('NOT_CONFIGURED'), findsWidgets);
     expect(find.textContaining('300 000'), findsOneWidget);
-    expect(find.textContaining('max_leverage · 3.0'), findsOneWidget);
+    expect(find.text('max_leverage'), findsOneWidget);
+    expect(find.text('3.0'), findsOneWidget);
     expect(find.textContaining('risk.paper_only=true'), findsOneWidget);
     expect(find.text('Подтвердить LIVE'), findsNothing);
     expect(api.posts.where((item) => item.path.endsWith('/live/confirm')), isEmpty);
