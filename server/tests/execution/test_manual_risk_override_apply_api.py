@@ -9,6 +9,11 @@ from sqlalchemy import select
 
 from app.db import get_db
 from app.execution.enums import ExecutionLifecycleMode
+from app.execution.intent_service import (
+    ExecutionIntentGate,
+    ExecutionIntentRequest,
+    create_execution_intent,
+)
 from app.execution.mode import ModeChangeAuthorization, change_execution_mode
 from app.main import app
 from app.models import ExecutionRiskOverride, RiskSnapshot, TradeIdea
@@ -80,6 +85,16 @@ def _apply(client, idea, shown, *, key="manual-risk-apply-1", confirmed=True):
     )
 
 
+def _intent_gate() -> ExecutionIntentGate:
+    return ExecutionIntentGate(
+        owner_approved=True,
+        risk_snapshot_verified=True,
+        mode_allows_intent=True,
+        kill_switch_clear=True,
+        venue_capability_verified=True,
+    )
+
+
 def test_sai_044_applies_exact_signed_preview_without_client_economics(
     client,
     session,
@@ -106,12 +121,15 @@ def test_sai_044_applies_exact_signed_preview_without_client_economics(
     assert override.risk_snapshot_id == risk.id
     assert override.preset == "BOOST_2"
     assert override.execution_mode_snapshot == ExecutionLifecycleMode.PAPER
-    assert override.preview_hash == shown["preview_hash"]
-    assert len(override.preview_hash) > 64
-    # SAI-044's public contract does not let the phone manufacture execution
-    # scope. Venue/account are bound later by the execution intent/provider.
-    assert override.venue is None
-    assert override.account is None
+    # The immutable table keeps its existing 64-char content address. The full
+    # signed token is retained in detail_json and returned by the public API.
+    assert len(override.preview_hash) == 64
+    int(override.preview_hash, 16)
+    assert override.detail_json["manual_preview_hash"] == shown["preview_hash"]
+    # Explicit reserved markers mean "bind execution scope at intent creation";
+    # they are never presented as real provider credentials.
+    assert override.venue == "__DEFERRED__"
+    assert override.account == "__DEFERRED__"
 
 
 def test_sai_044_rejects_client_supplied_risk_quantity_leverage_or_scope(
@@ -276,4 +294,38 @@ def test_sai_044_is_idempotent_only_for_the_same_preview_and_key(
     assert second.json()["created"] is False
     assert first.json()["risk_override_id"] == second.json()["risk_override_id"]
     assert replay_with_other_key.status_code == 409
-    assert session.execute(select(ExecutionRiskOverride)).scalars().all().__len__() == 1
+    assert len(session.execute(select(ExecutionRiskOverride)).scalars().all()) == 1
+
+
+def test_sai_044_deferred_scope_binds_once_at_execution_intent(
+    client,
+    session,
+    instrument,
+    now,
+):
+    idea, risk = _seed(session, instrument, now)
+    shown = _preview(client, idea)
+    applied = _apply(client, idea, shown, key="manual-risk-intent-bind")
+    assert applied.status_code == 200
+    body = applied.json()
+
+    creation = create_execution_intent(
+        session,
+        request=ExecutionIntentRequest(
+            idea_id=idea.id,
+            instrument_id=idea.instrument_id,
+            strategy_version=idea.strategy_version,
+            risk_policy_snapshot_id=risk.id,
+            risk_override_id=body["risk_override_id"],
+            venue="MOEX",
+            account="paper-main",
+            planned_quantity=Decimal(str(body["effective_quantity"])),
+            planned_entry_price=idea.entry_reference,
+            planned_stop_price=idea.stop,
+        ),
+        gate=_intent_gate(),
+    )
+
+    assert creation.created is True
+    assert creation.intent.venue == "MOEX"
+    assert creation.intent.account == "paper-main"
