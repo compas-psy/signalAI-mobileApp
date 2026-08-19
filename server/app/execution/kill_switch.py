@@ -84,6 +84,7 @@ def set_execution_kill_switch(
     actor: str,
     reason: str,
     confirm_flatten_all: bool = False,
+    audit_action: str = "execution_kill_switch_set",
 ) -> RiskState:
     """Persist one active kill-switch level and append its audit fact.
 
@@ -91,6 +92,10 @@ def set_execution_kill_switch(
     It changes the desired handling of open risk and therefore needs an
     explicit second signal from the caller. This service still does not claim
     provider flattening before SAI-036 supplies that capability.
+
+    ``audit_action`` exists only so the old ``/risk/halt`` endpoint can retain
+    its established audit vocabulary while the new exact-level API uses the
+    SAI-028 action name.
     """
 
     try:
@@ -119,7 +124,7 @@ def set_execution_kill_switch(
     db.add(
         AuditEvent(
             actor=actor,
-            action="execution_kill_switch_set",
+            action=audit_action,
             subject="risk_state",
             detail=reason,
             before_json=before,
@@ -135,6 +140,7 @@ def clear_execution_kill_switch(
     *,
     actor: str,
     reason: str = "",
+    audit_action: str = "execution_kill_switch_clear",
 ) -> RiskState:
     """Explicitly restore entry eligibility; never called automatically here."""
 
@@ -147,7 +153,7 @@ def clear_execution_kill_switch(
     db.add(
         AuditEvent(
             actor=actor,
-            action="execution_kill_switch_clear",
+            action=audit_action,
             subject="risk_state",
             detail=reason.strip(),
             before_json=before,
