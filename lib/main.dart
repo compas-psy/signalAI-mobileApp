@@ -18,6 +18,7 @@ import 'state/app_scope.dart';
 import 'state/navigation.dart';
 import 'theme/tokens.dart';
 import 'ui/app_shell.dart';
+import 'ui/execution_mode_shell.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -300,7 +301,7 @@ class _RootBackScopeState extends State<_RootBackScope> {
           _restorePreviousRoute(controller);
         }
       },
-      child: const AppShell(),
+      child: const ExecutionModeShell(child: AppShell()),
     );
   }
 }
