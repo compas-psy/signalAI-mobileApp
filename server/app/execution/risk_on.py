@@ -16,7 +16,7 @@ from decimal import Decimal, InvalidOperation
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..config import AppConfig, get_config
+from ..config import EngineConfig, get_config
 from ..market.fx import rate_to_rub
 from ..models.enums import AssetClass
 from ..models.ideas import TradeIdea
@@ -65,7 +65,7 @@ class RiskOnPreview:
     preview_hash: str
 
 
-def _limits(cfg: AppConfig) -> RiskLimits:
+def _limits(cfg: EngineConfig) -> RiskLimits:
     return RiskLimits(
         base_risk_per_trade=cfg.decimal("risk.base_risk_per_trade"),
         max_risk_per_trade=cfg.decimal("risk.max_risk_per_trade"),
@@ -103,10 +103,10 @@ def _decimal_json(value: object, *, default: Decimal = Decimal(0)) -> Decimal:
         return default
 
 
-def _strategy_multiplier(cfg: AppConfig, idea: TradeIdea) -> Decimal:
+def _strategy_multiplier(cfg: EngineConfig, idea: TradeIdea) -> Decimal:
     raw = getattr(idea.strategy, "value", idea.strategy)
     key = str(raw).strip().lower()
-    return cfg.decimal(f"strategies.{key}.risk_multiplier", Decimal(1))
+    return Decimal(str(cfg.get(f"strategies.{key}.risk_multiplier", 1)))
 
 
 def _risk_state(snapshot: RiskSnapshot, idea: TradeIdea) -> RiskState:
@@ -157,7 +157,7 @@ def _build(
     venue: str,
     account: str,
     now: datetime,
-    cfg: AppConfig,
+    cfg: EngineConfig,
 ) -> tuple[RiskOnPreview, RiskOverrideRequest | None, RiskOverrideAuthorization | None]:
     venue = venue.strip()
     account = account.strip()
@@ -230,8 +230,8 @@ def _build(
             account=account,
             effective_risk_pct=budget.percent,
             effective_quantity=sizing.quantity,
-            # The 3x config value remains a visible hard ceiling. We do not
-            # increase leverage without venue margin/liquidation evidence.
+            # 3x is displayed as an owner ceiling only. No leverage increase
+            # happens without venue-specific margin/liquidation evidence.
             effective_leverage=None,
             idempotency_key="preview-only",
             owner_confirmed=True,
@@ -272,7 +272,7 @@ def preview_risk_on(
     venue: str,
     account: str,
     now: datetime | None = None,
-    cfg: AppConfig | None = None,
+    cfg: EngineConfig | None = None,
 ) -> RiskOnPreview:
     preview, _, _ = _build(
         db,
@@ -295,7 +295,7 @@ def confirm_risk_on(
     idempotency_key: str,
     owner_confirmed: bool,
     now: datetime | None = None,
-    cfg: AppConfig | None = None,
+    cfg: EngineConfig | None = None,
 ) -> RiskOverrideCreation:
     if not owner_confirmed:
         raise RiskOnConfirmationRejected("explicit owner confirmation is required")
