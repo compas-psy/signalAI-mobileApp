@@ -1,0 +1,17 @@
+# SAI-042/B7.1 manual risk envelope.
+#
+# This file is intentionally separate from the strategy optimizer config: an
+# owner boost is a distinct audited layer and cannot silently widen production
+# hard caps. Loader validation rejects any envelope wider than default.yaml.
+enabled: true
+presets:
+  AUTO:
+    multiplier: 1.00
+  BOOST_1:
+    multiplier: 1.25
+  BOOST_2:
+    multiplier: 1.50
+max_risk_per_trade: 0.0075
+max_leverage: 3.0
+min_liquidation_distance_ratio: 2.5
+ttl_minutes: 5
