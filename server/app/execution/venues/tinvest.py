@@ -3,6 +3,10 @@
 The module preserves the provider semantics extracted from the legacy Flutter
 ``TInvestBroker`` behind the server-side ``VenueAdapter`` contract. It has no
 HTTP/token factory and is not registered by the production execution worker.
+
+Late partial fills extend protection additively: an already-active stop is never
+cancelled merely to increase coverage. Multiple exact-price stop legs are valid
+only when their aggregate quantity equals the required protected quantity.
 """
 
 from __future__ import annotations
@@ -203,6 +207,11 @@ class TInvestAdapter(VenueAdapter):
             return "SandboxService", "PostSandboxOrder", "GetSandboxOrderState"
         return "OrdersService", "PostOrder", "GetOrderState"
 
+    def _stop_service(self) -> tuple[str, str, str]:
+        if self._sandbox:
+            return "SandboxService", "PostSandboxStopOrder", "GetSandboxStopOrders"
+        return "StopOrdersService", "PostStopOrder", "GetStopOrders"
+
     def _get_order_state(
         self,
         intent: ExecutionIntent,
@@ -224,6 +233,75 @@ class TInvestAdapter(VenueAdapter):
                 "orderIdType": "ORDER_ID_TYPE_REQUEST",
             }
         return self._call(service, get_method, body)
+
+    def _active_stop_orders(self, plan: TInvestOrderPlan) -> list[Mapping[str, object]]:
+        service, _, get_method = self._stop_service()
+        response = self._call(
+            service,
+            get_method,
+            {
+                "accountId": plan.account_id,
+                "status": "STOP_ORDER_STATUS_ACTIVE",
+            },
+        )
+        raw_orders = response.get("stopOrders")
+        if not isinstance(raw_orders, list):
+            raise TInvestProviderError(
+                code="INVALID_RESPONSE",
+                message="T-Invest active-stop response lacks stopOrders",
+            )
+        return [raw for raw in raw_orders if isinstance(raw, Mapping)]
+
+    def _matching_stop_legs(
+        self,
+        plan: TInvestOrderPlan,
+        *,
+        stop_price: Decimal,
+        raw_orders: list[Mapping[str, object]],
+    ) -> list[tuple[str, Decimal]]:
+        expected_direction = (
+            "STOP_ORDER_DIRECTION_SELL"
+            if plan.long
+            else "STOP_ORDER_DIRECTION_BUY"
+        )
+        expected_stop_price = Decimal(stop_price)
+        legs: list[tuple[str, Decimal]] = []
+        for item in raw_orders:
+            if str(item.get("instrumentUid") or "") != plan.instrument_uid:
+                continue
+            if str(item.get("direction") or "") != expected_direction:
+                continue
+            order_type = str(
+                item.get("orderType") or item.get("stopOrderType") or ""
+            )
+            if order_type != "STOP_ORDER_TYPE_STOP_LOSS":
+                continue
+            stop_id = str(item.get("stopOrderId") or "")
+            if not stop_id:
+                raise TInvestProviderError(
+                    code="INVALID_RESPONSE",
+                    message="active T-Invest stop lacks stopOrderId",
+                )
+            try:
+                quantity = Decimal(
+                    str(item.get("lotsRequested", item.get("quantity", "0")))
+                )
+                actual_stop_price = quotation_to_decimal(item.get("stopPrice"))
+            except Exception as exc:
+                if isinstance(exc, TInvestProviderError):
+                    raise
+                raise TInvestProviderError(
+                    code="INVALID_RESPONSE",
+                    message=f"invalid T-Invest stop snapshot: {exc}",
+                ) from exc
+            if quantity <= 0:
+                raise TInvestProviderError(
+                    code="INVALID_RESPONSE",
+                    message="active T-Invest stop has non-positive quantity",
+                )
+            if actual_stop_price == expected_stop_price:
+                legs.append((stop_id, quantity))
+        return legs
 
     def reconcile_before_submit(
         self,
@@ -384,18 +462,43 @@ class TInvestAdapter(VenueAdapter):
     ) -> ExecutionProtectionAck:
         del order
         plan = self._plan_resolver(intent)
-        lots = _exact_lots(filled_quantity)
-        if self._sandbox:
-            service = "SandboxService"
-            method = "PostSandboxStopOrder"
-        else:
-            service = "StopOrdersService"
-            method = "PostStopOrder"
+        target_lots = _exact_lots(filled_quantity)
+        current_lots = 0
 
+        # Preserve the original one-lot initial call shape. Larger targets may
+        # represent either a full initial fill or an expansion; authoritative
+        # active-stop read-back distinguishes those cases without cancellation.
+        if target_lots > 1:
+            raw_orders = self._active_stop_orders(plan)
+            legs = self._matching_stop_legs(
+                plan,
+                stop_price=align_price(plan.stop_loss, plan.price_step),
+                raw_orders=raw_orders,
+            )
+            current_quantity = sum((quantity for _, quantity in legs), Decimal("0"))
+            current_lots = _exact_lots(current_quantity) if current_quantity > 0 else 0
+            if current_lots > target_lots:
+                raise TInvestProviderError(
+                    code="PROTECTION_OVER_COVERED",
+                    message=(
+                        "active T-Invest stop coverage exceeds required quantity: "
+                        f"{current_lots} > {target_lots}"
+                    ),
+                )
+            if current_lots == target_lots:
+                preferred_id = sorted(stop_id for stop_id, _ in legs)[-1]
+                return ExecutionProtectionAck(
+                    provider_order_id=preferred_id,
+                    status="ACTIVE",
+                    armed_at=self._clock(),
+                )
+
+        delta_lots = target_lots - current_lots
+        service, post_method, _ = self._stop_service()
         body: dict[str, object] = {
             "accountId": plan.account_id,
             "instrumentId": plan.instrument_uid,
-            "quantity": str(lots),
+            "quantity": str(delta_lots),
             "stopPrice": decimal_to_quotation(
                 align_price(plan.stop_loss, plan.price_step)
             ),
@@ -408,14 +511,15 @@ class TInvestAdapter(VenueAdapter):
             "expirationType": "STOP_ORDER_EXPIRATION_TYPE_GOOD_TILL_CANCEL",
         }
         if self._sandbox:
+            purpose = "stop" if current_lots == 0 else f"stop-total-{target_lots}"
             body.update(
                 {
-                    "orderId": provider_request_id(intent, purpose="stop"),
+                    "orderId": provider_request_id(intent, purpose=purpose),
                     "priceType": "PRICE_TYPE_POINT",
                     "confirmMarginTrade": True,
                 }
             )
-        response = self._call(service, method, body)
+        response = self._call(service, post_method, body)
         provider_stop_id = str(response.get("stopOrderId") or "")
         if not provider_stop_id:
             raise TInvestProviderError(
@@ -436,126 +540,52 @@ class TInvestAdapter(VenueAdapter):
     ) -> ProtectionReconciliation:
         del order
         plan = self._plan_resolver(intent)
-        service = "SandboxService" if self._sandbox else "StopOrdersService"
-        method = "GetSandboxStopOrders" if self._sandbox else "GetStopOrders"
         try:
-            response = self._call(
-                service,
-                method,
-                {
-                    "accountId": plan.account_id,
-                    "status": "STOP_ORDER_STATUS_ACTIVE",
-                },
+            raw_orders = self._active_stop_orders(plan)
+            legs = self._matching_stop_legs(
+                plan,
+                stop_price=Decimal(protection.stop_price),
+                raw_orders=raw_orders,
             )
         except TInvestProviderError as exc:
             return ProtectionReconciliation.unknown(str(exc))
 
-        raw_orders = response.get("stopOrders")
-        if not isinstance(raw_orders, list):
-            return ProtectionReconciliation.unknown(
-                "T-Invest active-stop response lacks stopOrders"
-            )
-
-        expected_direction = (
-            "STOP_ORDER_DIRECTION_SELL"
-            if plan.long
-            else "STOP_ORDER_DIRECTION_BUY"
-        )
         expected_quantity = Decimal(protection.quantity)
-        expected_stop_price = Decimal(protection.stop_price)
-        provider_order_id = str(protection.provider_order_id or "")
-
-        def parse_exact_candidate(
-            item: Mapping[str, object],
-        ) -> tuple[str, Decimal, Decimal] | None:
-            if str(item.get("instrumentUid") or "") != plan.instrument_uid:
-                return None
-            if str(item.get("direction") or "") != expected_direction:
-                return None
-            order_type = str(
-                item.get("orderType") or item.get("stopOrderType") or ""
-            )
-            if order_type != "STOP_ORDER_TYPE_STOP_LOSS":
-                return None
-            stop_id = str(item.get("stopOrderId") or "")
-            if not stop_id:
-                raise TInvestProviderError(
-                    code="INVALID_RESPONSE",
-                    message="active T-Invest stop lacks stopOrderId",
-                )
-            try:
-                quantity = Decimal(
-                    str(item.get("lotsRequested", item.get("quantity", "0")))
-                )
-                stop_price = quotation_to_decimal(item.get("stopPrice"))
-            except Exception as exc:
-                if isinstance(exc, TInvestProviderError):
-                    raise
-                raise TInvestProviderError(
-                    code="INVALID_RESPONSE",
-                    message=f"invalid T-Invest stop snapshot: {exc}",
-                ) from exc
-            if quantity != expected_quantity or stop_price != expected_stop_price:
-                return None
-            return stop_id, quantity, stop_price
-
-        if provider_order_id:
-            row = next(
-                (
-                    item
-                    for item in raw_orders
-                    if isinstance(item, Mapping)
-                    and str(item.get("stopOrderId") or "") == provider_order_id
-                ),
-                None,
-            )
-            if row is None:
-                return ProtectionReconciliation.missing(
-                    "T-Invest protective stop is not active"
-                )
-            try:
-                exact = parse_exact_candidate(row)
-            except TInvestProviderError as exc:
-                return ProtectionReconciliation.unknown(str(exc))
-            if exact is None:
-                return ProtectionReconciliation.missing(
-                    "T-Invest active stop does not exactly match instrument, direction, quantity and price"
-                )
-            stop_id, quantity, stop_price = exact
-            return ProtectionReconciliation.matched(
-                provider_order_id=stop_id,
-                status="ACTIVE",
-                quantity=quantity,
-                stop_price=stop_price,
-                reconciled_at=self._clock(),
-            )
-
-        exact_candidates: list[tuple[str, Decimal, Decimal]] = []
-        for raw in raw_orders:
-            if not isinstance(raw, Mapping):
-                continue
-            try:
-                candidate = parse_exact_candidate(raw)
-            except TInvestProviderError as exc:
-                return ProtectionReconciliation.unknown(str(exc))
-            if candidate is not None:
-                exact_candidates.append(candidate)
-
-        if not exact_candidates:
+        if not legs:
             return ProtectionReconciliation.missing(
-                "T-Invest exact protective stop is not active"
-            )
-        if len(exact_candidates) > 1:
-            return ProtectionReconciliation.unknown(
-                "multiple exact active T-Invest stops match the lost acknowledgement"
+                "T-Invest exact-price protective stop coverage is not active"
             )
 
-        stop_id, quantity, stop_price = exact_candidates[0]
+        aggregate_quantity = sum((quantity for _, quantity in legs), Decimal("0"))
+        if aggregate_quantity < expected_quantity:
+            return ProtectionReconciliation.missing(
+                "T-Invest active protective stop coverage is below required quantity: "
+                f"{aggregate_quantity} < {expected_quantity}"
+            )
+        if aggregate_quantity > expected_quantity:
+            return ProtectionReconciliation.unknown(
+                "T-Invest active protective stop coverage exceeds required quantity: "
+                f"{aggregate_quantity} > {expected_quantity}"
+            )
+
+        known_provider_id = str(protection.provider_order_id or "")
+        leg_ids = [stop_id for stop_id, _ in legs]
+        if known_provider_id and known_provider_id in leg_ids:
+            provider_order_id = known_provider_id
+        elif len(leg_ids) == 1:
+            provider_order_id = leg_ids[0]
+        else:
+            # Multiple legs are expected after a deliberate expansion. With no
+            # durable latest-leg id we cannot guess which ACK was lost.
+            return ProtectionReconciliation.unknown(
+                "multiple exact active T-Invest stop legs match aggregate coverage but no provider id is anchored"
+            )
+
         return ProtectionReconciliation.matched(
-            provider_order_id=stop_id,
+            provider_order_id=provider_order_id,
             status="ACTIVE",
-            quantity=quantity,
-            stop_price=stop_price,
+            quantity=aggregate_quantity,
+            stop_price=Decimal(protection.stop_price),
             reconciled_at=self._clock(),
         )
 
