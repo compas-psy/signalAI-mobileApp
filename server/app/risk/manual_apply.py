@@ -4,6 +4,10 @@ This service is the only bridge from the read-only SAI-043 preview to the
 immutable SAI-042 execution-risk override. It deliberately accepts no client
 risk, quantity, leverage or notional. Those values are recalculated from
 server state immediately before persistence.
+
+SAI-044 is intentionally PAPER-only. SAI-045 must provide deterministic
+leverage/liquidation proof before a manual risk increase can be persisted in a
+money-bearing execution mode.
 """
 
 from __future__ import annotations
@@ -100,6 +104,11 @@ def apply_manual_risk_override(
     if not fresh.allowed:
         detail = ", ".join(fresh.blockers) or "current risk state blocks override"
         raise ManualRiskOverrideApplyRejected(detail)
+    if fresh.execution_mode is not ExecutionLifecycleMode.PAPER:
+        raise ManualRiskOverrideApplyRejected(
+            "manual risk override apply is PAPER-only until SAI-045 provides "
+            "leverage/liquidation proof"
+        )
     if fresh.preset_id == "AUTO":
         raise ManualRiskOverrideApplyRejected(
             "AUTO is not a risk-increasing override; choose a BOOST preset"
