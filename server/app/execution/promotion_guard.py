@@ -179,11 +179,10 @@ def current_server_promotion_evidence(
 ) -> PromotionEvidence:
     """Build only evidence the server can prove today.
 
-    Later slices own the real providers for these gates. In SAI-031 there is no
-    VenueAdapter capability proof (SAI-036), no two-step owner activation proof
-    (SAI-032), and no approved numeric performance/ops promotion policy. The
-    correct production answer is therefore explicit missing evidence, not a
-    guessed green state.
+    Later slices own the real providers for these gates. In SAI-031/032 there
+    is still no VenueAdapter capability proof (SAI-036) and no approved live
+    performance/ops proof provider. The correct production answer is explicit
+    missing evidence, not a guessed green state.
     """
 
     del db, current, target
@@ -218,7 +217,13 @@ def change_mode_with_guard(
     actor: str,
     reason: str,
 ) -> ExecutionModeSnapshot:
-    """Apply only a transition currently authorized by the server guard."""
+    """Apply safe generic transitions; LIVE is reserved for SAI-032 flow."""
+
+    target = ExecutionLifecycleMode(target)
+    if target == ExecutionLifecycleMode.LIVE:
+        raise ExecutionModeChangeRejected(
+            "LIVE requires the two-step owner activation flow"
+        )
 
     decision = preview_promotion(db, target=target)
     if not decision.allowed:
