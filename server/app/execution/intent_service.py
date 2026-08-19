@@ -18,7 +18,7 @@ from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
-from ..models.execution import ExecutionIntent
+from ..models.execution import ExecutionIntent, ExecutionRiskOverride
 from ..models.ideas import TradeIdea
 from ..models.risk import RiskSnapshot
 from .enums import ExecutionLifecycleMode, ExecutionState
@@ -129,6 +129,30 @@ def _validate_request(db: Session, request: ExecutionIntentRequest) -> None:
         raise ExecutionIntentRejected("risk snapshot blocks new entries")
 
 
+def _validate_risk_override(
+    db: Session,
+    request: ExecutionIntentRequest,
+    *,
+    execution_mode_snapshot: ExecutionLifecycleMode,
+) -> None:
+    if request.risk_override_id is None:
+        return
+    override = db.get(ExecutionRiskOverride, request.risk_override_id)
+    if override is None:
+        raise ExecutionIntentRejected("risk_override_id does not exist")
+    if (
+        override.idea_id != request.idea_id
+        or override.risk_snapshot_id != request.risk_policy_snapshot_id
+    ):
+        raise ExecutionIntentRejected("risk override idea/risk snapshot does not match intent")
+    if override.venue != request.venue or override.account != request.account:
+        raise ExecutionIntentRejected("risk override venue/account does not match intent")
+    if override.execution_mode_snapshot != execution_mode_snapshot:
+        raise ExecutionIntentRejected("risk override execution mode does not match current mode")
+    if Decimal(override.effective_quantity) != Decimal(request.planned_quantity):
+        raise ExecutionIntentRejected("risk override quantity does not match planned_quantity")
+
+
 def _same_plan(
     intent: ExecutionIntent,
     request: ExecutionIntentRequest,
@@ -176,11 +200,18 @@ def create_execution_intent(
     additionally increments a durable counter only after the conflicting row
     is proven to carry the exact same execution plan. SAI-035 snapshots the
     authoritative server lifecycle mode; callers cannot supply or spoof it.
+    SAI-042 additionally binds any manual risk increase to the exact immutable
+    owner override that authorized its quantity and execution scope.
     """
 
     _validate_gate(gate)
     _validate_request(db, request)
     execution_mode_snapshot = get_execution_mode(db).mode
+    _validate_risk_override(
+        db,
+        request,
+        execution_mode_snapshot=execution_mode_snapshot,
+    )
     identity_hash = execution_intent_identity_hash(
         request,
         execution_mode_snapshot=execution_mode_snapshot,
@@ -216,7 +247,7 @@ def create_execution_intent(
             select(ExecutionIntent).where(ExecutionIntent.identity_hash == identity_hash)
         ).scalar_one_or_none()
 
-    if intent is None:  # Defensive: conflict target must always resolve.
+    if intent is None:
         raise RuntimeError("execution intent conflict did not resolve to a durable row")
     if not _same_plan(
         intent,
