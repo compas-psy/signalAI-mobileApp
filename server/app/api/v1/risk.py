@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import UUID
 
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, Header, HTTPException
 from pydantic import ConfigDict
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -22,6 +22,10 @@ from ...execution.kill_switch import (
 )
 from ...models import RiskSnapshot, RiskState
 from ...models.enums import ExecutionMode
+from ...risk.manual_apply import (
+    ManualRiskOverrideApplyRejected,
+    apply_manual_risk_override,
+)
 from ...risk.manual_preview import ManualRiskPreviewRejected, preview_manual_risk
 from ...schemas.common import ApiModel, Money
 
@@ -111,6 +115,31 @@ class ManualRiskPreviewOut(ApiModel):
     preview_hash: str
 
 
+class ManualRiskApplyRequest(_StrictApiModel):
+    """SAI-044 confirmation contains no client-authored economic values."""
+
+    idea_id: UUID
+    preset_id: str
+    current_mode: ExecutionLifecycleMode
+    preview_hash: str
+    owner_confirmed: bool
+    reason: str
+
+
+class ManualRiskOverrideOut(ApiModel):
+    override_id: UUID
+    idea_id: UUID
+    risk_snapshot_id: UUID
+    preset_id: str
+    execution_mode: ExecutionLifecycleMode
+    venue: str
+    account: str
+    effective_risk_pct: Money
+    effective_quantity: Money
+    effective_leverage: Money | None
+    created: bool
+
+
 def _state(db: Session) -> RiskState:
     state = db.get(RiskState, 1)
     if state is None:
@@ -149,6 +178,29 @@ def _limits(cfg, snap: RiskSnapshot | None) -> list[LimitOut]:
         ),
         row("cluster", "Риск кластера", "risk.max_cluster_risk", zero),
     ]
+
+
+def _manual_risk_idempotency_key(
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    mobile_idempotency_key: str | None = Header(
+        default=None,
+        alias="X-Idempotency-Key",
+    ),
+) -> str:
+    standard = (idempotency_key or "").strip()
+    mobile = (mobile_idempotency_key or "").strip()
+    if standard and mobile and standard != mobile:
+        raise HTTPException(
+            status_code=409,
+            detail="conflicting idempotency headers",
+        )
+    key = standard or mobile
+    if not key:
+        raise HTTPException(
+            status_code=422,
+            detail="Idempotency-Key or X-Idempotency-Key is required",
+        )
+    return key
 
 
 @router.get("/risk/dashboard", response_model=RiskDashboard)
@@ -229,6 +281,44 @@ def manual_risk_preview(
         issued_at=preview.issued_at,
         expires_at=preview.expires_at,
         preview_hash=preview.preview_hash,
+    )
+
+
+@router.post("/risk/override", response_model=ManualRiskOverrideOut)
+def manual_risk_override(
+    request: ManualRiskApplyRequest,
+    idempotency_key: str = Depends(_manual_risk_idempotency_key),
+    db: Session = Depends(get_db),
+) -> ManualRiskOverrideOut:
+    """SAI-044: apply one signed preview after an authoritative fresh recheck."""
+
+    try:
+        result = apply_manual_risk_override(
+            db,
+            idea_id=request.idea_id,
+            preset_id=request.preset_id,
+            current_mode=request.current_mode,
+            preview_hash=request.preview_hash,
+            owner_confirmed=request.owner_confirmed,
+            idempotency_key=idempotency_key,
+            reason=request.reason,
+        )
+    except ManualRiskOverrideApplyRejected as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    override = result.override
+    return ManualRiskOverrideOut(
+        override_id=override.id,
+        idea_id=override.idea_id,
+        risk_snapshot_id=override.risk_snapshot_id,
+        preset_id=override.preset,
+        execution_mode=override.execution_mode_snapshot,
+        venue=override.venue,
+        account=override.account,
+        effective_risk_pct=override.effective_risk_pct,
+        effective_quantity=override.effective_quantity,
+        effective_leverage=override.effective_leverage,
+        created=result.created,
     )
 
 
