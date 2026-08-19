@@ -655,8 +655,6 @@ def _resume_protection(
         and protection.provider_order_id is None
         and result.provider_order_id
     ):
-        # A crash/timeout can lose the ACK while the provider did create the
-        # stop. Exact read-back is authoritative enough to adopt that id.
         protection.provider_order_id = result.provider_order_id
 
     if _protection_match_is_exact(protection, result):
@@ -700,9 +698,6 @@ def _resume_protection(
         )
 
     if outcome == "MISSING":
-        # This is the one safe repair case: the provider has authoritatively
-        # shown that the expected stop is absent. Persist that evidence before
-        # issuing a replacement. UNKNOWN never reaches this path.
         protection.provider_order_id = None
         protection.status = "PENDING"
         db.flush()
@@ -716,6 +711,7 @@ def _resume_protection(
             port=port,
             now=now,
             allow_initial_arm=True,
+            reconcile_after_arm=False,
         )
 
     _schedule_retry(intent, now)
@@ -735,9 +731,8 @@ def _arm_or_resume_protection(
     port: ExecutionPort,
     now: datetime,
     allow_initial_arm: bool = False,
+    reconcile_after_arm: bool = True,
 ) -> ExecutionProcessOutcome:
-    # Fresh in-process exposure may arm immediately. Every resumed/ambiguous
-    # path must query the provider first; only authoritative MISSING may repair.
     if protection.provider_order_id or not allow_initial_arm:
         return _resume_protection(
             db,
@@ -806,11 +801,16 @@ def _arm_or_resume_protection(
             "quantity": str(filled_quantity),
         },
     )
-    # Persist the provider reference before the read-back query. A crash after
-    # this commit resumes with reconciliation, never a second stop submission.
+    if not reconcile_after_arm:
+        _schedule_retry(intent, now)
+        db.flush()
+        db.commit()
+        return ExecutionProcessOutcome(
+            False, "replacement protection submitted; reconciliation pending"
+        )
+
     db.flush()
     db.commit()
-
     return _resume_protection(
         db,
         intent=intent,
@@ -877,7 +877,6 @@ def _continue_after_ack(
         order=order,
         filled_quantity=filled_quantity,
     )
-    # Commit exposure + PROTECTION_PENDING before any protection provider I/O.
     db.commit()
 
     return _arm_or_resume_protection(
@@ -1083,7 +1082,6 @@ def process_execution_intent(
 
     order = _ensure_entry_order(db, intent, side=side, now=now)
     _advance(intent, ExecutionState.SUBMITTING)
-
     db.commit()
 
     try:
