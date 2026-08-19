@@ -1,8 +1,8 @@
-"""SAI-043 authoritative manual-risk preview.
+"""SAI-043/044 authoritative manual-risk preview proof.
 
-This module is deliberately read-only: it calculates and signs the exact
-owner-visible economics but does not persist an override or move money.
-SAI-044 will consume the signed preview token and add the write path.
+SAI-043 calculates and signs the exact owner-visible economics. SAI-044
+recalculates the same server-owned state and verifies that the short-lived
+signed proof still matches before any immutable override is persisted.
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ from .sizing import (
 
 
 class ManualRiskPreviewRejected(ValueError):
-    """The server cannot produce an authoritative manual-risk preview."""
+    """The server cannot produce or verify an authoritative manual-risk preview."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +48,8 @@ class ManualRiskPreview:
     risk_snapshot_id: uuid.UUID
     preset_id: str
     execution_mode: ExecutionLifecycleMode
+    execution_venue: str
+    execution_account: str
     allowed: bool
     warnings: tuple[str, ...]
     blockers: tuple[str, ...]
@@ -69,6 +71,7 @@ class ManualRiskPreview:
     issued_at: datetime
     expires_at: datetime
     preview_hash: str
+    proof_payload_json: str
 
 
 def _engine_limits(cfg: EngineConfig) -> RiskLimits:
@@ -175,6 +178,24 @@ def _instrument_spec(
     )
 
 
+def _execution_scope(
+    instrument: Instrument,
+    mode: ExecutionLifecycleMode,
+) -> tuple[str, str]:
+    """Return the server-owned logical execution scope for the preview.
+
+    The instrument master owns the venue. Account is an internal alias, not a
+    broker credential/account id; concrete provider credentials remain behind
+    the venue adapter. Mode is already server-owned and part of the signed
+    proof, so the alias cannot turn a PAPER preview into LIVE execution.
+    """
+
+    venue = str(getattr(instrument.venue, "value", instrument.venue)).strip()
+    if not venue:
+        raise ManualRiskPreviewRejected("idea instrument has no execution venue")
+    return venue, f"{mode.value.lower()}-default"
+
+
 def _preview_signing_key() -> bytes:
     """Derive a domain-separated signing key from server-only secrets.
 
@@ -205,19 +226,82 @@ def _decimal_text(value: Decimal | None) -> str | None:
     return "0" if text in {"", "-0"} else text
 
 
-def _sign_preview(payload: dict[str, object], *, expires_at: datetime) -> str:
-    expiry = int(expires_at.timestamp())
-    signed = dict(payload)
-    signed["expires_at_unix"] = expiry
-    canonical = json.dumps(
-        signed,
+def _canonical_json(payload: dict[str, object]) -> str:
+    return json.dumps(
+        payload,
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,
         default=str,
-    ).encode("utf-8")
+    )
+
+
+def _sign_preview(payload: dict[str, object], *, expires_at: datetime) -> str:
+    expiry = int(expires_at.timestamp())
+    signed = dict(payload)
+    signed["expires_at_unix"] = expiry
+    canonical = _canonical_json(signed).encode("utf-8")
     signature = hmac.new(_preview_signing_key(), canonical, hashlib.sha256).hexdigest()
     return f"v1.{expiry}.{signature}"
+
+
+def _normalise_instant(now: datetime | None) -> datetime:
+    instant = now or datetime.now(UTC)
+    if instant.tzinfo is None:
+        instant = instant.replace(tzinfo=UTC)
+    return instant.astimezone(UTC)
+
+
+def verify_manual_risk_preview_token(
+    preview: ManualRiskPreview,
+    token: str,
+    *,
+    now: datetime | None = None,
+) -> datetime:
+    """Verify a SAI-043 token against a freshly recalculated SAI-044 preview.
+
+    The token carries only version/expiry/HMAC. All economic material is
+    recomputed server-side and reconstructed from ``proof_payload_json``. Any
+    change to idea provenance, risk snapshot, mode, venue/account alias, config,
+    sizing or caps therefore invalidates the old proof instead of trusting
+    client-supplied values.
+    """
+
+    if not preview.allowed:
+        raise ManualRiskPreviewRejected("current risk state no longer allows override")
+    value = token.strip()
+    parts = value.split(".")
+    if len(parts) != 3 or parts[0] != "v1":
+        raise ManualRiskPreviewRejected("manual risk preview token is malformed")
+    _, expiry_text, signature = parts
+    try:
+        expiry_unix = int(expiry_text)
+    except ValueError as exc:
+        raise ManualRiskPreviewRejected("manual risk preview token is malformed") from exc
+    if len(signature) != 64:
+        raise ManualRiskPreviewRejected("manual risk preview token is malformed")
+    try:
+        int(signature, 16)
+    except ValueError as exc:
+        raise ManualRiskPreviewRejected("manual risk preview token is malformed") from exc
+
+    instant = _normalise_instant(now)
+    if expiry_unix <= int(instant.timestamp()):
+        raise ManualRiskPreviewRejected("manual risk preview token has expired")
+    expires_at = datetime.fromtimestamp(expiry_unix, tz=UTC)
+    try:
+        payload = json.loads(preview.proof_payload_json)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise ManualRiskPreviewRejected("manual risk preview proof is invalid") from exc
+    if not isinstance(payload, dict):
+        raise ManualRiskPreviewRejected("manual risk preview proof is invalid")
+
+    expected = _sign_preview(payload, expires_at=expires_at)
+    if not hmac.compare_digest(expected, value):
+        raise ManualRiskPreviewRejected(
+            "manual risk preview is stale or has an invalid signature; refresh"
+        )
+    return expires_at
 
 
 def _effective_budget(
@@ -256,9 +340,7 @@ def preview_manual_risk(
 ) -> ManualRiskPreview:
     """Calculate the exact owner-visible B7.3 preview and sign it with TTL."""
 
-    instant = now or datetime.now(UTC)
-    if instant.tzinfo is None:
-        instant = instant.replace(tzinfo=UTC)
+    instant = _normalise_instant(now)
     config = cfg or get_config()
     policy = envelope or get_manual_risk_envelope()
     if not policy.enabled:
@@ -284,6 +366,7 @@ def preview_manual_risk(
     ).scalar_one_or_none()
     if instrument is None:
         raise ManualRiskPreviewRejected("idea instrument does not exist")
+    execution_venue, execution_account = _execution_scope(instrument, server_mode)
 
     snapshot = _latest_snapshot(db)
     state = _risk_state(snapshot, idea)
@@ -327,10 +410,9 @@ def preview_manual_risk(
     ):
         blockers.append("NO_ADDITIONAL_RISK_HEADROOM")
 
-    # SAI-045 owns venue-tier margin/leverage/liquidation derivation. SAI-043
-    # exposes the required fields now but never invents them. An override cannot
-    # become LIVE through this read-only endpoint, and the later apply path must
-    # recalculate these fields before any money-moving intent is accepted.
+    # SAI-045 owns venue-tier margin/leverage/liquidation derivation. SAI-044
+    # still never invents these values: the immutable override can hold a null
+    # leverage proof, and downstream money-bearing intent remains gated.
     resulting_leverage: Decimal | None = None
     liquidation_distance_ratio: Decimal | None = None
     warnings.append("LEVERAGE_LIQUIDATION_DERIVATION_PENDING_SAI_045")
@@ -343,13 +425,15 @@ def preview_manual_risk(
     worst_case = effective_amount
     allowed = not blockers
 
-    issued_at = instant.astimezone(UTC)
+    issued_at = instant
     expires_at = issued_at + timedelta(minutes=policy.ttl_minutes)
     payload = {
         "idea_id": str(idea.id),
         "risk_snapshot_id": str(snapshot.id),
         "preset_id": preset,
         "execution_mode": server_mode.value,
+        "execution_venue": execution_venue,
+        "execution_account": execution_account,
         "strategy_version": idea.strategy_version,
         "risk_policy_version": idea.risk_policy_version,
         "engine_config_hash": config.config_hash,
@@ -367,6 +451,7 @@ def preview_manual_risk(
         "resulting_leverage": None,
         "liquidation_distance_ratio": None,
     }
+    proof_payload_json = _canonical_json(payload)
     preview_hash = _sign_preview(payload, expires_at=expires_at) if allowed else ""
 
     return ManualRiskPreview(
@@ -374,6 +459,8 @@ def preview_manual_risk(
         risk_snapshot_id=snapshot.id,
         preset_id=preset,
         execution_mode=server_mode,
+        execution_venue=execution_venue,
+        execution_account=execution_account,
         allowed=allowed,
         warnings=tuple(dict.fromkeys(warnings)),
         blockers=tuple(dict.fromkeys(blockers)),
@@ -395,6 +482,7 @@ def preview_manual_risk(
         issued_at=issued_at,
         expires_at=expires_at,
         preview_hash=preview_hash,
+        proof_payload_json=proof_payload_json,
     )
 
 
@@ -402,4 +490,5 @@ __all__ = [
     "ManualRiskPreview",
     "ManualRiskPreviewRejected",
     "preview_manual_risk",
+    "verify_manual_risk_preview_token",
 ]
