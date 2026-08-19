@@ -10,6 +10,7 @@ from sqlalchemy import select
 
 from app.db import get_db
 from app.execution.enums import ExecutionLifecycleMode
+from app.execution.mode import ModeChangeAuthorization, change_execution_mode
 from app.main import app
 from app.models import ExecutionRiskOverride, RiskSnapshot, TradeIdea
 from app.risk.manual_preview import (
@@ -55,13 +56,13 @@ def _seed(session, instrument, now):
     return idea, risk
 
 
-def _preview(client, idea, *, preset_id: str = "BOOST_2") -> dict:
+def _preview(client, idea, *, preset_id: str = "BOOST_2", mode: str = "PAPER") -> dict:
     response = client.post(
         "/api/v1/risk/preview",
         json={
             "idea_id": str(idea.id),
             "preset_id": preset_id,
-            "current_mode": "PAPER",
+            "current_mode": mode,
         },
     )
     assert response.status_code == 200
@@ -213,6 +214,37 @@ def test_sai_044_expired_signed_preview_fails_closed(
             now=preview.expires_at + timedelta(seconds=1),
         )
 
+    assert session.execute(select(ExecutionRiskOverride)).scalars().all() == []
+
+
+def test_sai_044_apply_is_paper_only_until_leverage_liquidation_proof_exists(
+    client,
+    session,
+    instrument,
+    now,
+):
+    idea, _ = _seed(session, instrument, now)
+    change_execution_mode(
+        session,
+        target=ExecutionLifecycleMode.SANDBOX,
+        actor="test",
+        reason="exercise non-paper SAI-044 fail-closed boundary",
+        authorization=ModeChangeAuthorization(
+            allowed=True,
+            actor="test-promotion-guard",
+            reason="test-only authorized transition",
+        ),
+    )
+    preview = _preview(client, idea, preset_id="BOOST_1", mode="SANDBOX")
+
+    response = client.post(
+        "/api/v1/risk/override",
+        json=_apply_payload(idea, preview),
+        headers={"X-Idempotency-Key": "manual-risk-sandbox"},
+    )
+
+    assert response.status_code == 409
+    assert "paper" in str(response.json()).lower()
     assert session.execute(select(ExecutionRiskOverride)).scalars().all() == []
 
 
