@@ -102,7 +102,11 @@ class RiskOnController extends ChangeNotifier {
     final cleanVenue = venue.trim();
     final cleanAccount = account.trim();
     if (cleanVenue.isEmpty || cleanAccount.isEmpty) {
-      throw StateError('venue and account are required for RISK ON preview');
+      _preview = null;
+      _result = null;
+      _error = 'Укажите площадку и счёт для RISK ON.';
+      notifyListeners();
+      throw StateError(_error);
     }
     _loading = true;
     _error = null;
@@ -136,7 +140,11 @@ class RiskOnController extends ChangeNotifier {
         bindingLimit: '${data['binding_limit'] ?? ''}',
         previewHash: '${data['preview_hash'] ?? ''}',
       );
-      if (result.previewHash.trim().isEmpty) {
+      // Blocked previews intentionally have no confirmable hash: they still
+      // must reach the UI so the owner sees the exact server blockers. An
+      // allowed preview without a hash cannot be confirmed safely and fails
+      // closed instead.
+      if (result.allowed && result.previewHash.trim().isEmpty) {
         throw StateError('server returned empty RISK ON preview hash');
       }
       _preview = result;
