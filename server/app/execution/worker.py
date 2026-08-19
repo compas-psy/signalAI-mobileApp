@@ -27,6 +27,7 @@ from .domain import transition_execution_state
 from .enums import ExecutionKillSwitchLevel, ExecutionState
 from .kill_switch import (
     effective_execution_kill_switch_level,
+    execution_control_lock,
     get_execution_kill_switch_level,
 )
 from .service import (
@@ -182,17 +183,13 @@ def _release_lease(db: Session, *, intent_id, worker_id: str) -> None:
     db.flush()
 
 
-def _locked_kill_switch_level(db: Session) -> ExecutionKillSwitchLevel:
-    """Serialize a new-entry decision against a concurrent owner halt.
-
-    The row lock stays held until ``process_execution_intent`` commits the
-    durable SUBMITTING order immediately before provider I/O. Therefore either
-    the halt wins first and no submit begins, or the submit is durably ordered
-    before the halt; there is no silent check-then-submit gap.
-    """
+def _fresh_kill_switch_level(db: Session) -> ExecutionKillSwitchLevel:
+    """Read the exact current level without holding a long transaction row lock."""
 
     state = db.execute(
-        select(RiskState).where(RiskState.id == 1).with_for_update()
+        select(RiskState)
+        .where(RiskState.id == 1)
+        .execution_options(populate_existing=True)
     ).scalar_one()
     return effective_execution_kill_switch_level(state)
 
@@ -205,7 +202,7 @@ def _apply_pre_submit_kill_switch(
     if intent.state not in _PRE_SUBMIT:
         return None
 
-    level = _locked_kill_switch_level(db)
+    level = _fresh_kill_switch_level(db)
     if level == ExecutionKillSwitchLevel.CLEAR:
         return None
     if level == ExecutionKillSwitchLevel.HALT_NEW_ENTRIES:
@@ -220,6 +217,72 @@ def _apply_pre_submit_kill_switch(
     intent.state = transition_execution_state(intent.state, ExecutionState.CANCELLED)
     db.flush()
     return ExecutionProcessOutcome(True, None)
+
+
+class _KillSwitchGuardedPort(ExecutionPort):
+    """Delegate venue work, guarding only the money-crossing entry submit.
+
+    Reconciliation, fill capture and protection intentionally remain available
+    while the switch is active. Blocking those safety operations could turn an
+    emergency halt into an unprotected position.
+    """
+
+    def __init__(self, db: Session, inner: ExecutionPort) -> None:
+        self._db = db
+        self._inner = inner
+
+    def reconcile_before_submit(self, intent: ExecutionIntent) -> PreSubmitReconciliation:
+        return self._inner.reconcile_before_submit(intent)
+
+    def reconcile_submission(
+        self,
+        intent: ExecutionIntent,
+        order: ExecutionOrder,
+    ) -> SubmissionReconciliation:
+        return self._inner.reconcile_submission(intent, order)
+
+    def submit(
+        self,
+        intent: ExecutionIntent,
+        *,
+        client_order_id: str,
+    ) -> ExecutionSubmitAck:
+        with execution_control_lock(self._db):
+            level = _fresh_kill_switch_level(self._db)
+            if level != ExecutionKillSwitchLevel.CLEAR:
+                # SAI-027 already treats ConnectionError after durable SUBMITTING
+                # as ambiguous and reconciles before any later retry. Reuse that
+                # fail-closed path instead of inventing a second state machine.
+                raise ConnectionError(
+                    f"{level.value}: submit blocked before provider I/O"
+                )
+            return self._inner.submit(intent, client_order_id=client_order_id)
+
+    def consume_fills(
+        self,
+        intent: ExecutionIntent,
+        order: ExecutionOrder,
+    ) -> tuple[ExecutionFillSnapshot, ...] | list[ExecutionFillSnapshot]:
+        return self._inner.consume_fills(intent, order)
+
+    def arm_protection(
+        self,
+        intent: ExecutionIntent,
+        order: ExecutionOrder,
+        *,
+        filled_quantity: Decimal,
+    ) -> ExecutionProtectionAck:
+        return self._inner.arm_protection(
+            intent,
+            order,
+            filled_quantity=filled_quantity,
+        )
+
+    def reconcile(self, intent: ExecutionIntent) -> None:
+        self._inner.reconcile(intent)
+
+    def manage_until_close(self, intent: ExecutionIntent) -> None:
+        self._inner.manage_until_close(intent)
 
 
 def process_next_intent(
@@ -273,9 +336,15 @@ def process_next_intent(
                 return kill_outcome
 
             # SUBMITTING/AMBIGUOUS/RECONCILING/ACKNOWLEDGED intentionally bypass
-            # a new-entry halt: they must finish reconciliation, fill capture and
-            # protection so the kill switch cannot create naked risk.
-            return process_execution_intent(db, intent_id=intent_id, port=port)
+            # the early new-entry halt so they can finish reconciliation, fill
+            # capture and protection. The wrapped port independently guards the
+            # actual provider submit after SAI-027's durable SUBMITTING commit.
+            guarded_port = _KillSwitchGuardedPort(db, port)
+            return process_execution_intent(
+                db,
+                intent_id=intent_id,
+                port=guarded_port,
+            )
     finally:
         _release_lease(db, intent_id=intent_id, worker_id=worker_id)
         db.commit()
