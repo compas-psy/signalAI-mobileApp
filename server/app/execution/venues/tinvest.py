@@ -456,64 +456,103 @@ class TInvestAdapter(VenueAdapter):
                 "T-Invest active-stop response lacks stopOrders"
             )
 
-        row = next(
-            (
-                item
-                for item in raw_orders
-                if isinstance(item, Mapping)
-                and str(item.get("stopOrderId") or "")
-                == str(protection.provider_order_id or "")
-            ),
-            None,
-        )
-        if row is None:
-            return ProtectionReconciliation.missing(
-                "T-Invest protective stop is not active"
-            )
-
-        try:
-            quantity = Decimal(
-                str(row.get("lotsRequested", row.get("quantity", "0")))
-            )
-            stop_price = quotation_to_decimal(row.get("stopPrice"))
-        except Exception as exc:
-            if isinstance(exc, TInvestProviderError):
-                return ProtectionReconciliation.unknown(str(exc))
-            return ProtectionReconciliation.unknown(
-                f"invalid T-Invest stop snapshot: {exc}"
-            )
-
         expected_direction = (
             "STOP_ORDER_DIRECTION_SELL"
             if plan.long
             else "STOP_ORDER_DIRECTION_BUY"
         )
-        order_type = str(
-            row.get("orderType") or row.get("stopOrderType") or ""
-        )
-        if str(row.get("instrumentUid") or "") != plan.instrument_uid:
-            return ProtectionReconciliation.missing(
-                "T-Invest stop instrument does not match execution plan"
+        expected_quantity = Decimal(protection.quantity)
+        expected_stop_price = Decimal(protection.stop_price)
+        provider_order_id = str(protection.provider_order_id or "")
+
+        def parse_exact_candidate(
+            item: Mapping[str, object],
+        ) -> tuple[str, Decimal, Decimal] | None:
+            if str(item.get("instrumentUid") or "") != plan.instrument_uid:
+                return None
+            if str(item.get("direction") or "") != expected_direction:
+                return None
+            order_type = str(
+                item.get("orderType") or item.get("stopOrderType") or ""
             )
-        if str(row.get("direction") or "") != expected_direction:
-            return ProtectionReconciliation.missing(
-                "T-Invest stop direction does not protect the position"
+            if order_type != "STOP_ORDER_TYPE_STOP_LOSS":
+                return None
+            stop_id = str(item.get("stopOrderId") or "")
+            if not stop_id:
+                raise TInvestProviderError(
+                    code="INVALID_RESPONSE",
+                    message="active T-Invest stop lacks stopOrderId",
+                )
+            try:
+                quantity = Decimal(
+                    str(item.get("lotsRequested", item.get("quantity", "0")))
+                )
+                stop_price = quotation_to_decimal(item.get("stopPrice"))
+            except Exception as exc:
+                if isinstance(exc, TInvestProviderError):
+                    raise
+                raise TInvestProviderError(
+                    code="INVALID_RESPONSE",
+                    message=f"invalid T-Invest stop snapshot: {exc}",
+                ) from exc
+            if quantity != expected_quantity or stop_price != expected_stop_price:
+                return None
+            return stop_id, quantity, stop_price
+
+        if provider_order_id:
+            row = next(
+                (
+                    item
+                    for item in raw_orders
+                    if isinstance(item, Mapping)
+                    and str(item.get("stopOrderId") or "") == provider_order_id
+                ),
+                None,
             )
-        if order_type != "STOP_ORDER_TYPE_STOP_LOSS":
-            return ProtectionReconciliation.missing(
-                "T-Invest active protection is not a stop-loss"
-            )
-        if quantity != Decimal(protection.quantity):
-            return ProtectionReconciliation.missing(
-                f"T-Invest stop quantity {quantity} != expected {protection.quantity}"
-            )
-        if stop_price != Decimal(protection.stop_price):
-            return ProtectionReconciliation.missing(
-                f"T-Invest stop price {stop_price} != expected {protection.stop_price}"
+            if row is None:
+                return ProtectionReconciliation.missing(
+                    "T-Invest protective stop is not active"
+                )
+            try:
+                exact = parse_exact_candidate(row)
+            except TInvestProviderError as exc:
+                return ProtectionReconciliation.unknown(str(exc))
+            if exact is None:
+                return ProtectionReconciliation.missing(
+                    "T-Invest active stop does not exactly match instrument, direction, quantity and price"
+                )
+            stop_id, quantity, stop_price = exact
+            return ProtectionReconciliation.matched(
+                provider_order_id=stop_id,
+                status="ACTIVE",
+                quantity=quantity,
+                stop_price=stop_price,
+                reconciled_at=self._clock(),
             )
 
+        exact_candidates: list[tuple[str, Decimal, Decimal]] = []
+        for raw in raw_orders:
+            if not isinstance(raw, Mapping):
+                continue
+            try:
+                candidate = parse_exact_candidate(raw)
+            except TInvestProviderError as exc:
+                return ProtectionReconciliation.unknown(str(exc))
+            if candidate is not None:
+                exact_candidates.append(candidate)
+
+        if not exact_candidates:
+            return ProtectionReconciliation.missing(
+                "T-Invest exact protective stop is not active"
+            )
+        if len(exact_candidates) > 1:
+            return ProtectionReconciliation.unknown(
+                "multiple exact active T-Invest stops match the lost acknowledgement"
+            )
+
+        stop_id, quantity, stop_price = exact_candidates[0]
         return ProtectionReconciliation.matched(
-            provider_order_id=str(protection.provider_order_id or ""),
+            provider_order_id=stop_id,
             status="ACTIVE",
             quantity=quantity,
             stop_price=stop_price,
