@@ -5,13 +5,18 @@ I/O is injected through ``ExecutionPort``. Submit recovery is replay-safe and
 protection is never considered active until the provider state is reconciled.
 A naked position that cannot prove protection within the accepted 30-second SLA
 moves to a durable emergency-flatten path with its own idempotent order.
+
+Partial fills remain in the protection/entry-settling loop until the entry is
+terminal (or the full planned quantity is observed) and every observed fill is
+covered by provider-confirmed protection. This preserves GTC entry economics
+without treating the first protected partial fill as a completed entry.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Iterable, Protocol
 from uuid import UUID
 
@@ -34,6 +39,20 @@ from .enums import ExecutionState
 _RETRY_BASE_SECONDS = 5
 _RETRY_MAX_SECONDS = 300
 _PROTECTION_SLA = timedelta(seconds=30)
+_ENTRY_TERMINAL_STATUSES = frozenset(
+    {
+        "FILLED",
+        "CANCELLED",
+        "CANCELED",
+        "REJECTED",
+        "EXPIRED",
+        "DEACTIVATED",
+        "EXECUTION_REPORT_STATUS_FILL",
+        "EXECUTION_REPORT_STATUS_CANCELLED",
+        "EXECUTION_REPORT_STATUS_CANCELED",
+        "EXECUTION_REPORT_STATUS_REJECTED",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -296,23 +315,114 @@ def _filled_quantity(db: Session, intent: ExecutionIntent) -> Decimal:
     return sum((fill.quantity for fill in fills), start=Decimal("0"))
 
 
-def _first_fill_at(db: Session, intent: ExecutionIntent) -> datetime | None:
-    return db.execute(
-        select(ExecutionFill.filled_at)
-        .where(ExecutionFill.intent_id == intent.id)
-        .order_by(ExecutionFill.filled_at.asc())
-        .limit(1)
-    ).scalar_one_or_none()
+def _confirmed_protection_quantity(db: Session, intent: ExecutionIntent) -> Decimal:
+    events = db.execute(
+        select(ExecutionReconciliationEvent)
+        .where(
+            ExecutionReconciliationEvent.intent_id == intent.id,
+            ExecutionReconciliationEvent.event_type == "PROTECTION_RECONCILIATION",
+            ExecutionReconciliationEvent.outcome == "MATCHED",
+        )
+        .order_by(
+            ExecutionReconciliationEvent.occurred_at.desc(),
+            ExecutionReconciliationEvent.id.desc(),
+        )
+    ).scalars()
+    for event in events:
+        raw = (event.detail_json or {}).get("quantity")
+        if raw is None:
+            continue
+        try:
+            quantity = Decimal(str(raw))
+        except (InvalidOperation, ValueError):
+            continue
+        if quantity >= 0:
+            return quantity
+    return Decimal("0")
+
+
+def _uncovered_since(
+    db: Session,
+    intent: ExecutionIntent,
+    *,
+    confirmed_quantity: Decimal,
+) -> datetime | None:
+    fills = list(
+        db.execute(
+            select(ExecutionFill)
+            .where(ExecutionFill.intent_id == intent.id)
+            .order_by(ExecutionFill.filled_at.asc(), ExecutionFill.id.asc())
+        ).scalars()
+    )
+    cumulative = Decimal("0")
+    for fill in fills:
+        cumulative += fill.quantity
+        if cumulative > confirmed_quantity:
+            return fill.filled_at
+    return None
 
 
 def _protection_sla_expired(
     db: Session,
     intent: ExecutionIntent,
+    protection: ExecutionProtection,
     *,
     now: datetime,
 ) -> bool:
-    exposed_at = _first_fill_at(db, intent)
+    confirmed_quantity = _confirmed_protection_quantity(db, intent)
+    if confirmed_quantity >= protection.quantity:
+        return False
+    exposed_at = _uncovered_since(
+        db,
+        intent,
+        confirmed_quantity=confirmed_quantity,
+    )
     return exposed_at is not None and now - exposed_at >= _PROTECTION_SLA
+
+
+def _capture_fills(
+    db: Session,
+    *,
+    intent: ExecutionIntent,
+    order: ExecutionOrder,
+    port: ExecutionPort,
+) -> Decimal:
+    snapshots = list(port.consume_fills(intent, order))
+    existing_fills = list(
+        db.execute(
+            select(ExecutionFill).where(ExecutionFill.order_id == order.id)
+        ).scalars()
+    )
+    known_fill_ids = {fill.provider_fill_id for fill in existing_fills}
+
+    for snapshot in snapshots:
+        if snapshot.quantity <= 0 or snapshot.provider_fill_id in known_fill_ids:
+            continue
+        fill = ExecutionFill(
+            intent_id=intent.id,
+            order_id=order.id,
+            provider_fill_id=snapshot.provider_fill_id,
+            quantity=snapshot.quantity,
+            price=snapshot.price,
+            fee_amount=snapshot.fee_amount,
+            fee_currency=snapshot.fee_currency,
+            filled_at=snapshot.filled_at,
+        )
+        db.add(fill)
+        existing_fills.append(fill)
+        known_fill_ids.add(snapshot.provider_fill_id)
+
+    db.flush()
+    return sum(
+        (fill.quantity for fill in existing_fills),
+        start=Decimal("0"),
+    )
+
+
+def _entry_status_is_terminal(status: str | None) -> bool:
+    if status is None:
+        return False
+    return str(status).strip().upper() in _ENTRY_TERMINAL_STATUSES
 
 
 def _ensure_entry_order(
@@ -377,7 +487,9 @@ def _ensure_protection_row(
         db.add(protection)
     else:
         protection.order_id = order.id
-        protection.quantity = filled_quantity
+        if filled_quantity > protection.quantity:
+            protection.quantity = filled_quantity
+            protection.status = "PENDING"
         protection.stop_price = intent.planned_stop_price
         if protection.provider_order_id is None:
             protection.status = "PENDING"
@@ -398,18 +510,65 @@ def _protection_match_is_exact(
     )
 
 
+def _entry_is_settled(
+    db: Session,
+    *,
+    intent: ExecutionIntent,
+    order: ExecutionOrder,
+    port: ExecutionPort,
+    now: datetime,
+) -> bool:
+    if _filled_quantity(db, intent) >= intent.planned_quantity:
+        return True
+
+    try:
+        result = port.reconcile_submission(intent, order)
+    except Exception as exc:
+        result = SubmissionReconciliation.unknown(str(exc))
+
+    outcome = str(result.outcome).upper()
+    detail = {"client_order_id": order.client_order_id}
+    if result.status:
+        detail["status"] = result.status
+    if result.reason:
+        detail["reason"] = result.reason
+    _record_reconciliation(
+        db,
+        intent,
+        event_type="ENTRY_SETTLING",
+        outcome=outcome,
+        detail=detail,
+    )
+
+    if outcome != "FOUND":
+        _schedule_retry(intent, now)
+        return False
+    if not result.provider_order_id or not result.status or result.acknowledged_at is None:
+        _schedule_retry(intent, now)
+        return False
+
+    order.provider_order_id = result.provider_order_id
+    order.status = result.status
+    order.acknowledged_at = result.acknowledged_at
+    if _entry_status_is_terminal(result.status):
+        return True
+
+    _schedule_retry(intent, now)
+    return False
+
+
 def _finish_protected(
     db: Session,
     *,
     intent: ExecutionIntent,
+    order: ExecutionOrder,
     protection: ExecutionProtection,
     result: ProtectionReconciliation,
     port: ExecutionPort,
+    now: datetime,
 ) -> ExecutionProcessOutcome:
     protection.status = result.status or "ACTIVE"
     protection.last_reconciled_at = result.reconciled_at
-    intent.next_retry_at = None
-    _advance(intent, ExecutionState.PROTECTED)
     _record_reconciliation(
         db,
         intent,
@@ -422,6 +581,22 @@ def _finish_protected(
         },
     )
     db.flush()
+
+    if not _entry_is_settled(
+        db,
+        intent=intent,
+        order=order,
+        port=port,
+        now=now,
+    ):
+        db.commit()
+        return ExecutionProcessOutcome(
+            False,
+            "entry still settling after protected partial fill",
+        )
+
+    intent.next_retry_at = None
+    _advance(intent, ExecutionState.PROTECTED)
     db.commit()
 
     port.reconcile(intent)
@@ -661,9 +836,11 @@ def _resume_protection(
         return _finish_protected(
             db,
             intent=intent,
+            order=order,
             protection=protection,
             result=result,
             port=port,
+            now=now,
         )
 
     reason = result.reason
@@ -687,7 +864,7 @@ def _resume_protection(
         },
     )
 
-    if _protection_sla_expired(db, intent, now=now):
+    if _protection_sla_expired(db, intent, protection, now=now):
         db.flush()
         return _begin_emergency_flatten(
             db,
@@ -698,6 +875,8 @@ def _resume_protection(
         )
 
     if outcome == "MISSING":
+        confirmed_quantity = _confirmed_protection_quantity(db, intent)
+        is_expansion = Decimal(protection.quantity) > confirmed_quantity > 0
         protection.provider_order_id = None
         protection.status = "PENDING"
         db.flush()
@@ -711,7 +890,7 @@ def _resume_protection(
             port=port,
             now=now,
             allow_initial_arm=True,
-            reconcile_after_arm=False,
+            reconcile_after_arm=is_expansion,
         )
 
     _schedule_retry(intent, now)
@@ -758,7 +937,7 @@ def _arm_or_resume_protection(
             outcome="AMBIGUOUS",
             detail={"reason": str(exc), "quantity": str(filled_quantity)},
         )
-        if _protection_sla_expired(db, intent, now=now):
+        if _protection_sla_expired(db, intent, protection, now=now):
             db.flush()
             return _begin_emergency_flatten(
                 db,
@@ -829,35 +1008,11 @@ def _continue_after_ack(
     port: ExecutionPort,
     now: datetime,
 ) -> ExecutionProcessOutcome:
-    snapshots = list(port.consume_fills(intent, order))
-    existing_fills = list(
-        db.execute(
-            select(ExecutionFill).where(ExecutionFill.order_id == order.id)
-        ).scalars()
-    )
-    known_fill_ids = {fill.provider_fill_id for fill in existing_fills}
-
-    for snapshot in snapshots:
-        if snapshot.quantity <= 0 or snapshot.provider_fill_id in known_fill_ids:
-            continue
-        fill = ExecutionFill(
-            intent_id=intent.id,
-            order_id=order.id,
-            provider_fill_id=snapshot.provider_fill_id,
-            quantity=snapshot.quantity,
-            price=snapshot.price,
-            fee_amount=snapshot.fee_amount,
-            fee_currency=snapshot.fee_currency,
-            filled_at=snapshot.filled_at,
-        )
-        db.add(fill)
-        existing_fills.append(fill)
-        known_fill_ids.add(snapshot.provider_fill_id)
-
-    db.flush()
-    filled_quantity = sum(
-        (fill.quantity for fill in existing_fills),
-        start=Decimal("0"),
+    filled_quantity = _capture_fills(
+        db,
+        intent=intent,
+        order=order,
+        port=port,
     )
     if filled_quantity <= 0:
         _schedule_retry(intent, now)
@@ -998,20 +1153,47 @@ def process_execution_intent(
             return ExecutionProcessOutcome(
                 False, "protection-pending execution has no durable entry order"
             )
+
+        filled_quantity = _capture_fills(
+            db,
+            intent=intent,
+            order=order,
+            port=port,
+        )
+        if filled_quantity <= 0:
+            return ExecutionProcessOutcome(
+                False, "protection-pending execution has no durable fills"
+            )
+
         protection = _stop_protection(db, intent)
         if protection is None:
-            filled_quantity = _filled_quantity(db, intent)
-            if filled_quantity <= 0:
-                return ExecutionProcessOutcome(
-                    False, "protection-pending execution has no durable fills"
-                )
             protection = _ensure_protection_row(
                 db,
                 intent=intent,
                 order=order,
                 filled_quantity=filled_quantity,
             )
-            db.commit()
+        elif filled_quantity > protection.quantity:
+            protection = _ensure_protection_row(
+                db,
+                intent=intent,
+                order=order,
+                filled_quantity=filled_quantity,
+            )
+            _record_reconciliation(
+                db,
+                intent,
+                event_type="ENTRY_EXPOSURE",
+                outcome="INCREASED",
+                detail={
+                    "filled_quantity": str(filled_quantity),
+                    "confirmed_protection_quantity": str(
+                        _confirmed_protection_quantity(db, intent)
+                    ),
+                },
+            )
+        db.commit()
+
         return _arm_or_resume_protection(
             db,
             intent=intent,
