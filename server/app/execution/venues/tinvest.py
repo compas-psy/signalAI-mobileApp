@@ -1,17 +1,8 @@
-"""T-Invest futures parity adapter for SAI-038.
+"""T-Invest futures adapter parity plus SAI-039 protection safety.
 
-The module extracts the provider semantics already proven by the legacy Flutter
-``TInvestBroker`` behind the server-side ``VenueAdapter`` contract.  It has no
-HTTP/token factory and is not registered by the production execution worker, so
-adding it cannot enable real-money execution by itself.
-
-T-Invest uses a UUID request id for order idempotency while the durable SignalAI
-core uses its own ``e-<intent hex>`` client id.  The adapter therefore derives a
-stable provider UUID from the immutable execution intent.  Ambiguous submits can
-be queried by ``ORDER_ID_TYPE_REQUEST`` without re-submitting a second order.
-
-SAI-039 owns protection-first production wiring, partial-fill protection resize,
-and provider position/protection reconciliation.
+The module preserves the provider semantics extracted from the legacy Flutter
+``TInvestBroker`` behind the server-side ``VenueAdapter`` contract. It has no
+HTTP/token factory and is not registered by the production execution worker.
 """
 
 from __future__ import annotations
@@ -22,12 +13,13 @@ from decimal import Decimal, ROUND_FLOOR, ROUND_HALF_UP
 from typing import Callable, Mapping, Protocol
 from uuid import NAMESPACE_URL, uuid5
 
-from ...models.execution import ExecutionIntent, ExecutionOrder
+from ...models.execution import ExecutionIntent, ExecutionOrder, ExecutionProtection
 from ..service import (
     ExecutionFillSnapshot,
     ExecutionProtectionAck,
     ExecutionSubmitAck,
     PreSubmitReconciliation,
+    ProtectionReconciliation,
     SubmissionReconciliation,
 )
 from .base import VenueAdapter
@@ -49,8 +41,6 @@ class TInvestProviderError(RuntimeError):
 
 
 class TInvestTransport(Protocol):
-    """Injected REST/gRPC-equivalent transport; credentials stay outside adapter."""
-
     def call(
         self,
         service: str,
@@ -61,8 +51,6 @@ class TInvestTransport(Protocol):
 
 @dataclass(frozen=True)
 class TInvestOrderPlan:
-    """Provider-facing futures order plan matching the existing mobile path."""
-
     account_id: str
     instrument_uid: str
     ticker: str
@@ -75,15 +63,13 @@ class TInvestOrderPlan:
 
 
 def provider_request_id(intent: ExecutionIntent, *, purpose: str) -> str:
-    """Stable provider UID36 distinct for entry and protection operations."""
+    """Stable provider UID36 distinct for entry, stop and emergency close."""
 
     intent_id = getattr(intent, "id")
     return str(uuid5(NAMESPACE_URL, f"signalai:tinvest:{intent_id.hex}:{purpose}"))
 
 
 def align_price(price: Decimal, step: Decimal) -> Decimal:
-    """Align positive market price to nearest provider step using exact Decimal."""
-
     value = Decimal(price)
     increment = Decimal(step)
     if increment <= 0:
@@ -93,8 +79,6 @@ def align_price(price: Decimal, step: Decimal) -> Decimal:
 
 
 def decimal_to_quotation(value: Decimal) -> dict[str, object]:
-    """Convert Decimal to T-Invest units/nano without binary floating point."""
-
     decimal = Decimal(value)
     negative = decimal < 0
     absolute = -decimal if negative else decimal
@@ -142,6 +126,27 @@ def _parse_time(value: object, fallback: datetime) -> datetime:
     return fallback
 
 
+def _exact_lots(quantity: Decimal) -> int:
+    value = Decimal(quantity)
+    integral = value.to_integral_value()
+    if value <= 0 or value != integral:
+        raise TInvestProviderError(
+            code="INVALID_ORDER",
+            message=f"T-Invest safety quantity must be positive whole lots, got {value}",
+        )
+    return int(integral)
+
+
+def _emergency_status(status: object) -> str:
+    value = str(status or "")
+    return {
+        "EXECUTION_REPORT_STATUS_FILL": "FILLED",
+        "EXECUTION_REPORT_STATUS_PARTIALLYFILL": "PARTIALLY_FILLED",
+        "EXECUTION_REPORT_STATUS_CANCELLED": "CANCELLED",
+        "EXECUTION_REPORT_STATUS_REJECTED": "REJECTED",
+    }.get(value, value)
+
+
 class TInvestAdapter(VenueAdapter):
     """Provider-neutral wrapper over the proven T-Invest futures semantics."""
 
@@ -162,8 +167,6 @@ class TInvestAdapter(VenueAdapter):
 
     @property
     def capabilities(self) -> VenueCapabilities:
-        # Provider support is intentionally not enough: claim only server-side
-        # behavior implemented in this adapter slice.
         return VenueCapabilities(
             limit_order=True,
             stop_protection=True,
@@ -187,8 +190,6 @@ class TInvestAdapter(VenueAdapter):
             raise TInvestProviderError(
                 code="TRANSPORT", message=str(exc) or exc.__class__.__name__
             ) from exc
-        # Test doubles and future transports may return a structured exception
-        # sentinel instead of raising it. Normalize that boundary here.
         if isinstance(response, TInvestProviderError):
             raise response
         if not isinstance(response, Mapping):
@@ -207,6 +208,7 @@ class TInvestAdapter(VenueAdapter):
         intent: ExecutionIntent,
         *,
         provider_order_id: str | None = None,
+        request_purpose: str = "entry",
     ) -> Mapping[str, object]:
         plan = self._plan_resolver(intent)
         service, _, get_method = self._order_service()
@@ -218,7 +220,7 @@ class TInvestAdapter(VenueAdapter):
         else:
             body = {
                 "accountId": plan.account_id,
-                "orderId": provider_request_id(intent, purpose="entry"),
+                "orderId": provider_request_id(intent, purpose=request_purpose),
                 "orderIdType": "ORDER_ID_TYPE_REQUEST",
             }
         return self._call(service, get_method, body)
@@ -251,7 +253,7 @@ class TInvestAdapter(VenueAdapter):
         intent: ExecutionIntent,
         order: ExecutionOrder,
     ) -> SubmissionReconciliation:
-        del order  # Provider reconciliation uses the stable request UID.
+        del order
         try:
             state = self._get_order_state(intent)
         except TInvestProviderError as exc:
@@ -277,8 +279,6 @@ class TInvestAdapter(VenueAdapter):
         *,
         client_order_id: str,
     ) -> ExecutionSubmitAck:
-        # SignalAI retains the internal e-* id in durable evidence; T-Invest
-        # requires a UID36, so provider identity is derived from the same intent.
         del client_order_id
         plan = self._plan_resolver(intent)
         if plan.stop_entry:
@@ -363,9 +363,6 @@ class TInvestAdapter(VenueAdapter):
                     code="INVALID_RESPONSE",
                     message="execution stage lacks tradeId/positive quantity/price",
                 )
-            # executedCommission is aggregate order-level evidence. Assigning it
-            # to every stage would multiply fees, so SAI-038 leaves stage fees at
-            # zero until a per-trade commission source is wired.
             snapshots.append(
                 ExecutionFillSnapshot(
                     provider_fill_id=provider_fill_id,
@@ -385,14 +382,9 @@ class TInvestAdapter(VenueAdapter):
         *,
         filled_quantity: Decimal,
     ) -> ExecutionProtectionAck:
-        # Legacy T-Invest path protects the planned lot quantity. SAI-039 owns
-        # partial-fill resize/reconciliation before this adapter is production-wired.
-        del order, filled_quantity
+        del order
         plan = self._plan_resolver(intent)
-        if plan.quantity_lots < 1:
-            raise TInvestProviderError(
-                code="INVALID_ORDER", message="protection quantity is below one lot"
-            )
+        lots = _exact_lots(filled_quantity)
         if self._sandbox:
             service = "SandboxService"
             method = "PostSandboxStopOrder"
@@ -403,7 +395,7 @@ class TInvestAdapter(VenueAdapter):
         body: dict[str, object] = {
             "accountId": plan.account_id,
             "instrumentId": plan.instrument_uid,
-            "quantity": str(plan.quantity_lots),
+            "quantity": str(lots),
             "stopPrice": decimal_to_quotation(
                 align_price(plan.stop_loss, plan.price_step)
             ),
@@ -436,13 +428,211 @@ class TInvestAdapter(VenueAdapter):
             armed_at=self._clock(),
         )
 
+    def reconcile_protection(
+        self,
+        intent: ExecutionIntent,
+        order: ExecutionOrder,
+        protection: ExecutionProtection,
+    ) -> ProtectionReconciliation:
+        del order
+        plan = self._plan_resolver(intent)
+        service = "SandboxService" if self._sandbox else "StopOrdersService"
+        method = "GetSandboxStopOrders" if self._sandbox else "GetStopOrders"
+        try:
+            response = self._call(
+                service,
+                method,
+                {
+                    "accountId": plan.account_id,
+                    "status": "STOP_ORDER_STATUS_ACTIVE",
+                },
+            )
+        except TInvestProviderError as exc:
+            return ProtectionReconciliation.unknown(str(exc))
+
+        raw_orders = response.get("stopOrders")
+        if not isinstance(raw_orders, list):
+            return ProtectionReconciliation.unknown(
+                "T-Invest active-stop response lacks stopOrders"
+            )
+
+        expected_direction = (
+            "STOP_ORDER_DIRECTION_SELL"
+            if plan.long
+            else "STOP_ORDER_DIRECTION_BUY"
+        )
+        expected_quantity = Decimal(protection.quantity)
+        expected_stop_price = Decimal(protection.stop_price)
+        provider_order_id = str(protection.provider_order_id or "")
+
+        def parse_exact_candidate(
+            item: Mapping[str, object],
+        ) -> tuple[str, Decimal, Decimal] | None:
+            if str(item.get("instrumentUid") or "") != plan.instrument_uid:
+                return None
+            if str(item.get("direction") or "") != expected_direction:
+                return None
+            order_type = str(
+                item.get("orderType") or item.get("stopOrderType") or ""
+            )
+            if order_type != "STOP_ORDER_TYPE_STOP_LOSS":
+                return None
+            stop_id = str(item.get("stopOrderId") or "")
+            if not stop_id:
+                raise TInvestProviderError(
+                    code="INVALID_RESPONSE",
+                    message="active T-Invest stop lacks stopOrderId",
+                )
+            try:
+                quantity = Decimal(
+                    str(item.get("lotsRequested", item.get("quantity", "0")))
+                )
+                stop_price = quotation_to_decimal(item.get("stopPrice"))
+            except Exception as exc:
+                if isinstance(exc, TInvestProviderError):
+                    raise
+                raise TInvestProviderError(
+                    code="INVALID_RESPONSE",
+                    message=f"invalid T-Invest stop snapshot: {exc}",
+                ) from exc
+            if quantity != expected_quantity or stop_price != expected_stop_price:
+                return None
+            return stop_id, quantity, stop_price
+
+        if provider_order_id:
+            row = next(
+                (
+                    item
+                    for item in raw_orders
+                    if isinstance(item, Mapping)
+                    and str(item.get("stopOrderId") or "") == provider_order_id
+                ),
+                None,
+            )
+            if row is None:
+                return ProtectionReconciliation.missing(
+                    "T-Invest protective stop is not active"
+                )
+            try:
+                exact = parse_exact_candidate(row)
+            except TInvestProviderError as exc:
+                return ProtectionReconciliation.unknown(str(exc))
+            if exact is None:
+                return ProtectionReconciliation.missing(
+                    "T-Invest active stop does not exactly match instrument, direction, quantity and price"
+                )
+            stop_id, quantity, stop_price = exact
+            return ProtectionReconciliation.matched(
+                provider_order_id=stop_id,
+                status="ACTIVE",
+                quantity=quantity,
+                stop_price=stop_price,
+                reconciled_at=self._clock(),
+            )
+
+        exact_candidates: list[tuple[str, Decimal, Decimal]] = []
+        for raw in raw_orders:
+            if not isinstance(raw, Mapping):
+                continue
+            try:
+                candidate = parse_exact_candidate(raw)
+            except TInvestProviderError as exc:
+                return ProtectionReconciliation.unknown(str(exc))
+            if candidate is not None:
+                exact_candidates.append(candidate)
+
+        if not exact_candidates:
+            return ProtectionReconciliation.missing(
+                "T-Invest exact protective stop is not active"
+            )
+        if len(exact_candidates) > 1:
+            return ProtectionReconciliation.unknown(
+                "multiple exact active T-Invest stops match the lost acknowledgement"
+            )
+
+        stop_id, quantity, stop_price = exact_candidates[0]
+        return ProtectionReconciliation.matched(
+            provider_order_id=stop_id,
+            status="ACTIVE",
+            quantity=quantity,
+            stop_price=stop_price,
+            reconciled_at=self._clock(),
+        )
+
+    def emergency_flatten(
+        self,
+        intent: ExecutionIntent,
+        order: ExecutionOrder,
+        *,
+        filled_quantity: Decimal,
+        client_order_id: str,
+    ) -> ExecutionSubmitAck:
+        del order, client_order_id
+        plan = self._plan_resolver(intent)
+        lots = _exact_lots(filled_quantity)
+        service, post_method, _ = self._order_service()
+        body: dict[str, object] = {
+            "accountId": plan.account_id,
+            "instrumentId": plan.instrument_uid,
+            "quantity": str(lots),
+            "direction": (
+                "ORDER_DIRECTION_SELL" if plan.long else "ORDER_DIRECTION_BUY"
+            ),
+            "orderType": "ORDER_TYPE_MARKET",
+            "orderId": provider_request_id(intent, purpose="emergency-flatten"),
+        }
+        if self._sandbox:
+            body.update(
+                {
+                    "priceType": "PRICE_TYPE_POINT",
+                    "confirmMarginTrade": True,
+                }
+            )
+        response = self._call(service, post_method, body)
+        provider_order_id = str(response.get("orderId") or "")
+        if not provider_order_id:
+            raise TInvestProviderError(
+                code="INVALID_RESPONSE",
+                message="successful emergency close lacks exchange orderId",
+            )
+        return ExecutionSubmitAck(
+            provider_order_id=provider_order_id,
+            status="ACKNOWLEDGED",
+            acknowledged_at=self._clock(),
+        )
+
+    def reconcile_emergency_flatten(
+        self,
+        intent: ExecutionIntent,
+        order: ExecutionOrder,
+    ) -> SubmissionReconciliation:
+        del order
+        try:
+            state = self._get_order_state(
+                intent,
+                request_purpose="emergency-flatten",
+            )
+        except TInvestProviderError as exc:
+            if exc.is_not_found:
+                return SubmissionReconciliation.absent()
+            return SubmissionReconciliation.unknown(str(exc))
+
+        provider_order_id = str(state.get("orderId") or "")
+        status = _emergency_status(state.get("executionReportStatus"))
+        if not provider_order_id or not status:
+            return SubmissionReconciliation.unknown(
+                "T-Invest emergency reconciliation lacks orderId/executionReportStatus"
+            )
+        return SubmissionReconciliation.found(
+            provider_order_id=provider_order_id,
+            status=status,
+            acknowledged_at=_parse_time(state.get("orderDate"), self._clock()),
+        )
+
     def reconcile(self, intent: ExecutionIntent) -> None:
-        # Order-state reconciliation is implemented above. Position/protection
-        # reconciliation remains SAI-039 scope.
         del intent
 
     def manage_until_close(self, intent: ExecutionIntent) -> None:
-        # Exit management is intentionally not invented in this parity slice.
         del intent
 
 

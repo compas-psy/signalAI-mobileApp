@@ -285,7 +285,7 @@ def test_fill_stages_become_exact_durable_snapshots_without_duplicating_aggregat
     assert all(fill.fee_currency == "RUB" for fill in fills)
 
 
-def test_protective_stop_preserves_legacy_direction_and_sandbox_fields():
+def test_protective_stop_preserves_direction_and_uses_actual_filled_quantity():
     from app.execution.venues.tinvest import TInvestAdapter, provider_request_id
 
     transport = RecordingTransport(
@@ -313,7 +313,7 @@ def test_protective_stop_preserves_legacy_direction_and_sandbox_fields():
             {
                 "accountId": "ACC-1",
                 "instrumentId": "FUT-UID-1",
-                "quantity": "2",
+                "quantity": "1",
                 "stopPrice": {"units": "122000", "nano": 0},
                 "direction": "STOP_ORDER_DIRECTION_SELL",
                 "stopOrderType": "STOP_ORDER_TYPE_STOP_LOSS",

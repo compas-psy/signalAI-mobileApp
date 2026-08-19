@@ -10,6 +10,7 @@ from app.execution.service import (
     ExecutionProtectionAck,
     ExecutionSubmitAck,
     PreSubmitReconciliation,
+    ProtectionReconciliation,
     SubmissionReconciliation,
 )
 
@@ -139,6 +140,32 @@ def test_venue_adapter_contract_matches_existing_execution_port_surface():
                 status="ACTIVE",
                 armed_at=datetime(2026, 8, 19, tzinfo=UTC),
             )
+
+        def reconcile_protection(self, intent, order, protection):
+            return ProtectionReconciliation.matched(
+                provider_order_id="stop-1",
+                status="ACTIVE",
+                quantity=Decimal("1"),
+                stop_price=Decimal("90"),
+                reconciled_at=datetime(2026, 8, 19, tzinfo=UTC),
+            )
+
+        def emergency_flatten(
+            self,
+            intent,
+            order,
+            *,
+            filled_quantity: Decimal,
+            client_order_id: str,
+        ):
+            return ExecutionSubmitAck(
+                provider_order_id="close-1",
+                status="ACKNOWLEDGED",
+                acknowledged_at=datetime(2026, 8, 19, tzinfo=UTC),
+            )
+
+        def reconcile_emergency_flatten(self, intent, order):
+            return SubmissionReconciliation.absent()
 
         def reconcile(self, intent) -> None:
             return None

@@ -17,6 +17,8 @@ from app.execution.service import (
     ExecutionProtectionAck,
     ExecutionSubmitAck,
     PreSubmitReconciliation,
+    ProtectionReconciliation,
+    SubmissionReconciliation,
     process_execution_intent,
 )
 from app.execution.worker import (
@@ -79,6 +81,12 @@ class _HappyPort(ExecutionPort):
         self.calls.append("reconcile_before_submit")
         return PreSubmitReconciliation.absent()
 
+    def reconcile_submission(
+        self, intent: ExecutionIntent, order: ExecutionOrder
+    ) -> SubmissionReconciliation:
+        self.calls.append("reconcile_submission")
+        return SubmissionReconciliation.unknown("not used in happy path")
+
     def submit(self, intent: ExecutionIntent, *, client_order_id: str) -> ExecutionSubmitAck:
         self.calls.append("submit")
         return ExecutionSubmitAck(
@@ -110,6 +118,44 @@ class _HappyPort(ExecutionPort):
             armed_at=NOW,
         )
 
+    def reconcile_protection(
+        self,
+        intent: ExecutionIntent,
+        order: ExecutionOrder,
+        protection: ExecutionProtection,
+    ) -> ProtectionReconciliation:
+        self.calls.append("reconcile_protection")
+        return ProtectionReconciliation.matched(
+            provider_order_id="provider-stop-1",
+            status="ACTIVE",
+            quantity=Decimal("1"),
+            stop_price=Decimal("89400"),
+            reconciled_at=NOW,
+        )
+
+    def emergency_flatten(
+        self,
+        intent: ExecutionIntent,
+        order: ExecutionOrder,
+        *,
+        filled_quantity: Decimal,
+        client_order_id: str,
+    ) -> ExecutionSubmitAck:
+        self.calls.append("emergency_flatten")
+        return ExecutionSubmitAck(
+            provider_order_id="provider-emergency-1",
+            status="ACKNOWLEDGED",
+            acknowledged_at=NOW,
+        )
+
+    def reconcile_emergency_flatten(
+        self,
+        intent: ExecutionIntent,
+        order: ExecutionOrder,
+    ) -> SubmissionReconciliation:
+        self.calls.append("reconcile_emergency_flatten")
+        return SubmissionReconciliation.unknown("not used in happy path")
+
     def reconcile(self, intent: ExecutionIntent) -> None:
         self.calls.append("reconcile")
 
@@ -139,6 +185,7 @@ def test_worker_executes_required_b53_order_and_persists_ack_fill_protection(
         "submit",
         "consume_fills",
         "arm_protection",
+        "reconcile_protection",
         "reconcile",
         "manage_until_close",
     ]
@@ -159,6 +206,7 @@ def test_worker_executes_required_b53_order_and_persists_ack_fill_protection(
     assert protection.quantity == Decimal("1")
     assert protection.stop_price == Decimal("89400")
     assert protection.status == "ACTIVE"
+    assert protection.last_reconciled_at == NOW
 
 
 def test_unknown_pre_submit_reconciliation_fails_closed_without_submit(session, instrument):
