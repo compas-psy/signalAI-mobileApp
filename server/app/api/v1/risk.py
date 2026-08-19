@@ -1,4 +1,4 @@
-"""Риск-панель, ручной risk preview и аварийная остановка."""
+"""Риск-панель и аварийная остановка (engine-ТЗ §23 блок Risk, §21)."""
 
 from __future__ import annotations
 
@@ -61,6 +61,8 @@ class RiskDashboard(ApiModel):
     drawdown_multiplier: Money
     limits: list[LimitOut]
     clusters: dict
+    # Пока не было ни одного снимка риска, панель обязана сказать это прямо,
+    # а не показать нули: ноль расхода читается как «всё свободно».
     has_data: bool
     note: str = ""
 
@@ -131,6 +133,7 @@ def _limits(cfg, snap: RiskSnapshot | None) -> list[LimitOut]:
         )
 
     zero = Decimal(0)
+    # Убытки хранятся со знаком; для лимита важна величина потери.
     day = -min(zero, snap.day_pnl_pct) if snap else zero
     week = -min(zero, snap.week_pnl_pct) if snap else zero
     month = -min(zero, snap.month_pnl_pct) if snap else zero
@@ -234,6 +237,13 @@ def set_kill_switch(
     request: KillSwitchRequest,
     db: Session = Depends(get_db),
 ) -> RiskDashboard:
+    """Set one exact execution stop level.
+
+    ``FLATTEN_ALL`` requires ``confirm_flatten_all=true``. The API records the
+    deliberate request but does not pretend that provider-side flattening exists
+    before SAI-036 supplies a venue adapter with that capability.
+    """
+
     try:
         set_execution_kill_switch(
             db,
@@ -252,6 +262,12 @@ def halt(
     reason: str = Body(..., embed=True),
     db: Session = Depends(get_db),
 ) -> RiskDashboard:
+    """Backward-compatible alias for ``HALT_NEW_ENTRIES``.
+
+    Protective/reconciliation work is deliberately not stopped. Removing
+    protection during an emergency halt would increase rather than reduce risk.
+    """
+
     try:
         set_execution_kill_switch(
             db,
