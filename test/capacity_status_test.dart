@@ -169,7 +169,8 @@ void main() {
           findsOneWidget);
     });
 
-    testWidgets('probe failures degrade the card without pretending zero is healthy',
+    testWidgets(
+        'probe failures degrade the card without pretending zero is healthy',
         (tester) async {
       await pumpCard(
         tester,
@@ -211,5 +212,37 @@ void main() {
 
     await tester.pump();
     expect(calls, 1);
+  });
+
+  testWidgets('dragging the server resource card scrolls the whole Data screen',
+      (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            height: 420,
+            child: CapacityStatusPanel(
+              loader: () async => _status(withRemediation: false),
+              child: ListView(
+                children: const [
+                  SizedBox(height: 500),
+                  Text('lower data block'),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final resourceLabel = find.text('РЕСУРСЫ СЕРВЕРА');
+    final before = tester.getTopLeft(resourceLabel).dy;
+
+    await tester.drag(resourceLabel, const Offset(0, -220));
+    await tester.pumpAndSettle();
+
+    final after = tester.getTopLeft(resourceLabel).dy;
+    expect(after, lessThan(before - 20));
   });
 }
