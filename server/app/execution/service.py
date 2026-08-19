@@ -650,6 +650,15 @@ def _resume_protection(
         result = ProtectionReconciliation.unknown(str(exc))
 
     outcome = str(result.outcome).upper()
+    if (
+        outcome == "MATCHED"
+        and protection.provider_order_id is None
+        and result.provider_order_id
+    ):
+        # A crash/timeout can lose the ACK while the provider did create the
+        # stop. Exact read-back is authoritative enough to adopt that id.
+        protection.provider_order_id = result.provider_order_id
+
     if _protection_match_is_exact(protection, result):
         return _finish_protected(
             db,
@@ -690,6 +699,25 @@ def _resume_protection(
             now=now,
         )
 
+    if outcome == "MISSING":
+        # This is the one safe repair case: the provider has authoritatively
+        # shown that the expected stop is absent. Persist that evidence before
+        # issuing a replacement. UNKNOWN never reaches this path.
+        protection.provider_order_id = None
+        protection.status = "PENDING"
+        db.flush()
+        db.commit()
+        return _arm_or_resume_protection(
+            db,
+            intent=intent,
+            order=order,
+            protection=protection,
+            filled_quantity=protection.quantity,
+            port=port,
+            now=now,
+            allow_initial_arm=True,
+        )
+
     _schedule_retry(intent, now)
     db.commit()
     return ExecutionProcessOutcome(
@@ -706,10 +734,11 @@ def _arm_or_resume_protection(
     filled_quantity: Decimal,
     port: ExecutionPort,
     now: datetime,
+    allow_initial_arm: bool = False,
 ) -> ExecutionProcessOutcome:
-    # If an ACK was ever persisted, never create a second stop blindly. Query
-    # the provider first and let the SLA/emergency path handle uncertainty.
-    if protection.provider_order_id:
+    # Fresh in-process exposure may arm immediately. Every resumed/ambiguous
+    # path must query the provider first; only authoritative MISSING may repair.
+    if protection.provider_order_id or not allow_initial_arm:
         return _resume_protection(
             db,
             intent=intent,
@@ -726,7 +755,7 @@ def _arm_or_resume_protection(
             filled_quantity=filled_quantity,
         )
     except (TimeoutError, ConnectionError) as exc:
-        protection.status = "UNCONFIRMED"
+        protection.status = "SUBMIT_AMBIGUOUS"
         _record_reconciliation(
             db,
             intent,
@@ -859,6 +888,7 @@ def _continue_after_ack(
         filled_quantity=filled_quantity,
         port=port,
         now=now,
+        allow_initial_arm=True,
     )
 
 
