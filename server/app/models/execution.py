@@ -122,8 +122,9 @@ class ExecutionIntent(UuidPk, Base):
     __tablename__ = "execution_intents"
 
     # Content-addressed stable identity from B5.2. The hash deliberately covers
-    # decision identity (idea/strategy/risk/venue/account), not mutable delivery
-    # state. PostgreSQL uniqueness is the final retry/concurrency guard.
+    # decision identity (idea/strategy/risk/venue/account) plus the server-owned
+    # execution lifecycle mode, not mutable delivery state. PostgreSQL
+    # uniqueness is the final retry/concurrency guard.
     identity_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     idea_id: Mapped[uuid.UUID] = mapped_column(
         PgUUID(as_uuid=True),
@@ -148,6 +149,12 @@ class ExecutionIntent(UuidPk, Base):
     )
     venue: Mapped[str] = mapped_column(String(32), nullable=False)
     account: Mapped[str] = mapped_column(String(128), nullable=False)
+    # SAI-035: immutable forensic snapshot selected from server-owned mode state
+    # when the intent is created. Callers cannot supply it, and it participates
+    # in identity so a decision cannot be replayed across lifecycle modes.
+    execution_mode_snapshot: Mapped[ExecutionLifecycleMode] = mapped_column(
+        StrEnumColumn(ExecutionLifecycleMode, 12), nullable=False
+    )
     state: Mapped[ExecutionState] = mapped_column(
         StrEnumColumn(ExecutionState, 24),
         nullable=False,
