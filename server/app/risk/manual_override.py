@@ -7,8 +7,10 @@ engine's current production hard caps.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from functools import lru_cache
 from pathlib import Path
 
@@ -16,7 +18,9 @@ import yaml
 
 from ..config import ConfigError, EngineConfig, get_config
 
-CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "manual_risk_override.yaml"
+CONFIG_PATH = (
+    Path(__file__).resolve().parents[2] / "config" / "manual_risk_override.yaml"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,6 +31,7 @@ class ManualRiskEnvelope:
     max_leverage: Decimal
     min_liquidation_distance_ratio: Decimal
     ttl_minutes: int
+    config_hash: str
 
     def multiplier(self, preset_id: str) -> Decimal:
         key = preset_id.strip().upper()
@@ -39,11 +44,21 @@ class ManualRiskEnvelope:
 def _decimal(raw: object, *, label: str) -> Decimal:
     try:
         value = Decimal(str(raw))
-    except Exception as exc:  # yaml scalar -> Decimal conversion boundary
+    except (InvalidOperation, TypeError, ValueError) as exc:
         raise ConfigError(f"{label} must be decimal") from exc
     if not value.is_finite():
         raise ConfigError(f"{label} must be finite")
     return value
+
+
+def _canonical_hash(raw: dict) -> str:
+    canonical = json.dumps(
+        raw,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def load_manual_risk_envelope(
@@ -60,6 +75,10 @@ def load_manual_risk_envelope(
         raise ConfigError(f"manual risk config is invalid YAML: {exc}") from exc
     if not isinstance(raw, dict):
         raise ConfigError("manual risk config must be a mapping")
+
+    enabled = raw.get("enabled")
+    if not isinstance(enabled, bool):
+        raise ConfigError("manual risk enabled must be boolean")
 
     presets_raw = raw.get("presets")
     if not isinstance(presets_raw, dict):
@@ -87,7 +106,10 @@ def load_manual_risk_envelope(
         raw.get("min_liquidation_distance_ratio"),
         label="min_liquidation_distance_ratio",
     )
-    ttl_minutes = int(raw.get("ttl_minutes", 0))
+    try:
+        ttl_minutes = int(raw.get("ttl_minutes", 0))
+    except (TypeError, ValueError) as exc:
+        raise ConfigError("manual risk preview ttl_minutes must be integer") from exc
     if max_risk <= 0 or max_leverage <= 0 or min_liq <= 0:
         raise ConfigError("manual risk hard limits must be positive")
     if ttl_minutes < 1 or ttl_minutes > 30:
@@ -102,12 +124,13 @@ def load_manual_risk_envelope(
         raise ConfigError("manual risk envelope weakens liquidation distance")
 
     return ManualRiskEnvelope(
-        enabled=bool(raw.get("enabled", False)),
+        enabled=enabled,
         presets=presets,
         max_risk_per_trade=max_risk,
         max_leverage=max_leverage,
         min_liquidation_distance_ratio=min_liq,
         ttl_minutes=ttl_minutes,
+        config_hash=_canonical_hash(raw),
     )
 
 
