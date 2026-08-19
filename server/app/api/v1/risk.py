@@ -1,25 +1,29 @@
-"""Риск-панель и аварийная остановка (engine-ТЗ §23 блок Risk, §21)."""
+"""Риск-панель, ручной risk preview и аварийная остановка."""
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
 from decimal import Decimal
+from uuid import UUID
 
 from fastapi import APIRouter, Body, Depends, HTTPException
+from pydantic import ConfigDict
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ...config import get_config
 from ...db import get_db
-from ...execution.enums import ExecutionKillSwitchLevel
+from ...execution.enums import ExecutionKillSwitchLevel, ExecutionLifecycleMode
 from ...execution.kill_switch import (
     ExecutionKillSwitchError,
     clear_execution_kill_switch,
     effective_execution_kill_switch_level,
     set_execution_kill_switch,
 )
+from ...execution.risk_on import RiskOnPreviewRejected
 from ...models import RiskSnapshot, RiskState
 from ...models.enums import ExecutionMode
+from ...risk.manual_preview import preview_manual_risk
 from ...schemas.common import ApiModel, Money
 
 router = APIRouter(tags=["risk"])
@@ -58,10 +62,52 @@ class RiskDashboard(ApiModel):
     drawdown_multiplier: Money
     limits: list[LimitOut]
     clusters: dict
-    # Пока не было ни одного снимка риска, панель обязана сказать это прямо,
-    # а не показать нули: ноль расхода читается как «всё свободно».
     has_data: bool
     note: str = ""
+
+
+class _StrictApiModel(ApiModel):
+    model_config = ConfigDict(
+        from_attributes=True,
+        populate_by_name=True,
+        extra="forbid",
+    )
+
+
+class ManualRiskPreviewRequest(_StrictApiModel):
+    """B7.3 input: identity + named preset + client-observed server mode only."""
+
+    idea_id: UUID
+    preset_id: str
+    current_mode: ExecutionLifecycleMode
+
+
+class ManualRiskPreviewOut(ApiModel):
+    idea_id: UUID
+    risk_snapshot_id: UUID
+    preset_id: str
+    execution_mode: ExecutionLifecycleMode
+    allowed: bool
+    warnings: list[str]
+    blockers: list[str]
+    auto_risk_pct: Money
+    auto_risk_amount: Money
+    requested_risk_pct: Money
+    requested_risk_amount: Money
+    effective_risk_pct: Money
+    effective_risk_amount: Money
+    hard_cap_risk_pct: Money
+    quantity: Money
+    notional: Money
+    resulting_leverage: Money | None
+    liquidation_distance_ratio: Money | None
+    total_open_risk_after: Money
+    cluster_risk_after: Money
+    worst_case_stop_loss: Money
+    binding_constraint: str
+    issued_at: datetime
+    expires_at: datetime
+    preview_hash: str
 
 
 def _state(db: Session) -> RiskState:
@@ -86,7 +132,6 @@ def _limits(cfg, snap: RiskSnapshot | None) -> list[LimitOut]:
         )
 
     zero = Decimal(0)
-    # Убытки хранятся со знаком; для лимита важна величина потери.
     day = -min(zero, snap.day_pnl_pct) if snap else zero
     week = -min(zero, snap.week_pnl_pct) if snap else zero
     month = -min(zero, snap.month_pnl_pct) if snap else zero
@@ -136,18 +181,60 @@ def dashboard(db: Session = Depends(get_db)) -> RiskDashboard:
     )
 
 
+@router.post("/risk/preview", response_model=ManualRiskPreviewOut)
+def manual_risk_preview(
+    request: ManualRiskPreviewRequest,
+    db: Session = Depends(get_db),
+) -> ManualRiskPreviewOut:
+    """SAI-043: signed short-lived, server-owned risk preview.
+
+    The client cannot submit multiplier, risk, quantity, leverage or any other
+    money-bearing value. Unknown fields fail validation before domain logic.
+    """
+
+    try:
+        preview = preview_manual_risk(
+            db,
+            idea_id=request.idea_id,
+            preset_id=request.preset_id,
+            current_mode=request.current_mode,
+        )
+    except RiskOnPreviewRejected as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return ManualRiskPreviewOut(
+        idea_id=preview.idea_id,
+        risk_snapshot_id=preview.risk_snapshot_id,
+        preset_id=preview.preset_id,
+        execution_mode=preview.execution_mode,
+        allowed=preview.allowed,
+        warnings=list(preview.warnings),
+        blockers=list(preview.blockers),
+        auto_risk_pct=preview.auto_risk_pct,
+        auto_risk_amount=preview.auto_risk_amount,
+        requested_risk_pct=preview.requested_risk_pct,
+        requested_risk_amount=preview.requested_risk_amount,
+        effective_risk_pct=preview.effective_risk_pct,
+        effective_risk_amount=preview.effective_risk_amount,
+        hard_cap_risk_pct=preview.hard_cap_risk_pct,
+        quantity=preview.quantity,
+        notional=preview.notional,
+        resulting_leverage=preview.resulting_leverage,
+        liquidation_distance_ratio=preview.liquidation_distance_ratio,
+        total_open_risk_after=preview.total_open_risk_after,
+        cluster_risk_after=preview.cluster_risk_after,
+        worst_case_stop_loss=preview.worst_case_stop_loss,
+        binding_constraint=preview.binding_constraint,
+        issued_at=preview.issued_at,
+        expires_at=preview.expires_at,
+        preview_hash=preview.preview_hash,
+    )
+
+
 @router.post("/risk/kill-switch", response_model=RiskDashboard)
 def set_kill_switch(
     request: KillSwitchRequest,
     db: Session = Depends(get_db),
 ) -> RiskDashboard:
-    """Set one exact execution stop level.
-
-    ``FLATTEN_ALL`` requires ``confirm_flatten_all=true``. The API records the
-    deliberate request but does not pretend that provider-side flattening exists
-    before SAI-036 supplies a venue adapter with that capability.
-    """
-
     try:
         set_execution_kill_switch(
             db,
@@ -166,12 +253,6 @@ def halt(
     reason: str = Body(..., embed=True),
     db: Session = Depends(get_db),
 ) -> RiskDashboard:
-    """Backward-compatible alias for ``HALT_NEW_ENTRIES``.
-
-    Protective/reconciliation work is deliberately not stopped. Removing
-    protection during an emergency halt would increase rather than reduce risk.
-    """
-
     try:
         set_execution_kill_switch(
             db,
