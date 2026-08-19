@@ -182,6 +182,24 @@ class BybitAdapter(VenueAdapter):
             reconciliation_query=True,
         )
 
+    def _reconciliation_order(
+        self,
+        client_order_id: str,
+    ) -> tuple[Mapping[str, object] | None, str | None]:
+        query = {
+            "category": _BYBIT_CATEGORY,
+            "orderLinkId": client_order_id,
+        }
+        for path in ("/v5/order/realtime", "/v5/order/history"):
+            try:
+                result = _provider_result(self._transport.get(path, query))
+            except BybitProviderError as exc:
+                return None, str(exc)
+            orders = _items(result)
+            if orders:
+                return orders[0], None
+        return None, None
+
     def reconcile_before_submit(
         self,
         intent: ExecutionIntent,
@@ -213,23 +231,12 @@ class BybitAdapter(VenueAdapter):
         intent: ExecutionIntent,
         order: ExecutionOrder,
     ) -> SubmissionReconciliation:
-        try:
-            result = _provider_result(
-                self._transport.get(
-                    "/v5/order/realtime",
-                    {
-                        "category": _BYBIT_CATEGORY,
-                        "orderLinkId": order.client_order_id,
-                    },
-                )
-            )
-        except BybitProviderError as exc:
-            return SubmissionReconciliation.unknown(str(exc))
-
-        orders = _items(result)
-        if not orders:
+        del intent
+        provider, error = self._reconciliation_order(order.client_order_id)
+        if error is not None:
+            return SubmissionReconciliation.unknown(error)
+        if provider is None:
             return SubmissionReconciliation.absent()
-        provider = orders[0]
         provider_order_id = str(provider.get("orderId") or "")
         status = str(provider.get("orderStatus") or "")
         if not provider_order_id or not status:
@@ -444,23 +451,11 @@ class BybitAdapter(VenueAdapter):
         order: ExecutionOrder,
     ) -> SubmissionReconciliation:
         del intent
-        try:
-            result = _provider_result(
-                self._transport.get(
-                    "/v5/order/realtime",
-                    {
-                        "category": _BYBIT_CATEGORY,
-                        "orderLinkId": order.client_order_id,
-                    },
-                )
-            )
-        except BybitProviderError as exc:
-            return SubmissionReconciliation.unknown(str(exc))
-
-        orders = _items(result)
-        if not orders:
+        provider, error = self._reconciliation_order(order.client_order_id)
+        if error is not None:
+            return SubmissionReconciliation.unknown(error)
+        if provider is None:
             return SubmissionReconciliation.absent()
-        provider = orders[0]
         provider_order_id = str(provider.get("orderId") or "")
         status = _emergency_status(provider.get("orderStatus"))
         if not provider_order_id or not status:
