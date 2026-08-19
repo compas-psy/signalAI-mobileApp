@@ -1,10 +1,11 @@
-"""Server execution worker for SAI-026–SAI-028 / B5.3–B5.5.
+"""Server execution worker for SAI-026–SAI-039 / B5 safety lifecycle.
 
 The worker serializes venue/account/instrument work with a PostgreSQL advisory
-lock, persists a short worker lease plus retry due-time, and now enforces the
+lock, persists a short worker lease plus retry due-time, and enforces the
 durable execution kill switch before any new entry can cross the venue boundary.
-Production venue I/O remains deliberately disabled until SAI-036 installs a
-real adapter.
+Protection reconciliation and emergency flatten remain claimable even while new
+entries are halted. Production venue I/O stays fail-closed until explicitly
+configured by a later wiring slice.
 """
 
 from __future__ import annotations
@@ -20,8 +21,11 @@ from typing import Iterator
 from sqlalchemy import or_, select, text
 from sqlalchemy.orm import Session
 
-from ..db import session_scope
-from ..models.execution import ExecutionIntent, ExecutionOrder
+from ..models.execution import (
+    ExecutionIntent,
+    ExecutionOrder,
+    ExecutionProtection,
+)
 from ..models.risk import RiskState
 from .domain import transition_execution_state
 from .enums import ExecutionKillSwitchLevel, ExecutionState
@@ -37,6 +41,7 @@ from .service import (
     ExecutionProtectionAck,
     ExecutionSubmitAck,
     PreSubmitReconciliation,
+    ProtectionReconciliation,
     SubmissionReconciliation,
     process_execution_intent,
 )
@@ -55,6 +60,8 @@ _SAFETY_CLAIMABLE = (
     ExecutionState.AMBIGUOUS,
     ExecutionState.RECONCILING,
     ExecutionState.ACKNOWLEDGED,
+    ExecutionState.PROTECTION_PENDING,
+    ExecutionState.EMERGENCY_FLATTEN,
 )
 _CLAIMABLE = _PRE_SUBMIT + _SAFETY_CLAIMABLE
 
@@ -75,11 +82,7 @@ def execution_tuple_lock(
     account: str,
     instrument_id: str,
 ) -> Iterator[bool]:
-    """Try to serialize work for one venue/account/instrument tuple.
-
-    Session-level advisory locks survive transaction boundaries but are
-    released explicitly here (and by PostgreSQL if the connection dies).
-    """
+    """Try to serialize work for one venue/account/instrument tuple."""
 
     key = execution_tuple_lock_key(
         venue=venue,
@@ -97,7 +100,7 @@ def execution_tuple_lock(
 
 
 class DisabledExecutionPort(ExecutionPort):
-    """Production default before SAI-036: fail closed before any submit."""
+    """Production default: every provider action fails closed."""
 
     reason = "execution adapter is not configured"
 
@@ -129,6 +132,31 @@ class DisabledExecutionPort(ExecutionPort):
         filled_quantity: Decimal,
     ) -> ExecutionProtectionAck:
         raise RuntimeError(self.reason)
+
+    def reconcile_protection(
+        self,
+        intent: ExecutionIntent,
+        order: ExecutionOrder,
+        protection: ExecutionProtection,
+    ) -> ProtectionReconciliation:
+        return ProtectionReconciliation.unknown(self.reason)
+
+    def emergency_flatten(
+        self,
+        intent: ExecutionIntent,
+        order: ExecutionOrder,
+        *,
+        filled_quantity: Decimal,
+        client_order_id: str,
+    ) -> ExecutionSubmitAck:
+        raise RuntimeError(self.reason)
+
+    def reconcile_emergency_flatten(
+        self,
+        intent: ExecutionIntent,
+        order: ExecutionOrder,
+    ) -> SubmissionReconciliation:
+        return SubmissionReconciliation.unknown(self.reason)
 
     def reconcile(self, intent: ExecutionIntent) -> None:
         raise RuntimeError(self.reason)
@@ -211,21 +239,13 @@ def _apply_pre_submit_kill_switch(
             f"{ExecutionKillSwitchLevel.HALT_NEW_ENTRIES.value}: new entries are halted",
         )
 
-    # CANCEL_PENDING_ENTRIES and FLATTEN_ALL both cancel an intent that has not
-    # crossed the venue boundary. In-flight/provider-side actions are not
-    # invented here: SAI-036 owns cancel/flatten venue capabilities.
     intent.state = transition_execution_state(intent.state, ExecutionState.CANCELLED)
     db.flush()
     return ExecutionProcessOutcome(True, None)
 
 
 class _KillSwitchGuardedPort(ExecutionPort):
-    """Delegate venue work, guarding only the money-crossing entry submit.
-
-    Reconciliation, fill capture and protection intentionally remain available
-    while the switch is active. Blocking those safety operations could turn an
-    emergency halt into an unprotected position.
-    """
+    """Delegate safety work; guard only the money-crossing entry submit."""
 
     def __init__(self, db: Session, inner: ExecutionPort) -> None:
         self._db = db
@@ -250,9 +270,6 @@ class _KillSwitchGuardedPort(ExecutionPort):
         with execution_control_lock(self._db):
             level = _fresh_kill_switch_level(self._db)
             if level != ExecutionKillSwitchLevel.CLEAR:
-                # SAI-027 already treats ConnectionError after durable SUBMITTING
-                # as ambiguous and reconciles before any later retry. Reuse that
-                # fail-closed path instead of inventing a second state machine.
                 raise ConnectionError(
                     f"{level.value}: submit blocked before provider I/O"
                 )
@@ -278,6 +295,36 @@ class _KillSwitchGuardedPort(ExecutionPort):
             filled_quantity=filled_quantity,
         )
 
+    def reconcile_protection(
+        self,
+        intent: ExecutionIntent,
+        order: ExecutionOrder,
+        protection: ExecutionProtection,
+    ) -> ProtectionReconciliation:
+        return self._inner.reconcile_protection(intent, order, protection)
+
+    def emergency_flatten(
+        self,
+        intent: ExecutionIntent,
+        order: ExecutionOrder,
+        *,
+        filled_quantity: Decimal,
+        client_order_id: str,
+    ) -> ExecutionSubmitAck:
+        return self._inner.emergency_flatten(
+            intent,
+            order,
+            filled_quantity=filled_quantity,
+            client_order_id=client_order_id,
+        )
+
+    def reconcile_emergency_flatten(
+        self,
+        intent: ExecutionIntent,
+        order: ExecutionOrder,
+    ) -> SubmissionReconciliation:
+        return self._inner.reconcile_emergency_flatten(intent, order)
+
     def reconcile(self, intent: ExecutionIntent) -> None:
         self._inner.reconcile(intent)
 
@@ -291,8 +338,6 @@ def process_next_intent(
     port: ExecutionPort,
     worker_id: str = "execution-worker",
 ) -> ExecutionProcessOutcome:
-    # Ensure the singleton exists before claiming work. A legacy boolean halt
-    # is interpreted fail-closed as HALT_NEW_ENTRIES by the service helper.
     initial_level = get_execution_kill_switch_level(db)
     claimable = (
         _SAFETY_CLAIMABLE
@@ -313,8 +358,6 @@ def process_next_intent(
     account = intent.account
     instrument_id = intent.instrument_id
 
-    # Persist the lease before any network-capable work. A crashed worker leaves
-    # a bounded lease that another worker may reclaim after expiry.
     db.commit()
     try:
         with execution_tuple_lock(
@@ -335,10 +378,6 @@ def process_next_intent(
             if kill_outcome is not None:
                 return kill_outcome
 
-            # SUBMITTING/AMBIGUOUS/RECONCILING/ACKNOWLEDGED intentionally bypass
-            # the early new-entry halt so they can finish reconciliation, fill
-            # capture and protection. The wrapped port independently guards the
-            # actual provider submit after SAI-027's durable SUBMITTING commit.
             guarded_port = _KillSwitchGuardedPort(db, port)
             return process_execution_intent(
                 db,
@@ -351,7 +390,7 @@ def process_next_intent(
 
 
 def main() -> None:
-    """Docker execution entrypoint, deliberately idle until SAI-036."""
+    """Docker execution entrypoint; deliberately idle without explicit wiring."""
 
     logging.basicConfig(level=logging.INFO)
     port = DisabledExecutionPort()
@@ -360,9 +399,6 @@ def main() -> None:
         port.reason,
     )
     while True:
-        # Do not mutate intent state or append repeated reconciliation evidence
-        # while no production adapter exists. SAI-036 replaces this disabled
-        # port with an explicitly configured venue implementation.
         time.sleep(5)
 
 
