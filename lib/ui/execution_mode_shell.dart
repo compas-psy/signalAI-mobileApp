@@ -7,13 +7,15 @@ import '../state/app_scope.dart';
 import '../state/execution_mode_controller.dart';
 import '../state/navigation.dart';
 import 'widgets/execution_mode_banner.dart';
+import 'widgets/risk_on_detail_control.dart';
 
 /// Thin-client shell for the server-owned execution lifecycle mode.
 ///
 /// It deliberately waits until AppController finishes restoring the engine
 /// address and device token before constructing ApiClient inside the mode
 /// controller. The underlying AppShell remains untouched, which keeps mode UI
-/// orthogonal to navigation and trading screens.
+/// orthogonal to navigation and trading screens. The same shell mounts the
+/// idea-scoped RISK ON launcher only when a concrete server idea is actionable.
 class ExecutionModeShell extends StatefulWidget {
   const ExecutionModeShell({
     super.key,
@@ -66,6 +68,19 @@ class _ExecutionModeShellState extends State<ExecutionModeShell> {
 
     _scheduleModeSync(app);
     final mode = _modeController!;
+    final idea = app.currentIdea;
+    final riskOnAvailable = app.isDetailOpen &&
+        idea != null &&
+        idea.readiness.canAct &&
+        idea.actionable;
+    final body = riskOnAvailable
+        ? RiskOnDetailControl(
+            key: ValueKey('risk-on-detail-${idea.id}'),
+            ideaId: idea.id,
+            child: widget.child,
+          )
+        : widget.child;
+
     return ExecutionModeScope(
       controller: mode,
       child: Column(
@@ -77,7 +92,7 @@ class _ExecutionModeShellState extends State<ExecutionModeShell> {
               app.goPill(0);
             },
           ),
-          Expanded(child: widget.child),
+          Expanded(child: body),
         ],
       ),
     );
