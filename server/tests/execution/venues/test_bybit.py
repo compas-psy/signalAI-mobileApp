@@ -293,6 +293,56 @@ def test_submission_reconciliation_falls_back_to_history_for_terminal_order():
     ]
 
 
+def test_emergency_reconciliation_uses_history_before_declaring_close_absent():
+    from app.execution.venues.bybit import BybitAdapter
+
+    transport = RecordingTransport(
+        {
+            ("GET", "/v5/order/realtime"): {
+                "retCode": 0,
+                "result": {"list": []},
+            },
+            ("GET", "/v5/order/history"): {
+                "retCode": 0,
+                "result": {
+                    "list": [
+                        {
+                            "orderId": "ORD-EMERGENCY-1",
+                            "orderStatus": "Filled",
+                            "updatedTime": "1700000000789",
+                        }
+                    ]
+                },
+            },
+        }
+    )
+    adapter = BybitAdapter(
+        transport=transport,
+        plan_resolver=lambda _: _plan(),
+        clock=lambda: NOW,
+    )
+    order = SimpleNamespace(client_order_id="x-stable-close")
+
+    result = adapter.reconcile_emergency_flatten(_intent(), order)
+
+    assert result.outcome == "FOUND"
+    assert result.provider_order_id == "ORD-EMERGENCY-1"
+    assert result.status == "FILLED"
+    assert result.acknowledged_at == datetime.fromtimestamp(1700000000.789, tz=UTC)
+    assert transport.calls == [
+        (
+            "GET",
+            "/v5/order/realtime",
+            {"category": "linear", "orderLinkId": "x-stable-close"},
+        ),
+        (
+            "GET",
+            "/v5/order/history",
+            {"category": "linear", "orderLinkId": "x-stable-close"},
+        ),
+    ]
+
+
 def test_fill_parsing_and_position_stop_match_existing_bybit_semantics():
     from app.execution.venues.bybit import BybitAdapter
 
