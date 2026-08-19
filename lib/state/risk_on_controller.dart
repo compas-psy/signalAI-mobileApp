@@ -102,11 +102,12 @@ class RiskOnController extends ChangeNotifier {
     final cleanVenue = venue.trim();
     final cleanAccount = account.trim();
     if (cleanVenue.isEmpty || cleanAccount.isEmpty) {
+      const message = 'Укажите площадку и счёт для RISK ON.';
       _preview = null;
       _result = null;
-      _error = 'Укажите площадку и счёт для RISK ON.';
+      _error = message;
       notifyListeners();
-      throw StateError(_error);
+      throw StateError(message);
     }
     _loading = true;
     _error = null;
