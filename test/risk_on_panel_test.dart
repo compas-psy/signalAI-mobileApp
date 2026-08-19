@@ -90,7 +90,7 @@ void main() {
     expect(api.confirmCalls, 0);
     expect(find.textContaining('0,50% → 0,75%'), findsOneWidget);
     expect(find.textContaining('1 → 2'), findsOneWidget);
-    expect(find.textContaining('плечо не увеличивается автоматически'), findsOneWidget);
+    expect(find.textContaining('Плечо не увеличивается автоматически'), findsOneWidget);
     expect(find.text('Подтвердить Рискнуть'), findsOneWidget);
 
     await tester.tap(find.text('Подтвердить Рискнуть'));
@@ -115,6 +115,7 @@ void main() {
 
     expect(find.textContaining('risk snapshot blocks new entries'), findsOneWidget);
     expect(find.text('Подтвердить Рискнуть'), findsNothing);
+    expect(blockedApi.confirmCalls, 0);
   });
 }
 
@@ -138,12 +139,12 @@ class _BlockedRiskOnApi extends _RiskOnPanelApi {
         'effective_risk_pct': '0.005',
         'hard_cap_risk_pct': '0.0075',
         'base_quantity': '1',
-        'effective_quantity': '1',
-        'effective_risk_amount': '500',
+        'effective_quantity': '0',
+        'effective_risk_amount': '0',
         'effective_leverage': null,
         'hard_cap_leverage': '3.0',
         'binding_limit': 'risk_snapshot',
-        'preview_hash': 'c' * 64,
+        'preview_hash': '',
       };
     }
     return super.post(path, body: body, idempotencyKey: idempotencyKey);
