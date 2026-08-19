@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -9,8 +9,14 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.db import get_db
+from app.execution.enums import ExecutionLifecycleMode
 from app.main import app
 from app.models import ExecutionRiskOverride, RiskSnapshot, TradeIdea
+from app.risk.manual_preview import (
+    ManualRiskPreviewRejected,
+    preview_manual_risk,
+    verify_manual_risk_preview_token,
+)
 from tests.conftest import DEVICE_HEADERS, idea_kwargs
 
 
@@ -182,6 +188,31 @@ def test_sai_044_rejects_tampered_or_stale_preview_before_persisting(
         headers={"X-Idempotency-Key": "manual-risk-stale"},
     )
     assert stale.status_code == 409
+    assert session.execute(select(ExecutionRiskOverride)).scalars().all() == []
+
+
+def test_sai_044_expired_signed_preview_fails_closed(
+    session,
+    instrument,
+    now,
+):
+    idea, _ = _seed(session, instrument, now)
+    preview = preview_manual_risk(
+        session,
+        idea_id=idea.id,
+        preset_id="BOOST_1",
+        current_mode=ExecutionLifecycleMode.PAPER,
+        now=now,
+    )
+    assert preview.preview_hash
+
+    with pytest.raises(ManualRiskPreviewRejected, match="expired"):
+        verify_manual_risk_preview_token(
+            preview,
+            preview.preview_hash,
+            now=preview.expires_at + timedelta(seconds=1),
+        )
+
     assert session.execute(select(ExecutionRiskOverride)).scalars().all() == []
 
 
