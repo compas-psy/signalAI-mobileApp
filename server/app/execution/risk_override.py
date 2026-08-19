@@ -1,8 +1,10 @@
-"""Durable bounded owner risk overrides (SAI-042).
+"""Durable bounded owner risk overrides (SAI-042 / SAI-044).
 
 This service stores a single immutable owner decision produced from an internal
-risk-policy authorization. It does not calculate the preview itself, expose a
-public API, or move money. SAI-043 owns preview/provider/UI wiring.
+risk-policy authorization. SAI-044 may additionally provide a durable digest
+of the externally signed SAI-043 preview; when present, that proof digest is
+the override identity so one signed preview cannot mint multiple overrides.
+The service still does not move money or bypass execution/risk gates.
 """
 
 from __future__ import annotations
@@ -37,6 +39,7 @@ class RiskOverrideAuthorization:
     reason: str
     hard_cap_risk_pct: Decimal
     hard_cap_leverage: Decimal | None = None
+    preview_proof_hash: str | None = None
     detail_json: dict[str, object] = field(default_factory=dict)
 
 
@@ -70,6 +73,20 @@ def _decimal_text(value: Decimal | None) -> str | None:
     return "0" if text in {"", "-0"} else text
 
 
+def _proof_hash(authorization: RiskOverrideAuthorization) -> str | None:
+    raw = authorization.preview_proof_hash
+    if raw is None:
+        return None
+    value = raw.strip().lower()
+    if len(value) != 64:
+        raise ExecutionRiskOverrideRejected("preview proof hash must be sha256")
+    try:
+        int(value, 16)
+    except ValueError as exc:
+        raise ExecutionRiskOverrideRejected("preview proof hash must be sha256") from exc
+    return value
+
+
 def _preview_hash(
     *,
     request: RiskOverrideRequest,
@@ -77,6 +94,17 @@ def _preview_hash(
     mode: ExecutionLifecycleMode,
     authorization: RiskOverrideAuthorization,
 ) -> str:
+    """Return immutable override identity.
+
+    Legacy/internal SAI-042 callers keep the material hash. SAI-044 callers
+    provide the SHA-256 of the signed preview token, which makes the preview a
+    single-use durable capability independent of caller-chosen idempotency key.
+    """
+
+    proof_hash = _proof_hash(authorization)
+    if proof_hash is not None:
+        return proof_hash
+
     payload = {
         "account": request.account,
         "authorization_actor": authorization.actor.strip(),
@@ -113,7 +141,8 @@ def _validate(
 ) -> tuple[TradeIdea, RiskSnapshot, ExecutionLifecycleMode]:
     if not request.owner_confirmed:
         raise ExecutionRiskOverrideRejected("explicit owner confirmation is required")
-    if request.preset != "RISK_ON":
+    preset = request.preset.strip().upper()
+    if preset not in {"RISK_ON", "BOOST_1", "BOOST_2"}:
         raise ExecutionRiskOverrideRejected("unsupported risk override preset")
     if not request.venue.strip() or not request.account.strip():
         raise ExecutionRiskOverrideRejected("venue and account are required")
@@ -128,6 +157,7 @@ def _validate(
         raise ExecutionRiskOverrideRejected(
             "risk-policy authorization actor and reason are required"
         )
+    _proof_hash(authorization)
 
     hard_risk = Decimal(authorization.hard_cap_risk_pct)
     if hard_risk <= 0:
@@ -148,13 +178,13 @@ def _validate(
     effective_quantity = Decimal(request.effective_quantity)
     if effective_risk <= base_risk:
         raise ExecutionRiskOverrideRejected(
-            "RISK_ON effective risk must be greater than the base risk"
+            "risk override effective risk must be greater than the base risk"
         )
     if effective_risk > hard_risk:
         raise ExecutionRiskOverrideRejected("effective risk exceeds hard risk cap")
     if effective_quantity <= 0 or effective_quantity < base_quantity:
         raise ExecutionRiskOverrideRejected(
-            "RISK_ON effective quantity must be positive and not below base quantity"
+            "risk override quantity must be positive and not below base quantity"
         )
 
     if request.effective_leverage is not None:
@@ -228,7 +258,7 @@ def create_execution_risk_override(
     values = {
         "idea_id": idea.id,
         "risk_snapshot_id": risk.id,
-        "preset": request.preset,
+        "preset": request.preset.strip().upper(),
         "venue": request.venue,
         "account": request.account,
         "execution_mode_snapshot": mode.value,
