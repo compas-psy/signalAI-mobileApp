@@ -26,6 +26,7 @@ from .api.v1 import capacity as capacity_routes
 from .api.v1 import control as control_routes
 from .api.v1 import diagnostics as diagnostics_routes
 from .api.v1 import equity_rankings as equity_ranking_routes
+from .api.v1 import execution_health as execution_health_routes
 from .api.v1 import experiments as experiment_routes
 from .api.v1 import idea_progress as idea_progress_routes
 from .api.v1 import ideas as ideas_routes
@@ -84,6 +85,7 @@ v1.include_router(live_market_routes.router)
 v1.include_router(ideas_routes.router)
 v1.include_router(idea_progress_routes.router)
 v1.include_router(risk_routes.router)
+v1.include_router(execution_health_routes.router)
 v1.include_router(portfolio_routes.router)
 v1.include_router(portfolio_headline_routes.router)
 v1.include_router(research_routes.router)
