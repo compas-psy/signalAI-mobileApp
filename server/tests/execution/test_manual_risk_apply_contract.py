@@ -201,7 +201,7 @@ def test_sai_044_expired_signed_preview_fails_closed(
     preview = preview_manual_risk(
         session,
         idea_id=idea.id,
-        preset_id="BOOST_1",
+        preset_id="BOOST_2",
         current_mode=ExecutionLifecycleMode.PAPER,
         now=now,
     )
@@ -235,7 +235,7 @@ def test_sai_044_apply_is_paper_only_until_leverage_liquidation_proof_exists(
             reason="test-only authorized transition",
         ),
     )
-    preview = _preview(client, idea, preset_id="BOOST_1", mode="SANDBOX")
+    preview = _preview(client, idea, preset_id="BOOST_2", mode="SANDBOX")
 
     response = client.post(
         "/api/v1/risk/override",
@@ -296,7 +296,7 @@ def test_sai_044_auto_preview_is_not_a_risk_increase_and_header_conflicts_fail_c
     )
     assert auto.status_code == 409
 
-    boosted = _preview(client, idea, preset_id="BOOST_1")
+    boosted = _preview(client, idea, preset_id="BOOST_2")
     conflict = client.post(
         "/api/v1/risk/override",
         json=_apply_payload(idea, boosted),
