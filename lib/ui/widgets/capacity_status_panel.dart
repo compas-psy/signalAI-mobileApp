@@ -52,19 +52,20 @@ class _CapacityStatusPanelState extends State<CapacityStatusPanel> {
   }
 
   @override
-  Widget build(BuildContext context) => Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(S.screen, 12, S.screen, 4),
-            child: _loading
-                ? const _CapacityLoadingCard()
-                : _error != null
-                    ? const _CapacityUnavailableCard()
-                    : CapacityStatusCard(status: _status!),
+  Widget build(BuildContext context) => NestedScrollView(
+        headerSliverBuilder: (context, innerBoxIsScrolled) => [
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(S.screen, 12, S.screen, 4),
+              child: _loading
+                  ? const _CapacityLoadingCard()
+                  : _error != null
+                      ? const _CapacityUnavailableCard()
+                      : CapacityStatusCard(status: _status!),
+            ),
           ),
-          Expanded(child: widget.child),
         ],
+        body: widget.child,
       );
 }
 
