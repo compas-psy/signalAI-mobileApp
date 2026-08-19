@@ -64,7 +64,9 @@ def effective_execution_kill_switch_level(
 
 
 def get_execution_kill_switch_level(db: Session) -> ExecutionKillSwitchLevel:
-    return effective_execution_kill_switch_level(db.get(RiskState, 1))
+    # Materialize the singleton before a worker claim so the later SELECT FOR
+    # UPDATE always has a row to serialize against a concurrent owner action.
+    return effective_execution_kill_switch_level(_state(db))
 
 
 def _snapshot(state: RiskState) -> dict[str, object]:
