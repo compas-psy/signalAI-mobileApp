@@ -5,9 +5,9 @@ adapters or the current paper lifecycle yet. Later slices may create and
 advance records only through their explicit risk/mode/reconciliation gates.
 
 Mutable rows represent current operational state (intent/order/protection,
-venue health and the singleton mode state). Facts that must survive forensic
-review are stored as append-only mode events, fills and reconciliation events
-at the database layer by migration 0020.
+venue health, activation challenge and the singleton mode state). Facts that
+must survive forensic review are stored as append-only mode events, fills and
+reconciliation events at the database layer by migration 0020.
 """
 
 from __future__ import annotations
@@ -37,11 +37,7 @@ from .base import Base, Money, Price, Quantity, StrEnumColumn, UuidPk, utcnow_co
 
 
 class ExecutionModeState(Base):
-    """Reserved singleton for the server-owned mode implemented in SAI-030.
-
-    Until SAI-030 wires this table into runtime, the existing risk_state path
-    remains authoritative. The persisted default is the least-risk PAPER mode.
-    """
+    """Authoritative server-owned mode singleton (SAI-030)."""
 
     __tablename__ = "execution_mode_state"
 
@@ -71,6 +67,55 @@ class ExecutionModeEvent(UuidPk, Base):
     occurred_at: Mapped[datetime] = utcnow_column()
 
     __table_args__ = (Index("ix_execution_mode_events_occurred", "occurred_at"),)
+
+
+class ExecutionModeActivationRequest(UuidPk, Base):
+    """Durable two-step owner activation challenge (SAI-032 / B6.3).
+
+    This row stores exactly what the owner was shown before the second
+    confirmation. It is mutable operational state rather than an append-only
+    fact; the final confirmation outcome is also copied to ``audit_events`` and
+    an applied mode change is recorded in ``execution_mode_events``.
+    """
+
+    __tablename__ = "execution_mode_activation_requests"
+
+    preview_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    from_mode: Mapped[ExecutionLifecycleMode] = mapped_column(
+        StrEnumColumn(ExecutionLifecycleMode, 12), nullable=False
+    )
+    target_mode: Mapped[ExecutionLifecycleMode] = mapped_column(
+        StrEnumColumn(ExecutionLifecycleMode, 12), nullable=False
+    )
+    venue: Mapped[str] = mapped_column(String(32), nullable=False)
+    account: Mapped[str] = mapped_column(String(128), nullable=False)
+    capital_rub: Mapped[Money] = mapped_column(nullable=False)
+    hard_caps_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    blockers_json: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    config_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="PREVIEWED")
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    outcome_mode: Mapped[ExecutionLifecycleMode | None] = mapped_column(
+        StrEnumColumn(ExecutionLifecycleMode, 12), nullable=True
+    )
+    owner_confirmed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = utcnow_column()
+    updated_at: Mapped[datetime] = utcnow_column()
+
+    __table_args__ = (
+        UniqueConstraint(
+            "preview_hash",
+            name="uq_execution_mode_activation_requests_preview_hash",
+        ),
+        UniqueConstraint(
+            "idempotency_key",
+            name="uq_execution_mode_activation_requests_idempotency_key",
+        ),
+        Index("ix_execution_mode_activation_requests_status", "status"),
+        Index("ix_execution_mode_activation_requests_created", "created_at"),
+    )
 
 
 class ExecutionIntent(UuidPk, Base):
@@ -295,6 +340,7 @@ class ExecutionVenueHealth(Base):
 __all__ = [
     "ExecutionFill",
     "ExecutionIntent",
+    "ExecutionModeActivationRequest",
     "ExecutionModeEvent",
     "ExecutionModeState",
     "ExecutionOrder",
