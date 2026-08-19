@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import datetime
 from decimal import Decimal
 
 import pytest
@@ -77,6 +78,10 @@ def _apply_payload(idea, preview: dict, **overrides) -> dict:
     return payload
 
 
+def _timestamp(value: str) -> int:
+    return int(datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp())
+
+
 def test_sai_044_apply_rechecks_signed_preview_and_persists_server_owned_values(
     client,
     session,
@@ -110,13 +115,15 @@ def test_sai_044_apply_rechecks_signed_preview_and_persists_server_owned_values(
     rows = session.execute(select(ExecutionRiskOverride)).scalars().all()
     assert len(rows) == 1
     override = rows[0]
-    assert override.id == body["override_id"]
+    assert str(override.id) == body["override_id"]
     assert override.preset == "BOOST_2"
     assert override.preview_hash == hashlib.sha256(
         preview["preview_hash"].encode("utf-8")
     ).hexdigest()
     assert override.detail_json["manual_preview_token_sha256"] == override.preview_hash
-    assert override.detail_json["manual_preview_expires_at"] == preview["expires_at"]
+    assert _timestamp(override.detail_json["manual_preview_expires_at"]) == _timestamp(
+        preview["expires_at"]
+    )
 
 
 def test_sai_044_same_signed_preview_is_single_use_across_idempotency_keys(
