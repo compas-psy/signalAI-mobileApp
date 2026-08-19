@@ -4,10 +4,10 @@ These models are deliberately not wired into owner approval, workers, venue
 adapters or the current paper lifecycle yet. Later slices may create and
 advance records only through their explicit risk/mode/reconciliation gates.
 
-Mutable rows represent current operational state (intent/order/protection and
-the singleton mode state). Facts that must survive forensic review are stored
-as append-only mode events, fills and reconciliation events at the database
-layer by migration 0020.
+Mutable rows represent current operational state (intent/order/protection,
+venue health and the singleton mode state). Facts that must survive forensic
+review are stored as append-only mode events, fills and reconciliation events
+at the database layer by migration 0020.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -124,6 +125,12 @@ class ExecutionIntent(UuidPk, Base):
     lease_owner: Mapped[str | None] = mapped_column(String(128), nullable=True)
     lease_expires_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+
+    # SAI-029: every successful idempotency suppression increments the same
+    # durable intent. This is operational telemetry, not a trading input.
+    duplicate_prevention_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
     )
 
     created_at: Mapped[datetime] = utcnow_column()
@@ -257,6 +264,34 @@ class ExecutionReconciliationEvent(UuidPk, Base):
     )
 
 
+class ExecutionVenueHealth(Base):
+    """Latest provider-stream evidence for one execution venue/account.
+
+    SAI-029 only defines the durable health contract. SAI-036 venue adapters
+    will update this row from their real websocket/stream heartbeat. Until a
+    row exists, execution health must say ``NOT_CONFIGURED`` rather than infer
+    healthy state from silence.
+    """
+
+    __tablename__ = "execution_venue_health"
+
+    venue: Mapped[str] = mapped_column(String(32), primary_key=True)
+    account: Mapped[str] = mapped_column(String(128), primary_key=True)
+    websocket_connected: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    last_websocket_message_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    stale_after_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[datetime] = utcnow_column()
+
+    __table_args__ = (
+        CheckConstraint("stale_after_seconds > 0", name="positive_stale_after_seconds"),
+        Index("ix_execution_venue_health_updated", "updated_at"),
+    )
+
+
 __all__ = [
     "ExecutionFill",
     "ExecutionIntent",
@@ -265,4 +300,5 @@ __all__ = [
     "ExecutionOrder",
     "ExecutionProtection",
     "ExecutionReconciliationEvent",
+    "ExecutionVenueHealth",
 ]

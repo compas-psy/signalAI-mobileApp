@@ -4,6 +4,7 @@ import '../../data/api/api_client.dart';
 import '../../theme/tokens.dart';
 import '../../theme/typography.dart';
 import '../widgets/common.dart';
+import '../widgets/execution_health_panel.dart';
 
 /// Риск thin-клиента читает и меняет именно серверный risk-state.
 class ServerRiskScreen extends StatefulWidget {
@@ -21,7 +22,9 @@ class _ServerRiskScreenState extends State<ServerRiskScreen> {
   late final ApiClient _api;
   late final bool _ownsApi;
   Map<String, dynamic>? _data;
+  Map<String, dynamic>? _executionHealth;
   String? _error;
+  String? _executionHealthError;
   bool _busy = false;
   bool _confirmFlatten = false;
 
@@ -40,6 +43,13 @@ class _ServerRiskScreenState extends State<ServerRiskScreen> {
   }
 
   Future<void> _load() async {
+    await Future.wait([
+      _loadRisk(),
+      _loadExecutionHealth(),
+    ]);
+  }
+
+  Future<void> _loadRisk() async {
     try {
       final data = await _api.get('/api/v1/risk/dashboard');
       if (mounted) {
@@ -52,6 +62,24 @@ class _ServerRiskScreenState extends State<ServerRiskScreen> {
     } catch (error) {
       if (mounted) {
         setState(() => _error = '$error');
+      }
+    }
+  }
+
+  Future<void> _loadExecutionHealth() async {
+    try {
+      final data = await _api.get('/api/v1/execution/health?limit=20');
+      if (mounted) {
+        setState(() {
+          _executionHealth = data;
+          _executionHealthError = null;
+        });
+      }
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          _executionHealthError = '$error';
+        });
       }
     }
   }
@@ -284,6 +312,34 @@ class _ServerRiskScreenState extends State<ServerRiskScreen> {
             ],
           ),
         ),
+        const SizedBox(height: 10),
+        if (_executionHealth != null)
+          ExecutionHealthPanel(data: _executionHealth!)
+        else
+          SectionCard(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const SectionLabel('Здоровье исполнения'),
+                const SizedBox(height: 7),
+                if (_executionHealthError == null)
+                  const BusyLine(label: 'Читаем execution evidence…')
+                else ...[
+                  Text(
+                    'Execution health сейчас недоступен. Kill-switch и лимиты '
+                    'остаются рабочими независимо от этой диагностической панели.',
+                    style: T.body(10.5, color: C.warning, height: 1.45),
+                  ),
+                  const SizedBox(height: 7),
+                  ActionButton(
+                    label: 'Повторить health',
+                    dense: true,
+                    onTap: _loadExecutionHealth,
+                  ),
+                ],
+              ],
+            ),
+          ),
         const SizedBox(height: 10),
         SectionCard(
           child: Column(

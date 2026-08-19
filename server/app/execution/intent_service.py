@@ -14,7 +14,7 @@ import uuid
 from dataclasses import dataclass
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -128,6 +128,25 @@ def _same_plan(intent: ExecutionIntent, request: ExecutionIntentRequest) -> bool
     )
 
 
+def _count_duplicate_prevention(db: Session, *, intent_id: uuid.UUID) -> ExecutionIntent:
+    """Atomically count a same-plan retry suppressed by the identity guard."""
+
+    db.execute(
+        update(ExecutionIntent)
+        .where(ExecutionIntent.id == intent_id)
+        .values(
+            duplicate_prevention_count=(
+                ExecutionIntent.duplicate_prevention_count + 1
+            )
+        )
+    )
+    db.flush()
+    intent = db.get(ExecutionIntent, intent_id, populate_existing=True)
+    if intent is None:
+        raise RuntimeError("execution intent disappeared while counting duplicate")
+    return intent
+
+
 def create_execution_intent(
     db: Session,
     *,
@@ -137,7 +156,9 @@ def create_execution_intent(
     """Persist one intent per stable execution identity.
 
     PostgreSQL ``ON CONFLICT DO NOTHING`` makes duplicate retry/concurrency
-    safe without turning a timeout into a second money-bearing intent.
+    safe without turning a timeout into a second money-bearing intent. SAI-029
+    additionally increments a durable counter only after the conflicting row
+    is proven to carry the exact same execution plan.
     """
 
     _validate_gate(gate)
@@ -179,6 +200,8 @@ def create_execution_intent(
         raise ExecutionIntentRejected(
             "stable execution identity already exists with a different plan"
         )
+    if not created:
+        intent = _count_duplicate_prevention(db, intent_id=intent.id)
     return ExecutionIntentCreation(intent=intent, created=created)
 
 

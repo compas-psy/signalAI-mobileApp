@@ -43,6 +43,7 @@ from .execution import (
     ExecutionOrder,
     ExecutionProtection,
     ExecutionReconciliationEvent,
+    ExecutionVenueHealth,
 )
 from .experiments import (
     Experiment,
@@ -111,6 +112,7 @@ __all__ = [
     "ExecutionFill",
     "ExecutionProtection",
     "ExecutionReconciliationEvent",
+    "ExecutionVenueHealth",
     # delivery
     "NotificationOutbox",
     # portfolio

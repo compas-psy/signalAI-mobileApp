@@ -11,8 +11,25 @@ class _RiskApi extends ApiClient {
 
   @override
   Future<Map<String, dynamic>> get(String path) async {
-    expect(path, '/api/v1/risk/dashboard');
-    return Map<String, dynamic>.from(state);
+    if (path == '/api/v1/risk/dashboard') {
+      return Map<String, dynamic>.from(state);
+    }
+    if (path == '/api/v1/execution/health?limit=20') {
+      return {
+        'items': <dynamic>[],
+        'aggregate': {
+          'total_intents': 0,
+          'violation_intents': 0,
+          'protection_slo_breaches': 0,
+          'reconciliation_mismatches': 0,
+          'websocket_configured_intents': 0,
+          'websocket_stale_intents': 0,
+          'rejected_orders': 0,
+          'duplicate_preventions': 0,
+        },
+      };
+    }
+    throw StateError('unexpected GET $path');
   }
 
   @override
@@ -68,6 +85,7 @@ void main() {
     expect(find.text('Запретить новые входы'), findsOneWidget);
     expect(find.text('Отменить ожидающие входы'), findsOneWidget);
     expect(find.textContaining('FLATTEN_ALL'), findsWidgets);
+    expect(find.text('ЗДОРОВЬЕ ИСПОЛНЕНИЯ'), findsOneWidget);
 
     await tester.tap(find.text('Отменить ожидающие входы'));
     await tester.pumpAndSettle();
