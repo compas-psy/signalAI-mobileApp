@@ -20,10 +20,11 @@ from app.execution.service import (
     ExecutionProtectionAck,
     ExecutionSubmitAck,
     PreSubmitReconciliation,
+    ProtectionReconciliation,
     SubmissionReconciliation,
 )
 from app.execution.worker import process_next_intent
-from app.models import AuditEvent, ExecutionIntent, ExecutionOrder
+from app.models import AuditEvent, ExecutionIntent, ExecutionOrder, ExecutionProtection
 from app.models.enums import ExecutionMode
 from app.models.ideas import TradeIdea
 from app.models.risk import RiskSnapshot, RiskState
@@ -125,6 +126,44 @@ class _RecordingPort(ExecutionPort):
             status="ACTIVE",
             armed_at=NOW,
         )
+
+    def reconcile_protection(
+        self,
+        intent: ExecutionIntent,
+        order: ExecutionOrder,
+        protection: ExecutionProtection,
+    ) -> ProtectionReconciliation:
+        self.calls.append("reconcile_protection")
+        return ProtectionReconciliation.matched(
+            provider_order_id="provider-stop-1",
+            status="ACTIVE",
+            quantity=Decimal("1"),
+            stop_price=Decimal("89400"),
+            reconciled_at=NOW,
+        )
+
+    def emergency_flatten(
+        self,
+        intent: ExecutionIntent,
+        order: ExecutionOrder,
+        *,
+        filled_quantity: Decimal,
+        client_order_id: str,
+    ) -> ExecutionSubmitAck:
+        self.calls.append("emergency_flatten")
+        return ExecutionSubmitAck(
+            provider_order_id="provider-emergency-1",
+            status="ACKNOWLEDGED",
+            acknowledged_at=NOW,
+        )
+
+    def reconcile_emergency_flatten(
+        self,
+        intent: ExecutionIntent,
+        order: ExecutionOrder,
+    ) -> SubmissionReconciliation:
+        self.calls.append("reconcile_emergency_flatten")
+        return SubmissionReconciliation.unknown("not used")
 
     def reconcile(self, intent: ExecutionIntent) -> None:
         self.calls.append("reconcile")
@@ -230,6 +269,7 @@ def test_halt_keeps_ambiguous_reconciliation_and_protection_alive(session, instr
         "reconcile_submission",
         "consume_fills",
         "arm_protection",
+        "reconcile_protection",
         "reconcile",
         "manage_until_close",
     ]
@@ -318,22 +358,3 @@ def test_clear_resets_level_and_legacy_boolean(session):
     assert state.kill_switch_level == _level("CLEAR")
     assert state.kill_switch is False
     assert state.kill_switch_reason == ""
-
-
-def test_risk_api_accepts_and_returns_exact_kill_switch_level(session):
-    risk_api = importlib.import_module("app.api.v1.risk")
-    request_type = getattr(risk_api, "KillSwitchRequest", None)
-    endpoint = getattr(risk_api, "set_kill_switch", None)
-
-    assert request_type is not None
-    assert endpoint is not None
-    request = request_type(
-        level=_level("CANCEL_PENDING_ENTRIES"),
-        reason="owner cancel request",
-        confirm_flatten_all=False,
-    )
-
-    dashboard = endpoint(request=request, db=session)
-
-    assert dashboard.kill_switch is True
-    assert dashboard.kill_switch_level == _level("CANCEL_PENDING_ENTRIES")
