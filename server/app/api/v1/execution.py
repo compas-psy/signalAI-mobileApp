@@ -1,4 +1,4 @@
-"""Server-owned execution lifecycle mode API (SAI-030 / B6.1)."""
+"""Server-owned execution lifecycle mode API (SAI-030–031 / B6.1–B6.2)."""
 
 from __future__ import annotations
 
@@ -11,9 +11,11 @@ from ...db import get_db
 from ...execution.enums import ExecutionLifecycleMode
 from ...execution.mode import (
     ExecutionModeChangeRejected,
-    change_execution_mode as apply_execution_mode_change,
     get_execution_mode as read_execution_mode,
-    preview_execution_mode as preview_mode_change,
+)
+from ...execution.promotion_guard import (
+    change_mode_with_guard,
+    preview_promotion,
 )
 from ...schemas.common import ApiModel
 
@@ -52,7 +54,7 @@ def preview_execution_mode(
     request: ExecutionModePreviewRequest,
     db: Session = Depends(get_db),
 ) -> ExecutionModePreviewOut:
-    preview = preview_mode_change(db, target=request.target)
+    preview = preview_promotion(db, target=request.target)
     return ExecutionModePreviewOut(
         current=preview.current,
         target=preview.target,
@@ -66,14 +68,16 @@ def change_execution_mode(
     request: ExecutionModeChangeRequest,
     db: Session = Depends(get_db),
 ) -> ExecutionModeOut:
-    """Apply an idempotent same-mode request; other changes await SAI-031.
+    """Apply only transitions the server-side SAI-031 guard can prove safe.
 
-    No request field can manufacture promotion authorization. SAI-031 will
-    recheck server-side gates and call the internal service with its own proof.
+    Lower-risk transitions are automatically permitted with an append-only mode
+    event. Risk-increasing transitions remain fail-closed until later slices
+    supply their real server-side evidence; the request cannot submit or mint
+    those proof flags itself.
     """
 
     try:
-        snapshot = apply_execution_mode_change(
+        snapshot = change_mode_with_guard(
             db,
             target=request.target,
             actor="owner",
