@@ -350,6 +350,7 @@ def preview_manual_risk(
         "strategy_version": idea.strategy_version,
         "risk_policy_version": idea.risk_policy_version,
         "engine_config_hash": config.config_hash,
+        "manual_risk_config_hash": policy.config_hash,
         "auto_risk_pct": _decimal_text(auto_pct),
         "requested_risk_pct": _decimal_text(requested_pct),
         "effective_risk_pct": _decimal_text(budget.percent),
