@@ -20,10 +20,9 @@ from ...execution.kill_switch import (
     effective_execution_kill_switch_level,
     set_execution_kill_switch,
 )
-from ...execution.risk_on import RiskOnPreviewRejected
 from ...models import RiskSnapshot, RiskState
 from ...models.enums import ExecutionMode
-from ...risk.manual_preview import preview_manual_risk
+from ...risk.manual_preview import ManualRiskPreviewRejected, preview_manual_risk
 from ...schemas.common import ApiModel, Money
 
 router = APIRouter(tags=["risk"])
@@ -199,7 +198,7 @@ def manual_risk_preview(
             preset_id=request.preset_id,
             current_mode=request.current_mode,
         )
-    except RiskOnPreviewRejected as exc:
+    except ManualRiskPreviewRejected as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return ManualRiskPreviewOut(
         idea_id=preview.idea_id,
