@@ -204,11 +204,11 @@ def test_partial_fill_is_protected_only_for_actual_quantity_and_only_after_recon
     )
     session.flush()
 
-    assert outcome.processed is True
+    assert outcome.processed is False
     assert port.arm_quantities == [Decimal("1")]
     assert port.calls.index("reconcile_protection") > port.calls.index("arm_protection")
-    assert port.calls.index("manage_until_close") > port.calls.index("reconcile_protection")
-    assert intent.state == ExecutionState.MANAGING
+    assert "manage_until_close" not in port.calls
+    assert intent.state == ExecutionState.PROTECTION_PENDING
 
     protection = session.query(ExecutionProtection).filter_by(intent_id=intent.id).one()
     assert protection.quantity == Decimal("1")
@@ -246,7 +246,7 @@ def test_unconfirmed_protection_before_sla_stays_pending_and_does_not_manage(
 def test_pending_protection_retry_reconciles_without_blindly_arming_second_stop(
     session, instrument
 ):
-    intent = _seed_intent(session, instrument)
+    intent = _seed_intent(session, instrument, planned_quantity=Decimal("1"))
     port = _ProtectionPort(
         protection_result=ProtectionReconciliation.unknown("temporary ambiguity")
     )
