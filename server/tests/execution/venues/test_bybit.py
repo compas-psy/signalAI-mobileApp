@@ -243,6 +243,56 @@ def test_ambiguous_submission_reconciliation_returns_existing_provider_order():
     }
 
 
+def test_submission_reconciliation_falls_back_to_history_for_terminal_order():
+    from app.execution.venues.bybit import BybitAdapter
+
+    transport = RecordingTransport(
+        {
+            ("GET", "/v5/order/realtime"): {
+                "retCode": 0,
+                "result": {"list": []},
+            },
+            ("GET", "/v5/order/history"): {
+                "retCode": 0,
+                "result": {
+                    "list": [
+                        {
+                            "orderId": "ORD-CANCELLED-9",
+                            "orderStatus": "Cancelled",
+                            "updatedTime": "1700000000456",
+                        }
+                    ]
+                },
+            },
+        }
+    )
+    adapter = BybitAdapter(
+        transport=transport,
+        plan_resolver=lambda _: _plan(),
+        clock=lambda: NOW,
+    )
+    order = SimpleNamespace(client_order_id="e-stable-cancelled")
+
+    result = adapter.reconcile_submission(_intent(), order)
+
+    assert result.outcome == "FOUND"
+    assert result.provider_order_id == "ORD-CANCELLED-9"
+    assert result.status == "Cancelled"
+    assert result.acknowledged_at == datetime.fromtimestamp(1700000000.456, tz=UTC)
+    assert transport.calls == [
+        (
+            "GET",
+            "/v5/order/realtime",
+            {"category": "linear", "orderLinkId": "e-stable-cancelled"},
+        ),
+        (
+            "GET",
+            "/v5/order/history",
+            {"category": "linear", "orderLinkId": "e-stable-cancelled"},
+        ),
+    ]
+
+
 def test_fill_parsing_and_position_stop_match_existing_bybit_semantics():
     from app.execution.venues.bybit import BybitAdapter
 
