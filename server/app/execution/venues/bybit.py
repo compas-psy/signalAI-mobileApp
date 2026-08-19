@@ -1,14 +1,8 @@
-"""Bybit V5 adapter parity layer for SAI-037.
+"""Bybit V5 adapter parity plus SAI-039 protection safety.
 
-This module extracts the provider semantics already proven by the legacy
-Flutter ``BybitBroker`` behind the server-side ``VenueAdapter`` interface.
-It deliberately has no production HTTP factory and no credential lookup: a
-transport and an execution-plan resolver must be injected by the caller.
-Consequently adding this module cannot enable real-money execution by itself.
-
-SAI-039 owns the final protection-first worker wiring. Until then the existing
-Flutter broker remains the rollback/parity reference and the server production
-worker remains fail-closed.
+The adapter has no production HTTP factory and no credential lookup. Transport
+and plan resolution remain injected, so this module cannot enable real-money
+execution by itself.
 """
 
 from __future__ import annotations
@@ -20,12 +14,13 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Callable, Mapping, Protocol
 
-from ...models.execution import ExecutionIntent, ExecutionOrder
+from ...models.execution import ExecutionIntent, ExecutionOrder, ExecutionProtection
 from ..service import (
     ExecutionFillSnapshot,
     ExecutionProtectionAck,
     ExecutionSubmitAck,
     PreSubmitReconciliation,
+    ProtectionReconciliation,
     SubmissionReconciliation,
 )
 from .base import VenueAdapter
@@ -46,13 +41,6 @@ class BybitProviderError(RuntimeError):
 
 
 class BybitTransport(Protocol):
-    """Injected provider transport.
-
-    SAI-037 intentionally does not create a network implementation. The future
-    server-side credential boundary can supply an authenticated implementation
-    without changing the adapter's economic/reconciliation semantics.
-    """
-
     def get(self, path: str, query: dict[str, str]) -> Mapping[str, object]: ...
 
     def post(self, path: str, body: dict[str, object]) -> Mapping[str, object]: ...
@@ -60,8 +48,6 @@ class BybitTransport(Protocol):
 
 @dataclass(frozen=True)
 class BybitOrderPlan:
-    """Provider-facing order plan matching the existing Flutter contract."""
-
     symbol: str
     long: bool
     quantity: Decimal
@@ -73,8 +59,6 @@ class BybitOrderPlan:
 
 @dataclass(frozen=True)
 class BybitV5HmacAuth:
-    """Pure V5 HMAC signer matching the legacy mobile payload contract."""
-
     api_key: str
     api_secret: str
     recv_window: str = _RECV_WINDOW
@@ -96,8 +80,6 @@ class BybitV5HmacAuth:
 
 
 def _decimal_text(value: Decimal) -> str:
-    """Serialize Decimal without exponent or insignificant trailing zeroes."""
-
     value = Decimal(value)
     text = format(value, "f")
     if "." in text:
@@ -106,13 +88,6 @@ def _decimal_text(value: Decimal) -> str:
 
 
 def legacy_order_body(plan: BybitOrderPlan) -> dict[str, object]:
-    """Build the same economic V5 order fields as the existing Flutter broker.
-
-    ``orderLinkId`` is intentionally not part of this legacy parity function;
-    the server adapter appends it as transport/reconciliation identity without
-    changing price, quantity, side or protection economics.
-    """
-
     body: dict[str, object] = {
         "category": _BYBIT_CATEGORY,
         "symbol": plan.symbol,
@@ -168,14 +143,18 @@ def _deterministic_client_order_id(intent: ExecutionIntent) -> str:
     return f"e-{intent.id.hex}"
 
 
-class BybitAdapter(VenueAdapter):
-    """Provider-neutral wrapper over the current Bybit V5 semantics.
+def _emergency_status(status: object) -> str:
+    normalized = str(status or "")
+    return {
+        "Filled": "FILLED",
+        "PartiallyFilled": "PARTIALLY_FILLED",
+        "Cancelled": "CANCELLED",
+        "Rejected": "REJECTED",
+    }.get(normalized, normalized.upper())
 
-    The adapter is intentionally not instantiated by production code in this
-    slice. The injected plan resolver keeps side/TP/provider intent outside the
-    provider layer; SAI-039 will wire that plan to the durable execution core
-    when protection-first semantics are complete.
-    """
+
+class BybitAdapter(VenueAdapter):
+    """Provider-neutral wrapper over the current Bybit V5 semantics."""
 
     venue = "BYBIT"
 
@@ -192,9 +171,8 @@ class BybitAdapter(VenueAdapter):
 
     @property
     def capabilities(self) -> VenueCapabilities:
-        # Only capabilities already represented by the extracted provider path
-        # are claimed. Websocket/reduce-only/market/cancel-replace are left
-        # false until their dedicated server-side implementations exist.
+        # Emergency-only market/reduce-only behavior is a safety primitive, not
+        # general strategy capability. Keep those optional capabilities false.
         return VenueCapabilities(
             limit_order=True,
             stop_protection=True,
@@ -310,7 +288,7 @@ class BybitAdapter(VenueAdapter):
                 quantity = Decimal(str(item.get("execQty")))
                 price = Decimal(str(item.get("execPrice")))
                 fee_amount = Decimal(str(item.get("execFee") or "0"))
-            except Exception as exc:  # Decimal raises several parse subclasses.
+            except Exception as exc:
                 raise BybitProviderError(-1, f"invalid execution row: {exc}") from exc
             if not provider_fill_id or quantity <= 0 or price <= 0:
                 raise BybitProviderError(-1, "execution row lacks id/positive qty/price")
@@ -337,7 +315,7 @@ class BybitAdapter(VenueAdapter):
         *,
         filled_quantity: Decimal,
     ) -> ExecutionProtectionAck:
-        del order, filled_quantity  # Bybit Full position stop is position-scoped.
+        del order, filled_quantity
         plan = self._plan_resolver(intent)
         _provider_result(
             self._transport.post(
@@ -351,23 +329,157 @@ class BybitAdapter(VenueAdapter):
                 },
             )
         )
-        # The legacy endpoint returns no stable protection-order id. Persist a
-        # deterministic provider reference until SAI-039 reconciles the actual
-        # position/protection state explicitly.
         return ExecutionProtectionAck(
             provider_order_id=f"bybit-position-stop:{plan.symbol}",
             status="ACTIVE",
             armed_at=self._clock(),
         )
 
+    def reconcile_protection(
+        self,
+        intent: ExecutionIntent,
+        order: ExecutionOrder,
+        protection: ExecutionProtection,
+    ) -> ProtectionReconciliation:
+        del order
+        plan = self._plan_resolver(intent)
+        try:
+            result = _provider_result(
+                self._transport.get(
+                    "/v5/position/list",
+                    {"category": _BYBIT_CATEGORY, "symbol": plan.symbol},
+                )
+            )
+        except BybitProviderError as exc:
+            return ProtectionReconciliation.unknown(str(exc))
+
+        expected_side = "Buy" if plan.long else "Sell"
+        position = next(
+            (
+                item
+                for item in _items(result)
+                if str(item.get("symbol") or "") == plan.symbol
+                and int(item.get("positionIdx") or 0) == 0
+                and str(item.get("side") or "") == expected_side
+            ),
+            None,
+        )
+        if position is None:
+            return ProtectionReconciliation.missing(
+                "Bybit position is absent while protection is expected"
+            )
+
+        try:
+            quantity = Decimal(str(position.get("size") or "0"))
+            stop_price = Decimal(str(position.get("stopLoss") or "0"))
+        except Exception as exc:
+            return ProtectionReconciliation.unknown(
+                f"invalid Bybit position protection snapshot: {exc}"
+            )
+
+        if quantity <= 0:
+            return ProtectionReconciliation.missing(
+                "Bybit position size is zero while protection is expected"
+            )
+        if stop_price <= 0:
+            return ProtectionReconciliation.missing(
+                "Bybit position has no active stopLoss"
+            )
+        if quantity != Decimal(protection.quantity):
+            return ProtectionReconciliation.missing(
+                f"Bybit protected quantity {quantity} != expected {protection.quantity}"
+            )
+        if stop_price != Decimal(protection.stop_price):
+            return ProtectionReconciliation.missing(
+                f"Bybit stopLoss {stop_price} != expected {protection.stop_price}"
+            )
+
+        return ProtectionReconciliation.matched(
+            provider_order_id=str(protection.provider_order_id or ""),
+            status="ACTIVE",
+            quantity=quantity,
+            stop_price=stop_price,
+            reconciled_at=self._clock(),
+        )
+
+    def emergency_flatten(
+        self,
+        intent: ExecutionIntent,
+        order: ExecutionOrder,
+        *,
+        filled_quantity: Decimal,
+        client_order_id: str,
+    ) -> ExecutionSubmitAck:
+        del order
+        quantity = Decimal(filled_quantity)
+        if quantity <= 0:
+            raise BybitProviderError(-1, "emergency close quantity must be positive")
+        plan = self._plan_resolver(intent)
+        body: dict[str, object] = {
+            "category": _BYBIT_CATEGORY,
+            "symbol": plan.symbol,
+            "side": "Sell" if plan.long else "Buy",
+            "orderType": "Market",
+            "qty": _decimal_text(quantity),
+            "positionIdx": 0,
+            "reduceOnly": True,
+            "closeOnTrigger": True,
+            "orderLinkId": client_order_id,
+        }
+        result = _provider_result(self._transport.post("/v5/order/create", body))
+        provider_order_id = str(result.get("orderId") or "")
+        if not provider_order_id:
+            raise BybitProviderError(
+                -1, "successful emergency create-order lacks orderId"
+            )
+        return ExecutionSubmitAck(
+            provider_order_id=provider_order_id,
+            status="ACKNOWLEDGED",
+            acknowledged_at=self._clock(),
+        )
+
+    def reconcile_emergency_flatten(
+        self,
+        intent: ExecutionIntent,
+        order: ExecutionOrder,
+    ) -> SubmissionReconciliation:
+        del intent
+        try:
+            result = _provider_result(
+                self._transport.get(
+                    "/v5/order/realtime",
+                    {
+                        "category": _BYBIT_CATEGORY,
+                        "orderLinkId": order.client_order_id,
+                    },
+                )
+            )
+        except BybitProviderError as exc:
+            return SubmissionReconciliation.unknown(str(exc))
+
+        orders = _items(result)
+        if not orders:
+            return SubmissionReconciliation.absent()
+        provider = orders[0]
+        provider_order_id = str(provider.get("orderId") or "")
+        status = _emergency_status(provider.get("orderStatus"))
+        if not provider_order_id or not status:
+            return SubmissionReconciliation.unknown(
+                "Bybit emergency reconciliation lacks orderId/orderStatus"
+            )
+        return SubmissionReconciliation.found(
+            provider_order_id=provider_order_id,
+            status=status,
+            acknowledged_at=_millis_timestamp(
+                provider.get("updatedTime"),
+                self._clock(),
+            ),
+        )
+
     def reconcile(self, intent: ExecutionIntent) -> None:
-        # Submission reconciliation is implemented above. Position/protection
-        # reconciliation is intentionally owned by SAI-039/040 and the adapter
-        # is not production-wired before then.
         del intent
 
     def manage_until_close(self, intent: ExecutionIntent) -> None:
-        # Exit management is not invented in this parity slice.
         del intent
 
 
