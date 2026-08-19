@@ -235,6 +235,41 @@ def test_halt_keeps_ambiguous_reconciliation_and_protection_alive(session, instr
     ]
 
 
+def test_halt_raised_after_pre_submit_reconcile_still_blocks_provider_submit(
+    session,
+    instrument,
+):
+    intent = _seed_intent(session, instrument)
+    kill = _kill_module()
+
+    class _HaltDuringPreSubmitPort(_RecordingPort):
+        def reconcile_before_submit(
+            self,
+            current: ExecutionIntent,
+        ) -> PreSubmitReconciliation:
+            self.calls.append("reconcile_before_submit")
+            kill.set_execution_kill_switch(
+                session,
+                level=_level("HALT_NEW_ENTRIES"),
+                actor="owner",
+                reason="halt won the submit race",
+            )
+            return PreSubmitReconciliation.absent()
+
+    port = _HaltDuringPreSubmitPort()
+
+    outcome = process_next_intent(session, port=port)
+
+    session.refresh(intent)
+    assert outcome.processed is False
+    assert "submit" not in port.calls
+    assert intent.state in {
+        ExecutionState.AMBIGUOUS,
+        ExecutionState.RECONCILING,
+        ExecutionState.READY_TO_SUBMIT,
+    }
+
+
 def test_flatten_all_requires_explicit_confirmation_and_audits_exact_level(
     session,
 ):
