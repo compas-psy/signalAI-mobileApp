@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import telegram_notifications as telegram
+from app.execution.enums import ExecutionKillSwitchLevel
 from app.models import AuditEvent, NotificationOutbox
 from app.notification_outbox import list_after
 from app.ops.backpressure import build_backpressure_plan
@@ -180,18 +181,17 @@ def test_initial_normal_state_is_silent_but_recovery_after_pressure_is_recorded(
     assert "восстанов" in event.title.lower()
 
 
-def test_entry_halt_remains_advisory_in_audit_and_never_mutates_risk_state(session: Session):
+def test_entry_halt_is_applied_without_changing_legacy_execution_mode(session: Session):
     from app.models import RiskState
 
     # A migrated database does not seed the singleton RiskState row. Create an
-    # explicit baseline so this test proves remediation leaves real state
-    # untouched instead of relying on another fixture or API side effect.
+    # explicit baseline so this test proves CRITICAL resource pressure changes
+    # only the approved entry-safety state and does not mutate legacy mode.
     session.add(RiskState(id=1))
     session.flush()
     before = session.get(RiskState, 1)
     assert before is not None
     before_mode = str(before.execution_mode)
-    before_kill_switch = bool(before.kill_switch)
 
     result = record_resource_remediation(
         session,
@@ -209,7 +209,12 @@ def test_entry_halt_remains_advisory_in_audit_and_never_mutates_risk_state(sessi
     after = session.get(RiskState, 1)
     assert after is not None
     assert str(after.execution_mode) == before_mode
-    assert bool(after.kill_switch) is before_kill_switch
+    assert after.kill_switch is True
+    assert after.kill_switch_level == ExecutionKillSwitchLevel.HALT_NEW_ENTRIES
+    event = session.get(NotificationOutbox, result.notification_id)
+    assert event is not None
+    assert "применено автоматически" in event.body
+    assert "только рекомендация" not in event.body
 
 
 def test_resource_outbox_event_is_delivered_to_telegram_as_text(

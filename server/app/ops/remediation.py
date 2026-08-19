@@ -1,9 +1,10 @@
-"""Append-only resource remediation audit and durable owner alerting.
+"""Resource remediation audit, owner alerting and approved CRITICAL halt.
 
-This module records the outcome of resource-autopilot decisions and approved
-low-priority remediations. It deliberately does not import or mutate RiskState,
-scanner state, signal admission, paper lifecycle or broker execution. An
-advisory ``HALT_NEW_ENTRIES`` may be visible in the evidence, but remains data.
+Most resource-autopilot actions remain low-priority operational remediation.
+SAI-033 makes one deliberate exception: when the existing backpressure policy
+returns ``HALT_NEW_ENTRIES`` for actual CRITICAL pressure, that advisory is now
+applied through the durable execution kill switch. Recovery never clears the
+halt automatically; resuming entries remains a separate explicit safety action.
 """
 
 from __future__ import annotations
@@ -17,9 +18,10 @@ from datetime import datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..execution.automatic_safety import automatic_halt_new_entries
 from ..models import AuditEvent
 from ..notification_outbox import emit
-from .backpressure import BackpressurePlan
+from .backpressure import BackpressurePlan, EntryDisposition
 from .ollama_shed import OllamaShedResult
 from .pressure import PressureAssessment, PressureState
 from .retention import RetentionResult
@@ -53,10 +55,21 @@ def record_resource_remediation(
     the same state is not re-alerted after a process restart. Initial NORMAL is
     intentionally silent; NORMAL after any prior resource event is a recovery
     transition and is recorded.
+
+    A CRITICAL plan's ``HALT_NEW_ENTRIES`` is applied before audit deduplication.
+    That ordering is intentional: a repeated CRITICAL observation must still
+    restore fail-closed entry state if some external owner action cleared it,
+    while an already-active equal/stronger switch remains idempotent.
     """
 
     if now.tzinfo is None or now.utcoffset() is None:
         raise ValueError("now must be timezone-aware")
+
+    if plan.new_entries is EntryDisposition.HALT_NEW_ENTRIES:
+        automatic_halt_new_entries(
+            session,
+            reason=_automatic_halt_reason(assessment),
+        )
 
     payload = _payload(
         assessment=assessment,
@@ -104,6 +117,11 @@ def record_resource_remediation(
         audit_id=audit.id,
         notification_id=notification_id,
     )
+
+
+def _automatic_halt_reason(assessment: PressureAssessment) -> str:
+    reasons = ", ".join(assessment.reasons) if assessment.reasons else "unspecified"
+    return f"resource autopilot CRITICAL: {reasons}"
 
 
 def _latest_resource_audit(session: Session) -> AuditEvent | None:
@@ -197,8 +215,8 @@ def _body(
             f" · {retention.deleted_files} файлов / {retention.deleted_bytes} байт"
         )
     entry_suffix = (
-        " (только рекомендация)"
-        if plan.new_entries.value == "HALT_NEW_ENTRIES"
+        " (применено автоматически)"
+        if plan.new_entries is EntryDisposition.HALT_NEW_ENTRIES
         else ""
     )
     return "\n".join(
