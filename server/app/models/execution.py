@@ -6,8 +6,8 @@ advance records only through their explicit risk/mode/reconciliation gates.
 
 Mutable rows represent current operational state (intent/order/protection,
 venue health, activation challenge and the singleton mode state). Facts that
-must survive forensic review are stored as append-only mode events, fills and
-reconciliation events at the database layer by migration 0020.
+must survive forensic review are stored as append-only mode events, risk
+overrides, fills and reconciliation events at the database layer.
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ..execution.enums import ExecutionLifecycleMode, ExecutionState
-from .base import Base, Money, Price, Quantity, StrEnumColumn, UuidPk, utcnow_column
+from .base import Base, Money, Price, Quantity, Ratio, StrEnumColumn, UuidPk, utcnow_column
 
 
 class ExecutionModeState(Base):
@@ -70,13 +70,7 @@ class ExecutionModeEvent(UuidPk, Base):
 
 
 class ExecutionModeActivationRequest(UuidPk, Base):
-    """Durable two-step owner activation challenge (SAI-032 / B6.3).
-
-    This row stores exactly what the owner was shown before the second
-    confirmation. It is mutable operational state rather than an append-only
-    fact; the final confirmation outcome is also copied to ``audit_events`` and
-    an applied mode change is recorded in ``execution_mode_events``.
-    """
+    """Durable two-step owner activation challenge (SAI-032 / B6.3)."""
 
     __tablename__ = "execution_mode_activation_requests"
 
@@ -118,13 +112,82 @@ class ExecutionModeActivationRequest(UuidPk, Base):
     )
 
 
+class ExecutionRiskOverride(UuidPk, Base):
+    """Immutable owner-approved bounded risk decision for one execution scope.
+
+    The row is the forensic bridge between the future SAI-043 preview provider
+    and the money-bearing intent. It is bound to the exact idea, risk snapshot,
+    venue/account and server-owned lifecycle mode so a later mode or venue
+    change cannot replay an old ``Рискнуть`` decision.
+    """
+
+    __tablename__ = "execution_risk_overrides"
+
+    idea_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("trade_ideas.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    risk_snapshot_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("risk_snapshots.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    preset: Mapped[str] = mapped_column(String(24), nullable=False)
+    venue: Mapped[str] = mapped_column(String(32), nullable=False)
+    account: Mapped[str] = mapped_column(String(128), nullable=False)
+    execution_mode_snapshot: Mapped[ExecutionLifecycleMode] = mapped_column(
+        StrEnumColumn(ExecutionLifecycleMode, 12), nullable=False
+    )
+
+    base_risk_pct: Mapped[Ratio] = mapped_column(nullable=False)
+    effective_risk_pct: Mapped[Ratio] = mapped_column(nullable=False)
+    hard_cap_risk_pct: Mapped[Ratio] = mapped_column(nullable=False)
+    base_quantity: Mapped[Quantity] = mapped_column(nullable=False)
+    effective_quantity: Mapped[Quantity] = mapped_column(nullable=False)
+    effective_leverage: Mapped[Ratio | None] = mapped_column(nullable=True)
+    hard_cap_leverage: Mapped[Ratio | None] = mapped_column(nullable=True)
+
+    preview_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    actor: Mapped[str] = mapped_column(String(32), nullable=False, default="owner")
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    detail_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = utcnow_column()
+
+    __table_args__ = (
+        UniqueConstraint("preview_hash", name="uq_execution_risk_overrides_preview_hash"),
+        UniqueConstraint(
+            "idempotency_key", name="uq_execution_risk_overrides_idempotency_key"
+        ),
+        CheckConstraint("base_risk_pct > 0", name="positive_base_risk_pct"),
+        CheckConstraint("effective_risk_pct > 0", name="positive_effective_risk_pct"),
+        CheckConstraint("hard_cap_risk_pct > 0", name="positive_hard_cap_risk_pct"),
+        CheckConstraint(
+            "effective_risk_pct <= hard_cap_risk_pct",
+            name="effective_risk_within_cap",
+        ),
+        CheckConstraint("base_quantity >= 0", name="base_quantity_not_negative"),
+        CheckConstraint("effective_quantity > 0", name="positive_effective_quantity"),
+        CheckConstraint(
+            "effective_leverage IS NULL OR effective_leverage > 0",
+            name="positive_effective_leverage",
+        ),
+        CheckConstraint(
+            "hard_cap_leverage IS NULL OR hard_cap_leverage > 0",
+            name="positive_hard_cap_leverage",
+        ),
+        CheckConstraint(
+            "effective_leverage IS NULL OR (hard_cap_leverage IS NOT NULL AND effective_leverage <= hard_cap_leverage)",
+            name="effective_leverage_within_cap",
+        ),
+        Index("ix_execution_risk_overrides_idea", "idea_id", "created_at"),
+    )
+
+
 class ExecutionIntent(UuidPk, Base):
     __tablename__ = "execution_intents"
 
-    # Content-addressed stable identity from B5.2. The hash deliberately covers
-    # decision identity (idea/strategy/risk/venue/account) plus the server-owned
-    # execution lifecycle mode, not mutable delivery state. PostgreSQL
-    # uniqueness is the final retry/concurrency guard.
     identity_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     idea_id: Mapped[uuid.UUID] = mapped_column(
         PgUUID(as_uuid=True),
@@ -142,16 +205,13 @@ class ExecutionIntent(UuidPk, Base):
         ForeignKey("risk_snapshots.id", ondelete="RESTRICT"),
         nullable=False,
     )
-    # SAI-042 owns the risk-override table. Preserve stable identity now without
-    # inventing a foreign key to a table that intentionally does not exist yet.
     risk_override_id: Mapped[uuid.UUID | None] = mapped_column(
-        PgUUID(as_uuid=True), nullable=True
+        PgUUID(as_uuid=True),
+        ForeignKey("execution_risk_overrides.id", ondelete="RESTRICT"),
+        nullable=True,
     )
     venue: Mapped[str] = mapped_column(String(32), nullable=False)
     account: Mapped[str] = mapped_column(String(128), nullable=False)
-    # SAI-035: immutable forensic snapshot selected from server-owned mode state
-    # when the intent is created. Callers cannot supply it, and it participates
-    # in identity so a decision cannot be replayed across lifecycle modes.
     execution_mode_snapshot: Mapped[ExecutionLifecycleMode] = mapped_column(
         StrEnumColumn(ExecutionLifecycleMode, 12), nullable=False
     )
@@ -165,9 +225,6 @@ class ExecutionIntent(UuidPk, Base):
     planned_entry_price: Mapped[Price] = mapped_column(nullable=False)
     planned_stop_price: Mapped[Price] = mapped_column(nullable=False)
 
-    # SAI-027 durable delivery metadata. These fields are operational state,
-    # not strategy/risk inputs: they only control when and by whom the same
-    # content-addressed execution intent may be replayed after uncertainty.
     retry_count: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default=text("0")
     )
@@ -178,9 +235,6 @@ class ExecutionIntent(UuidPk, Base):
     lease_expires_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-
-    # SAI-029: every successful idempotency suppression increments the same
-    # durable intent. This is operational telemetry, not a trading input.
     duplicate_prevention_count: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default=text("0")
     )
@@ -317,13 +371,7 @@ class ExecutionReconciliationEvent(UuidPk, Base):
 
 
 class ExecutionVenueHealth(Base):
-    """Latest provider-stream evidence for one execution venue/account.
-
-    SAI-029 only defines the durable health contract. SAI-036 venue adapters
-    will update this row from their real websocket/stream heartbeat. Until a
-    row exists, execution health must say ``NOT_CONFIGURED`` rather than infer
-    healthy state from silence.
-    """
+    """Latest provider-stream evidence for one execution venue/account."""
 
     __tablename__ = "execution_venue_health"
 
@@ -353,5 +401,6 @@ __all__ = [
     "ExecutionOrder",
     "ExecutionProtection",
     "ExecutionReconciliationEvent",
+    "ExecutionRiskOverride",
     "ExecutionVenueHealth",
 ]
