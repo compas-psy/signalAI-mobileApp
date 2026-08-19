@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime
 from decimal import Decimal
 
 import pytest
@@ -28,7 +28,7 @@ def _seed(session, instrument, now):
             status="TRIGGERED",
             quality_status="ACTIVE",
             risk_pct=Decimal("0.005"),
-            risk_amount=Decimal("500"),
+            risk_amount=Decimal("1000"),
             quantity=Decimal("1"),
         )
     )
@@ -75,7 +75,7 @@ def test_sai_043_preview_is_preset_and_mode_scoped_with_full_economics(
     assert Decimal(str(body["auto_risk_pct"])) == Decimal("0.005")
     assert Decimal(str(body["requested_risk_pct"])) == Decimal("0.0075")
     assert Decimal(str(body["effective_risk_pct"])) == Decimal("0.0075")
-    assert Decimal(str(body["auto_risk_amount"])) == Decimal("500")
+    assert Decimal(str(body["auto_risk_amount"])) == Decimal("1000")
     assert Decimal(str(body["requested_risk_amount"])) == Decimal("1500")
     assert Decimal(str(body["effective_risk_amount"])) > Decimal("0")
     assert Decimal(str(body["quantity"])) > Decimal("1")
