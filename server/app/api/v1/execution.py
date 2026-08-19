@@ -1,11 +1,13 @@
-"""Server-owned execution lifecycle mode API (SAI-030–034 / B6.1–B6.5)."""
+"""Server-owned execution lifecycle and bounded owner-control API."""
 
 from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException
+from pydantic import ConfigDict
 from sqlalchemy.orm import Session
 
 from ...db import get_db
@@ -23,7 +25,14 @@ from ...execution.promotion_guard import (
     change_mode_with_guard,
     preview_promotion,
 )
-from ...schemas.common import ApiModel
+from ...execution.risk_on import (
+    RiskOnConfirmationRejected,
+    RiskOnPreviewRejected,
+    confirm_risk_on as apply_risk_on_confirmation,
+    preview_risk_on as build_risk_on_preview,
+)
+from ...execution.risk_override import ExecutionRiskOverrideRejected
+from ...schemas.common import ApiModel, Money
 
 router = APIRouter(tags=["execution"])
 
@@ -73,6 +82,62 @@ class LiveActivationResultOut(ApiModel):
     status: str
     mode: ExecutionLifecycleMode
     blockers: list[str]
+
+
+class _StrictApiModel(ApiModel):
+    """Owner write payloads fail closed on fields the phone must not own."""
+
+    model_config = ConfigDict(
+        from_attributes=True,
+        populate_by_name=True,
+        extra="forbid",
+    )
+
+
+class RiskOnPreviewRequest(_StrictApiModel):
+    idea_id: UUID
+    venue: str
+    account: str
+
+
+class RiskOnPreviewOut(ApiModel):
+    idea_id: UUID
+    risk_snapshot_id: UUID
+    venue: str
+    account: str
+    allowed: bool
+    blockers: list[str]
+    base_risk_pct: Money
+    effective_risk_pct: Money
+    hard_cap_risk_pct: Money
+    base_quantity: Money
+    effective_quantity: Money
+    effective_risk_amount: Money
+    effective_leverage: Money | None
+    hard_cap_leverage: Money
+    binding_limit: str
+    preview_hash: str
+
+
+class RiskOnConfirmRequest(_StrictApiModel):
+    idea_id: UUID
+    venue: str
+    account: str
+    preview_hash: str
+    owner_confirmed: bool
+
+
+class RiskOnConfirmOut(ApiModel):
+    risk_override_id: UUID
+    created: bool
+    preview_hash: str
+    venue: str
+    account: str
+    effective_risk_pct: Money
+    effective_quantity: Money
+    effective_leverage: Money | None
+    hard_cap_risk_pct: Money
+    hard_cap_leverage: Money | None
 
 
 def _live_idempotency_key(
@@ -195,6 +260,89 @@ def confirm_live_activation(
     )
 
 
+@router.post(
+    "/execution/risk-on/preview",
+    response_model=RiskOnPreviewOut,
+)
+def preview_risk_on(
+    request: RiskOnPreviewRequest,
+    db: Session = Depends(get_db),
+) -> RiskOnPreviewOut:
+    """Return server-calculated RISK_ON economics for one execution scope.
+
+    The payload intentionally has no risk, quantity or leverage fields. Extra
+    fields are rejected by Pydantic so a compromised/stale mobile client cannot
+    become an economic source of truth accidentally.
+    """
+
+    try:
+        preview = build_risk_on_preview(
+            db,
+            idea_id=request.idea_id,
+            venue=request.venue,
+            account=request.account,
+        )
+    except RiskOnPreviewRejected as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return RiskOnPreviewOut(
+        idea_id=preview.idea_id,
+        risk_snapshot_id=preview.risk_snapshot_id,
+        venue=preview.venue,
+        account=preview.account,
+        allowed=preview.allowed,
+        blockers=list(preview.blockers),
+        base_risk_pct=preview.base_risk_pct,
+        effective_risk_pct=preview.effective_risk_pct,
+        hard_cap_risk_pct=preview.hard_cap_risk_pct,
+        base_quantity=preview.base_quantity,
+        effective_quantity=preview.effective_quantity,
+        effective_risk_amount=preview.effective_risk_amount,
+        effective_leverage=preview.effective_leverage,
+        hard_cap_leverage=preview.hard_cap_leverage,
+        binding_limit=preview.binding_limit,
+        preview_hash=preview.preview_hash,
+    )
+
+
+@router.post(
+    "/execution/risk-on/confirm",
+    response_model=RiskOnConfirmOut,
+)
+def confirm_risk_on(
+    request: RiskOnConfirmRequest,
+    idempotency_key: str = Depends(_live_idempotency_key),
+    db: Session = Depends(get_db),
+) -> RiskOnConfirmOut:
+    """Recalculate the shown preview and persist one immutable owner override."""
+
+    try:
+        result = apply_risk_on_confirmation(
+            db,
+            idea_id=request.idea_id,
+            venue=request.venue,
+            account=request.account,
+            preview_hash=request.preview_hash,
+            idempotency_key=idempotency_key,
+            owner_confirmed=request.owner_confirmed,
+        )
+    except (RiskOnConfirmationRejected, ExecutionRiskOverrideRejected) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    override = result.override
+    return RiskOnConfirmOut(
+        risk_override_id=override.id,
+        created=result.created,
+        preview_hash=override.preview_hash,
+        venue=override.venue,
+        account=override.account,
+        effective_risk_pct=override.effective_risk_pct,
+        effective_quantity=override.effective_quantity,
+        effective_leverage=override.effective_leverage,
+        hard_cap_risk_pct=override.hard_cap_risk_pct,
+        hard_cap_leverage=override.hard_cap_leverage,
+    )
+
+
 __all__ = [
     "ExecutionModeChangeRequest",
     "ExecutionModeOut",
@@ -203,10 +351,16 @@ __all__ = [
     "LiveActivationConfirmRequest",
     "LiveActivationPreviewOut",
     "LiveActivationResultOut",
+    "RiskOnConfirmOut",
+    "RiskOnConfirmRequest",
+    "RiskOnPreviewOut",
+    "RiskOnPreviewRequest",
     "change_execution_mode",
     "confirm_live_activation",
+    "confirm_risk_on",
     "get_execution_mode",
     "preview_execution_mode",
     "preview_live_activation",
+    "preview_risk_on",
     "router",
 ]
