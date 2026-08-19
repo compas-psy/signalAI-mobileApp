@@ -33,7 +33,7 @@ from ..execution.risk_on import (
 from ..models.ideas import TradeIdea
 from ..models.market import Instrument
 from .manual_override import ManualRiskEnvelope, get_manual_risk_envelope
-from .sizing import RiskBudget, RiskLimits, size_position
+from .sizing import RiskBudget, RiskLimits, compute_budget, size_position
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,8 +187,6 @@ def preview_manual_risk(
     idea = db.get(TradeIdea, idea_id)
     if idea is None:
         raise RiskOnPreviewRejected("idea does not exist")
-    if idea.expires_at <= instant:
-        raise RiskOnPreviewRejected("idea is stale or expired")
     instrument = db.execute(
         select(Instrument).where(Instrument.instrument_id == idea.instrument_id)
     ).scalar_one_or_none()
@@ -198,9 +196,7 @@ def preview_manual_risk(
     snapshot = _latest_snapshot(db)
     state = _risk_state(snapshot, idea)
     limits = _bounded_limits(config, policy)
-    ceiling = __import__(
-        "app.risk.sizing", fromlist=["compute_budget"]
-    ).compute_budget(
+    ceiling = compute_budget(
         score=Decimal("100"),
         state=state,
         limits=limits,
