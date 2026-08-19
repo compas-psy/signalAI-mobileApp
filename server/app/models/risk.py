@@ -21,6 +21,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
+from ..execution.enums import ExecutionKillSwitchLevel
 from .base import Base, Money, Ratio, StrEnumColumn, UuidPk, utcnow_column
 from .enums import ExecutionMode
 
@@ -66,7 +67,9 @@ class RiskState(Base):
     """Текущий режим торговли и kill switch (§21).
 
     Одна строка. Хранится в базе, а не в памяти процесса: перезапуск сервера
-    не должен снимать аварийную остановку.
+    не должен снимать аварийную остановку. ``kill_switch`` остаётся совместимым
+    boolean для старых health/mobile consumers; точное действие хранится в
+    ``kill_switch_level``.
     """
 
     __tablename__ = "risk_state"
@@ -76,6 +79,12 @@ class RiskState(Base):
         StrEnumColumn(ExecutionMode, 20), nullable=False, default=ExecutionMode.PAPER
     )
     kill_switch: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    kill_switch_level: Mapped[ExecutionKillSwitchLevel] = mapped_column(
+        StrEnumColumn(ExecutionKillSwitchLevel, 24),
+        nullable=False,
+        default=ExecutionKillSwitchLevel.CLEAR,
+        server_default=text("'CLEAR'"),
+    )
     kill_switch_reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
     halted_until: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
