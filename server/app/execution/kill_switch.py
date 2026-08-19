@@ -11,8 +11,13 @@ local pre-submit intents; in-flight reconciliation and protection must continue.
 
 from __future__ import annotations
 
+import hashlib
+from contextlib import contextmanager
 from datetime import UTC, datetime
+from typing import Iterator
 
+from sqlalchemy import text
+from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.orm import Session
 
 from ..models.enums import ExecutionMode
@@ -20,8 +25,57 @@ from ..models.risk import AuditEvent, RiskState
 from .enums import ExecutionKillSwitchLevel
 
 
+_EXECUTION_CONTROL_LOCK_KEY = int.from_bytes(
+    hashlib.sha256(b"signalai-execution-control").digest()[:8],
+    byteorder="big",
+    signed=True,
+)
+
+
 class ExecutionKillSwitchError(ValueError):
     """Raised when a money-sensitive kill-switch action is not deliberate."""
+
+
+def _engine_for_session(db: Session) -> Engine:
+    """Return the Engine behind either an Engine- or Connection-bound Session."""
+
+    bind = db.get_bind()
+    if isinstance(bind, Engine):
+        return bind
+    if isinstance(bind, Connection):
+        return bind.engine
+    raise RuntimeError("execution control requires a SQLAlchemy Engine/Connection")
+
+
+@contextmanager
+def execution_control_lock(db: Session) -> Iterator[None]:
+    """Serialize kill-switch commits with the actual provider submit call.
+
+    The advisory lock lives on a dedicated PostgreSQL connection, not on the
+    ORM Session connection. That is essential: SAI-027 intentionally commits
+    the durable ``SUBMITTING`` order before network I/O, and an ordinary
+    transaction/row lock would be released at exactly that crash-safety
+    boundary. The dedicated session-level advisory lock survives those ORM
+    commits and is explicitly released when the guarded operation is complete.
+    """
+
+    engine = _engine_for_session(db)
+    with engine.connect() as lock_connection:
+        lock_connection.execute(
+            text("SELECT pg_advisory_lock(:key)"),
+            {"key": _EXECUTION_CONTROL_LOCK_KEY},
+        ).scalar_one()
+        try:
+            yield
+        finally:
+            released = bool(
+                lock_connection.execute(
+                    text("SELECT pg_advisory_unlock(:key)"),
+                    {"key": _EXECUTION_CONTROL_LOCK_KEY},
+                ).scalar_one()
+            )
+            if not released:
+                raise RuntimeError("execution control advisory lock was not held")
 
 
 def _state(db: Session) -> RiskState:
@@ -64,8 +118,8 @@ def effective_execution_kill_switch_level(
 
 
 def get_execution_kill_switch_level(db: Session) -> ExecutionKillSwitchLevel:
-    # Materialize the singleton before a worker claim so the later SELECT FOR
-    # UPDATE always has a row to serialize against a concurrent owner action.
+    # Materialize the singleton before a worker claim. The provider-submit
+    # guard performs a fresh authoritative read under execution_control_lock.
     return effective_execution_kill_switch_level(_state(db))
 
 
@@ -87,6 +141,10 @@ def set_execution_kill_switch(
     audit_action: str = "execution_kill_switch_set",
 ) -> RiskState:
     """Persist one active kill-switch level and append its audit fact.
+
+    The state and audit event are committed *while* the execution-control lock
+    is held. Therefore a provider submit that starts after this function
+    returns must observe the new level before it can touch the venue.
 
     ``FLATTEN_ALL`` is intentionally harder to request than the other levels.
     It changes the desired handling of open risk and therefore needs an
@@ -114,25 +172,27 @@ def set_execution_kill_switch(
             "FLATTEN_ALL requires explicit confirm_flatten_all=true"
         )
 
-    state = _state(db)
-    before = _snapshot(state)
-    state.kill_switch = True
-    state.kill_switch_level = level
-    state.kill_switch_reason = reason
-    state.updated_at = datetime.now(UTC)
-    after = {"active": True, "level": level.value, "reason": reason}
-    db.add(
-        AuditEvent(
-            actor=actor,
-            action=audit_action,
-            subject="risk_state",
-            detail=reason,
-            before_json=before,
-            after_json=after,
+    with execution_control_lock(db):
+        state = _state(db)
+        before = _snapshot(state)
+        state.kill_switch = True
+        state.kill_switch_level = level.value
+        state.kill_switch_reason = reason
+        state.updated_at = datetime.now(UTC)
+        after = {"active": True, "level": level.value, "reason": reason}
+        db.add(
+            AuditEvent(
+                actor=actor,
+                action=audit_action,
+                subject="risk_state",
+                detail=reason,
+                before_json=before,
+                after_json=after,
+            )
         )
-    )
-    db.flush()
-    return state
+        db.flush()
+        db.commit()
+        return state
 
 
 def clear_execution_kill_switch(
@@ -144,34 +204,37 @@ def clear_execution_kill_switch(
 ) -> RiskState:
     """Explicitly restore entry eligibility; never called automatically here."""
 
-    state = _state(db)
-    before = _snapshot(state)
-    state.kill_switch = False
-    state.kill_switch_level = ExecutionKillSwitchLevel.CLEAR
-    state.kill_switch_reason = ""
-    state.updated_at = datetime.now(UTC)
-    db.add(
-        AuditEvent(
-            actor=actor,
-            action=audit_action,
-            subject="risk_state",
-            detail=reason.strip(),
-            before_json=before,
-            after_json={
-                "active": False,
-                "level": ExecutionKillSwitchLevel.CLEAR.value,
-                "reason": "",
-            },
+    with execution_control_lock(db):
+        state = _state(db)
+        before = _snapshot(state)
+        state.kill_switch = False
+        state.kill_switch_level = ExecutionKillSwitchLevel.CLEAR.value
+        state.kill_switch_reason = ""
+        state.updated_at = datetime.now(UTC)
+        db.add(
+            AuditEvent(
+                actor=actor,
+                action=audit_action,
+                subject="risk_state",
+                detail=reason.strip(),
+                before_json=before,
+                after_json={
+                    "active": False,
+                    "level": ExecutionKillSwitchLevel.CLEAR.value,
+                    "reason": "",
+                },
+            )
         )
-    )
-    db.flush()
-    return state
+        db.flush()
+        db.commit()
+        return state
 
 
 __all__ = [
     "ExecutionKillSwitchError",
     "clear_execution_kill_switch",
     "effective_execution_kill_switch_level",
+    "execution_control_lock",
     "get_execution_kill_switch_level",
     "set_execution_kill_switch",
 ]
