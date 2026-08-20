@@ -30,8 +30,8 @@ def _crypto_instrument(session, now, *, with_margin_facts: bool) -> Instrument:
         facts_now = datetime.now(UTC)
         metadata = {
             "linear_isolated_margin_facts": {
-                "source": "bybit-v5-risk-limit",
-                "source_ref": "/v5/market/risk-limit",
+                "source": "bybit-v5-risk-limit+instruments-info",
+                "source_ref": "/v5/market/risk-limit + /v5/market/instruments-info",
                 "observed_at": facts_now.isoformat(),
                 "expires_at": (facts_now + timedelta(minutes=5)).isoformat(),
                 "venue": "CRYPTO",
@@ -219,8 +219,14 @@ def test_sai_045_margin_fact_change_invalidates_signed_preview_before_apply(
     preview = preview_response.json()
     assert preview["allowed"] is True
 
+    # Change a venue margin fact without making the fresh preview unsafe. The
+    # fresh preview remains admissible, but its canonical margin-proof hash and
+    # liquidation economics differ, so the old signed preview must fail HMAC
+    # verification rather than being accepted as current.
     facts = dict(instrument.metadata_json["linear_isolated_margin_facts"])
-    facts["available_margin"] = "60000"
+    tiers = [dict(item) for item in facts["tiers"]]
+    tiers[0]["maintenance_margin_rate"] = "0.0051"
+    facts["tiers"] = tiers
     instrument.metadata_json = {"linear_isolated_margin_facts": facts}
     session.flush()
 
