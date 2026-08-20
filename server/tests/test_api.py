@@ -588,10 +588,17 @@ def test_halt_and_resume_are_audited(client, session):
     off = client.post("/api/v1/risk/resume", json={"reason": "отбой"}).json()
     assert off["kill_switch"] is False
 
+    # AuditEvent — общий append-only ledger. Независимые REJECTED-события
+    # других money-bearing действий могут законно переживать rollback своих
+    # запросов, поэтому этот тест проверяет ровно свой kill-switch domain.
     actions = [
         r[0]
         for r in session.execute(
-            text("SELECT action FROM audit_events ORDER BY occurred_at")
+            text(
+                "SELECT action FROM audit_events "
+                "WHERE action IN ('kill_switch_on', 'kill_switch_off') "
+                "ORDER BY occurred_at"
+            )
         )
     ]
     assert actions == ["kill_switch_on", "kill_switch_off"]
