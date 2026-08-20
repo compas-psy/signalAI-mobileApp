@@ -106,6 +106,21 @@ def _seed(session, instrument, now) -> TradeIdea:
     return idea
 
 
+def _apply(client, idea, preview, *, key: str):
+    return client.post(
+        "/api/v1/risk/override",
+        json={
+            "idea_id": str(idea.id),
+            "preset_id": "BOOST_2",
+            "current_mode": "PAPER",
+            "preview_hash": preview["preview_hash"],
+            "owner_confirmed": True,
+            "reason": "owner confirmed bounded crypto risk boost",
+        },
+        headers={"X-Idempotency-Key": key},
+    )
+
+
 def test_sai_045_crypto_boost_preview_contains_signed_server_derived_margin_proof(
     client,
     session,
@@ -177,20 +192,41 @@ def test_sai_045_apply_persists_only_the_server_derived_leverage(
     preview = preview_response.json()
     assert preview["allowed"] is True
 
-    response = client.post(
-        "/api/v1/risk/override",
-        json={
-            "idea_id": str(idea.id),
-            "preset_id": "BOOST_2",
-            "current_mode": "PAPER",
-            "preview_hash": preview["preview_hash"],
-            "owner_confirmed": True,
-            "reason": "owner confirmed bounded crypto risk boost",
-        },
-        headers={"X-Idempotency-Key": "sai-045-crypto-apply"},
-    )
+    response = _apply(client, idea, preview, key="sai-045-crypto-apply")
 
     assert response.status_code == 200
     body = response.json()
     assert body["created"] is True
     assert Decimal(str(body["effective_leverage"])) == Decimal("3.0")
+
+
+def test_sai_045_margin_fact_change_invalidates_signed_preview_before_apply(
+    client,
+    session,
+    now,
+):
+    instrument = _crypto_instrument(session, now, with_margin_facts=True)
+    idea = _seed(session, instrument, now)
+    preview_response = client.post(
+        "/api/v1/risk/preview",
+        json={
+            "idea_id": str(idea.id),
+            "preset_id": "BOOST_2",
+            "current_mode": "PAPER",
+        },
+    )
+    assert preview_response.status_code == 200
+    preview = preview_response.json()
+    assert preview["allowed"] is True
+
+    facts = dict(instrument.metadata_json["linear_isolated_margin_facts"])
+    facts["available_margin"] = "60000"
+    instrument.metadata_json = {"linear_isolated_margin_facts": facts}
+    session.flush()
+
+    response = _apply(client, idea, preview, key="sai-045-stale-margin")
+
+    assert response.status_code == 409
+    assert "stale" in str(response.json()).lower() or "signature" in str(
+        response.json()
+    ).lower()
