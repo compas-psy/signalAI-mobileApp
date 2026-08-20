@@ -4,6 +4,7 @@ import '../../domain/idea/execution.dart';
 import '../../theme/tokens.dart';
 import '../../theme/typography.dart';
 import 'common.dart';
+import 'manual_trade_controls.dart';
 
 /// Состояние исполнения плана на экране (ТЗ §11.3, §21).
 ///
@@ -93,14 +94,23 @@ class ExecutionStrip extends StatelessWidget {
                       'Нужно закрыть её вручную или выставить стоп — '
                       'дальше риск ничем не ограничен.'
                   : ExecutionRules.actionOn(execution.state),
-              style: T.body(11.5,
-                  color: _emergency ? C.red : C.muted, height: 1.45),
+              style: T.body(
+                11.5,
+                color: _emergency ? C.red : C.muted,
+                height: 1.45,
+              ),
             ),
           ),
           if (execution.note.isNotEmpty) ...[
             const SizedBox(height: 6),
-            Text(execution.note,
-                style: T.body(11, color: C.faint, height: 1.4)),
+            Text(
+              execution.note,
+              style: T.body(11, color: C.faint, height: 1.4),
+            ),
+          ],
+          if (execution.state.isProtected) ...[
+            const SizedBox(height: 14),
+            ManualTradeControls(ideaId: execution.ideaId),
           ],
         ],
       ),
