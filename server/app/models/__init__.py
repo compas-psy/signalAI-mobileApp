@@ -56,6 +56,7 @@ from .experiments import (
 )
 from .ideas import IdeaEvent, IdeaOutcome, IdeaSkip, TradeIdea
 from .management import ExecutionManagementPolicySnapshot
+from .manual_control import ExecutionManualTradeControl
 from .notifications import NotificationOutbox
 from .paper import PaperTrade
 from .research import (
@@ -119,6 +120,7 @@ __all__ = [
     "ExecutionReconciliationEvent",
     "ExecutionVenueHealth",
     "ExecutionManagementPolicySnapshot",
+    "ExecutionManualTradeControl",
     # delivery
     "NotificationOutbox",
     # portfolio
