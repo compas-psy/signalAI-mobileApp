@@ -184,6 +184,7 @@ def append_manual_risk_audit(
     payload = dict(record.context)
     payload["outcome"] = record.outcome
     event = AuditEvent(
+        occurred_at=datetime.now(UTC),
         actor="owner",
         action=record.action,
         subject=record.subject,
