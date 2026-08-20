@@ -1,6 +1,6 @@
 """Persist immutable open-trade management policy snapshots.
 
-revision = 0028_execution_management_policy_snapshot
+revision = 0028_management_policy_snapshot
 """
 
 from __future__ import annotations
@@ -9,7 +9,7 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision = "0028_execution_management_policy_snapshot"
+revision = "0028_management_policy_snapshot"
 down_revision = "0027_execution_risk_override"
 branch_labels = None
 depends_on = None
