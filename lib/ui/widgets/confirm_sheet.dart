@@ -22,6 +22,7 @@ class ConfirmSheet extends StatelessWidget {
     required this.signal,
     required this.risk,
     required this.onExecute,
+    this.onRiskBoost,
     this.plan,
     this.impact,
     required this.onClose,
@@ -38,6 +39,12 @@ class ConfirmSheet extends StatelessWidget {
 
   final RiskProfile risk;
   final VoidCallback onExecute;
+
+  /// Отдельный owner-action для server-owned manual risk preview/apply.
+  ///
+  /// Он намеренно не связан с [onExecute]: повышение риска фиксирует override,
+  /// но само по себе не создаёт paper-сделку и не отправляет ордер.
+  final VoidCallback? onRiskBoost;
 
   /// Что сделка сделает с портфелем: открытый риск, число сделок, корреляция.
   /// null — считать не из чего (нет книги и профиля риска).
@@ -197,6 +204,13 @@ class ConfirmSheet extends StatelessWidget {
                         ],
                       ),
                     ),
+                    if (paperOnly && onRiskBoost != null) ...[
+                      const SizedBox(height: 12),
+                      ActionButton(
+                        label: 'Рискнуть',
+                        onTap: busy ? null : onRiskBoost,
+                      ),
+                    ],
                     const SizedBox(height: 14),
                     Row(
                       children: [
