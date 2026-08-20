@@ -20,6 +20,7 @@ from typing import Any
 
 from ..models.enums import Timeframe
 from .candles import Candle
+from .derivatives import CryptoCarryMarketFacts, FundingObservation
 from .http import FetchReport, http_json
 
 BASE = "https://api.bybit.com"
@@ -50,6 +51,10 @@ class Ticker:
     next_funding_time: datetime | None
     bid: Decimal | None
     ask: Decimal | None
+    mark_price: Decimal | None = None
+    index_price: Decimal | None = None
+    basis: Decimal | None = None
+    basis_rate: Decimal | None = None
 
     @property
     def relative_spread(self) -> float | None:
@@ -68,6 +73,15 @@ def _dec(value: Any) -> Decimal | None:
     try:
         return Decimal(str(value))
     except (InvalidOperation, ValueError):
+        return None
+
+
+def _int(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
         return None
 
 
@@ -94,10 +108,18 @@ def _result(payload: Any) -> dict:
 
 
 def tickers(
-    *, category: str = "linear", fetch=http_json
+    *,
+    category: str = "linear",
+    symbol: str | None = None,
+    fetch=http_json,
 ) -> tuple[list[Ticker], FetchReport]:
-    """Снимок рынка: цена, оборот, OI, фандинг, лучшие котировки."""
+    """Снимок рынка: цена, mark/index, OI, фандинг, basis и лучшие котировки."""
     url = f"{BASE}/v5/market/tickers?category={category}"
+    if symbol is not None:
+        normalized = symbol.strip().upper()
+        if not normalized:
+            raise ValueError("symbol must not be blank")
+        url += f"&symbol={normalized}"
     payload, report = fetch(url)
     rows = _result(payload).get("list") or []
     out = []
@@ -115,6 +137,10 @@ def tickers(
                 next_funding_time=_ms(row.get("nextFundingTime")),
                 bid=_dec(row.get("bid1Price")),
                 ask=_dec(row.get("ask1Price")),
+                mark_price=_dec(row.get("markPrice")),
+                index_price=_dec(row.get("indexPrice")),
+                basis=_dec(row.get("basis")),
+                basis_rate=_dec(row.get("basisRate")),
             )
         )
     return out, report
@@ -139,6 +165,7 @@ class InstrumentInfo:
     min_order_qty: Decimal | None
     launch_time: datetime | None
     delivery_time: datetime | None
+    funding_interval_minutes: int | None = None
 
     @property
     def is_perpetual(self) -> bool:
@@ -150,15 +177,24 @@ class InstrumentInfo:
 
 
 def instruments_info(
-    *, category: str = "linear", fetch=http_json
+    *,
+    category: str = "linear",
+    symbol: str | None = None,
+    fetch=http_json,
 ) -> tuple[list[InstrumentInfo], FetchReport]:
     """Справочник контрактов.
 
     Нужен для §5.3 (delisting и pre-market отсеиваются по ``status``) и для
     §17.1 (шаг объёма и минимальный лот). ``deliveryTime`` отличает вечный
-    контракт от поставочного: у вечного оно нулевое.
+    контракт от поставочного: у вечного оно нулевое. Для perpetual также
+    сохраняется официальный ``fundingInterval`` в минутах.
     """
     url = f"{BASE}/v5/market/instruments-info?category={category}&limit=1000"
+    if symbol is not None:
+        normalized = symbol.strip().upper()
+        if not normalized:
+            raise ValueError("symbol must not be blank")
+        url += f"&symbol={normalized}"
     payload, report = fetch(url)
     rows = _result(payload).get("list") or []
     out = []
@@ -181,9 +217,126 @@ def instruments_info(
                 launch_time=_ms(row.get("launchTime")),
                 # Ноль — «поставки нет», а не «поставка в 1970 году».
                 delivery_time=delivery if str(row.get("deliveryTime")) != "0" else None,
+                funding_interval_minutes=_int(row.get("fundingInterval")),
             )
         )
     return out, report
+
+
+def funding_history(
+    symbol: str,
+    *,
+    end_at: datetime | None = None,
+    limit: int = 200,
+    category: str = "linear",
+    fetch=http_json,
+) -> tuple[list[FundingObservation], FetchReport]:
+    """Settled Bybit funding prints, normalized oldest→newest.
+
+    ``end_at`` is the point-in-time upper bound used by candidate/backtest
+    evaluation.  Without it, a historical replay could accidentally consume
+    a funding print that was only known later.
+    """
+
+    normalized = symbol.strip().upper()
+    if not normalized:
+        raise ValueError("symbol must not be blank")
+    safe_limit = max(1, min(int(limit), 200))
+    url = (
+        f"{BASE}/v5/market/funding/history?category={category}&symbol={normalized}"
+        f"&limit={safe_limit}"
+    )
+    if end_at is not None:
+        if end_at.tzinfo is None or end_at.utcoffset() is None:
+            raise ValueError("funding history end_at must be timezone-aware")
+        url += f"&endTime={int(end_at.timestamp() * 1000)}"
+
+    payload, report = fetch(url)
+    rows = _result(payload).get("list") or []
+    out: list[FundingObservation] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        rate = _dec(row.get("fundingRate"))
+        settled_at = _ms(row.get("fundingRateTimestamp"))
+        if rate is None or settled_at is None:
+            continue
+        if end_at is not None and settled_at > end_at:
+            continue
+        out.append(
+            FundingObservation(
+                rate=rate,
+                settled_at=settled_at,
+                tradable_at=settled_at,
+                source="bybit-v5-funding",
+            )
+        )
+    out.sort(key=lambda item: item.settled_at)
+    return out, report
+
+
+def carry_market_facts(
+    symbol: str,
+    *,
+    evaluated_at: datetime,
+    funding_limit: int = 24,
+    category: str = "linear",
+    fetch=http_json,
+) -> tuple[CryptoCarryMarketFacts, tuple[FetchReport, ...]]:
+    """Resolve fail-closed public facts for the venue-neutral carry strategy."""
+
+    if evaluated_at.tzinfo is None or evaluated_at.utcoffset() is None:
+        raise ValueError("evaluated_at must be timezone-aware")
+    normalized = symbol.strip().upper()
+    if not normalized:
+        raise ValueError("symbol must not be blank")
+
+    ticker_rows, ticker_report = tickers(
+        category=category, symbol=normalized, fetch=fetch
+    )
+    instrument_rows, instrument_report = instruments_info(
+        category=category, symbol=normalized, fetch=fetch
+    )
+    history, funding_report = funding_history(
+        normalized,
+        end_at=evaluated_at,
+        limit=funding_limit,
+        category=category,
+        fetch=fetch,
+    )
+
+    ticker = next((item for item in ticker_rows if item.symbol == normalized), None)
+    instrument = next(
+        (item for item in instrument_rows if item.symbol == normalized), None
+    )
+    if ticker is None:
+        raise ValueError(f"Bybit ticker missing for {normalized}")
+    if instrument is None:
+        raise ValueError(f"Bybit instrument info missing for {normalized}")
+    if not instrument.is_trading or not instrument.is_perpetual:
+        raise ValueError(f"{normalized} is not a trading perpetual contract")
+    if ticker.mark_price is None or ticker.index_price is None:
+        raise ValueError(f"Bybit mark/index price missing for {normalized}")
+    if ticker.funding_rate is None:
+        raise ValueError(f"Bybit funding rate missing for {normalized}")
+    if instrument.funding_interval_minutes is None or instrument.funding_interval_minutes <= 0:
+        raise ValueError(f"Bybit funding interval missing for {normalized}")
+
+    visible_history = tuple(
+        item for item in history if item.tradable_at <= evaluated_at
+    )
+    facts = CryptoCarryMarketFacts(
+        instrument_id=f"CRYPTO:{normalized}",
+        mark_price=ticker.mark_price,
+        index_price=ticker.index_price,
+        current_funding_rate=ticker.funding_rate,
+        funding_interval_minutes=instrument.funding_interval_minutes,
+        funding_history=visible_history,
+        observed_at=evaluated_at,
+        tradable_at=evaluated_at,
+        source="bybit-v5-public",
+    )
+    return facts, (ticker_report, instrument_report, funding_report)
 
 
 def _parse_kline_rows(
