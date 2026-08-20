@@ -26,6 +26,12 @@ from ...risk.manual_apply import (
     ManualRiskOverrideApplyRejected,
     apply_manual_risk_override,
 )
+from ...risk.manual_audit import (
+    append_manual_risk_audit,
+    apply_audit_record,
+    persist_manual_risk_audit,
+    preview_audit_record,
+)
 from ...risk.manual_preview import ManualRiskPreviewRejected, preview_manual_risk
 from ...schemas.common import ApiModel, Money
 
@@ -240,10 +246,12 @@ def manual_risk_preview(
     request: ManualRiskPreviewRequest,
     db: Session = Depends(get_db),
 ) -> ManualRiskPreviewOut:
-    """SAI-043: signed short-lived, server-owned risk preview.
+    """SAI-043/046: calculate, sign and audit the exact owner-visible preview.
 
     The client cannot submit multiplier, risk, quantity, leverage or any other
     money-bearing value. Unknown fields fail validation before domain logic.
+    The resulting audit stores the exact server-owned economics and only a
+    SHA-256 digest of the signed token, never the replayable token itself.
     """
 
     try:
@@ -255,6 +263,7 @@ def manual_risk_preview(
         )
     except ManualRiskPreviewRejected as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    append_manual_risk_audit(db, preview_audit_record(preview))
     return ManualRiskPreviewOut(
         idea_id=preview.idea_id,
         risk_snapshot_id=preview.risk_snapshot_id,
@@ -290,7 +299,12 @@ def manual_risk_override(
     idempotency_key: str = Depends(_manual_risk_idempotency_key),
     db: Session = Depends(get_db),
 ) -> ManualRiskOverrideOut:
-    """SAI-044: apply one signed preview after an authoritative fresh recheck."""
+    """SAI-044/046: apply and forensically audit one owner confirmation.
+
+    Successful and replayed outcomes are appended in this business transaction.
+    Rejected domain decisions are appended through a separate short transaction
+    so the request rollback that produces HTTP 409 cannot erase the audit fact.
+    """
 
     try:
         result = apply_manual_risk_override(
@@ -304,9 +318,34 @@ def manual_risk_override(
             reason=request.reason,
         )
     except ManualRiskOverrideApplyRejected as exc:
+        persist_manual_risk_audit(
+            apply_audit_record(
+                idea_id=request.idea_id,
+                preset_id=request.preset_id,
+                current_mode=request.current_mode,
+                preview_token=request.preview_hash,
+                idempotency_key=idempotency_key,
+                outcome="REJECTED",
+                owner_reason=request.reason,
+                rejection_detail=str(exc),
+            )
+        )
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     override = result.override
+    append_manual_risk_audit(
+        db,
+        apply_audit_record(
+            idea_id=request.idea_id,
+            preset_id=request.preset_id,
+            current_mode=request.current_mode,
+            preview_token=request.preview_hash,
+            idempotency_key=idempotency_key,
+            outcome="APPLIED" if result.created else "REPLAYED",
+            owner_reason=request.reason,
+            override=override,
+        ),
+    )
     return ManualRiskOverrideOut(
         override_id=override.id,
         idea_id=override.idea_id,
