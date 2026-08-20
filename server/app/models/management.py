@@ -5,12 +5,13 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import ForeignKey, Index, String, UniqueConstraint
+from sqlalchemy import ForeignKey, Index, String, UniqueConstraint, event, select
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from .base import Base, UuidPk, utcnow_column
+from .execution import ExecutionIntent
 
 
 class ExecutionManagementPolicySnapshot(UuidPk, Base):
@@ -56,6 +57,53 @@ class ExecutionManagementPolicySnapshot(UuidPk, Base):
             "created_at",
         ),
     )
+
+
+def _state_text(intent: ExecutionIntent) -> str:
+    return str(getattr(intent.state, "value", intent.state)).upper()
+
+
+@event.listens_for(Session, "before_commit")
+def _freeze_protected_management_policy_before_commit(session: Session) -> None:
+    """Make the PROTECTED transaction the management-policy freeze boundary.
+
+    The execution core commits immediately after provider-confirmed protection
+    and before entering MANAGING. Enforcing the snapshot at the Session commit
+    boundary keeps the snapshot durable in the same transaction as PROTECTED,
+    even if a future caller reaches that state without going through one
+    particular orchestration helper.
+    """
+
+    if session.info.get("_sai049_management_policy_freeze"):
+        return
+
+    intents: dict[uuid.UUID, ExecutionIntent] = {}
+    for obj in (*session.identity_map.values(), *session.new):
+        if (
+            isinstance(obj, ExecutionIntent)
+            and obj.id is not None
+            and _state_text(obj) == "PROTECTED"
+        ):
+            intents[obj.id] = obj
+
+    if not intents:
+        return
+
+    session.info["_sai049_management_policy_freeze"] = True
+    try:
+        from ..execution.management_policy import freeze_execution_management_policy
+
+        for intent_id in intents:
+            existing = session.execute(
+                select(ExecutionManagementPolicySnapshot.id).where(
+                    ExecutionManagementPolicySnapshot.intent_id == intent_id
+                )
+            ).scalar_one_or_none()
+            if existing is not None:
+                continue
+            freeze_execution_management_policy(session, intent_id=intent_id)
+    finally:
+        session.info.pop("_sai049_management_policy_freeze", None)
 
 
 __all__ = ["ExecutionManagementPolicySnapshot"]
