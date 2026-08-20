@@ -12,7 +12,12 @@ from app.execution.manual_controls import (
     ManualTradeControlRejected,
     request_manual_trade_control,
 )
-from app.models import AuditEvent, ExecutionManagementPolicySnapshot
+from app.models import (
+    AuditEvent,
+    ExecutionFill,
+    ExecutionManagementPolicySnapshot,
+    ExecutionOrder,
+)
 from tests.execution.test_entry_settling import _seed_intent
 
 
@@ -21,6 +26,33 @@ NOW = datetime(2026, 8, 20, 14, 15, tzinfo=UTC)
 
 def _managed_intent(session, instrument):
     intent = _seed_intent(session, instrument, planned_quantity=Decimal("4"))
+    entry = ExecutionOrder(
+        intent_id=intent.id,
+        client_order_id=f"e-{intent.id.hex}",
+        provider_order_id="entry-provider-1",
+        side="BUY",
+        order_type="ENTRY",
+        status="FILLED",
+        quantity=Decimal("4"),
+        limit_price=Decimal("90100"),
+        stop_price=None,
+        submitted_at=NOW,
+        acknowledged_at=NOW,
+    )
+    session.add(entry)
+    session.flush()
+    session.add(
+        ExecutionFill(
+            intent_id=intent.id,
+            order_id=entry.id,
+            provider_fill_id="entry-fill-1",
+            quantity=Decimal("4"),
+            price=Decimal("90110"),
+            fee_amount=Decimal("1"),
+            fee_currency="RUB",
+            filled_at=NOW,
+        )
+    )
     intent.state = ExecutionState.PROTECTED
     session.commit()
     snapshot = session.execute(
@@ -71,6 +103,18 @@ def test_close_is_reduce_only_and_idempotent(session, instrument):
 def test_reduce_requires_strictly_smaller_positive_quantity(session, instrument):
     intent, _snapshot = _managed_intent(session, instrument)
 
+    for invalid in (Decimal("0"), Decimal("4"), Decimal("5")):
+        with pytest.raises(ManualTradeControlRejected, match="strictly below"):
+            request_manual_trade_control(
+                session,
+                intent_id=intent.id,
+                action=ManualTradeAction.REDUCE,
+                idempotency_key=f"bad-{invalid}",
+                owner_reason="bad reduce",
+                requested_quantity=invalid,
+                requested_stop=None,
+            )
+
     result = request_manual_trade_control(
         session,
         intent_id=intent.id,
@@ -84,21 +128,20 @@ def test_reduce_requires_strictly_smaller_positive_quantity(session, instrument)
     assert result.order.quantity == Decimal("1")
     assert result.command.reduce_only is True
 
-    for invalid in (Decimal("0"), Decimal("4"), Decimal("5")):
-        with pytest.raises(ManualTradeControlRejected, match="strictly below"):
-            request_manual_trade_control(
-                session,
-                intent_id=intent.id,
-                action=ManualTradeAction.REDUCE,
-                idempotency_key=f"bad-{invalid}",
-                owner_reason="bad reduce",
-                requested_quantity=invalid,
-                requested_stop=None,
-            )
-
 
 def test_tighten_stop_must_move_only_toward_lower_risk_for_long(session, instrument):
     intent, _snapshot = _managed_intent(session, instrument)
+
+    with pytest.raises(ManualTradeControlRejected, match="lower risk"):
+        request_manual_trade_control(
+            session,
+            intent_id=intent.id,
+            action=ManualTradeAction.TIGHTEN_STOP,
+            idempotency_key="widen-1",
+            owner_reason="Нельзя расширять стоп",
+            requested_quantity=None,
+            requested_stop=Decimal("89000"),
+        )
 
     result = request_manual_trade_control(
         session,
@@ -113,17 +156,6 @@ def test_tighten_stop_must_move_only_toward_lower_risk_for_long(session, instrum
     assert result.order.quantity == Decimal("4")
     assert result.order.stop_price == Decimal("89700")
     assert result.command.reduce_only is True
-
-    with pytest.raises(ManualTradeControlRejected, match="lower risk"):
-        request_manual_trade_control(
-            session,
-            intent_id=intent.id,
-            action=ManualTradeAction.TIGHTEN_STOP,
-            idempotency_key="widen-1",
-            owner_reason="Нельзя расширять стоп",
-            requested_quantity=None,
-            requested_stop=Decimal("89000"),
-        )
 
 
 def test_return_auto_creates_no_provider_order_and_is_audited(session, instrument):
