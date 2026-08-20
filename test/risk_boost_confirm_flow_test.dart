@@ -31,6 +31,14 @@ void main() {
       expect(find.text('Рискнуть · BTCUSDT'), findsOneWidget);
       expect(find.textContaining('Сделка не создаётся'), findsOneWidget);
       expect(executeCalls, 0);
+
+      // Closing manual-risk review returns to the exact original trade confirm;
+      // it never confirms that trade as a side effect.
+      await tester.tap(find.text('Отмена').last);
+      await tester.pumpAndSettle();
+      expect(find.text('Рискнуть · BTCUSDT'), findsNothing);
+      expect(find.text('Подтвердить paper-сделку'), findsOneWidget);
+      expect(executeCalls, 0);
     },
   );
 
