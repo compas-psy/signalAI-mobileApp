@@ -31,6 +31,8 @@ def upgrade() -> None:
         sa.Column("venue", sa.String(length=32), nullable=False),
         sa.Column("strategy_family", sa.String(length=32), nullable=True),
         sa.Column("strategy_version", sa.String(length=64), nullable=False),
+        sa.Column("evidence_status", sa.String(length=24), nullable=False),
+        sa.Column("reason_code", sa.String(length=64), nullable=True),
         sa.Column("signal_emitted", sa.Boolean(), nullable=False),
         sa.Column("direction", sa.String(length=8), nullable=True),
         sa.Column("raw_edge_score", sa.Numeric(28, 12), nullable=True),
@@ -48,6 +50,16 @@ def upgrade() -> None:
         sa.CheckConstraint(
             "stage = 'SHADOW'",
             name=op.f("ck_shadow_observations_shadow_stage_only"),
+        ),
+        sa.CheckConstraint(
+            "evidence_status IN ('EVALUATED','INPUT_UNAVAILABLE')",
+            name=op.f("ck_shadow_observations_shadow_evidence_status_valid"),
+        ),
+        sa.CheckConstraint(
+            "(evidence_status = 'EVALUATED' AND reason_code IS NULL) OR "
+            "(evidence_status = 'INPUT_UNAVAILABLE' AND reason_code IS NOT NULL "
+            "AND NOT signal_emitted)",
+            name=op.f("ck_shadow_observations_shadow_evidence_reason_consistent"),
         ),
         sa.CheckConstraint(
             "(signal_emitted AND direction IS NOT NULL AND raw_edge_score IS NOT NULL "
