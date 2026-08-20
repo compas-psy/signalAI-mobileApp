@@ -72,6 +72,35 @@ class CostModel:
             spread_bps=self.spread_bps * multiplier,
         )
 
+    def round_trip_bps(
+        self,
+        *,
+        entry_maker: bool,
+        exit_maker: bool,
+        funding_intervals: int = 0,
+    ) -> Decimal:
+        """Project full entry→exit friction in basis points.
+
+        This is the bps-space counterpart of the existing R-unit helpers.  It
+        lets research/admission code carry one auditable all-in cost number
+        into a candidate without coupling strategy code back to ``CostModel``.
+        The quoted spread is counted once across the round trip: half on entry
+        and half on exit, matching ``entry_friction_r`` / ``exit_friction_r``.
+        """
+
+        if funding_intervals < 0:
+            raise ValueError("funding intervals must be non-negative")
+        entry_fee = self.maker_fee_bps if entry_maker else self.taker_fee_bps
+        exit_fee = self.maker_fee_bps if exit_maker else self.taker_fee_bps
+        return (
+            entry_fee
+            + exit_fee
+            + self.entry_slippage_bps
+            + self.exit_slippage_bps
+            + self.spread_bps
+            + self.funding_bps_per_interval * Decimal(funding_intervals)
+        )
+
     def fee_cost_r(
         self, *, price: Decimal, risk_per_unit: Decimal, maker: bool
     ) -> Decimal:
