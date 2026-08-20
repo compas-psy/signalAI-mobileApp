@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -24,12 +24,16 @@ def client(session):
 def _crypto_instrument(session, now, *, with_margin_facts: bool) -> Instrument:
     metadata = {}
     if with_margin_facts:
+        # The API deliberately uses its server clock rather than the historical
+        # idea fixture time. Margin authority is short-lived operational state,
+        # so seed it from request-time UTC instead of the July replay timestamp.
+        facts_now = datetime.now(UTC)
         metadata = {
             "linear_isolated_margin_facts": {
                 "source": "bybit-v5-risk-limit",
                 "source_ref": "/v5/market/risk-limit",
-                "observed_at": now.isoformat(),
-                "expires_at": (now + timedelta(minutes=5)).isoformat(),
+                "observed_at": facts_now.isoformat(),
+                "expires_at": (facts_now + timedelta(minutes=5)).isoformat(),
                 "venue": "CRYPTO",
                 "account": "paper-default",
                 "symbol": "BTCUSDT",
