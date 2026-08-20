@@ -43,150 +43,165 @@ class RiskBoostSheet extends StatelessWidget {
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.end,
                 children: [
-                  GestureDetector(
-                    onTap: () {},
-                    child: Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.fromLTRB(18, 16, 18, 22),
-                      decoration: const BoxDecoration(
-                        color: C.sheet,
-                        border: Border(top: BorderSide(color: C.borderStrong)),
-                        borderRadius: BorderRadius.vertical(
-                          top: Radius.circular(R.sheet),
-                        ),
-                      ),
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Center(
-                            child: Container(
-                              width: 36,
-                              height: 4,
-                              margin: const EdgeInsets.only(bottom: 14),
-                              decoration: BoxDecoration(
-                                color: C.handle,
-                                borderRadius: BorderRadius.circular(2),
-                              ),
+                  Flexible(
+                    child: GestureDetector(
+                      onTap: () {},
+                      child: SingleChildScrollView(
+                        child: Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.fromLTRB(18, 16, 18, 22),
+                          decoration: const BoxDecoration(
+                            color: C.sheet,
+                            border: Border(
+                              top: BorderSide(color: C.borderStrong),
+                            ),
+                            borderRadius: BorderRadius.vertical(
+                              top: Radius.circular(R.sheet),
                             ),
                           ),
-                          Row(
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Expanded(
-                                child: Text(
-                                  'Рискнуть · $symbol',
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: T.jost(18),
+                              Center(
+                                child: Container(
+                                  width: 36,
+                                  height: 4,
+                                  margin: const EdgeInsets.only(bottom: 14),
+                                  decoration: BoxDecoration(
+                                    color: C.handle,
+                                    borderRadius: BorderRadius.circular(2),
+                                  ),
                                 ),
                               ),
-                              const SizedBox(width: 12),
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: Text(
+                                      'Рискнуть · $symbol',
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: T.jost(18),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Text(
+                                    currentMode,
+                                    style: T.body(
+                                      11,
+                                      weight: 700,
+                                      color: C.muted,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 6),
                               Text(
-                                currentMode,
-                                style: T.body(11, weight: 700, color: C.muted),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 6),
-                          Text(
-                            'Вы выбираете только уровень. Риск, объём и плечо '
-                            'заново считает сервер в текущих лимитах.',
-                            style: T.body(
-                              11.5,
-                              color: C.textSecondary,
-                              height: 1.45,
-                            ),
-                          ),
-                          const SizedBox(height: 13),
-                          if (!paperOnly)
-                            _Notice(
-                              text: 'Ручное повышение риска пока доступно только '
-                                  'в PAPER. В $currentMode параметры не применяются.',
-                              color: C.warning,
-                            )
-                          else ...[
-                            Row(
-                              children: [
-                                Expanded(
-                                  child: ActionButton(
-                                    label: 'BOOST 1',
-                                    dense: true,
-                                    onTap: controller.loading
-                                        ? null
-                                        : () => _load('BOOST_1'),
-                                  ),
+                                'Вы выбираете только уровень. Риск, объём и '
+                                'плечо заново считает сервер в текущих лимитах.',
+                                style: T.body(
+                                  11.5,
+                                  color: C.textSecondary,
+                                  height: 1.45,
                                 ),
-                                const SizedBox(width: 9),
-                                Expanded(
-                                  child: ActionButton(
-                                    label: 'BOOST 2',
-                                    dense: true,
-                                    onTap: controller.loading
-                                        ? null
-                                        : () => _load('BOOST_2'),
-                                  ),
-                                ),
-                              ],
-                            ),
-                            if (controller.loading) ...[
-                              const SizedBox(height: 12),
-                              const BusyLine(
-                                label: 'Сервер пересчитывает риск по текущему состоянию…',
                               ),
-                            ],
-                            if (preview != null) ...[
                               const SizedBox(height: 13),
-                              _PreviewCard(preview: preview),
-                            ],
-                            if (controller.message != null) ...[
-                              const SizedBox(height: 11),
-                              _Notice(
-                                text: controller.message!,
-                                color: controller.needsReview
-                                    ? C.warning
-                                    : C.green,
-                              ),
-                            ],
-                            if (controller.error != null) ...[
-                              const SizedBox(height: 11),
-                              _Notice(text: controller.error!, color: C.red),
-                            ],
-                            if (result != null) ...[
-                              const SizedBox(height: 11),
-                              _ResultCard(result: result),
-                            ],
-                          ],
-                          const SizedBox(height: 12),
-                          _Notice(
-                            text: 'Сделка не создаётся. Это действие только '
-                                'фиксирует проверенные сервером параметры ручного '
-                                'риска; ордер не отправляется.',
-                            color: C.accent,
-                          ),
-                          const SizedBox(height: 14),
-                          Row(
-                            children: [
-                              if (paperOnly && result == null) ...[
-                                Expanded(
-                                  child: ActionButton(
-                                    primary: true,
-                                    label: _confirmLabel(preview),
-                                    onTap: controller.canConfirm
-                                        ? () => _confirm()
-                                        : null,
+                              if (!paperOnly)
+                                _Notice(
+                                  text: 'Ручное повышение риска пока доступно '
+                                      'только в PAPER. В $currentMode параметры '
+                                      'не применяются.',
+                                  color: C.warning,
+                                )
+                              else ...[
+                                Row(
+                                  children: [
+                                    Expanded(
+                                      child: ActionButton(
+                                        label: 'BOOST 1',
+                                        dense: true,
+                                        onTap: controller.loading
+                                            ? null
+                                            : () => _load('BOOST_1'),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 9),
+                                    Expanded(
+                                      child: ActionButton(
+                                        label: 'BOOST 2',
+                                        dense: true,
+                                        onTap: controller.loading
+                                            ? null
+                                            : () => _load('BOOST_2'),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                if (controller.loading) ...[
+                                  const SizedBox(height: 12),
+                                  const BusyLine(
+                                    label: 'Сервер пересчитывает риск по '
+                                        'текущему состоянию…',
                                   ),
-                                ),
-                                const SizedBox(width: 9),
+                                ],
+                                if (preview != null) ...[
+                                  const SizedBox(height: 13),
+                                  _PreviewCard(preview: preview),
+                                ],
+                                if (controller.message != null) ...[
+                                  const SizedBox(height: 11),
+                                  _Notice(
+                                    text: controller.message!,
+                                    color: controller.needsReview
+                                        ? C.warning
+                                        : C.green,
+                                  ),
+                                ],
+                                if (controller.error != null) ...[
+                                  const SizedBox(height: 11),
+                                  _Notice(
+                                    text: controller.error!,
+                                    color: C.red,
+                                  ),
+                                ],
+                                if (result != null) ...[
+                                  const SizedBox(height: 11),
+                                  _ResultCard(result: result),
+                                ],
                               ],
-                              Expanded(
-                                child: ActionButton(
-                                  label: result == null ? 'Отмена' : 'Закрыть',
-                                  onTap: _close,
-                                ),
+                              const SizedBox(height: 12),
+                              _Notice(
+                                text: 'Сделка не создаётся. Это действие только '
+                                    'фиксирует проверенные сервером параметры '
+                                    'ручного риска; ордер не отправляется.',
+                                color: C.accent,
+                              ),
+                              const SizedBox(height: 14),
+                              Row(
+                                children: [
+                                  if (paperOnly && result == null) ...[
+                                    Expanded(
+                                      child: ActionButton(
+                                        primary: true,
+                                        label: _confirmLabel(preview),
+                                        onTap: controller.canConfirm
+                                            ? () => _confirm()
+                                            : null,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 9),
+                                  ],
+                                  Expanded(
+                                    child: ActionButton(
+                                      label: result == null ? 'Отмена' : 'Закрыть',
+                                      onTap: _close,
+                                    ),
+                                  ),
+                                ],
                               ),
                             ],
                           ),
-                        ],
+                        ),
                       ),
                     ),
                   ),
