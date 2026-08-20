@@ -89,6 +89,7 @@ from .portfolio import (
     RebalanceDraft,
 )
 from .risk import AuditEvent, BacktestRun, ModelRegistry, RiskSnapshot, RiskState
+from .shadow import ShadowObservation
 from .strategies import StrategyPromotionEvent, StrategyVersion
 
 __all__ = [
@@ -108,6 +109,8 @@ __all__ = [
     "IdeaEvent",
     "IdeaOutcome",
     "IdeaSkip",
+    # isolated Shadow measurement
+    "ShadowObservation",
     # durable execution domain
     "ExecutionModeState",
     "ExecutionModeEvent",
