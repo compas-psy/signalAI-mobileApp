@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
@@ -22,6 +23,9 @@ from app.models.risk import RiskSnapshot
 from tests.conftest import idea_kwargs
 
 
+NOW = datetime(2026, 8, 20, 13, 0, tzinfo=UTC)
+
+
 def _seed_protected_intent(
     session: Session,
     instrument,
@@ -31,6 +35,7 @@ def _seed_protected_intent(
     idea = TradeIdea(
         **idea_kwargs(
             instrument.instrument_id,
+            NOW,
             status="TRIGGERED",
             quality_status="PASS",
             score=Decimal("82"),
