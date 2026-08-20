@@ -38,7 +38,10 @@ class ShadowEvaluationInput:
         _require_aware_datetime("evaluated_at", self.evaluated_at)
         if any(not isinstance(item, StrategyResultV2) for item in self.candidates):
             raise ValueError("candidates must contain StrategyResultV2 values")
-        if any(not isinstance(item, str) or not item.strip() for item in self.candidate_versions):
+        if any(
+            not isinstance(item, str) or not item.strip()
+            for item in self.candidate_versions
+        ):
             raise ValueError("candidate_versions must contain non-blank strings")
         if len(self.candidate_versions) != len(set(self.candidate_versions)):
             raise ValueError("duplicate strategy version in candidate manifest")
@@ -47,6 +50,7 @@ class ShadowEvaluationInput:
 @dataclass(frozen=True, slots=True)
 class ShadowCandidateObservation:
     observation_key: str
+    opportunity_key: str
     stage: str
     instrument_id: str
     venue: str
@@ -63,6 +67,7 @@ class ShadowCandidateObservation:
 
     def __post_init__(self) -> None:
         _require_sha256("observation_key", self.observation_key)
+        _require_sha256("opportunity_key", self.opportunity_key)
         if self.stage != _STAGE:
             raise ValueError("Shadow observation stage must be SHADOW")
         _require_text("instrument_id", self.instrument_id)
@@ -78,12 +83,24 @@ class ShadowCandidateObservation:
         if self.signal_emitted:
             if not isinstance(self.direction, Direction):
                 raise ValueError("emitted Shadow observation requires direction")
-            if not isinstance(self.raw_edge_score, Decimal) or not self.raw_edge_score.is_finite():
-                raise ValueError("emitted Shadow observation requires finite raw_edge_score")
-            if not isinstance(self.entry_reference, Decimal) or not self.entry_reference.is_finite():
-                raise ValueError("emitted Shadow observation requires finite entry_reference")
+            if (
+                not isinstance(self.raw_edge_score, Decimal)
+                or not self.raw_edge_score.is_finite()
+            ):
+                raise ValueError(
+                    "emitted Shadow observation requires finite raw_edge_score"
+                )
+            if (
+                not isinstance(self.entry_reference, Decimal)
+                or not self.entry_reference.is_finite()
+            ):
+                raise ValueError(
+                    "emitted Shadow observation requires finite entry_reference"
+                )
             if not isinstance(self.data_quality_state, DataQualityState):
-                raise ValueError("emitted Shadow observation requires data_quality_state")
+                raise ValueError(
+                    "emitted Shadow observation requires data_quality_state"
+                )
         elif any(
             value is not None
             for value in (
@@ -93,7 +110,9 @@ class ShadowCandidateObservation:
                 self.data_quality_state,
             )
         ):
-            raise ValueError("no-signal Shadow observation must not invent candidate values")
+            raise ValueError(
+                "no-signal Shadow observation must not invent candidate values"
+            )
 
 
 def evaluate_shadow_candidates(
@@ -125,21 +144,26 @@ def evaluate_shadow_candidates(
     if undeclared:
         raise ValueError("candidate output is not present in candidate manifest")
 
+    opportunity_key = _opportunity_key(
+        instrument_id=payload.instrument_id,
+        venue=payload.venue,
+        market_snapshot_hash=payload.market_snapshot_hash,
+        cost_model_hash=payload.cost_model_hash,
+        evaluated_at=payload.evaluated_at,
+    )
+
     observations: list[ShadowCandidateObservation] = []
     for version in manifest:
         candidate = candidates_by_version.get(version)
         key = _observation_key(
-            instrument_id=payload.instrument_id,
-            venue=payload.venue,
+            opportunity_key=opportunity_key,
             strategy_version=version,
-            market_snapshot_hash=payload.market_snapshot_hash,
-            cost_model_hash=payload.cost_model_hash,
-            evaluated_at=payload.evaluated_at,
         )
         if candidate is None:
             observations.append(
                 ShadowCandidateObservation(
                     observation_key=key,
+                    opportunity_key=opportunity_key,
                     stage=_STAGE,
                     instrument_id=payload.instrument_id,
                     venue=payload.venue,
@@ -160,6 +184,7 @@ def evaluate_shadow_candidates(
         observations.append(
             ShadowCandidateObservation(
                 observation_key=key,
+                opportunity_key=opportunity_key,
                 stage=_STAGE,
                 instrument_id=payload.instrument_id,
                 venue=payload.venue,
@@ -178,11 +203,10 @@ def evaluate_shadow_candidates(
     return tuple(observations)
 
 
-def _observation_key(
+def _opportunity_key(
     *,
     instrument_id: str,
     venue: str,
-    strategy_version: str,
     market_snapshot_hash: str,
     cost_model_hash: str,
     evaluated_at: datetime,
@@ -192,12 +216,16 @@ def _observation_key(
             _STAGE,
             instrument_id,
             venue,
-            strategy_version,
             market_snapshot_hash,
             cost_model_hash,
             evaluated_at.isoformat(),
         )
     )
+    return sha256(identity.encode("utf-8")).hexdigest()
+
+
+def _observation_key(*, opportunity_key: str, strategy_version: str) -> str:
+    identity = "|".join((opportunity_key, strategy_version))
     return sha256(identity.encode("utf-8")).hexdigest()
 
 
@@ -216,7 +244,11 @@ def _require_sha256(label: str, value: str) -> None:
 
 
 def _require_aware_datetime(label: str, value: datetime) -> None:
-    if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
+    if (
+        not isinstance(value, datetime)
+        or value.tzinfo is None
+        or value.utcoffset() is None
+    ):
         raise ValueError(f"{label} must be timezone-aware")
 
 
