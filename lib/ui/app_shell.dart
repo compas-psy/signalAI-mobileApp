@@ -384,6 +384,7 @@ class _LoadingState extends StatelessWidget {
           ),
         ),
       );
+}
 
 class _ErrorState extends StatelessWidget {
   const _ErrorState({required this.onRetry});
