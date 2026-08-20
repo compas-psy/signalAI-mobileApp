@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.db import get_db
+from app.execution.enums import ExecutionState
 from app.main import app
 from tests.conftest import DEVICE_HEADERS
 from tests.execution.test_manual_trade_controls_contract import _managed_intent
@@ -127,3 +128,41 @@ def test_manual_reduce_api_cannot_equal_current_exposure(client, session, instru
 
     assert response.status_code == 409
     assert "strictly below" in response.json()["detail"]
+
+
+def test_manual_control_by_idea_resolves_the_single_active_execution(
+    client, session, instrument
+):
+    intent, snapshot = _managed_intent(session, instrument)
+
+    response = client.post(
+        f"/api/v1/execution/ideas/{intent.idea_id}/control",
+        headers={"X-Idempotency-Key": "idea-close-1"},
+        json={"action": "CLOSE", "reason": "Закрыть из карточки идеи"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["intent_id"] == str(intent.id)
+    assert body["management_policy_snapshot_id"] == str(snapshot.id)
+    assert body["action"] == "CLOSE"
+    assert body["status"] == "REQUESTED"
+    assert body["reduce_only"] is True
+
+
+def test_manual_control_by_idea_fails_closed_without_active_execution(
+    client, session, instrument
+):
+    intent, _snapshot = _managed_intent(session, instrument)
+    idea_id = intent.idea_id
+    intent.state = ExecutionState.CLOSED
+    session.commit()
+
+    response = client.post(
+        f"/api/v1/execution/ideas/{idea_id}/control",
+        headers={"Idempotency-Key": "idea-close-none"},
+        json={"action": "CLOSE", "reason": "Закрыть из карточки идеи"},
+    )
+
+    assert response.status_code == 409
+    assert "active protected execution" in response.json()["detail"]
