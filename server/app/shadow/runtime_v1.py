@@ -12,12 +12,20 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
+from enum import StrEnum
 from hashlib import sha256
 
 from ..models.enums import Direction
 from ..strategies.result_v2 import DataQualityState, StrategyResultV2
 
 _STAGE = "SHADOW"
+
+
+class ShadowEvidenceStatus(StrEnum):
+    """Whether the strategy was actually evaluable for this opportunity."""
+
+    EVALUATED = "EVALUATED"
+    INPUT_UNAVAILABLE = "INPUT_UNAVAILABLE"
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,6 +37,7 @@ class ShadowEvaluationInput:
     evaluated_at: datetime
     candidates: tuple[StrategyResultV2, ...]
     candidate_versions: tuple[str, ...] = ()
+    unavailable_reasons: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
         _require_text("instrument_id", self.instrument_id)
@@ -45,6 +54,17 @@ class ShadowEvaluationInput:
             raise ValueError("candidate_versions must contain non-blank strings")
         if len(self.candidate_versions) != len(set(self.candidate_versions)):
             raise ValueError("duplicate strategy version in candidate manifest")
+
+        unavailable_versions: list[str] = []
+        for item in self.unavailable_reasons:
+            if not isinstance(item, tuple) or len(item) != 2:
+                raise ValueError("unavailable_reasons must contain (version, reason) tuples")
+            version, reason = item
+            _require_text("unavailable strategy version", version)
+            _require_text("unavailable reason", reason)
+            unavailable_versions.append(version)
+        if len(unavailable_versions) != len(set(unavailable_versions)):
+            raise ValueError("duplicate unavailable strategy version")
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +84,8 @@ class ShadowCandidateObservation:
     evaluated_at: datetime
     market_snapshot_hash: str
     cost_model_hash: str
+    evidence_status: ShadowEvidenceStatus = ShadowEvidenceStatus.EVALUATED
+    reason_code: str | None = None
 
     def __post_init__(self) -> None:
         _require_sha256("observation_key", self.observation_key)
@@ -78,8 +100,20 @@ class ShadowCandidateObservation:
         _require_sha256("cost_model_hash", self.cost_model_hash)
         if self.strategy_family is not None:
             _require_text("strategy_family", self.strategy_family)
+        if not isinstance(self.evidence_status, ShadowEvidenceStatus):
+            raise ValueError("evidence_status must be ShadowEvidenceStatus")
         if not isinstance(self.signal_emitted, bool):
             raise ValueError("signal_emitted must be bool")
+
+        if self.evidence_status is ShadowEvidenceStatus.INPUT_UNAVAILABLE:
+            if self.signal_emitted:
+                raise ValueError("unavailable Shadow evidence cannot emit a signal")
+            if self.reason_code is None:
+                raise ValueError("unavailable Shadow evidence requires reason_code")
+            _require_text("reason_code", self.reason_code)
+        elif self.reason_code is not None:
+            raise ValueError("evaluated Shadow evidence must not carry unavailable reason_code")
+
         if self.signal_emitted:
             if not isinstance(self.direction, Direction):
                 raise ValueError("emitted Shadow observation requires direction")
@@ -140,9 +174,17 @@ def evaluate_shadow_candidates(
     manifest = payload.candidate_versions or tuple(candidates_by_version)
     if len(manifest) != len(set(manifest)):
         raise ValueError("duplicate strategy version in candidate manifest")
-    undeclared = set(candidates_by_version) - set(manifest)
+    manifest_set = set(manifest)
+    undeclared = set(candidates_by_version) - manifest_set
     if undeclared:
         raise ValueError("candidate output is not present in candidate manifest")
+
+    unavailable = dict(payload.unavailable_reasons)
+    if set(unavailable) - manifest_set:
+        raise ValueError("unavailable strategy is not present in candidate manifest")
+    overlap = set(unavailable) & set(candidates_by_version)
+    if overlap:
+        raise ValueError("unavailable strategy cannot also have candidate output")
 
     opportunity_key = _opportunity_key(
         instrument_id=payload.instrument_id,
@@ -160,6 +202,7 @@ def evaluate_shadow_candidates(
             strategy_version=version,
         )
         if candidate is None:
+            reason = unavailable.get(version)
             observations.append(
                 ShadowCandidateObservation(
                     observation_key=key,
@@ -177,6 +220,12 @@ def evaluate_shadow_candidates(
                     evaluated_at=payload.evaluated_at,
                     market_snapshot_hash=payload.market_snapshot_hash,
                     cost_model_hash=payload.cost_model_hash,
+                    evidence_status=(
+                        ShadowEvidenceStatus.INPUT_UNAVAILABLE
+                        if reason is not None
+                        else ShadowEvidenceStatus.EVALUATED
+                    ),
+                    reason_code=reason,
                 )
             )
             continue
@@ -254,6 +303,7 @@ def _require_aware_datetime(label: str, value: datetime) -> None:
 
 __all__ = [
     "ShadowCandidateObservation",
+    "ShadowEvidenceStatus",
     "ShadowEvaluationInput",
     "evaluate_shadow_candidates",
 ]
