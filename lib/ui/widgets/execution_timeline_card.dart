@@ -57,7 +57,7 @@ class _ExecutionTimelineCardState extends State<ExecutionTimelineCard> {
   Widget build(BuildContext context) => Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const SectionLabel('История исполнения'),
+          Text('История исполнения', style: T.sectionLabel()),
           const SizedBox(height: 8),
           if (_loading)
             const BusyLine(label: 'Загружаю подтверждённые факты исполнения…')
