@@ -1,11 +1,13 @@
-"""Server-owned execution lifecycle mode API (SAI-030–034 / B6.1–B6.5)."""
+"""Server-owned execution lifecycle and owner-control API."""
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, Header, HTTPException
+from pydantic import ConfigDict
 from sqlalchemy.orm import Session
 
 from ...db import get_db
@@ -15,6 +17,11 @@ from ...execution.live_activation import (
     confirm_live_activation as apply_live_activation_confirmation,
     create_live_activation_preview,
 )
+from ...execution.manual_controls import (
+    ManualTradeAction,
+    ManualTradeControlRejected,
+    request_manual_trade_control,
+)
 from ...execution.mode import (
     ExecutionModeChangeRejected,
     get_execution_mode as read_execution_mode,
@@ -23,7 +30,7 @@ from ...execution.promotion_guard import (
     change_mode_with_guard,
     preview_promotion,
 )
-from ...schemas.common import ApiModel
+from ...schemas.common import ApiModel, Money
 
 router = APIRouter(tags=["execution"])
 
@@ -75,17 +82,40 @@ class LiveActivationResultOut(ApiModel):
     blockers: list[str]
 
 
-def _live_idempotency_key(
+class ManualTradeControlRequest(ApiModel):
+    """Owner intent only; execution economics remain server-revalidated."""
+
+    model_config = ConfigDict(
+        from_attributes=True,
+        populate_by_name=True,
+        extra="forbid",
+    )
+
+    action: ManualTradeAction
+    quantity: Money | None = None
+    stop_price: Money | None = None
+    reason: str
+
+
+class ManualTradeControlOut(ApiModel):
+    command_id: uuid.UUID
+    intent_id: uuid.UUID
+    management_policy_snapshot_id: uuid.UUID
+    action: ManualTradeAction
+    status: str
+    reduce_only: bool
+    quantity: Money | None
+    stop_price: Money | None
+    order_id: uuid.UUID | None
+    order_status: str | None
+    created: bool
+
+
+def _idempotency_key(
     idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
     x_idempotency_key: str | None = Header(None, alias="X-Idempotency-Key"),
 ) -> str:
-    """Accept the historical mobile header without breaking standard callers.
-
-    ApiClient has long used ``X-Idempotency-Key`` across owner write endpoints,
-    while SAI-032 initially exposed only ``Idempotency-Key``. Supporting both at
-    this boundary keeps replay safety intact and avoids changing unrelated API
-    clients. Conflicting dual headers fail closed instead of choosing one.
-    """
+    """Resolve the standard/mobile replay key without choosing on conflict."""
 
     standard = (idempotency_key or "").strip()
     mobile = (x_idempotency_key or "").strip()
@@ -101,6 +131,12 @@ def _live_idempotency_key(
             detail="Idempotency-Key or X-Idempotency-Key is required",
         )
     return resolved
+
+
+# Backward-compatible internal dependency name used by the LIVE activation
+# endpoint/tests. Both write boundaries intentionally share the same header
+# semantics and conflict behavior.
+_live_idempotency_key = _idempotency_key
 
 
 @router.get("/execution/mode", response_model=ExecutionModeOut)
@@ -195,6 +231,48 @@ def confirm_live_activation(
     )
 
 
+@router.post(
+    "/execution/intents/{intent_id}/control",
+    response_model=ManualTradeControlOut,
+)
+def request_execution_manual_control(
+    intent_id: uuid.UUID,
+    request: ManualTradeControlRequest,
+    idempotency_key: str = Depends(_idempotency_key),
+    db: Session = Depends(get_db),
+) -> ManualTradeControlOut:
+    """Persist one monotonic owner action; no provider I/O occurs here."""
+
+    try:
+        result = request_manual_trade_control(
+            db,
+            intent_id=intent_id,
+            action=request.action,
+            idempotency_key=idempotency_key,
+            owner_reason=request.reason,
+            requested_quantity=request.quantity,
+            requested_stop=request.stop_price,
+        )
+    except ManualTradeControlRejected as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    command = result.command
+    order = result.order
+    return ManualTradeControlOut(
+        command_id=command.id,
+        intent_id=command.intent_id,
+        management_policy_snapshot_id=command.management_policy_snapshot_id,
+        action=ManualTradeAction(command.action),
+        status=command.status,
+        reduce_only=bool(command.reduce_only),
+        quantity=(order.quantity if order is not None else command.requested_quantity),
+        stop_price=(order.stop_price if order is not None else command.requested_stop),
+        order_id=(order.id if order is not None else None),
+        order_status=(order.status if order is not None else None),
+        created=result.created,
+    )
+
+
 __all__ = [
     "ExecutionModeChangeRequest",
     "ExecutionModeOut",
@@ -203,10 +281,13 @@ __all__ = [
     "LiveActivationConfirmRequest",
     "LiveActivationPreviewOut",
     "LiveActivationResultOut",
+    "ManualTradeControlOut",
+    "ManualTradeControlRequest",
     "change_execution_mode",
     "confirm_live_activation",
     "get_execution_mode",
     "preview_execution_mode",
     "preview_live_activation",
+    "request_execution_manual_control",
     "router",
 ]
