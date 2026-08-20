@@ -91,7 +91,11 @@ class RiskBoostSheet extends StatelessWidget {
                           Text(
                             'Вы выбираете только уровень. Риск, объём и плечо '
                             'заново считает сервер в текущих лимитах.',
-                            style: T.body(11.5, color: C.textSecondary, height: 1.45),
+                            style: T.body(
+                              11.5,
+                              color: C.textSecondary,
+                              height: 1.45,
+                            ),
                           ),
                           const SizedBox(height: 13),
                           if (!paperOnly)
@@ -138,7 +142,9 @@ class RiskBoostSheet extends StatelessWidget {
                               const SizedBox(height: 11),
                               _Notice(
                                 text: controller.message!,
-                                color: controller.needsReview ? C.warning : C.green,
+                                color: controller.needsReview
+                                    ? C.warning
+                                    : C.green,
                               ),
                             ],
                             if (controller.error != null) ...[
@@ -269,7 +275,12 @@ class _PreviewCard extends StatelessWidget {
                 padding: const EdgeInsets.only(bottom: 4),
                 child: Text(
                   blocker,
-                  style: T.body(10.5, weight: 700, color: C.red, height: 1.35),
+                  style: T.body(
+                    10.5,
+                    weight: 700,
+                    color: C.red,
+                    height: 1.35,
+                  ),
                 ),
               ),
           ],
@@ -347,26 +358,23 @@ String _percent(String raw) {
     value = value.substring(1);
   }
   final parts = value.split('.');
-  if (parts.length > 2 || parts.any((part) => part.isNotEmpty && !_digits(part))) {
+  if (parts.length > 2 ||
+      parts.any((part) => part.isNotEmpty && !_digits(part))) {
     return raw;
   }
   var whole = parts.first.isEmpty ? '0' : parts.first;
-  var fraction = parts.length == 2 ? parts[1] : '';
+  final fraction = parts.length == 2 ? parts[1] : '';
   whole = whole.replaceFirst(RegExp(r'^0+(?=\d)'), '');
-  final digits = '$whole${fraction.padRight(2, '0')}';
-  final split = digits.length - fraction.length - whole.length + 2;
-  final source = '$whole$fraction'.padLeft(3, '0');
-  final percentPoint = source.length - fraction.length - whole.length + 2;
 
-  // Simpler textual decimal shift: remove the source decimal point, then move
-  // it two places right. Padding on the left/right preserves exact zeros.
+  // Remove the source decimal point and move it exactly two places right.
+  // Padding preserves leading/trailing zeros without any numeric conversion.
   final canonicalWhole = whole.isEmpty ? '0' : whole;
   final combined = '$canonicalWhole$fraction';
-  final originalPoint = canonicalWhole.length;
-  final targetPoint = originalPoint + 2;
+  final targetPoint = canonicalWhole.length + 2;
   final padded = combined.padRight(targetPoint + 1, '0');
   var pctWhole = padded.substring(0, targetPoint);
-  var pctFraction = padded.substring(targetPoint).replaceFirst(RegExp(r'0+$'), '');
+  final pctFraction =
+      padded.substring(targetPoint).replaceFirst(RegExp(r'0+$'), '');
   pctWhole = pctWhole.replaceFirst(RegExp(r'^0+(?=\d)'), '');
   if (pctWhole.isEmpty) pctWhole = '0';
   final text = pctFraction.isEmpty ? pctWhole : '$pctWhole,$pctFraction';
