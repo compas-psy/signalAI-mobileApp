@@ -149,8 +149,8 @@ class ManualTradeControlClient {
 
     final body = <String, dynamic>{
       'action': action.wireName,
-      if (qty != null) 'quantity': qty,
-      if (stop != null) 'stop_price': stop,
+      'quantity': ?qty,
+      'stop_price': ?stop,
       'reason': why,
     };
     final json = await _api.post(
