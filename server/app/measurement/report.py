@@ -21,6 +21,12 @@ class MeasurementDataset(StrEnum):
     LIVE = "LIVE"
 
 
+class ManualRiskCohort(StrEnum):
+    AUTO = "AUTO"
+    BOOST_1 = "BOOST_1"
+    BOOST_2 = "BOOST_2"
+
+
 @dataclass(frozen=True)
 class StrategyMeasurementRecord:
     """One immutable opportunity/outcome used by the measurement contract.
@@ -29,6 +35,11 @@ class StrategyMeasurementRecord:
     previous meaning. Paired experiment measurement sets it explicitly: a
     no-signal decision stays in the opportunity universe with a zero return,
     preventing selection bias from silently dropping hard opportunities.
+
+    Manual-risk fields describe already-observed sizing facts only. They never
+    change risk or execution decisions. When both risk amounts are present, the
+    report can quantify the size-only counterfactual against AUTO because the
+    manual override is not allowed to change entry/stop/admission semantics.
     """
 
     input_id: str
@@ -49,6 +60,9 @@ class StrategyMeasurementRecord:
     reconciliation_mismatch: bool = False
     label_usable: bool = True
     signal_emitted: bool = True
+    risk_preset: ManualRiskCohort | str = ManualRiskCohort.AUTO
+    auto_risk_amount: float | None = None
+    effective_risk_amount: float | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.signal_emitted, bool):
@@ -59,9 +73,21 @@ class StrategyMeasurementRecord:
             and float(self.outcome_r) != 0.0
         ):
             raise ValueError("no-signal decision cannot carry a non-zero realised return")
+        try:
+            preset = ManualRiskCohort(self.risk_preset)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"invalid risk_preset: {self.risk_preset!r}") from exc
+        object.__setattr__(self, "risk_preset", preset)
+        for name, value in (
+            ("auto_risk_amount", self.auto_risk_amount),
+            ("effective_risk_amount", self.effective_risk_amount),
+        ):
+            if value is not None and float(value) < 0:
+                raise ValueError(f"{name} cannot be negative")
 
 
 _DATASETS = tuple(MeasurementDataset)
+_MANUAL_RISK_COHORTS = tuple(ManualRiskCohort)
 
 
 def _utc(value: datetime) -> datetime:
@@ -127,6 +153,17 @@ def _drawdown_and_recovery(
         max_recovery_trades = max(max_recovery_trades, recovery_trades)
 
     return _clean_number(max_drawdown), max_recovery_trades
+
+
+def _money_drawdown(pnls: Iterable[float]) -> float:
+    equity = 0.0
+    peak = 0.0
+    max_drawdown = 0.0
+    for pnl in pnls:
+        equity += float(pnl)
+        peak = max(peak, equity)
+        max_drawdown = max(max_drawdown, peak - equity)
+    return max_drawdown
 
 
 def _calibration(records: list[StrategyMeasurementRecord]) -> list[dict]:
@@ -229,6 +266,52 @@ def _metrics(records: list[StrategyMeasurementRecord], *, min_sample: int) -> di
     }
 
 
+def _manual_risk_impact(records: list[StrategyMeasurementRecord]) -> dict:
+    sized = [
+        record
+        for record in sorted(records, key=lambda item: (_utc(item.timestamp), item.input_id))
+        if record.label_usable
+        and record.outcome_r is not None
+        and record.auto_risk_amount is not None
+        and record.effective_risk_amount is not None
+    ]
+    if not sized:
+        return {
+            "sized_sample_size": 0,
+            "helped_count": 0,
+            "worsened_count": 0,
+            "neutral_count": 0,
+            "actual_pnl": None,
+            "auto_counterfactual_pnl": None,
+            "incremental_pnl": None,
+            "incremental_max_drawdown": None,
+        }
+
+    actual: list[float] = []
+    counterfactual: list[float] = []
+    increments: list[float] = []
+    for record in sized:
+        outcome = float(record.outcome_r)
+        actual_pnl = outcome * float(record.effective_risk_amount)
+        auto_pnl = outcome * float(record.auto_risk_amount)
+        actual.append(actual_pnl)
+        counterfactual.append(auto_pnl)
+        increments.append(actual_pnl - auto_pnl)
+
+    return {
+        "sized_sample_size": len(sized),
+        "helped_count": sum(value > 0 for value in increments),
+        "worsened_count": sum(value < 0 for value in increments),
+        "neutral_count": sum(value == 0 for value in increments),
+        "actual_pnl": _clean_number(sum(actual)),
+        "auto_counterfactual_pnl": _clean_number(sum(counterfactual)),
+        "incremental_pnl": _clean_number(sum(increments)),
+        "incremental_max_drawdown": _clean_number(
+            _money_drawdown(actual) - _money_drawdown(counterfactual)
+        ),
+    }
+
+
 def _datasets(
     records: list[StrategyMeasurementRecord], *, min_sample: int
 ) -> dict[str, dict]:
@@ -239,6 +322,33 @@ def _datasets(
         )
         for dataset in _DATASETS
     }
+
+
+def _manual_risk_datasets(
+    records: list[StrategyMeasurementRecord], *, min_sample: int
+) -> dict[str, dict]:
+    result: dict[str, dict] = {}
+    for dataset in _DATASETS:
+        dataset_records = [record for record in records if record.dataset is dataset]
+        metrics = _metrics(dataset_records, min_sample=min_sample)
+        metrics["impact"] = _manual_risk_impact(dataset_records)
+        result[dataset.value] = metrics
+    return result
+
+
+def _manual_risk_cohorts(
+    records: list[StrategyMeasurementRecord], *, min_sample: int
+) -> list[dict]:
+    return [
+        {
+            "preset": preset.value,
+            "datasets": _manual_risk_datasets(
+                [record for record in records if record.risk_preset is preset],
+                min_sample=min_sample,
+            ),
+        }
+        for preset in _MANUAL_RISK_COHORTS
+    ]
 
 
 def _grouped(
@@ -273,6 +383,7 @@ def _variant_report(
         "by_regime": _grouped(
             records, lambda record: record.regime, min_sample=min_sample
         ),
+        "manual_risk_cohorts": _manual_risk_cohorts(records, min_sample=min_sample),
     }
 
 
@@ -510,6 +621,7 @@ def build_strategy_measurement_report(
 
 
 __all__ = [
+    "ManualRiskCohort",
     "MeasurementDataset",
     "StrategyMeasurementRecord",
     "build_strategy_measurement_report",
