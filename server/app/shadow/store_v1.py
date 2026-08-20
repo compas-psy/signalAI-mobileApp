@@ -45,6 +45,8 @@ def persist_shadow_observations(
                 venue=item.venue,
                 strategy_family=item.strategy_family,
                 strategy_version=item.strategy_version,
+                evidence_status=item.evidence_status.value,
+                reason_code=item.reason_code,
                 signal_emitted=item.signal_emitted,
                 direction=None if item.direction is None else item.direction.value,
                 raw_edge_score=item.raw_edge_score,
