@@ -35,6 +35,10 @@ def _fixed(value: Decimal | None, places: int) -> str | None:
     return format(Decimal(value).quantize(quantum), "f")
 
 
+def _enum_text(value) -> str:
+    return str(getattr(value, "value", value))
+
+
 def _risk_policy(risk: RiskSnapshot) -> dict:
     return {
         "risk_equity": _fixed(risk.risk_equity, 8),
@@ -97,6 +101,59 @@ def _validate_mapping(name: str, value: dict) -> dict:
         raise ManagementPolicySnapshotRejected(
             f"{name} must be JSON-serializable"
         ) from exc
+
+
+def derive_execution_management_policy(
+    db: Session,
+    *,
+    intent_id: uuid.UUID,
+) -> tuple[dict, dict]:
+    """Derive only policy facts SignalAI can prove at the PROTECTED boundary.
+
+    Provider-specific rules are deliberately not guessed here. The venue-rules
+    snapshot records the execution-core invariants that already protect every
+    venue; provider facts can extend the contract later only through a verified
+    adapter capability.
+    """
+
+    intent = db.get(ExecutionIntent, intent_id)
+    if intent is None:
+        raise ManagementPolicySnapshotRejected("execution intent does not exist")
+    idea = db.get(TradeIdea, intent.idea_id)
+    if idea is None:
+        raise ManagementPolicySnapshotRejected("intent idea is missing")
+
+    targets = [
+        value
+        for value in (
+            _fixed(idea.tp1, 12),
+            _fixed(idea.tp2, 12),
+            _fixed(idea.tp3, 12),
+        )
+        if value is not None
+    ]
+    exit_profile = {
+        "profile_version": "signalai-idea-plan-v1",
+        "direction": _enum_text(idea.direction),
+        "order_intent": _enum_text(idea.order_intent),
+        "initial_stop": _fixed(intent.planned_stop_price, 12),
+        "targets": targets,
+        "invalidation": idea.invalidation,
+    }
+    venue_rules = {
+        "rules_version": "signalai-execution-core-v1",
+        "scope": "SIGNALAI_CORE",
+        "venue": intent.venue,
+        "account": intent.account,
+        "execution_mode": _enum_text(intent.execution_mode_snapshot),
+        "protection_required": True,
+        "protection_readback_required": True,
+        "protection_sla_seconds": 30,
+        "emergency_flatten_on_unprotected": True,
+        "reduce_only_exit": True,
+        "stop_tighten_only": True,
+    }
+    return exit_profile, venue_rules
 
 
 def freeze_management_policy_snapshot(
@@ -196,8 +253,27 @@ def freeze_management_policy_snapshot(
     return ManagementPolicySnapshotFreeze(snapshot=snapshot, created=True)
 
 
+def freeze_execution_management_policy(
+    db: Session,
+    *,
+    intent_id: uuid.UUID,
+) -> ManagementPolicySnapshotFreeze:
+    exit_profile, venue_rules = derive_execution_management_policy(
+        db,
+        intent_id=intent_id,
+    )
+    return freeze_management_policy_snapshot(
+        db,
+        intent_id=intent_id,
+        exit_profile=exit_profile,
+        venue_rules=venue_rules,
+    )
+
+
 __all__ = [
     "ManagementPolicySnapshotFreeze",
     "ManagementPolicySnapshotRejected",
+    "derive_execution_management_policy",
+    "freeze_execution_management_policy",
     "freeze_management_policy_snapshot",
 ]
