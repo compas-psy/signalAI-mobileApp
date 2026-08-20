@@ -1,7 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:signal_ai/data/api/api_client.dart';
-import 'package:signal_ai/data/api/engine_client.dart';
+import 'package:signalai/data/api/api_client.dart';
+import 'package:signalai/data/api/engine_client.dart';
 
 class _RecordingApi extends ApiClient {
   _RecordingApi() : super(baseUrl: 'https://engine.test', deviceToken: 'device');
