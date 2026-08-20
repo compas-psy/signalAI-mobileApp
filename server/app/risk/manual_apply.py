@@ -5,9 +5,10 @@ immutable SAI-042 execution-risk override. It deliberately accepts no client
 risk, quantity, leverage or notional. Those values are recalculated from
 server state immediately before persistence.
 
-SAI-044 is intentionally PAPER-only. SAI-045 must provide deterministic
-leverage/liquidation proof before a manual risk increase can be persisted in a
-money-bearing execution mode.
+Apply remains intentionally PAPER-only in this slice. SAI-045 now supplies the
+deterministic leverage/liquidation proof for crypto risk increases, but widening
+manual overrides into money-bearing SANDBOX/CANARY/LIVE modes remains a later
+provider/promotion/acceptance concern and is not enabled here.
 """
 
 from __future__ import annotations
@@ -106,8 +107,8 @@ def apply_manual_risk_override(
         raise ManualRiskOverrideApplyRejected(detail)
     if fresh.execution_mode is not ExecutionLifecycleMode.PAPER:
         raise ManualRiskOverrideApplyRejected(
-            "manual risk override apply is PAPER-only until SAI-045 provides "
-            "leverage/liquidation proof"
+            "manual risk override apply is PAPER-only until later "
+            "provider/promotion/acceptance slices enable money-bearing modes"
         )
     if fresh.preset_id == "AUTO":
         raise ManualRiskOverrideApplyRejected(

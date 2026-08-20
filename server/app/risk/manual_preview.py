@@ -1,8 +1,10 @@
-"""SAI-043/044 authoritative manual-risk preview proof.
+"""SAI-043/044/045 authoritative manual-risk preview proof.
 
 SAI-043 calculates and signs the exact owner-visible economics. SAI-044
 recalculates the same server-owned state and verifies that the short-lived
-signed proof still matches before any immutable override is persisted.
+signed proof still matches before any immutable override is persisted. SAI-045
+adds a deterministic, server-owned isolated-margin leverage/liquidation proof
+for risk-increasing crypto-perpetual previews.
 """
 
 from __future__ import annotations
@@ -27,6 +29,11 @@ from ..models.enums import AssetClass
 from ..models.ideas import TradeIdea
 from ..models.market import Instrument
 from ..models.risk import RiskSnapshot
+from .leverage import (
+    LeverageLiquidationRejected,
+    derive_leverage_liquidation,
+    margin_facts_from_metadata,
+)
 from .manual_override import ManualRiskEnvelope, get_manual_risk_envelope
 from .sizing import (
     InstrumentSpec,
@@ -258,13 +265,13 @@ def verify_manual_risk_preview_token(
     *,
     now: datetime | None = None,
 ) -> datetime:
-    """Verify a SAI-043 token against a freshly recalculated SAI-044 preview.
+    """Verify a signed token against a freshly recalculated manual-risk preview.
 
     The token carries only version/expiry/HMAC. All economic material is
     recomputed server-side and reconstructed from ``proof_payload_json``. Any
-    change to idea provenance, risk snapshot, mode, venue/account alias, config,
-    sizing or caps therefore invalidates the old proof instead of trusting
-    client-supplied values.
+    change to idea provenance, risk snapshot, mode, venue/account, config,
+    sizing, caps or the SAI-045 margin-fact fingerprint therefore invalidates
+    the old proof instead of trusting client-supplied values.
     """
 
     if not preview.allowed:
@@ -387,11 +394,12 @@ def preview_manual_risk(
         requested_pct=requested_pct,
         risk_equity=state.risk_equity,
     )
+    instrument_spec = _instrument_spec(db, instrument, now=instant)
     sizing = size_position(
         budget=budget,
         entry=Decimal(idea.entry_reference),
         stop=Decimal(idea.stop),
-        spec=_instrument_spec(db, instrument, now=instant),
+        spec=instrument_spec,
         limits=limits,
     )
 
@@ -410,12 +418,58 @@ def preview_manual_risk(
     ):
         blockers.append("NO_ADDITIONAL_RISK_HEADROOM")
 
-    # SAI-045 owns venue-tier margin/leverage/liquidation derivation. SAI-044
-    # still never invents these values: the immutable override can hold a null
-    # leverage proof, and downstream money-bearing intent remains gated.
     resulting_leverage: Decimal | None = None
     liquidation_distance_ratio: Decimal | None = None
-    warnings.append("LEVERAGE_LIQUIDATION_DERIVATION_PENDING_SAI_045")
+    margin_proof_hash: str | None = None
+    asset = str(getattr(instrument.asset_class, "value", instrument.asset_class))
+    if (
+        is_boost
+        and sizing.tradable
+        and asset == AssetClass.CRYPTO_PERPETUAL.value
+    ):
+        try:
+            margin_facts = margin_facts_from_metadata(instrument.metadata_json)
+            margin_proof = derive_leverage_liquidation(
+                facts=margin_facts,
+                venue=execution_venue,
+                account=execution_account,
+                symbol=instrument.symbol,
+                direction=idea.direction,
+                entry=Decimal(idea.entry_reference),
+                stop=Decimal(idea.stop),
+                quantity=sizing.quantity,
+                contract_multiplier=Decimal(instrument.contract_multiplier),
+                hard_max_leverage=limits.max_leverage,
+                min_liquidation_distance_ratio=limits.min_liquidation_distance_ratio,
+                now=instant,
+            )
+            # Reuse the canonical sizing guards as a second independent safety
+            # check around the provider-specific derivation. This must preserve
+            # the exact already-derived quantity; any disagreement fails closed.
+            verified_sizing = size_position(
+                budget=budget,
+                entry=Decimal(idea.entry_reference),
+                stop=Decimal(idea.stop),
+                spec=instrument_spec,
+                leverage=margin_proof.leverage,
+                liquidation_price=margin_proof.liquidation_price,
+                limits=limits,
+            )
+            if not verified_sizing.tradable:
+                raise LeverageLiquidationRejected(
+                    "SIZING_GUARD_REJECTED",
+                    verified_sizing.reason,
+                )
+            if verified_sizing.quantity != sizing.quantity:
+                raise LeverageLiquidationRejected(
+                    "SIZING_PROOF_MISMATCH",
+                    "margin verification changed the authoritative quantity",
+                )
+            resulting_leverage = margin_proof.leverage
+            liquidation_distance_ratio = margin_proof.liquidation_distance_ratio
+            margin_proof_hash = margin_proof.margin_proof_hash
+        except LeverageLiquidationRejected as exc:
+            blockers.append(f"LEVERAGE_LIQUIDATION_BLOCKED:{exc.code}")
 
     effective_amount = sizing.risk_amount if sizing.tradable else Decimal(0)
     quantity = sizing.quantity if sizing.tradable else Decimal(0)
@@ -448,8 +502,9 @@ def preview_manual_risk(
         "total_open_risk_after": _decimal_text(total_open_after),
         "cluster_risk_after": _decimal_text(cluster_after),
         "worst_case_stop_loss": _decimal_text(worst_case),
-        "resulting_leverage": None,
-        "liquidation_distance_ratio": None,
+        "resulting_leverage": _decimal_text(resulting_leverage),
+        "liquidation_distance_ratio": _decimal_text(liquidation_distance_ratio),
+        "margin_proof_hash": margin_proof_hash,
     }
     proof_payload_json = _canonical_json(payload)
     preview_hash = _sign_preview(payload, expires_at=expires_at) if allowed else ""
