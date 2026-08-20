@@ -4,6 +4,7 @@ import '../../domain/idea/execution.dart';
 import '../../theme/tokens.dart';
 import '../../theme/typography.dart';
 import 'common.dart';
+import 'execution_timeline_card.dart';
 import 'manual_trade_controls.dart';
 
 /// Состояние исполнения плана на экране (ТЗ §11.3, §21).
@@ -112,6 +113,8 @@ class ExecutionStrip extends StatelessWidget {
             const SizedBox(height: 14),
             ManualTradeControls(ideaId: execution.ideaId),
           ],
+          const SizedBox(height: 14),
+          ExecutionTimelineCard(ideaId: execution.ideaId),
         ],
       ),
     );

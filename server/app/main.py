@@ -28,6 +28,7 @@ from .api.v1 import diagnostics as diagnostics_routes
 from .api.v1 import equity_rankings as equity_ranking_routes
 from .api.v1 import execution as execution_routes
 from .api.v1 import execution_health as execution_health_routes
+from .api.v1 import execution_timeline as execution_timeline_routes
 from .api.v1 import experiments as experiment_routes
 from .api.v1 import idea_progress as idea_progress_routes
 from .api.v1 import ideas as ideas_routes
@@ -87,6 +88,7 @@ v1.include_router(ideas_routes.router)
 v1.include_router(idea_progress_routes.router)
 v1.include_router(risk_routes.router)
 v1.include_router(execution_routes.router)
+v1.include_router(execution_timeline_routes.router)
 v1.include_router(execution_health_routes.router)
 v1.include_router(portfolio_routes.router)
 v1.include_router(portfolio_headline_routes.router)
