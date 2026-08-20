@@ -1,5 +1,6 @@
 import 'package:flutter/widgets.dart';
 
+import '../../data/api/api_client.dart';
 import '../../data/api/engine_client.dart';
 import '../../domain/idea/trade_plan.dart';
 import '../../domain/models/settings.dart';
@@ -43,9 +44,9 @@ class RiskBoostConfirmFlow extends StatelessWidget {
   final bool busy;
   final bool paperOnly;
 
-  /// Injectable for contract/widget tests. Production can use a fresh
-  /// [EngineClient] because ApiClient reads the already-restored shared engine
-  /// runtime (base URL + auth) on every request; no execution mode is owned here.
+  /// Injectable for contract/widget tests. Production creates a short-lived
+  /// client that reads the already-restored shared engine runtime on every
+  /// request and closes its owned HTTP transport when the route exits.
   final EngineClient? engine;
 
   bool get _canOpenRiskBoost =>
@@ -65,7 +66,9 @@ class RiskBoostConfirmFlow extends StatelessWidget {
       );
 
   void _openRiskBoost(BuildContext context) {
-    final controller = RiskBoostController(engine: engine ?? EngineClient());
+    final ownedApi = engine == null ? ApiClient() : null;
+    final riskEngine = engine ?? EngineClient(client: ownedApi);
+    final controller = RiskBoostController(engine: riskEngine);
     final navigator = Navigator.of(context);
     navigator
         .push<void>(
@@ -82,6 +85,9 @@ class RiskBoostConfirmFlow extends StatelessWidget {
             ),
           ),
         )
-        .whenComplete(controller.dispose);
+        .whenComplete(() {
+          controller.dispose();
+          ownedApi?.close();
+        });
   }
 }
