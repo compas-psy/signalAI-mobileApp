@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import subprocess
+import uuid
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import sessionmaker
 
 from app.db import get_db
@@ -16,7 +20,7 @@ from app.risk.manual_audit import (
     ManualRiskAuditRecord,
     persist_manual_risk_audit,
 )
-from tests.conftest import DEVICE_HEADERS, idea_kwargs
+from tests.conftest import ADMIN_DSN, DEVICE_HEADERS, idea_kwargs
 
 
 @pytest.fixture
@@ -25,6 +29,56 @@ def client(session):
     with TestClient(app, headers=DEVICE_HEADERS) as test_client:
         yield test_client
     app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def isolated_audit_engine():
+    """Real migrated PostgreSQL DB for the one test that must commit durably.
+
+    Normal tests share a session-scoped database and rely on an outer rollback.
+    SAI-046 intentionally proves that a rejection audit commits independently of
+    its caller, so using that shared database would leak an append-only row into
+    later tests. A short-lived database preserves the real transaction/trigger
+    semantics without weakening global test isolation or deleting audit facts.
+    """
+
+    db_name = f"signalai_audit_{uuid.uuid4().hex[:12]}"
+    database_url = ADMIN_DSN.rsplit("/", 1)[0] + f"/{db_name}"
+    admin = create_engine(ADMIN_DSN, isolation_level="AUTOCOMMIT", future=True)
+    isolated = None
+    try:
+        with admin.connect() as conn:
+            conn.execute(text(f'CREATE DATABASE "{db_name}"'))
+
+        root = Path(__file__).resolve().parents[2]
+        env = dict(os.environ, SIGNALAI_DATABASE_URL=database_url)
+        migration = subprocess.run(
+            [str(root / ".venv" / "bin" / "alembic"), "upgrade", "head"],
+            cwd=root,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        if migration.returncode != 0:
+            raise RuntimeError(
+                "isolated SAI-046 audit database migrations failed:\n"
+                f"{migration.stderr}"
+            )
+        isolated = create_engine(database_url, future=True)
+        yield isolated
+    finally:
+        if isolated is not None:
+            isolated.dispose()
+        with admin.connect() as conn:
+            conn.execute(
+                text(
+                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                    "WHERE datname = :name AND pid <> pg_backend_pid()"
+                ),
+                {"name": db_name},
+            )
+            conn.execute(text(f'DROP DATABASE IF EXISTS "{db_name}"'))
+        admin.dispose()
 
 
 def _seed(session, instrument, now):
@@ -215,9 +269,15 @@ def test_sai_046_rejected_apply_uses_durable_audit_boundary_without_raw_secrets(
     assert record.context["rejection_detail"]
 
 
-def test_sai_046_rejection_audit_commit_survives_caller_transaction_rollback(engine):
+def test_sai_046_rejection_audit_commit_survives_caller_transaction_rollback(
+    isolated_audit_engine,
+):
     marker = "sai-046-independent-rejection-audit"
-    factory = sessionmaker(bind=engine, expire_on_commit=False, future=True)
+    factory = sessionmaker(
+        bind=isolated_audit_engine,
+        expire_on_commit=False,
+        future=True,
+    )
     record = ManualRiskAuditRecord(
         action="manual_risk_apply_outcome",
         subject=marker,
