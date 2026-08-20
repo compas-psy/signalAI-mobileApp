@@ -3,6 +3,7 @@ import 'package:flutter/widgets.dart';
 import '../domain/idea/idea_funnel.dart';
 import '../state/app_controller.dart';
 import '../state/app_scope.dart';
+import '../state/execution_mode_controller.dart';
 import '../theme/tokens.dart';
 import '../theme/typography.dart';
 import '../state/navigation.dart';
@@ -21,9 +22,9 @@ import 'screens/settings_screen.dart';
 import 'screens/strategies_screen.dart';
 import 'screens/today_screen.dart';
 import 'widgets/capacity_status_panel.dart';
-import 'widgets/confirm_sheet.dart';
 import 'widgets/engine_address_sheet.dart';
 import 'widgets/engine_setup_gate.dart';
+import 'widgets/risk_boost_confirm_flow.dart';
 import 'widgets/toast.dart';
 import 'widgets/vector_icon.dart';
 import 'widgets/bottom_nav.dart';
@@ -65,7 +66,7 @@ class AppShell extends StatelessWidget {
             return Stack(
               children: [
                 _body(controller, pane),
-                if (controller.sheetOpen) _sheet(controller, pane),
+                if (controller.sheetOpen) _sheet(context, controller, pane),
                 if (controller.toast != null)
                   Positioned(
                     top: 10,
@@ -278,17 +279,24 @@ class AppShell extends StatelessWidget {
     };
   }
 
-  Widget _sheet(AppController controller, Pane pane) {
+  Widget _sheet(BuildContext context, AppController controller, Pane pane) {
     final signal = controller.currentSignal;
     final risk = controller.risk;
+    final idea = controller.currentIdea;
     if (signal == null || risk == null) return const SizedBox.shrink();
-    final sheet = ConfirmSheet(
+
+    // Manual risk is enabled only when the server-owned execution lifecycle is
+    // known to be PAPER. Missing scope/mode fails closed instead of guessing.
+    final serverMode = ExecutionModeScope.maybeOf(context)?.mode.label ?? 'НЕИЗВЕСТЕН';
+    final sheet = RiskBoostConfirmFlow(
+      ideaId: idea?.id ?? '',
+      currentMode: serverMode,
       signal: signal,
-      plan: controller.currentIdea?.plan,
+      plan: idea?.plan,
       risk: risk,
       impact: controller.currentImpact,
       busy: controller.confirming,
-      paperOnly: controller.currentIdea != null && !controller.demoData,
+      paperOnly: idea != null && !controller.demoData,
       onExecute: controller.confirmCurrentSignal,
       onClose: controller.closeSheet,
     );

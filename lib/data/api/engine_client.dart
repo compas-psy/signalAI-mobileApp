@@ -90,6 +90,206 @@ class IdeaDecision {
   }
 }
 
+/// Exact server-owned economics shown to the owner before a manual risk boost.
+///
+/// Money deliberately stays as strings. The phone must not recalculate risk,
+/// quantity, leverage or liquidation economics from binary floating point and
+/// accidentally confirm numbers different from the signed server preview.
+class RiskPreview {
+  const RiskPreview({
+    required this.ideaId,
+    required this.riskSnapshotId,
+    required this.presetId,
+    required this.executionMode,
+    required this.allowed,
+    required this.warnings,
+    required this.blockers,
+    required this.autoRiskPct,
+    required this.autoRiskAmount,
+    required this.requestedRiskPct,
+    required this.requestedRiskAmount,
+    required this.effectiveRiskPct,
+    required this.effectiveRiskAmount,
+    required this.hardCapRiskPct,
+    required this.quantity,
+    required this.notional,
+    required this.resultingLeverage,
+    required this.liquidationDistanceRatio,
+    required this.totalOpenRiskAfter,
+    required this.clusterRiskAfter,
+    required this.worstCaseStopLoss,
+    required this.bindingConstraint,
+    required this.issuedAt,
+    required this.expiresAt,
+    required this.previewHash,
+  });
+
+  final String ideaId;
+  final String riskSnapshotId;
+  final String presetId;
+  final String executionMode;
+  final bool allowed;
+  final List<String> warnings;
+  final List<String> blockers;
+  final String autoRiskPct;
+  final String autoRiskAmount;
+  final String requestedRiskPct;
+  final String requestedRiskAmount;
+  final String effectiveRiskPct;
+  final String effectiveRiskAmount;
+  final String hardCapRiskPct;
+  final String quantity;
+  final String notional;
+  final String? resultingLeverage;
+  final String? liquidationDistanceRatio;
+  final String totalOpenRiskAfter;
+  final String clusterRiskAfter;
+  final String worstCaseStopLoss;
+  final String bindingConstraint;
+  final DateTime issuedAt;
+  final DateTime expiresAt;
+
+  /// Replayable signed token. Never persist it or place it in logs/keys.
+  final String previewHash;
+
+  bool get canConfirm => allowed && previewHash.isNotEmpty;
+  bool get isExpired => !DateTime.now().toUtc().isBefore(expiresAt.toUtc());
+
+  factory RiskPreview.fromJson(Map<String, dynamic> json) {
+    String requiredString(String key) {
+      final value = json[key];
+      if (value is! String || value.isEmpty) {
+        throw ApiException('Сервер вернул preview без обязательного поля $key.');
+      }
+      return value;
+    }
+
+    String? optionalString(String key) {
+      final value = json[key];
+      if (value == null) return null;
+      if (value is! String || value.isEmpty) {
+        throw ApiException('Сервер вернул некорректное поле $key в preview.');
+      }
+      return value;
+    }
+
+    List<String> stringList(String key) {
+      final raw = json[key];
+      if (raw is! List || raw.any((item) => item is! String)) {
+        throw ApiException('Сервер вернул некорректный список $key в preview.');
+      }
+      return List<String>.unmodifiable(raw.cast<String>());
+    }
+
+    final allowed = json['allowed'];
+    if (allowed is! bool) {
+      throw ApiException('Сервер не указал, разрешён ли manual-risk preview.');
+    }
+    final issuedAt = DateTime.tryParse(requiredString('issued_at'));
+    final expiresAt = DateTime.tryParse(requiredString('expires_at'));
+    if (issuedAt == null || expiresAt == null || !expiresAt.isAfter(issuedAt)) {
+      throw ApiException('Сервер вернул некорректный срок действия risk preview.');
+    }
+    final previewHash = json['preview_hash'];
+    if (previewHash is! String || (allowed && previewHash.isEmpty)) {
+      throw ApiException('Разрешённый risk preview не подписан сервером.');
+    }
+    return RiskPreview(
+      ideaId: requiredString('idea_id'),
+      riskSnapshotId: requiredString('risk_snapshot_id'),
+      presetId: requiredString('preset_id'),
+      executionMode: requiredString('execution_mode'),
+      allowed: allowed,
+      warnings: stringList('warnings'),
+      blockers: stringList('blockers'),
+      autoRiskPct: requiredString('auto_risk_pct'),
+      autoRiskAmount: requiredString('auto_risk_amount'),
+      requestedRiskPct: requiredString('requested_risk_pct'),
+      requestedRiskAmount: requiredString('requested_risk_amount'),
+      effectiveRiskPct: requiredString('effective_risk_pct'),
+      effectiveRiskAmount: requiredString('effective_risk_amount'),
+      hardCapRiskPct: requiredString('hard_cap_risk_pct'),
+      quantity: requiredString('quantity'),
+      notional: requiredString('notional'),
+      resultingLeverage: optionalString('resulting_leverage'),
+      liquidationDistanceRatio: optionalString('liquidation_distance_ratio'),
+      totalOpenRiskAfter: requiredString('total_open_risk_after'),
+      clusterRiskAfter: requiredString('cluster_risk_after'),
+      worstCaseStopLoss: requiredString('worst_case_stop_loss'),
+      bindingConstraint: requiredString('binding_constraint'),
+      issuedAt: issuedAt,
+      expiresAt: expiresAt,
+      previewHash: previewHash,
+    );
+  }
+}
+
+/// Durable result of applying the exact signed preview after a fresh recheck.
+class RiskOverrideResult {
+  const RiskOverrideResult({
+    required this.overrideId,
+    required this.ideaId,
+    required this.riskSnapshotId,
+    required this.presetId,
+    required this.executionMode,
+    required this.venue,
+    required this.account,
+    required this.effectiveRiskPct,
+    required this.effectiveQuantity,
+    required this.effectiveLeverage,
+    required this.created,
+  });
+
+  final String overrideId;
+  final String ideaId;
+  final String riskSnapshotId;
+  final String presetId;
+  final String executionMode;
+  final String venue;
+  final String account;
+  final String effectiveRiskPct;
+  final String effectiveQuantity;
+  final String? effectiveLeverage;
+  final bool created;
+
+  factory RiskOverrideResult.fromJson(Map<String, dynamic> json) {
+    String requiredString(String key) {
+      final value = json[key];
+      if (value is! String || value.isEmpty) {
+        throw ApiException('Сервер вернул risk override без поля $key.');
+      }
+      return value;
+    }
+
+    String? optionalString(String key) {
+      final value = json[key];
+      if (value == null) return null;
+      if (value is! String || value.isEmpty) {
+        throw ApiException('Сервер вернул некорректное поле $key в override.');
+      }
+      return value;
+    }
+
+    final created = json['created'];
+    if (created is! bool) {
+      throw ApiException('Сервер не указал, создан ли новый risk override.');
+    }
+    return RiskOverrideResult(
+      overrideId: requiredString('override_id'),
+      ideaId: requiredString('idea_id'),
+      riskSnapshotId: requiredString('risk_snapshot_id'),
+      presetId: requiredString('preset_id'),
+      executionMode: requiredString('execution_mode'),
+      venue: requiredString('venue'),
+      account: requiredString('account'),
+      effectiveRiskPct: requiredString('effective_risk_pct'),
+      effectiveQuantity: requiredString('effective_quantity'),
+      effectiveLeverage: optionalString('effective_leverage'),
+      created: created,
+    );
+  }
+}
+
 enum EngineFailureStage {
   ideaHydration,
   chartLoad,
@@ -394,6 +594,88 @@ class EngineClient {
     final result = IdeaDecision.fromJson(json);
     if (result.decision != 'REJECTED' || result.ideaId != ideaId) {
       throw ApiException('Сервер не подтвердил отказ от этой идеи.');
+    }
+    return result;
+  }
+
+  /// Ask the server for one bounded named manual-risk preset.
+  ///
+  /// The mobile request carries no money-bearing values. `currentMode` is the
+  /// mode the phone last observed from the server and is only a stale-state
+  /// guard; the server re-reads its own current mode before calculating.
+  Future<RiskPreview> previewRisk({
+    required String ideaId,
+    required String presetId,
+    required String currentMode,
+  }) async {
+    if (!isConfigured) throw ApiException(_noAddress);
+    final idea = ideaId.trim();
+    final preset = presetId.trim();
+    final mode = currentMode.trim();
+    if (idea.isEmpty || preset.isEmpty || mode.isEmpty) {
+      throw ApiException('Для risk preview нужны идея, preset и режим сервера.');
+    }
+    final json = await _api.post(
+      '$_base/risk/preview',
+      body: {
+        'idea_id': idea,
+        'preset_id': preset,
+        'current_mode': mode,
+      },
+    );
+    final preview = RiskPreview.fromJson(json);
+    if (preview.ideaId != idea ||
+        preview.presetId != preset ||
+        preview.executionMode != mode) {
+      throw ApiException(
+        'Сервер вернул risk preview для другой идеи, preset или режима.',
+      );
+    }
+    return preview;
+  }
+
+  /// Confirm exactly the signed preview after the server performs a fresh
+  /// recheck. The request intentionally contains no client-authored economics.
+  Future<RiskOverrideResult> applyRisk({
+    required RiskPreview preview,
+    required String reason,
+  }) async {
+    if (!isConfigured) throw ApiException(_noAddress);
+    if (!preview.canConfirm) {
+      throw ApiException('Этот risk preview нельзя подтвердить.');
+    }
+    final why = reason.trim();
+    if (why.isEmpty) {
+      throw ApiException('Для ручного повышения риска нужна причина.');
+    }
+    // Stable for this exact server preview without embedding the replayable
+    // signed token. Network retries therefore reuse the same key while logs,
+    // proxies and crash reports never learn the token itself.
+    final idempotencyKey = 'manual-risk:${preview.ideaId}:${preview.presetId}:'
+        '${preview.issuedAt.toUtc().microsecondsSinceEpoch}';
+    final json = await _api.post(
+      '$_base/risk/override',
+      body: {
+        'idea_id': preview.ideaId,
+        'preset_id': preview.presetId,
+        'current_mode': preview.executionMode,
+        'preview_hash': preview.previewHash,
+        'owner_confirmed': true,
+        'reason': why,
+      },
+      idempotencyKey: idempotencyKey,
+    );
+    final result = RiskOverrideResult.fromJson(json);
+    if (result.ideaId != preview.ideaId ||
+        result.riskSnapshotId != preview.riskSnapshotId ||
+        result.presetId != preview.presetId ||
+        result.executionMode != preview.executionMode ||
+        result.effectiveRiskPct != preview.effectiveRiskPct ||
+        result.effectiveQuantity != preview.quantity ||
+        result.effectiveLeverage != preview.resultingLeverage) {
+      throw ApiException(
+        'Сервер подтвердил risk override, не совпадающий с показанным preview.',
+      );
     }
     return result;
   }
