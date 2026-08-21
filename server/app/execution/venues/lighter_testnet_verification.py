@@ -12,7 +12,7 @@ only a post-only limit followed by cancellation and never promotes LIVE.
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
@@ -57,6 +57,7 @@ class LighterTestnetAdmission:
     provider_next_nonce: int | None
     observed_at: datetime
     transport_fingerprint: str | None
+    transport_instance_id: int | None = field(repr=False)
 
     @property
     def eligible_for_order_smoke(self) -> bool:
@@ -139,6 +140,7 @@ def _blocked(
         provider_next_nonce=None,
         observed_at=observed_at,
         transport_fingerprint=None,
+        transport_instance_id=None,
     )
 
 
@@ -267,6 +269,7 @@ def verify_lighter_testnet_admission(
             account_index=account_index,
             api_key_index=api_key_index,
         ),
+        transport_instance_id=id(transport),
     )
 
 
@@ -274,8 +277,17 @@ def _require_same_ready_transport(
     admission: LighterTestnetAdmission,
     transport: LighterTestnetTransport,
 ) -> None:
-    if not isinstance(admission, LighterTestnetAdmission) or not admission.eligible_for_order_smoke:
-        raise LighterTestnetAdmissionError("testnet admission is not eligible for order smoke")
+    if (
+        not isinstance(admission, LighterTestnetAdmission)
+        or not admission.eligible_for_order_smoke
+    ):
+        raise LighterTestnetAdmissionError(
+            "testnet admission is not eligible for order smoke"
+        )
+    if admission.transport_instance_id != id(transport):
+        raise LighterTestnetAdmissionError(
+            "testnet transport is not the verified admission instance"
+        )
 
     base_url, chain_id, account_index, api_key_index = _transport_scope(transport)
     if (
