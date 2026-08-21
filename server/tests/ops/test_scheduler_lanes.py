@@ -63,12 +63,34 @@ def test_production_compose_runs_market_and_heavy_lanes_as_separate_processes() 
     assert "SIGNALAI_SCHEDULER_LANE: market" in market
     assert "SIGNALAI_SCHEDULER_LANE: heavy" in heavy
     assert 'command: ["python", "-m", "app.scheduler"]' in market
-    assert 'command: ["python", "-m", "app.scheduler"]' in heavy
+    assert 'command: ["python", "-m", "app.scheduler.heavy"]' in heavy
 
 
-def test_scheduler_entrypoint_applies_lane_before_running_forever() -> None:
-    entrypoint = (_root() / "server/app/scheduler/__main__.py").read_text()
+def test_market_runtime_filters_default_jobs_before_returning_scheduler() -> None:
+    runtime = (_root() / "server/app/scheduler/p0_runtime.py").read_text()
 
-    assert "SIGNALAI_SCHEDULER_LANE" in entrypoint
-    assert "apply_scheduler_lane" in entrypoint
-    assert entrypoint.index("apply_scheduler_lane") < entrypoint.index("run_forever(")
+    assert "SIGNALAI_SCHEDULER_LANE" in runtime
+    assert "apply_scheduler_lane" in runtime
+    assert runtime.index("_add_capital_job") < runtime.rindex("apply_scheduler_lane")
+
+
+def test_heavy_entrypoint_has_no_market_startup_bootstrap() -> None:
+    heavy = (_root() / "server/app/scheduler/heavy.py").read_text()
+
+    assert "SchedulerLane.HEAVY" in heavy
+    assert "run_forever(" in heavy
+    assert "purge_premature_moex_bars" not in heavy
+    assert "materialize(" not in heavy
+    assert "paper_live" not in heavy
+
+
+def test_canonical_deploy_builds_the_heavy_scheduler_image() -> None:
+    deploy = (_root() / ".github/workflows/deploy-release.yml").read_text()
+
+    assert "docker compose --env-file \"$ENV_FILE\" build api scheduler scheduler-heavy" in deploy
+
+
+def test_runtime_logs_include_both_scheduler_lanes() -> None:
+    workflow = (_root() / ".github/workflows/runtime-logs.yml").read_text()
+
+    assert "$COMPOSE logs --since 30h --tail 600 scheduler scheduler-heavy" in workflow
