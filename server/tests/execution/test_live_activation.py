@@ -9,7 +9,7 @@ import pytest
 from app.execution.enums import ExecutionLifecycleMode
 from app.execution.mode import ModeChangeAuthorization, change_execution_mode, get_execution_mode
 from app.execution.promotion_guard import PromotionEvidence
-from app.models import AuditEvent, ExecutionModeEvent
+from app.models import AuditEvent, ExecutionModeEvent, PromotionEvidenceDecision
 
 
 def _activation():
@@ -60,6 +60,7 @@ def _ready_context(activation):
 
 def _ready_evidence(*_args, **_kwargs):
     return PromotionEvidence(
+        adr_gates_passed=True,
         performance_gates_passed=True,
         ops_gates_passed=True,
         notes=("test readiness provider",),
@@ -128,6 +129,7 @@ def test_confirm_rechecks_server_gates_instead_of_trusting_preview(session):
 
     def degraded_evidence(*_args, **_kwargs):
         return PromotionEvidence(
+            adr_gates_passed=True,
             performance_gates_passed=True,
             ops_gates_passed=False,
             notes=("ops degraded after preview",),
@@ -150,6 +152,15 @@ def test_confirm_rechecks_server_gates_instead_of_trusting_preview(session):
     assert session.query(ExecutionModeEvent).filter_by(
         to_mode=ExecutionLifecycleMode.LIVE
     ).count() == 0
+    audit = session.query(AuditEvent).filter_by(
+        action="execution_live_activation_confirm"
+    ).one()
+    correlation_id = audit.after_json["promotion_evidence_correlation_id"]
+    decision_row = session.query(PromotionEvidenceDecision).filter_by(
+        correlation_id=correlation_id
+    ).one()
+    assert decision_row.allowed is False
+    assert decision_row.blockers_json == ["ops gates not verified"]
 
 
 def test_confirm_changes_mode_only_after_second_confirmation_and_gate_recheck(session):

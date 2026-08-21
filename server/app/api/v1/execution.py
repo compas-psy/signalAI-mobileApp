@@ -31,6 +31,10 @@ from ...execution.promotion_guard import (
     change_mode_with_guard,
     preview_promotion,
 )
+from ...execution.promotion_evidence import (
+    PromotionEvidenceInputError,
+    derive_registered_promotion_scope,
+)
 from ...models.execution import ExecutionIntent
 from ...schemas.common import ApiModel, Money
 
@@ -44,6 +48,13 @@ class ExecutionModeOut(ApiModel):
 
 class ExecutionModePreviewRequest(ApiModel):
     target: ExecutionLifecycleMode
+    scope: "PromotionEvidenceScopeRequest | None" = None
+
+
+class PromotionEvidenceScopeRequest(ApiModel):
+    strategy_family: str
+    strategy_version: str
+    venue: str
 
 
 class ExecutionModePreviewOut(ApiModel):
@@ -56,6 +67,7 @@ class ExecutionModePreviewOut(ApiModel):
 class ExecutionModeChangeRequest(ApiModel):
     target: ExecutionLifecycleMode
     reason: str
+    scope: PromotionEvidenceScopeRequest | None = None
 
 
 class LiveActivationPreviewOut(ApiModel):
@@ -133,6 +145,20 @@ def _idempotency_key(
             detail="Idempotency-Key or X-Idempotency-Key is required",
         )
     return resolved
+
+
+def _promotion_scope(db: Session, request: PromotionEvidenceScopeRequest | None):
+    if request is None:
+        return None
+    try:
+        return derive_registered_promotion_scope(
+            db,
+            strategy_family=request.strategy_family,
+            strategy_version=request.strategy_version,
+            venue=request.venue,
+        )
+    except PromotionEvidenceInputError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 # Backward-compatible internal dependency name used by the LIVE activation
@@ -229,7 +255,9 @@ def preview_execution_mode(
     request: ExecutionModePreviewRequest,
     db: Session = Depends(get_db),
 ) -> ExecutionModePreviewOut:
-    preview = preview_promotion(db, target=request.target)
+    preview = preview_promotion(
+        db, target=request.target, scope=_promotion_scope(db, request.scope)
+    )
     return ExecutionModePreviewOut(
         current=preview.current,
         target=preview.target,
@@ -251,8 +279,12 @@ def change_execution_mode(
             target=request.target,
             actor="owner",
             reason=request.reason,
+            scope=_promotion_scope(db, request.scope),
         )
     except ExecutionModeChangeRejected as exc:
+        # A FastAPI HTTPException makes get_db roll back.  Commit the already
+        # append-only decision before converting this expected rejection.
+        db.commit()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return ExecutionModeOut.model_validate(snapshot)
 
@@ -356,6 +388,7 @@ __all__ = [
     "ExecutionModeOut",
     "ExecutionModePreviewOut",
     "ExecutionModePreviewRequest",
+    "PromotionEvidenceScopeRequest",
     "LiveActivationConfirmRequest",
     "LiveActivationPreviewOut",
     "LiveActivationResultOut",

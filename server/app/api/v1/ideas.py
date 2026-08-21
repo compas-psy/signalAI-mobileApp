@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 
 from ...db import get_db
 from ...journal.lifecycle import TransitionRequest, can_transition, transition
+from ...market.economic_events import load_owned_calendar
 from ...models import AuditEvent, IdeaEvent, IdeaSkip, Instrument, PaperTrade, TradeIdea
 from ...models.enums import IdeaStatus, QualityStatus, SkipReason, Strategy
 from ...paper.tracker import PaperTradeConflict, approve_for
@@ -29,6 +30,7 @@ from ...schemas.ideas import (
     DailyCards,
     EvidenceOut,
     ExplanationBlock,
+    EconomicEventCalendarBlock,
     IdeaDetail,
     IdeaEventOut,
     IdeaSummary,
@@ -287,6 +289,9 @@ def get_idea(idea_id: UUID, db: Session = Depends(get_db)) -> IdeaDetail:
             invalidation=idea.invalidation,
             data_warnings=list(idea.data_warnings or []),
         ),
+        event_calendar=EconomicEventCalendarBlock(
+            **(explanation.get("event_calendar") or {})
+        ),
         config_hash=idea.config_hash,
         engine_version=idea.engine_version,
         feature_version=idea.feature_version,
@@ -423,9 +428,11 @@ def _approval_response(
 
 
 def _is_actionable(idea: TradeIdea) -> bool:
+    calendar = (idea.explanation_json or {}).get("event_calendar") or {}
     return (
         QualityStatus(idea.quality_status) is QualityStatus.ACTIVE
         and IdeaStatus(idea.status) is IdeaStatus.TRIGGERED
+        and calendar.get("blocks_admission") is False
     )
 
 
@@ -450,13 +457,22 @@ def _validate_approval(idea: TradeIdea, *, now: datetime) -> None:
             409,
             "идея не подтверждена рынком: status=WATCH; ожидается TRIGGERED",
         )
+    if idea.quantity <= 0:
+        raise HTTPException(409, "идея не исполнима: размер позиции равен нулю")
+    calendar_assessment = load_owned_calendar(now=now).assess(
+        idea.instrument_id, as_of=now
+    )
+    if calendar_assessment.blocks_admission:
+        raise HTTPException(
+            409,
+            "текущий календарь событий блокирует approval: "
+            f"{calendar_assessment.reason_code}",
+        )
     if not _is_actionable(idea):
         raise HTTPException(
             409,
             f"идея уже не ждёт решения: status={status.value}; ожидается TRIGGERED",
         )
-    if idea.quantity <= 0:
-        raise HTTPException(409, "идея не исполнима: размер позиции равен нулю")
 
 
 @router.post("/ideas/{idea_id}/approve-paper", response_model=IdeaDecisionOut)

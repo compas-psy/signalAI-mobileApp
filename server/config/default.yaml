@@ -269,6 +269,12 @@ portfolio:
   crypto_max_weight: 0.05
   drift_min_pp: 0.02
   drift_relative: 0.20
+  # No broker fee/cost-basis/tax policy is approved yet.  All three values
+  # must be configured together before a rebalance draft can be actionable.
+  rebalance_economics:
+    policy_id: ""
+    fee_bps: null
+    capital_gain_tax_rate: null
   packages:
     simple: [3, 5]
     balanced: [5, 8]

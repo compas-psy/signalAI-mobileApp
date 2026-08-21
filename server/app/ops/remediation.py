@@ -48,6 +48,8 @@ def record_resource_remediation(
     ollama: OllamaShedResult,
     retention: RetentionResult,
     now: datetime,
+    force_audit: bool = False,
+    retention_attempt_id: uuid.UUID | None = None,
 ) -> ResourceRemediationRecord:
     """Persist one meaningful resource state transition/remediation outcome.
 
@@ -64,6 +66,10 @@ def record_resource_remediation(
 
     if now.tzinfo is None or now.utcoffset() is None:
         raise ValueError("now must be timezone-aware")
+    if not isinstance(force_audit, bool):
+        raise ValueError("force_audit must be bool")
+    if retention_attempt_id is not None and not isinstance(retention_attempt_id, uuid.UUID):
+        raise ValueError("retention_attempt_id must be UUID or None")
 
     if plan.new_entries is EntryDisposition.HALT_NEW_ENTRIES:
         automatic_halt_new_entries(
@@ -76,15 +82,20 @@ def record_resource_remediation(
         plan=plan,
         ollama=ollama,
         retention=retention,
+        retention_attempt_id=retention_attempt_id,
     )
     fingerprint = _fingerprint(payload)
     payload["fingerprint"] = fingerprint
 
     latest = _latest_resource_audit(session)
-    if latest is None and assessment.state is PressureState.NORMAL:
+    if latest is None and assessment.state is PressureState.NORMAL and not force_audit:
         return ResourceRemediationRecord(recorded=False, fingerprint=fingerprint)
 
-    if latest is not None and latest.after_json.get("fingerprint") == fingerprint:
+    if (
+        not force_audit
+        and latest is not None
+        and latest.after_json.get("fingerprint") == fingerprint
+    ):
         return ResourceRemediationRecord(
             recorded=False,
             fingerprint=fingerprint,
@@ -99,7 +110,11 @@ def record_resource_remediation(
         detail=_detail(assessment, ollama, retention),
         before_json=dict(latest.after_json) if latest is not None else {},
         after_json=payload,
-        trace_id=f"resource-{fingerprint[:16]}",
+        trace_id=(
+            f"retention-{retention_attempt_id}"
+            if retention_attempt_id is not None
+            else f"resource-{fingerprint[:16]}"
+        ),
     )
     session.add(audit)
     session.flush()
@@ -142,8 +157,9 @@ def _payload(
     plan: BackpressurePlan,
     ollama: OllamaShedResult,
     retention: RetentionResult,
+    retention_attempt_id: uuid.UUID | None,
 ) -> dict:
-    return {
+    payload = {
         "pressure_state": assessment.state.value,
         "pressure_score": assessment.score,
         "pressure_reasons": list(assessment.reasons),
@@ -173,6 +189,9 @@ def _payload(
             "errors": list(retention.errors),
         },
     }
+    if retention_attempt_id is not None:
+        payload["retention_attempt_id"] = str(retention_attempt_id)
+    return payload
 
 
 def _fingerprint(payload: dict) -> str:

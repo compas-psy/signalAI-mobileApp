@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import '../core/app_mode.dart';
 import '../data/api/api_client.dart';
 import '../data/api/api_config.dart';
+import '../data/api/device_enrollment.dart';
 import '../data/api/engine_contract.dart';
 import '../data/api/engine_client.dart';
 import '../data/api/engine_runtime.dart';
@@ -640,35 +641,93 @@ class AppController extends ChangeNotifier {
   /// Пустая строка возвращает приложение к адресу из сборки. Сразу после
   /// записи идеи перечитываются: смена адреса без перезагрузки ленты
   /// выглядела бы как «не сработало».
-  Future<void> setEngineBaseUrl(String url, {String? token}) async {
+  Future<void> setEngineBaseUrl(
+    String url, {
+    String? token,
+    String? pairingSessionId,
+  }) async {
     final value = url.trim();
-    ApiConfig.setBaseUrl(value);
-    // В JSON остаётся только несекретный адрес. Токен кладётся в Keystore;
-    // пустое значение — явное удаление привязки.
-    await _prefs.write('engine', {'base_url': value});
+    final previousUrl = ApiConfig.baseUrl;
     if (token != null) {
-      final available = await _bridge.vaultAvailable();
       final entered = token.trim();
-      if (!available) {
-        ApiConfig.setDeviceToken('');
-        _engineAuthIssue =
-            'Устройство не привязано: Android Keystore недоступен.';
-        showToast(_engineAuthIssue!, tone: ToastTone.failure);
-      } else if (entered.isEmpty) {
-        await _bridge.deleteEngineDeviceToken();
+      if (entered.isEmpty) {
+        // A self-forget remains fail-closed: retain the Keystore bearer and
+        // the local enrollment document unless the old server positively
+        // confirms revocation (including its explicit idempotent response).
+        try {
+          if (ApiConfig.deviceToken.isNotEmpty) {
+            await forgetEngineDevice(
+              _prefs,
+              _bridge,
+              baseUrl: previousUrl,
+            );
+          } else {
+            await _prefs.writeDurably('engine', {'base_url': value});
+          }
+          ApiConfig.setBaseUrl(value);
+          ApiConfig.setDeviceToken('');
+        } on DeviceEnrollmentException catch (error) {
+          _engineAuthIssue = error.message;
+          showToast(_engineAuthIssue!, tone: ToastTone.failure);
+          notifyListeners();
+          return;
+        }
         ApiConfig.setDeviceToken('');
         _engineAuthIssue = value.isEmpty
             ? null
             : 'Устройство не привязано: задайте токен в «Подключениях».';
-      } else if (await _bridge.putEngineDeviceToken(entered)) {
-        ApiConfig.setDeviceToken(entered);
-        _engineAuthIssue = null;
       } else {
+        // Bootstrap and pairing session are never copied into ApiConfig or
+        // the vault.  Replacing a configured server first revokes the old
+        // bearer at its original scope, preventing a credential scope rebind.
+        if (ApiConfig.deviceToken.isNotEmpty) {
+          try {
+            await forgetEngineDevice(
+              _prefs,
+              _bridge,
+              baseUrl: previousUrl,
+            );
+            ApiConfig.setDeviceToken('');
+          } on DeviceEnrollmentException catch (error) {
+            _engineAuthIssue = error.message;
+            showToast(_engineAuthIssue!, tone: ToastTone.failure);
+            notifyListeners();
+            return;
+          }
+        }
+        ApiConfig.setBaseUrl(value);
         ApiConfig.setDeviceToken('');
-        _engineAuthIssue =
-            'Устройство не привязано: токен не сохранён в Keystore.';
-        showToast(_engineAuthIssue!, tone: ToastTone.failure);
+        try {
+          final issued = await pairAndStoreEngineDevice(
+            _prefs,
+            _bridge,
+            baseUrl: ApiConfig.baseUrl,
+            bootstrapToken: entered,
+            pairingSessionId: pairingSessionId?.trim() ?? '',
+          );
+          ApiConfig.setDeviceToken(issued.deviceToken);
+          _engineAuthIssue = null;
+        } on DeviceEnrollmentException catch (error) {
+          _engineAuthIssue = error.message;
+          showToast(_engineAuthIssue!, tone: ToastTone.failure);
+        }
       }
+    } else {
+      if (ApiConfig.deviceToken.isNotEmpty) {
+        _engineAuthIssue =
+            'Сначала отзовите привязку устройства: адрес нельзя сменить с действующим токеном.';
+        showToast(_engineAuthIssue!, tone: ToastTone.failure);
+        notifyListeners();
+        return;
+      }
+      ApiConfig.setBaseUrl(value);
+      final saved = await _prefs.read('engine') ?? <String, dynamic>{};
+      await _prefs.writeDurably('engine', {
+        'base_url': value,
+        if (saved['device_enrollment_v1'] == true)
+          'device_enrollment_v1': true,
+        if (saved['device_id'] is String) 'device_id': saved['device_id'],
+      });
     }
     _engineProbe = null;
     // Ответ прежнего адреса выбрасывается целиком, включая «адреса нет».
@@ -678,6 +737,26 @@ class AppController extends ChangeNotifier {
     notifyListeners();
     await refreshIdeas();
     await loadPortfolio(force: true);
+  }
+
+  /// Rotate the current active-device bearer and replace the single Keystore
+  /// entry only after the server returns a distinct successor generation.
+  Future<void> rotateEngineDeviceToken() async {
+    try {
+      final issued = await rotateAndStoreEngineDevice(
+        _prefs,
+        _bridge,
+        baseUrl: ApiConfig.baseUrl,
+      );
+      ApiConfig.setDeviceToken(issued.deviceToken);
+      _engineAuthIssue = null;
+      _engineProbe = null;
+      notifyListeners();
+    } on DeviceEnrollmentException catch (error) {
+      _engineAuthIssue = error.message;
+      showToast(_engineAuthIssue!, tone: ToastTone.failure);
+      notifyListeners();
+    }
   }
 
   /// Проверить связь с движком и показать, что он ответил.

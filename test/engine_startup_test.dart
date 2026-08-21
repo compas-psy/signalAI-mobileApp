@@ -21,7 +21,7 @@ void main() {
     ApiConfig.setDeviceToken('');
   });
 
-  test('пакеты спрашиваются уже с сохранённым адресом', () async {
+  test('legacy credential не открывает API и адрес всё равно восстанавливается', () async {
     final controller = AppController(
       DemoRepository(),
       bridge: _VaultBridge(),
@@ -37,11 +37,11 @@ void main() {
     // Адрес применён к моменту запроса — значит запрос ушёл по нему, а не
     // в пустоту.
     expect(ApiConfig.baseUrl, 'https://engine.example.ru');
-    expect(ApiConfig.deviceToken, 'abc');
+    expect(ApiConfig.deviceToken, isEmpty);
     expect(
       (controller.engineAuthIssue),
-      isNull,
-      reason: 'legacy token должен мигрировать в Keystore',
+      contains('привязку заново'),
+      reason: 'bootstrap secret нельзя мигрировать как business bearer',
     );
     final state = controller.portfolio!;
     expect(state.isAvailable, isFalse, reason: 'сети в тесте нет');

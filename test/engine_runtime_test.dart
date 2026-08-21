@@ -22,6 +22,12 @@ class _Vault extends NativeBridge {
 
   @override
   Future<String?> engineDeviceToken() async => available ? token : null;
+
+  @override
+  Future<bool> deleteEngineDeviceToken() async {
+    token = null;
+    return true;
+  }
 }
 
 void main() {
@@ -30,7 +36,7 @@ void main() {
     ApiConfig.setDeviceToken('');
   });
 
-  test('legacy plaintext мигрирует в Keystore и исчезает из JSON', () async {
+  test('legacy bootstrap secret удаляется и требует безопасную перепривязку', () async {
     final store = LocalStore.inMemory();
     final vault = _Vault();
     await store.write('engine', {
@@ -40,9 +46,10 @@ void main() {
 
     final credentials = await restoreEngineRuntime(store, vault);
 
-    expect(credentials.ready, isTrue);
-    expect(credentials.deviceToken, 'legacy-secret');
-    expect(vault.token, 'legacy-secret');
+    expect(credentials.ready, isFalse);
+    expect(credentials.deviceToken, isEmpty);
+    expect(vault.token, isNull);
+    expect(credentials.issue, contains('привязку заново'));
     expect(await store.read('engine'), {
       'base_url': 'https://engine.example.ru',
     });
@@ -54,6 +61,7 @@ void main() {
     final vault = _Vault()..token = 'runtime-secret';
     await store.write('engine', {
       'base_url': 'https://engine.example.ru',
+      'device_enrollment_v1': true,
     });
 
     final credentials = await restoreEngineRuntime(store, vault);
@@ -63,7 +71,7 @@ void main() {
     expect(ApiConfig.deviceToken, 'runtime-secret');
   });
 
-  test('без Keystore auth fail closed и plaintext не остаётся', () async {
+  test('без Keystore auth fail closed и legacy secret не остаётся', () async {
     final store = LocalStore.inMemory();
     await store.write('engine', {
       'base_url': 'https://engine.example.ru',

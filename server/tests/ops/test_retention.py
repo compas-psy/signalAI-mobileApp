@@ -131,6 +131,102 @@ def test_symlink_root_and_symlink_files_are_never_followed(tmp_path):
     assert linked_file.is_symlink()
 
 
+def test_parent_symlink_swap_cannot_redirect_unlink_outside_marked_root(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "cache"
+    _mark(root)
+    nested = root / "nested"
+    inside = nested / "old.log"
+    _write_at(inside, age=timedelta(days=10), size=11)
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    outside_file = outside / "old.log"
+    _write_at(outside_file, age=timedelta(days=30), size=11)
+    moved = root / "nested-held"
+    swapped = False
+
+    def swap_parent() -> None:
+        nonlocal swapped
+        if swapped:
+            return
+        nested.rename(moved)
+        nested.symlink_to(outside, target_is_directory=True)
+        swapped = True
+
+    original_lstat = Path.lstat
+    lstat_calls = 0
+
+    def lstat_after_scan_and_validation(path: Path):
+        nonlocal lstat_calls
+        info = original_lstat(path)
+        if path == inside:
+            lstat_calls += 1
+            if lstat_calls == 3:
+                # The vulnerable sink reaches Path.unlink immediately after
+                # this final lstat. The dirfd sink instead uses os.stat below.
+                swap_parent()
+        return info
+
+    original_stat = os.stat
+
+    def stat_before_dirfd_unlink(path, *args, **kwargs):
+        info = original_stat(path, *args, **kwargs)
+        if path == "old.log" and kwargs.get("dir_fd") is not None:
+            swap_parent()
+        return info
+
+    monkeypatch.setattr(Path, "lstat", lstat_after_scan_and_validation)
+    monkeypatch.setattr(os, "stat", stat_before_dirfd_unlink)
+
+    result = run_safe_retention(
+        assessment=_assessment("disk_headroom_pressure"),
+        targets=(RetentionTarget(root=root, min_age=timedelta(days=7)),),
+        now=NOW,
+    )
+
+    assert swapped is True
+    assert result.status is RetentionStatus.CLEANED
+    assert outside_file.exists()
+    assert not (moved / "old.log").exists()
+    assert nested.is_symlink()
+
+
+def test_candidate_type_swap_after_dirfd_lstat_fails_closed(tmp_path, monkeypatch):
+    root = tmp_path / "cache"
+    _mark(root)
+    victim = root / "old.log"
+    _write_at(victim, age=timedelta(days=10), size=11)
+    outside = tmp_path / "outside.log"
+    _write_at(outside, age=timedelta(days=30), size=11)
+    swapped = False
+    original_stat = os.stat
+
+    def stat_before_dirfd_open(path, *args, **kwargs):
+        nonlocal swapped
+        info = original_stat(path, *args, **kwargs)
+        if path == "old.log" and kwargs.get("dir_fd") is not None and not swapped:
+            victim.unlink()
+            victim.symlink_to(outside)
+            swapped = True
+        return info
+
+    monkeypatch.setattr(os, "stat", stat_before_dirfd_open)
+
+    result = run_safe_retention(
+        assessment=_assessment("disk_headroom_pressure"),
+        targets=(RetentionTarget(root=root, min_age=timedelta(days=7)),),
+        now=NOW,
+    )
+
+    assert swapped is True
+    assert result.status is RetentionStatus.FAILED
+    assert victim.is_symlink()
+    assert outside.exists()
+    assert result.deleted_files == 0
+
+
 def test_delete_budgets_are_hard_caps_and_oldest_files_go_first(tmp_path):
     root = tmp_path / "cache"
     _mark(root)

@@ -8,7 +8,8 @@ real evidence.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, replace
+from datetime import datetime
 
 from sqlalchemy.orm import Session
 
@@ -19,6 +20,11 @@ from .mode import (
     ModeChangeAuthorization,
     change_execution_mode,
     get_execution_mode,
+)
+from .promotion_evidence import (
+    PromotionEvidenceScope,
+    current_persisted_promotion_evidence,
+    record_promotion_evidence_decision,
 )
 
 
@@ -33,6 +39,7 @@ class PromotionEvidence:
     performance_gates_passed: bool = False
     ops_gates_passed: bool = False
     notes: tuple[str, ...] = ()
+    snapshot_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -43,6 +50,8 @@ class PromotionDecision:
     blockers: tuple[str, ...]
     evidence_notes: tuple[str, ...]
     authorization: ModeChangeAuthorization | None
+    correlation_id: str | None = None
+    evidence_snapshot_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -99,6 +108,7 @@ def evaluate_promotion(
             blockers=(),
             evidence_notes=evidence.notes,
             authorization=None,
+            evidence_snapshot_ids=evidence.snapshot_ids,
         )
 
     current_rank = _RISK_RANK[current]
@@ -117,6 +127,7 @@ def evaluate_promotion(
                 reason="lower-risk mode transition is automatically permitted",
                 direction="lower-risk",
             ),
+            evidence_snapshot_ids=evidence.snapshot_ids,
         )
 
     if target_rank != current_rank + 1:
@@ -127,6 +138,7 @@ def evaluate_promotion(
             blockers=("stepwise promotion required",),
             evidence_notes=evidence.notes,
             authorization=None,
+            evidence_snapshot_ids=evidence.snapshot_ids,
         )
 
     blockers: list[str] = []
@@ -139,6 +151,8 @@ def evaluate_promotion(
         if not evidence.owner_confirmed:
             blockers.append("explicit owner confirmation missing")
     elif current == ExecutionLifecycleMode.CANARY and target == ExecutionLifecycleMode.LIVE:
+        if not evidence.adr_gates_passed:
+            blockers.append("ADR gates not verified")
         if not evidence.owner_confirmed:
             blockers.append("explicit owner confirmation missing")
         if not evidence.performance_gates_passed:
@@ -154,6 +168,7 @@ def evaluate_promotion(
             blockers=tuple(blockers),
             evidence_notes=evidence.notes,
             authorization=None,
+            evidence_snapshot_ids=evidence.snapshot_ids,
         )
 
     return PromotionDecision(
@@ -168,6 +183,7 @@ def evaluate_promotion(
             reason=f"{POLICY_VERSION} promotion evidence verified",
             direction="promotion",
         ),
+        evidence_snapshot_ids=evidence.snapshot_ids,
     )
 
 
@@ -176,22 +192,25 @@ def current_server_promotion_evidence(
     *,
     current: ExecutionLifecycleMode,
     target: ExecutionLifecycleMode,
+    scope: PromotionEvidenceScope | None = None,
+    now: datetime | None = None,
 ) -> PromotionEvidence:
     """Build only evidence the server can prove today.
 
-    Later slices own the real providers for these gates. In SAI-031/032 there
-    is still no VenueAdapter capability proof (SAI-036) and no approved live
-    performance/ops proof provider. The correct production answer is explicit
-    missing evidence, not a guessed green state.
+    The B5 provider reads only append-only server snapshots.  Generic callers
+    without an authoritative strategy/policy scope remain blocked instead of
+    turning a client-selected value into promotion authority.
     """
 
-    del db, current, target
+    del current
+    if scope is not None:
+        return current_persisted_promotion_evidence(
+            db, scope=scope, target=target, now=now
+        )
     return PromotionEvidence(
         notes=(
+            "promotion evidence scope is required",
             "venue sandbox capability not verified",
-            "owner activation proof not provided",
-            "performance promotion evidence not wired",
-            "ops promotion evidence not wired",
         )
     )
 
@@ -200,14 +219,35 @@ def preview_promotion(
     db: Session,
     *,
     target: ExecutionLifecycleMode,
+    scope: PromotionEvidenceScope | None = None,
+    now: datetime | None = None,
 ) -> PromotionDecision:
     current = get_execution_mode(db).mode
     evidence = current_server_promotion_evidence(
         db,
         current=current,
         target=target,
+        scope=scope,
+        now=now,
     )
-    return evaluate_promotion(current=current, target=target, evidence=evidence)
+    decision = evaluate_promotion(current=current, target=target, evidence=evidence)
+    decision = replace(decision, evidence_snapshot_ids=evidence.snapshot_ids)
+    correlation_id = record_promotion_evidence_decision(
+        db, decision=decision, scope=scope
+    )
+    authorization = decision.authorization
+    if authorization is not None:
+        authorization = replace(
+            authorization,
+            detail_json={
+                **authorization.detail_json,
+                "promotion_evidence_correlation_id": correlation_id,
+                "promotion_evidence_snapshot_ids": list(evidence.snapshot_ids),
+            },
+        )
+    return replace(
+        decision, correlation_id=correlation_id, authorization=authorization
+    )
 
 
 def change_mode_with_guard(
@@ -216,16 +256,16 @@ def change_mode_with_guard(
     target: ExecutionLifecycleMode,
     actor: str,
     reason: str,
+    scope: PromotionEvidenceScope | None = None,
 ) -> ExecutionModeSnapshot:
     """Apply safe generic transitions; LIVE is reserved for SAI-032 flow."""
 
     target = ExecutionLifecycleMode(target)
+    decision = preview_promotion(db, target=target, scope=scope)
     if target == ExecutionLifecycleMode.LIVE:
         raise ExecutionModeChangeRejected(
             "LIVE requires the two-step owner activation flow"
         )
-
-    decision = preview_promotion(db, target=target)
     if not decision.allowed:
         raise ExecutionModeChangeRejected("; ".join(decision.blockers))
 

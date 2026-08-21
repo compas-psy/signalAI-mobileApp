@@ -509,7 +509,7 @@ class _EventRiskCard extends StatelessWidget {
                   Text(risk.title, style: T.body(12, weight: 700)),
                   const SizedBox(height: 3),
                   Text(
-                    '${_when(risk.until(now))} · ${risk.policy}',
+                    '${risk.until(now) == null ? 'время не предоставлено источником' : _when(risk.until(now)!)} · ${risk.policy}',
                     style: T.body(11, color: C.muted, height: 1.4),
                   ),
                 ],
