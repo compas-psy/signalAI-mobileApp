@@ -101,13 +101,9 @@ jobs:
               await github.rest.actions.createWorkflowDispatch({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                workflow_id: 'deploy-server.yml',
+                workflow_id: 'runtime-logs.yml',
                 ref: defaultBranch,
-                inputs: {
-                  source_ref: sourceSha,
-                  admin_ip: '127.0.0.1',
-                  action: 'logs',
-                },
+                inputs: { source_ref: sourceSha },
               });
 
               for (let attempt = 0; attempt < 6 && !runtimeLogsRun; attempt += 1) {
@@ -115,7 +111,7 @@ jobs:
                 const response = await github.rest.actions.listWorkflowRuns({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
-                  workflow_id: 'deploy-server.yml',
+                  workflow_id: 'runtime-logs.yml',
                   event: 'workflow_dispatch',
                   branch: defaultBranch,
                   per_page: 10,
