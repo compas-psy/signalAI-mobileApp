@@ -9,7 +9,6 @@ explicit replay-safe nonce, and it exposes no LIVE/mainnet factory.
 from __future__ import annotations
 
 import asyncio
-import concurrent.futures
 import threading
 import weakref
 from collections.abc import Awaitable, Callable
