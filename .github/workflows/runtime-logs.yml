@@ -1,0 +1,88 @@
+name: Runtime logs snapshot
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: 'Exact default-branch commit used for diagnostic provenance'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    name: Read production runtime state
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+          fetch-depth: 1
+
+      - name: Verify diagnostic provenance
+        env:
+          EXPECTED_SHA: ${{ inputs.source_ref }}
+        run: |
+          set -euo pipefail
+          actual_sha="$(git rev-parse --verify HEAD^{commit})"
+          [ "$actual_sha" = "$EXPECTED_SHA" ] || {
+            echo "::error::requested $EXPECTED_SHA, checked out $actual_sha"
+            exit 1
+          }
+
+      - name: Verify SSH inputs
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
+          HOST_KEY_SHA256: ${{ secrets.VPS_SSH_HOST_KEY_SHA256 || 'SHA256:cUfeWKyHoFIhKsV17Bpk076calxUaxd90XhuETb4vng' }}
+        run: |
+          set -eu
+          test -n "$HOST"
+          test -n "$KEY"
+          test -n "$HOST_KEY_SHA256"
+
+      - name: Prepare pinned SSH
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
+          HOST_KEY_SHA256: ${{ secrets.VPS_SSH_HOST_KEY_SHA256 || 'SHA256:cUfeWKyHoFIhKsV17Bpk076calxUaxd90XhuETb4vng' }}
+        run: |
+          set -eu
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          bash .github/scripts/prepare_known_host.sh "$HOST" "$HOST_KEY_SHA256"
+
+      - name: Runtime snapshot
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          USER_NAME: ${{ secrets.VPS_USER || 'root' }}
+        run: |
+          ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$USER_NAME@$HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          SUDO=""; [ "$(id -u)" -eq 0 ] || SUDO=sudo
+          COMPOSE="$SUDO docker compose --env-file /etc/signalai/.env -f $HOME/signalai/server/docker-compose.yml"
+
+          echo "──────── containers ────────"
+          $COMPOSE ps -a
+
+          echo
+          echo "──────── api logs (30h) ────────"
+          $COMPOSE logs --since 30h --tail 250 api
+
+          echo
+          echo "──────── scheduler logs (30h) ────────"
+          $COMPOSE logs --since 30h --tail 600 scheduler
+
+          echo
+          echo "──────── market status ────────"
+          curl -fsS --max-time 20 http://127.0.0.1:8000/api/v1/market/status || echo "market status unavailable"
+          echo
+          REMOTE
+
+      - name: Remove SSH key
+        if: always()
+        run: |
+          shred -u ~/.ssh/id_deploy 2>/dev/null || rm -f ~/.ssh/id_deploy
