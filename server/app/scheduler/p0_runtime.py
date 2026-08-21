@@ -17,6 +17,7 @@ from datetime import timedelta
 from ..capital.runtime import refresh as refresh_capital
 from ..pipeline import scan as scan_module
 from . import runner
+from .lanes import apply_scheduler_lane, parse_scheduler_lane
 from .market_watermark import changed_lanes, snapshot
 
 _ORIGINAL_BUILD = runner.build_default_scheduler
@@ -136,6 +137,7 @@ def _add_paper_ab_job(scheduler, *, every: timedelta, paper_ab_runner=None) -> N
     if paper_ab_runner is not None:
         run = paper_ab_runner
     else:
+
         def run(session) -> str:
             from ..experiments.paper_ab_runtime_v1 import run_paper_ab_cycle
 
@@ -188,6 +190,10 @@ def build_default_scheduler(*args, **kwargs):
         paper_ab_runner=paper_ab_runner,
     )
     _add_capital_job(scheduler)
+    apply_scheduler_lane(
+        scheduler,
+        parse_scheduler_lane(os.environ.get("SIGNALAI_SCHEDULER_LANE")),
+    )
     return scheduler
 
 
