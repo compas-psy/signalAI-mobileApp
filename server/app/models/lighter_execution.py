@@ -165,7 +165,7 @@ class LighterReconciliationEvidence(UuidPk, Base):
         CheckConstraint("reserved_nonce >= 0", name="reserved_nonce_non_negative"),
         CheckConstraint(
             "provider_next_nonce >= reserved_nonce",
-            name="provider_nonce_not_behind_reserved",
+            name="provider_nonce_floor",
         ),
         CheckConstraint(
             "char_length(evidence_key) = 64",
