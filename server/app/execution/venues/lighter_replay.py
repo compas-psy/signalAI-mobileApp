@@ -14,7 +14,10 @@ from datetime import datetime
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
-from ...models.lighter_execution import LighterNonceReservation, LighterOrderIdentity
+from ...models.lighter_execution import (
+    LighterNonceReservation as NonceReservation,
+    LighterOrderIdentity as OrderIdentity,
+)
 
 _INT64_MAX = (1 << 63) - 1
 
@@ -66,16 +69,14 @@ def resolve_lighter_order_identity(
     *,
     account_index: int,
     client_order_id: str,
-) -> LighterOrderIdentity:
+) -> OrderIdentity:
     account_index = _validate_non_negative_int64("account_index", account_index)
     if not isinstance(client_order_id, str) or not client_order_id or len(client_order_id) > 96:
         raise LighterReplayError("client_order_id must be a non-empty string up to 96 chars")
 
     _lock(db, "lighter-client-order-id", client_order_id)
     existing = db.execute(
-        select(LighterOrderIdentity).where(
-            LighterOrderIdentity.client_order_id == client_order_id
-        )
+        select(OrderIdentity).where(OrderIdentity.client_order_id == client_order_id)
     ).scalar_one_or_none()
     if existing is not None:
         if existing.account_index != account_index:
@@ -91,9 +92,9 @@ def resolve_lighter_order_identity(
         f"{account_index}:{client_order_index}",
     )
     collision = db.execute(
-        select(LighterOrderIdentity).where(
-            LighterOrderIdentity.account_index == account_index,
-            LighterOrderIdentity.client_order_index == client_order_index,
+        select(OrderIdentity).where(
+            OrderIdentity.account_index == account_index,
+            OrderIdentity.client_order_index == client_order_index,
         )
     ).scalar_one_or_none()
     if collision is not None:
@@ -101,7 +102,7 @@ def resolve_lighter_order_identity(
             "Lighter client_order_index collision with another SignalAI order"
         )
 
-    identity = LighterOrderIdentity(
+    identity = OrderIdentity(
         account_index=account_index,
         client_order_id=client_order_id,
         client_order_index=client_order_index,
@@ -139,7 +140,7 @@ def reserve_lighter_nonce(
     api_key_index: int,
     replay_key: str,
     provider_next_nonce: int,
-) -> LighterNonceReservation:
+) -> NonceReservation:
     account_index, api_key_index, replay_key, parsed_provider_nonce = _validate_nonce_scope(
         account_index=account_index,
         api_key_index=api_key_index,
@@ -153,9 +154,7 @@ def reserve_lighter_nonce(
     _lock(db, "lighter-nonce-scope", f"{account_index}:{api_key_index}")
 
     existing = db.execute(
-        select(LighterNonceReservation).where(
-            LighterNonceReservation.replay_key == replay_key
-        )
+        select(NonceReservation).where(NonceReservation.replay_key == replay_key)
     ).scalar_one_or_none()
     if existing is not None:
         if (
@@ -168,10 +167,10 @@ def reserve_lighter_nonce(
         return existing
 
     active = db.execute(
-        select(LighterNonceReservation).where(
-            LighterNonceReservation.account_index == account_index,
-            LighterNonceReservation.api_key_index == api_key_index,
-            LighterNonceReservation.state == "RESERVED",
+        select(NonceReservation).where(
+            NonceReservation.account_index == account_index,
+            NonceReservation.api_key_index == api_key_index,
+            NonceReservation.state == "RESERVED",
         )
     ).scalar_one_or_none()
     if active is not None:
@@ -180,10 +179,10 @@ def reserve_lighter_nonce(
         )
 
     highest_consumed = db.scalar(
-        select(func.max(LighterNonceReservation.nonce)).where(
-            LighterNonceReservation.account_index == account_index,
-            LighterNonceReservation.api_key_index == api_key_index,
-            LighterNonceReservation.state == "CONSUMED",
+        select(func.max(NonceReservation.nonce)).where(
+            NonceReservation.account_index == account_index,
+            NonceReservation.api_key_index == api_key_index,
+            NonceReservation.state == "CONSUMED",
         )
     )
     if highest_consumed is not None and parsed_provider_nonce <= int(highest_consumed):
@@ -191,7 +190,7 @@ def reserve_lighter_nonce(
             "provider_next_nonce did not advance beyond consumed local evidence"
         )
 
-    reservation = LighterNonceReservation(
+    reservation = NonceReservation(
         account_index=account_index,
         api_key_index=api_key_index,
         replay_key=replay_key,
@@ -209,7 +208,7 @@ def mark_lighter_nonce_consumed(
     *,
     replay_key: str,
     consumed_at: datetime,
-) -> LighterNonceReservation:
+) -> NonceReservation:
     if not isinstance(replay_key, str) or not replay_key or len(replay_key) > 192:
         raise LighterReplayError("replay_key must be a non-empty string up to 192 chars")
     if consumed_at.tzinfo is None or consumed_at.utcoffset() is None:
@@ -217,9 +216,7 @@ def mark_lighter_nonce_consumed(
 
     _lock(db, "lighter-replay-key", replay_key)
     reservation = db.execute(
-        select(LighterNonceReservation).where(
-            LighterNonceReservation.replay_key == replay_key
-        )
+        select(NonceReservation).where(NonceReservation.replay_key == replay_key)
     ).scalar_one_or_none()
     if reservation is None:
         raise LighterReplayError("unknown Lighter replay_key")
