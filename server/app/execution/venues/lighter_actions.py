@@ -1,10 +1,10 @@
-"""Replay-safe Lighter create/cancel/reduce-only order actions for SAI-070.
+"""Replay-safe Lighter order actions and position protection for SAI-070/072.
 
 This is deliberately a narrow provider-action boundary.  It converts validated
 Decimal order facts to Lighter's integer wire representation and coordinates
 SAI-069's durable order identity/nonce state around an injected transport.
-Private streams, protection, reconciliation and execution-mode activation are
-owned by later slices.
+Private streams are normalized separately; reconciliation and execution-mode
+activation are owned by later slices.
 """
 
 from __future__ import annotations
@@ -32,10 +32,11 @@ from .lighter_replay import (
     resolve_lighter_order_identity,
 )
 
-# Verified against Lighter SignerClient constants.  Keeping them local avoids a
+# Verified against Lighter SignerClient constants. Keeping them local avoids a
 # runtime SDK dependency while preserving the provider wire contract.
 _ORDER_TYPE_LIMIT = 0
 _ORDER_TYPE_MARKET = 1
+_ORDER_TYPE_STOP_LOSS_LIMIT = 3
 _TIF_IOC = 0
 _TIF_GTT = 1
 _TIF_POST_ONLY = 2
@@ -373,7 +374,7 @@ class LighterOrderActions:
                 nonce = reservation.nonce
 
             # Identity, immutable request binding and nonce ownership must be
-            # durable before create/cancel provider I/O begins.
+            # durable before provider I/O begins.
             db.commit()
             return identity, nonce
 
@@ -541,6 +542,95 @@ class LighterOrderActions:
             reduce_only=True,
             trigger_price=_NIL_TRIGGER_PRICE,
             order_expiry=_DEFAULT_IOC_EXPIRY,
+            skip_nonce=_SKIP_NONCE_ON,
+            nonce=nonce,
+            api_key_index=self._api_key_index,
+        )
+        return self._accept_or_raise(action_key=action_key, ack=ack)
+
+    def arm_position_stop(
+        self,
+        *,
+        market: LighterMarketFact,
+        client_order_id: str,
+        position_side: str,
+        trigger_price: Decimal,
+        worst_price: Decimal,
+    ) -> LighterActionAck:
+        """Arm one position-tied, reduce-only STOP_LOSS_LIMIT order.
+
+        Lighter's position-tied representation deliberately uses base_amount=0:
+        the provider then keeps the stop attached to the whole current position
+        as its size changes.  The limit price is an explicit adverse-slippage
+        ceiling/floor, not an independent entry price.
+        """
+
+        _validate_market(market)
+        if position_side not in {"LONG", "SHORT"}:
+            raise LighterOrderActionError("position_side must be LONG or SHORT")
+
+        parsed_trigger = _positive_decimal("trigger_price", trigger_price)
+        parsed_worst = _positive_decimal("worst_price", worst_price)
+        if position_side == "LONG":
+            if parsed_worst > parsed_trigger:
+                raise LighterOrderActionError(
+                    "LONG protection worst_price must be <= trigger_price"
+                )
+            is_ask = True
+        else:
+            if parsed_worst < parsed_trigger:
+                raise LighterOrderActionError(
+                    "SHORT protection worst_price must be >= trigger_price"
+                )
+            is_ask = False
+
+        wire_trigger = _scale_exact(
+            "trigger_price",
+            parsed_trigger,
+            decimals=market.price_decimals,
+            maximum=_UINT32_MAX,
+        )
+        wire_worst = _scale_exact(
+            "worst_price",
+            parsed_worst,
+            decimals=market.price_decimals,
+            maximum=_UINT32_MAX,
+        )
+
+        action_key = f"PROTECT:{client_order_id}"
+        request_payload = {
+            "action": "PROTECT",
+            "market_index": market.market_id,
+            "client_order_id": client_order_id,
+            "position_side": position_side,
+            "base_amount": 0,
+            "price": wire_worst,
+            "is_ask": is_ask,
+            "order_type": _ORDER_TYPE_STOP_LOSS_LIMIT,
+            "time_in_force": _TIF_GTT,
+            "reduce_only": True,
+            "trigger_price": wire_trigger,
+            "order_expiry": _DEFAULT_LIMIT_EXPIRY,
+        }
+        identity, nonce = self._prepare(
+            action_key=action_key,
+            action_type="PROTECT",
+            market_index=market.market_id,
+            client_order_id=client_order_id,
+            request_payload=request_payload,
+            require_existing_identity=False,
+        )
+        ack = self._transport.create_order(
+            market_index=market.market_id,
+            client_order_index=identity.client_order_index,
+            base_amount=0,
+            price=wire_worst,
+            is_ask=is_ask,
+            order_type=_ORDER_TYPE_STOP_LOSS_LIMIT,
+            time_in_force=_TIF_GTT,
+            reduce_only=True,
+            trigger_price=wire_trigger,
+            order_expiry=_DEFAULT_LIMIT_EXPIRY,
             skip_nonce=_SKIP_NONCE_ON,
             nonce=nonce,
             api_key_index=self._api_key_index,
