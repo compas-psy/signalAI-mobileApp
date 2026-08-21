@@ -22,7 +22,7 @@ from ...models.lighter_execution import (
     LighterOrderActionBinding,
     LighterReconciliationEvidence,
 )
-from .lighter_replay import LighterReplayError, mark_lighter_nonce_consumed
+from .lighter_replay import mark_lighter_nonce_consumed, LighterReplayError
 
 _INT64_MAX = (1 << 63) - 1
 
