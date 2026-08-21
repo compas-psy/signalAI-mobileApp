@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -272,3 +273,41 @@ def test_sync_transport_can_bridge_sdk_coroutine_inside_running_event_loop() -> 
         return transport.next_nonce()
 
     assert asyncio.run(invoke_from_async_context()) == 909
+
+
+def test_sdk_client_and_async_calls_share_one_persistent_loop_thread() -> None:
+    from app.execution.venues.lighter_sdk_transport import (
+        build_lighter_testnet_transport,
+    )
+
+    observed: dict[str, object] = {}
+
+    class LoopAwareTxApi:
+        async def next_nonce(self, account_index: int, api_key_index: int):
+            observed.setdefault("call_loops", []).append(id(asyncio.get_running_loop()))
+            observed.setdefault("call_threads", []).append(threading.get_ident())
+            return SimpleNamespace(code=200, message=None, nonce=321)
+
+    class LoopAwareClient(_FakeSignerClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.tx_api = LoopAwareTxApi()
+
+    client = LoopAwareClient()
+
+    def factory(**kwargs):
+        observed["factory_loop"] = id(asyncio.get_running_loop())
+        observed["factory_thread"] = threading.get_ident()
+        return client
+
+    transport = build_lighter_testnet_transport(
+        _credentials(), signer_client_factory=factory
+    )
+    assert transport.next_nonce() == 321
+    assert transport.next_nonce() == 321
+
+    assert observed["call_loops"] == [observed["factory_loop"], observed["factory_loop"]]
+    assert observed["call_threads"] == [
+        observed["factory_thread"],
+        observed["factory_thread"],
+    ]
