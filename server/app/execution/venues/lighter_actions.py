@@ -306,15 +306,8 @@ class LighterOrderActions:
     ) -> tuple[OrderIdentity, int]:
         request_hash = _canonical_hash(request_payload)
         with self._session_factory() as db:
-            # Same lock namespaces as SAI-069 keep binding, reservation and
-            # consumption decisions serialized across processes.
-            _lock(db, "lighter-replay-key", action_key)
-            _lock(
-                db,
-                "lighter-nonce-scope",
-                f"{self._account_index}:{self._api_key_index}",
-            )
-
+            # Keep one global advisory-lock order with the standalone SAI-069
+            # seam: order identity -> action replay key -> nonce scope.
             if require_existing_identity:
                 identity = _existing_identity(
                     db,
@@ -330,6 +323,13 @@ class LighterOrderActions:
                     )
                 except LighterReplayError as exc:
                     raise LighterOrderActionError(str(exc)) from exc
+
+            _lock(db, "lighter-replay-key", action_key)
+            _lock(
+                db,
+                "lighter-nonce-scope",
+                f"{self._account_index}:{self._api_key_index}",
+            )
 
             _bind_request(
                 db,
