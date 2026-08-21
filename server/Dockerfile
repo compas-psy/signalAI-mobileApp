@@ -18,6 +18,7 @@ RUN pip install --no-cache-dir --upgrade pip \
       "psycopg[binary]>=3.2,<4.0" "pydantic>=2.10,<3.0" \
       "pydantic-settings>=2.7,<3.0" "pyyaml>=6.0,<7.0" \
       "numpy>=2.0,<3.0" "python-dateutil>=2.9,<3.0" "redis>=5.2,<9.0" \
+      "lighter-sdk==1.1.2" \
       "pillow>=11.0,<12.0" "qrcode>=8.2,<9.0"
 
 COPY alembic.ini ./
