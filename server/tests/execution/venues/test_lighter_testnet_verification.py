@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 
 from sqlalchemy.orm import sessionmaker
@@ -115,6 +115,37 @@ class FakeTestnetTransport:
 
     def cancel_order(self, **kwargs) -> LighterActionAck:
         self.cancel_calls.append(dict(kwargs))
+        return LighterActionAck(code=200, tx_hash="0xcancel", message=None)
+
+
+class RejectedCreateTransport(FakeTestnetTransport):
+    private_marker = "secret-private-key-marker"
+
+    def create_order(self, **kwargs) -> LighterActionAck:
+        self.create_calls.append(dict(kwargs))
+        return LighterActionAck(
+            code=400,
+            tx_hash="",
+            message=f"provider rejected {self.private_marker}",
+        )
+
+
+class RejectedThenSuccessfulCancelTransport(FakeTestnetTransport):
+    private_marker = "secret-private-key-marker"
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.reject_first_cancel = True
+
+    def cancel_order(self, **kwargs) -> LighterActionAck:
+        self.cancel_calls.append(dict(kwargs))
+        if self.reject_first_cancel:
+            self.reject_first_cancel = False
+            return LighterActionAck(
+                code=400,
+                tx_hash="",
+                message=f"provider rejected {self.private_marker}",
+            )
         return LighterActionAck(code=200, tx_hash="0xcancel", message=None)
 
 
@@ -249,6 +280,63 @@ def test_ready_admission_is_redacted_and_never_promotes_live() -> None:
     assert transport.next_nonce_calls == 1
 
 
+def test_missing_or_wrong_type_credentials_block_with_unknown_redacted_scope() -> None:
+    from app.execution.venues.lighter_testnet_verification import (
+        LighterTestnetAdmissionStatus,
+        verify_lighter_testnet_admission,
+    )
+
+    for credentials in (None, object()):
+        transport = FakeTestnetTransport()
+        result = verify_lighter_testnet_admission(
+            credentials=credentials,
+            shadow_result=_shadow(eligible=True),
+            transport=transport,
+            observed_at=datetime(2026, 8, 21, 19, 0, tzinfo=UTC),
+        )
+
+        assert result.status is LighterTestnetAdmissionStatus.BLOCKED
+        assert result.reasons == ("TESTNET_TRADE_CREDENTIALS_REQUIRED",)
+        assert result.account_index is None
+        assert result.api_key_index is None
+        assert result.eligible_for_order_smoke is False
+        assert result.eligible_for_live is False
+        assert transport.check_calls == 0
+        assert transport.next_nonce_calls == 0
+
+
+def test_admission_records_utc_observation_and_blocks_invalid_time_before_provider_calls(
+) -> None:
+    from app.execution.venues.lighter_testnet_verification import (
+        LighterTestnetAdmissionStatus,
+        verify_lighter_testnet_admission,
+    )
+
+    transport = FakeTestnetTransport()
+    ready = verify_lighter_testnet_admission(
+        credentials=_credentials(),
+        shadow_result=_shadow(eligible=True),
+        transport=transport,
+        observed_at=datetime(2026, 8, 21, 22, 0, tzinfo=timezone(timedelta(hours=3))),
+    )
+    assert ready.status is LighterTestnetAdmissionStatus.READY
+    assert ready.observed_at == datetime(2026, 8, 21, 19, 0, tzinfo=UTC)
+
+    for observed_at in (datetime(2026, 8, 21, 19, 0), None):
+        invalid_transport = FakeTestnetTransport()
+        blocked = verify_lighter_testnet_admission(
+            credentials=_credentials(),
+            shadow_result=_shadow(eligible=True),
+            transport=invalid_transport,
+            observed_at=observed_at,
+        )
+        assert blocked.status is LighterTestnetAdmissionStatus.BLOCKED
+        assert blocked.reasons == ("OBSERVED_AT_INVALID",)
+        assert blocked.observed_at is None
+        assert invalid_transport.check_calls == 0
+        assert invalid_transport.next_nonce_calls == 0
+
+
 def test_post_only_create_cancel_smoke_reuses_replay_safe_actions(session) -> None:
     from app.execution.venues.lighter_testnet_verification import (
         LighterTestnetAdmissionStatus,
@@ -342,3 +430,101 @@ def test_smoke_refuses_blocked_or_foreign_transport_without_order_calls(session)
         raise AssertionError("foreign transport unexpectedly reused admission")
     assert foreign_transport.create_calls == []
     assert foreign_transport.cancel_calls == []
+
+
+def test_create_rejection_is_sanitized_as_typed_smoke_stage_error(session) -> None:
+    from app.execution.venues.lighter_testnet_verification import (
+        LighterTestnetSmokeError,
+        run_lighter_testnet_create_cancel_smoke,
+        verify_lighter_testnet_admission,
+    )
+
+    transport = RejectedCreateTransport(nonces=[100, 100])
+    admission = verify_lighter_testnet_admission(
+        credentials=_credentials(),
+        shadow_result=_shadow(eligible=True),
+        transport=transport,
+        observed_at=datetime(2026, 8, 21, 19, 0, tzinfo=UTC),
+    )
+
+    try:
+        run_lighter_testnet_create_cancel_smoke(
+            admission=admission,
+            session_factory=sessionmaker(bind=session.get_bind(), expire_on_commit=False),
+            transport=transport,
+            market=_market(),
+            client_order_id="secret-free-create-id",
+            quantity=Decimal("0.01"),
+            price=Decimal("4000.00"),
+            is_ask=False,
+        )
+    except LighterTestnetSmokeError as exc:
+        assert str(exc) == "Lighter testnet smoke action failed"
+        assert exc.stage == "CREATE"
+        assert exc.client_order_id == "secret-free-create-id"
+        assert exc.create_tx_hash is None
+        assert exc.__cause__ is None
+        assert exc.__context__ is None
+        assert transport.private_marker not in str(exc)
+        assert transport.private_marker not in repr(exc)
+    else:
+        raise AssertionError("create rejection unexpectedly reached smoke success")
+
+
+def test_cancel_failure_keeps_create_evidence_for_recovery_without_new_nonce(
+    session,
+) -> None:
+    from app.execution.venues.lighter_testnet_verification import (
+        LighterTestnetSmokeError,
+        run_lighter_testnet_cancel_recovery,
+        run_lighter_testnet_create_cancel_smoke,
+        verify_lighter_testnet_admission,
+    )
+
+    transport = RejectedThenSuccessfulCancelTransport(nonces=[100, 100, 101])
+    admission = verify_lighter_testnet_admission(
+        credentials=_credentials(),
+        shadow_result=_shadow(eligible=True),
+        transport=transport,
+        observed_at=datetime(2026, 8, 21, 19, 0, tzinfo=UTC),
+    )
+    session_factory = sessionmaker(bind=session.get_bind(), expire_on_commit=False)
+
+    try:
+        run_lighter_testnet_create_cancel_smoke(
+            admission=admission,
+            session_factory=session_factory,
+            transport=transport,
+            market=_market(),
+            client_order_id="sai075-recovery-1",
+            quantity=Decimal("0.01"),
+            price=Decimal("4000.00"),
+            is_ask=False,
+        )
+    except LighterTestnetSmokeError as exc:
+        assert str(exc) == "Lighter testnet smoke action failed"
+        assert exc.stage == "CANCEL"
+        assert exc.client_order_id == "sai075-recovery-1"
+        assert exc.create_tx_hash == "0xcreate"
+        assert exc.__cause__ is None
+        assert exc.__context__ is None
+        assert transport.private_marker not in str(exc)
+        assert transport.private_marker not in repr(exc)
+        recovery = run_lighter_testnet_cancel_recovery(
+            admission=admission,
+            session_factory=session_factory,
+            transport=transport,
+            market=_market(),
+            client_order_id=exc.client_order_id,
+            create_tx_hash=exc.create_tx_hash,
+        )
+    else:
+        raise AssertionError("cancel rejection unexpectedly reached smoke success")
+
+    assert recovery.client_order_id == "sai075-recovery-1"
+    assert recovery.create_tx_hash == "0xcreate"
+    assert recovery.cancel_tx_hash == "0xcancel"
+    assert recovery.eligible_for_live is False
+    assert len(transport.create_calls) == 1
+    assert len(transport.cancel_calls) == 2
+    assert transport.next_nonce_calls == 3
