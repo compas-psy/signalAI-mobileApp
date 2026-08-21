@@ -59,6 +59,7 @@ from .management import ExecutionManagementPolicySnapshot
 from .manual_control import ExecutionManualTradeControl
 from .notifications import NotificationOutbox
 from .paper import PaperTrade
+from .paper_ab import PaperAbDecision, PaperAbOutcome
 from .research import (
     CollectionPermit,
     HypothesisEvidence,
@@ -103,14 +104,16 @@ __all__ = [
     "RegimeSnapshot",
     "DataQualityEvent",
     "FxRate",
-    # ideas
+    # ideas / owner paper
     "PaperTrade",
     "TradeIdea",
     "IdeaEvent",
     "IdeaOutcome",
     "IdeaSkip",
-    # isolated Shadow measurement
+    # isolated candidate measurement
     "ShadowObservation",
+    "PaperAbDecision",
+    "PaperAbOutcome",
     # durable execution domain
     "ExecutionModeState",
     "ExecutionModeEvent",
