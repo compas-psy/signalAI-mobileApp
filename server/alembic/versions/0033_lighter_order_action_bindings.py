@@ -1,6 +1,6 @@
 """Persist immutable Lighter order action request bindings.
 
-revision = 0033_lighter_order_action_bindings
+revision = 0033_lighter_order_actions
 """
 
 from __future__ import annotations
@@ -9,7 +9,7 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision = "0033_lighter_order_action_bindings"
+revision = "0033_lighter_order_actions"
 down_revision = "0032_lighter_replay_identity"
 branch_labels = None
 depends_on = None
