@@ -25,7 +25,6 @@ from app.models import (
     TradeIdea,
 )
 from app.models.enums import AssetClass, Direction, Timeframe, Venue
-from app.pipeline.scan import _load_bars
 
 
 AT = datetime(2026, 8, 21, 4, 0, tzinfo=UTC)
@@ -242,7 +241,6 @@ def test_emitted_arms_stay_pending_until_horizon_then_resolve_net_of_costs(sessi
     assert len(outcomes) == 2
     # gross R = (104-100)/2 = 2.0; cost R = (100*10bps)/2 = 0.05.
     assert {row.net_r for row in outcomes} == {Decimal("1.95")}
-    # A repeated resolver pass is append-only/idempotent.
     again = resolve_paper_ab(session, as_of=maturity + timedelta(hours=1))
     session.flush()
     assert again.resolved == 0
@@ -363,17 +361,16 @@ def test_paper_ab_tables_have_no_owner_trade_or_execution_foreign_keys() -> None
     assert outcome_targets == {"paper_ab_decisions.id"}
 
 
-def test_load_bars_point_in_time_filter_excludes_future_closed_bar(session) -> None:
+def test_default_control_replay_fails_closed_if_newer_closed_bar_already_exists(session) -> None:
     _instrument(session)
-    _exit_bar(session, AT - timedelta(hours=1), "100")
+    _shadow(session, emitted=False)
     _exit_bar(session, AT + timedelta(hours=1), "999")
 
-    visible = _load_bars(
-        session,
-        "CRYPTO:PERP:BTCUSDT",
-        Timeframe.H1,
-        10,
-        as_of=AT,
-    )
+    seed_paper_ab(session, evaluated_at=AT)
+    session.flush()
 
-    assert [bar.close for bar in visible] == [Decimal("100")]
+    control = session.query(PaperAbDecision).filter_by(arm_role="CONTROL").one()
+    outcome = session.query(PaperAbOutcome).filter_by(decision_id=control.id).one()
+    assert outcome.evidence_status == PaperAbEvidenceStatus.INPUT_UNAVAILABLE.value
+    assert outcome.reason_code == "CONTROL_REPLAY_NOT_POINT_IN_TIME"
+    assert outcome.net_r is None
