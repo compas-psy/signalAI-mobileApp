@@ -1,9 +1,10 @@
-"""Durable Lighter-specific execution identities for SAI-069/070/072.
+"""Durable Lighter-specific execution identities and evidence for R5.
 
 These tables map SignalAI's provider-neutral order identity to Lighter's signed
 64-bit client-order index, serialize explicit nonce ownership across worker
-restarts, and bind each provider action identity to one immutable request hash.
-They do not send, sign or reconcile provider transactions.
+restarts, bind each provider action identity to one immutable request hash and
+persist append-only reconciliation facts.  They do not send or sign provider
+transactions and do not own the generic ExecutionIntent lifecycle.
 """
 
 from __future__ import annotations
@@ -26,15 +27,8 @@ class LighterOrderIdentity(UuidPk, Base):
 
     __table_args__ = (
         CheckConstraint("account_index >= 0", name="account_index_non_negative"),
-        CheckConstraint(
-            "client_order_index > 0",
-            name="client_order_index_positive",
-        ),
-        Index(
-            "uq_lighter_order_identities_client_order_id",
-            "client_order_id",
-            unique=True,
-        ),
+        CheckConstraint("client_order_index > 0", name="client_order_index_positive"),
+        Index("uq_lighter_order_identities_client_order_id", "client_order_id", unique=True),
         Index(
             "uq_lighter_order_identities_account_client_index",
             "account_index",
@@ -67,10 +61,7 @@ class LighterOrderActionBinding(UuidPk, Base):
             "api_key_index >= 0 AND api_key_index <= 253",
             name="api_key_index_range",
         ),
-        CheckConstraint(
-            "client_order_index > 0",
-            name="client_order_index_positive",
-        ),
+        CheckConstraint("client_order_index > 0", name="client_order_index_positive"),
         CheckConstraint("market_index >= 0", name="market_index_non_negative"),
         CheckConstraint(
             "char_length(request_hash) = 64",
@@ -110,10 +101,7 @@ class LighterNonceReservation(UuidPk, Base):
             name="api_key_index_range",
         ),
         CheckConstraint("nonce >= 0", name="nonce_non_negative"),
-        CheckConstraint(
-            "state IN ('RESERVED','CONSUMED')",
-            name="state_valid",
-        ),
+        CheckConstraint("state IN ('RESERVED','CONSUMED')", name="state_valid"),
         CheckConstraint(
             "(state = 'RESERVED' AND consumed_at IS NULL) OR "
             "(state = 'CONSUMED' AND consumed_at IS NOT NULL)",
@@ -147,8 +135,58 @@ class LighterNonceReservation(UuidPk, Base):
     )
 
 
+class LighterReconciliationEvidence(UuidPk, Base):
+    __tablename__ = "lighter_reconciliation_evidence"
+
+    evidence_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    action_key: Mapped[str] = mapped_column(String(192), nullable=False)
+    outcome: Mapped[str] = mapped_column(String(32), nullable=False)
+    account_index: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    api_key_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    reserved_nonce: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    provider_next_nonce: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    provider_order_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    provider_order_status: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    provider_tx_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    provider_tx_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = utcnow_column()
+
+    __table_args__ = (
+        CheckConstraint(
+            "outcome IN ('ORDER_FOUND','TX_FOUND','AMBIGUOUS','CONSUMED_UNKNOWN')",
+            name="outcome_valid",
+        ),
+        CheckConstraint("account_index >= 0", name="account_index_non_negative"),
+        CheckConstraint(
+            "api_key_index >= 0 AND api_key_index <= 253",
+            name="api_key_index_range",
+        ),
+        CheckConstraint("reserved_nonce >= 0", name="reserved_nonce_non_negative"),
+        CheckConstraint(
+            "provider_next_nonce >= reserved_nonce",
+            name="provider_nonce_not_behind_reserved",
+        ),
+        CheckConstraint(
+            "char_length(evidence_key) = 64",
+            name="evidence_key_sha256_width",
+        ),
+        Index(
+            "uq_lighter_reconciliation_evidence_key",
+            "evidence_key",
+            unique=True,
+        ),
+        Index(
+            "ix_lighter_reconciliation_evidence_action",
+            "action_key",
+            "observed_at",
+        ),
+    )
+
+
 __all__ = [
     "LighterNonceReservation",
     "LighterOrderActionBinding",
     "LighterOrderIdentity",
+    "LighterReconciliationEvidence",
 ]
