@@ -59,6 +59,7 @@ from .lighter_execution import (
     LighterNonceReservation,
     LighterOrderActionBinding,
     LighterOrderIdentity,
+    LighterReconciliationEvidence,
 )
 from .management import ExecutionManagementPolicySnapshot
 from .manual_control import ExecutionManualTradeControl
@@ -135,6 +136,7 @@ __all__ = [
     "LighterOrderIdentity",
     "LighterOrderActionBinding",
     "LighterNonceReservation",
+    "LighterReconciliationEvidence",
     # delivery
     "NotificationOutbox",
     # portfolio
