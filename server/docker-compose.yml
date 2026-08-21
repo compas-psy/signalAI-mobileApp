@@ -133,11 +133,11 @@ services:
           # неотличимо от «сервер упал».
           cpus: "2"
 
-  # Планировщик §26: вселенная, загрузка, допуск, скан. Отдельный процесс, а
-  # не фон внутри api: несколько воркеров uvicorn подняли бы столько же копий
-  # расписания, и каждая пошла бы грузить биржу. Портов не публикует.
+  # Latency-critical market lane. It stays sequential so scan never observes
+  # half-ingested data, but long portfolio/research jobs are not allowed here.
   scheduler:
     build: .
+    image: signalai-scheduler
     restart: unless-stopped
     logging: *signalai-bounded-logging
     depends_on:
@@ -150,20 +150,13 @@ services:
     environment:
       SIGNALAI_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-signalai}
       SIGNALAI_REDIS_URL: redis://redis:6379/0
+      SIGNALAI_SCHEDULER_LANE: market
       TELEGRAM_TOKEN: ${TELEGRAM_TOKEN:-}
       TELEGRAM_CHATID: ${TELEGRAM_CHATID:-}
       SIGNALAI_UNIVERSE_EVERY_MINUTES: ${SIGNALAI_UNIVERSE_EVERY_MINUTES:-360}
       SIGNALAI_INGEST_EVERY_MINUTES: ${SIGNALAI_INGEST_EVERY_MINUTES:-15}
       SIGNALAI_REVIEW_EVERY_MINUTES: ${SIGNALAI_REVIEW_EVERY_MINUTES:-360}
       SIGNALAI_SCAN_EVERY_MINUTES: ${SIGNALAI_SCAN_EVERY_MINUTES:-15}
-      # Пакеты капитала (§6). Реже остальных намеренно: состав держится
-      # месяцами, а прогон — сотня оптимизаций на каждый вариант. Пересчёт
-      # каждые пятнадцать минут не сделал бы состав точнее, а нагрузку
-      # поднял бы на порядок.
-      SIGNALAI_PORTFOLIO_EVERY_MINUTES: ${SIGNALAI_PORTFOLIO_EVERY_MINUTES:-60}
-      # Пустой адрес означает «модели нет», и критик честно называет это
-      # блокером. Догадка о запущенном сервисе стоила бы планировщику
-      # таймаута на каждом прогоне разведки.
       SIGNALAI_LLM_BASE_URL: ${SIGNALAI_LLM_BASE_URL:-}
       SIGNALAI_LLM_MODEL: ${SIGNALAI_LLM_MODEL:-qwen3.5:4b}
       SIGNALAI_LLM_TIMEOUT_SECONDS: ${SIGNALAI_LLM_TIMEOUT_SECONDS:-180}
@@ -174,6 +167,32 @@ services:
     # построению. Контейнер поэтому вечно числился «unhealthy» — то есть
     # красный статус не значил ничего и заодно скрывал бы настоящую поломку,
     # случись она. Красное без содержания хуже отсутствия статуса.
+    healthcheck:
+      disable: true
+
+  # Heavy analytical lane. It deliberately reuses the exact image built for
+  # scheduler, so both processes run identical code while portfolio/research
+  # latency can no longer postpone market ingestion or owner signal scanning.
+  scheduler-heavy:
+    image: signalai-scheduler
+    restart: unless-stopped
+    logging: *signalai-bounded-logging
+    depends_on:
+      postgres:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    environment:
+      SIGNALAI_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-signalai}
+      SIGNALAI_REDIS_URL: redis://redis:6379/0
+      SIGNALAI_SCHEDULER_LANE: heavy
+      SIGNALAI_PORTFOLIO_EVERY_MINUTES: ${SIGNALAI_PORTFOLIO_EVERY_MINUTES:-60}
+      SIGNALAI_RESEARCH_EVERY_MINUTES: ${SIGNALAI_RESEARCH_EVERY_MINUTES:-720}
+      SIGNALAI_LLM_BASE_URL: ${SIGNALAI_LLM_BASE_URL:-}
+      SIGNALAI_LLM_MODEL: ${SIGNALAI_LLM_MODEL:-qwen3.5:4b}
+      SIGNALAI_LLM_TIMEOUT_SECONDS: ${SIGNALAI_LLM_TIMEOUT_SECONDS:-180}
+      SIGNALAI_LLM_NUM_CTX: ${SIGNALAI_LLM_NUM_CTX:-4096}
+    command: ["python", "-m", "app.scheduler.heavy"]
     healthcheck:
       disable: true
 
