@@ -1,8 +1,9 @@
-"""Durable Lighter-specific execution identities for SAI-069.
+"""Durable Lighter-specific execution identities for SAI-069/070.
 
 These tables map SignalAI's provider-neutral order identity to Lighter's signed
-64-bit client-order index and serialize explicit nonce ownership across worker
-restarts. They do not send, sign or reconcile provider transactions.
+64-bit client-order index, serialize explicit nonce ownership across worker
+restarts, and bind each provider action identity to one immutable request hash.
+They do not send, sign or reconcile provider transactions.
 """
 
 from __future__ import annotations
@@ -39,6 +40,52 @@ class LighterOrderIdentity(UuidPk, Base):
             "account_index",
             "client_order_index",
             unique=True,
+        ),
+    )
+
+
+class LighterOrderActionBinding(UuidPk, Base):
+    __tablename__ = "lighter_order_action_bindings"
+
+    action_key: Mapped[str] = mapped_column(String(192), nullable=False)
+    action_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    account_index: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    api_key_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    client_order_id: Mapped[str] = mapped_column(String(96), nullable=False)
+    client_order_index: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    market_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = utcnow_column()
+
+    __table_args__ = (
+        CheckConstraint(
+            "action_type IN ('CREATE','CANCEL','REDUCE')",
+            name="action_type_valid",
+        ),
+        CheckConstraint("account_index >= 0", name="account_index_non_negative"),
+        CheckConstraint(
+            "api_key_index >= 0 AND api_key_index <= 253",
+            name="api_key_index_range",
+        ),
+        CheckConstraint(
+            "client_order_index > 0",
+            name="client_order_index_positive",
+        ),
+        CheckConstraint("market_index >= 0", name="market_index_non_negative"),
+        CheckConstraint(
+            "char_length(request_hash) = 64",
+            name="request_hash_sha256_width",
+        ),
+        Index(
+            "uq_lighter_order_action_bindings_action_key",
+            "action_key",
+            unique=True,
+        ),
+        Index(
+            "ix_lighter_order_action_bindings_scope",
+            "account_index",
+            "api_key_index",
+            "created_at",
         ),
     )
 
@@ -100,4 +147,8 @@ class LighterNonceReservation(UuidPk, Base):
     )
 
 
-__all__ = ["LighterNonceReservation", "LighterOrderIdentity"]
+__all__ = [
+    "LighterNonceReservation",
+    "LighterOrderActionBinding",
+    "LighterOrderIdentity",
+]
