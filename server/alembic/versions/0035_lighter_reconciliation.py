@@ -60,7 +60,7 @@ def upgrade() -> None:
         ),
         sa.CheckConstraint(
             "provider_next_nonce >= reserved_nonce",
-            name=op.f("ck_lighter_reconciliation_evidence_provider_nonce_not_behind_reserved"),
+            name=op.f("ck_lighter_reconciliation_evidence_provider_nonce_floor"),
         ),
         sa.CheckConstraint(
             "char_length(evidence_key) = 64",
