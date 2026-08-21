@@ -1,4 +1,4 @@
-"""Durable Lighter-specific execution identities for SAI-069/070.
+"""Durable Lighter-specific execution identities for SAI-069/070/072.
 
 These tables map SignalAI's provider-neutral order identity to Lighter's signed
 64-bit client-order index, serialize explicit nonce ownership across worker
@@ -59,7 +59,7 @@ class LighterOrderActionBinding(UuidPk, Base):
 
     __table_args__ = (
         CheckConstraint(
-            "action_type IN ('CREATE','CANCEL','REDUCE')",
+            "action_type IN ('CREATE','CANCEL','REDUCE','PROTECT')",
             name="action_type_valid",
         ),
         CheckConstraint("account_index >= 0", name="account_index_non_negative"),
