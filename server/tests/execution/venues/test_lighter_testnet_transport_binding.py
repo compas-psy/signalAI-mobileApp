@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -123,3 +124,91 @@ def test_admission_cannot_move_to_another_transport_with_identical_public_scope(
     assert foreign_same_scope.nonce_calls == 0
     assert foreign_same_scope.create_calls == 0
     assert foreign_same_scope.cancel_calls == 0
+
+
+def test_cancel_recovery_rejects_foreign_same_scope_transport_before_action_io() -> None:
+    from app.execution.venues.lighter_testnet_verification import (
+        LighterTestnetAdmissionError,
+        run_lighter_testnet_cancel_recovery,
+        verify_lighter_testnet_admission,
+    )
+
+    verified_transport = SameScopeTransport()
+    admission = verify_lighter_testnet_admission(
+        credentials=LighterServerCredentials(
+            account_index=42,
+            api_key_index=3,
+            api_private_key="ab" * 32,
+            environment="testnet",
+            purpose="trade",
+        ),
+        shadow_result=_eligible_shadow(),
+        transport=verified_transport,
+        observed_at=datetime(2026, 8, 21, 19, 30, tzinfo=UTC),
+    )
+    foreign_same_scope = SameScopeTransport()
+
+    with pytest.raises(LighterTestnetAdmissionError, match="transport"):
+        run_lighter_testnet_cancel_recovery(
+            admission=admission,
+            session_factory=lambda: (_ for _ in ()).throw(
+                AssertionError(
+                    "foreign transport must be rejected before database access"
+                )
+            ),
+            transport=foreign_same_scope,
+            market=None,  # type: ignore[arg-type]
+            client_order_id="sai075-recovery-foreign-same-scope",
+            create_tx_hash="0xcreate",
+        )
+
+    assert foreign_same_scope.check_calls == 0
+    assert foreign_same_scope.nonce_calls == 0
+    assert foreign_same_scope.create_calls == 0
+    assert foreign_same_scope.cancel_calls == 0
+
+
+def test_cancel_recovery_requires_nonblank_create_hash_before_action_io() -> None:
+    from app.execution.venues.lighter_testnet_verification import (
+        LighterTestnetAdmissionError,
+        run_lighter_testnet_cancel_recovery,
+        verify_lighter_testnet_admission,
+    )
+
+    assert (
+        inspect.signature(run_lighter_testnet_cancel_recovery)
+        .parameters["create_tx_hash"]
+        .default
+        is inspect.Parameter.empty
+    )
+    transport = SameScopeTransport()
+    admission = verify_lighter_testnet_admission(
+        credentials=LighterServerCredentials(
+            account_index=42,
+            api_key_index=3,
+            api_private_key="ab" * 32,
+            environment="testnet",
+            purpose="trade",
+        ),
+        shadow_result=_eligible_shadow(),
+        transport=transport,
+        observed_at=datetime(2026, 8, 21, 19, 30, tzinfo=UTC),
+    )
+
+    for create_tx_hash in (None, "", "  "):
+        with pytest.raises(LighterTestnetAdmissionError, match="create hash"):
+            run_lighter_testnet_cancel_recovery(
+                admission=admission,
+                session_factory=lambda: (_ for _ in ()).throw(
+                    AssertionError("invalid create hash must not reach database")
+                ),
+                transport=transport,
+                market=None,  # type: ignore[arg-type]
+                client_order_id="sai075-recovery-missing-hash",
+                create_tx_hash=create_tx_hash,
+            )
+
+    assert transport.check_calls == 1
+    assert transport.nonce_calls == 1
+    assert transport.create_calls == 0
+    assert transport.cancel_calls == 0

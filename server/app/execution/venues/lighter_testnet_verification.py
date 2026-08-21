@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from enum import StrEnum
 from typing import Protocol
@@ -28,6 +28,7 @@ _LIGHTER_TESTNET_BASE_URL = lighter_base_url(LighterEnvironment.TESTNET)
 _LIGHTER_TESTNET_CHAIN_ID = 300
 _MAX_ACCOUNT_INDEX = (1 << 63) - 1
 _MAX_API_KEY_INDEX = 253
+_SMOKE_ACTION_FAILURE_MESSAGE = "Lighter testnet smoke action failed"
 
 
 class LighterTestnetAdmissionStatus(StrEnum):
@@ -37,6 +38,22 @@ class LighterTestnetAdmissionStatus(StrEnum):
 
 class LighterTestnetAdmissionError(RuntimeError):
     """Raised when a smoke action attempts to bypass verified admission."""
+
+
+class LighterTestnetSmokeError(LighterTestnetAdmissionError):
+    """Sanitized failure from one testnet CREATE or CANCEL action stage."""
+
+    def __init__(
+        self,
+        *,
+        stage: str,
+        client_order_id: str,
+        create_tx_hash: str | None,
+    ) -> None:
+        super().__init__(_SMOKE_ACTION_FAILURE_MESSAGE)
+        self.stage = stage
+        self.client_order_id = client_order_id
+        self.create_tx_hash = create_tx_hash
 
 
 class LighterTestnetTransport(LighterActionTransport, Protocol):
@@ -55,7 +72,7 @@ class LighterTestnetAdmission:
     base_url: str | None
     chain_id: int | None
     provider_next_nonce: int | None
-    observed_at: datetime
+    observed_at: datetime | None
     transport_fingerprint: str | None
     transport_instance_id: int | None = field(repr=False)
 
@@ -124,7 +141,7 @@ def _transport_fingerprint(
 def _blocked(
     *,
     reason: str,
-    observed_at: datetime,
+    observed_at: datetime | None,
     account_index: int | None = None,
     api_key_index: int | None = None,
     base_url: str | None = None,
@@ -146,7 +163,7 @@ def _blocked(
 
 def verify_lighter_testnet_admission(
     *,
-    credentials: LighterServerCredentials,
+    credentials: LighterServerCredentials | None,
     shadow_result: VenueShadowScorecardResult,
     transport: LighterTestnetTransport,
     observed_at: datetime,
@@ -158,20 +175,27 @@ def verify_lighter_testnet_admission(
     local precondition therefore performs no provider call.
     """
 
-    if not _aware(observed_at):
-        raise ValueError("observed_at must be timezone-aware")
+    normalized_observed_at = observed_at.astimezone(UTC) if _aware(observed_at) else None
     if not isinstance(credentials, LighterServerCredentials):
-        raise ValueError("credentials must be LighterServerCredentials")
+        return _blocked(
+            reason="TESTNET_TRADE_CREDENTIALS_REQUIRED",
+            observed_at=normalized_observed_at,
+        )
     if not isinstance(shadow_result, VenueShadowScorecardResult):
         raise ValueError("shadow_result must be VenueShadowScorecardResult")
+    if normalized_observed_at is None:
+        return _blocked(reason="OBSERVED_AT_INVALID", observed_at=None)
 
     if not shadow_result.eligible_for_testnet:
-        return _blocked(reason="SHADOW_GATE_NOT_ELIGIBLE", observed_at=observed_at)
+        return _blocked(
+            reason="SHADOW_GATE_NOT_ELIGIBLE",
+            observed_at=normalized_observed_at,
+        )
 
     if credentials.environment != "testnet" or credentials.purpose != "trade":
         return _blocked(
             reason="TESTNET_TRADE_CREDENTIALS_REQUIRED",
-            observed_at=observed_at,
+            observed_at=normalized_observed_at,
             account_index=credentials.account_index,
             api_key_index=credentials.api_key_index,
         )
@@ -180,7 +204,7 @@ def verify_lighter_testnet_admission(
     if base_url != _LIGHTER_TESTNET_BASE_URL:
         return _blocked(
             reason="TESTNET_ENDPOINT_MISMATCH",
-            observed_at=observed_at,
+            observed_at=normalized_observed_at,
             account_index=account_index,
             api_key_index=api_key_index,
             base_url=base_url,
@@ -189,7 +213,7 @@ def verify_lighter_testnet_admission(
     if chain_id != _LIGHTER_TESTNET_CHAIN_ID:
         return _blocked(
             reason="TESTNET_CHAIN_ID_MISMATCH",
-            observed_at=observed_at,
+            observed_at=normalized_observed_at,
             account_index=account_index,
             api_key_index=api_key_index,
             base_url=base_url,
@@ -201,7 +225,7 @@ def verify_lighter_testnet_admission(
     ):
         return _blocked(
             reason="TRANSPORT_CREDENTIAL_SCOPE_MISMATCH",
-            observed_at=observed_at,
+            observed_at=normalized_observed_at,
             account_index=account_index,
             api_key_index=api_key_index,
             base_url=base_url,
@@ -213,7 +237,7 @@ def verify_lighter_testnet_admission(
     except Exception:
         return _blocked(
             reason="PROVIDER_CREDENTIAL_CHECK_FAILED",
-            observed_at=observed_at,
+            observed_at=normalized_observed_at,
             account_index=account_index,
             api_key_index=api_key_index,
             base_url=base_url,
@@ -222,7 +246,7 @@ def verify_lighter_testnet_admission(
     if check_error is not None:
         return _blocked(
             reason="PROVIDER_CREDENTIAL_CHECK_FAILED",
-            observed_at=observed_at,
+            observed_at=normalized_observed_at,
             account_index=account_index,
             api_key_index=api_key_index,
             base_url=base_url,
@@ -234,7 +258,7 @@ def verify_lighter_testnet_admission(
     except Exception:
         return _blocked(
             reason="PROVIDER_NONCE_UNAVAILABLE",
-            observed_at=observed_at,
+            observed_at=normalized_observed_at,
             account_index=account_index,
             api_key_index=api_key_index,
             base_url=base_url,
@@ -243,7 +267,7 @@ def verify_lighter_testnet_admission(
     if not _valid_int(provider_next_nonce, maximum=_MAX_ACCOUNT_INDEX):
         return _blocked(
             reason="PROVIDER_NONCE_INVALID",
-            observed_at=observed_at,
+            observed_at=normalized_observed_at,
             account_index=account_index,
             api_key_index=api_key_index,
             base_url=base_url,
@@ -262,7 +286,7 @@ def verify_lighter_testnet_admission(
         base_url=base_url,
         chain_id=chain_id,
         provider_next_nonce=provider_next_nonce,
-        observed_at=observed_at,
+        observed_at=normalized_observed_at,
         transport_fingerprint=_transport_fingerprint(
             base_url=base_url,
             chain_id=chain_id,
@@ -309,6 +333,37 @@ def _require_same_ready_transport(
         )
 
 
+def _actions_for_verified_admission(
+    *,
+    admission: LighterTestnetAdmission,
+    session_factory: SessionFactory,
+    transport: LighterTestnetTransport,
+) -> LighterOrderActions:
+    _require_same_ready_transport(admission, transport)
+    return LighterOrderActions(session_factory=session_factory, transport=transport)
+
+
+def _smoke_action_error(
+    *,
+    stage: str,
+    client_order_id: str,
+    create_tx_hash: str | None,
+) -> LighterTestnetSmokeError:
+    return LighterTestnetSmokeError(
+        stage=stage,
+        client_order_id=client_order_id,
+        create_tx_hash=create_tx_hash,
+    )
+
+
+def _require_create_tx_hash(value: object) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise LighterTestnetAdmissionError(
+            "testnet cancel recovery requires non-blank create hash"
+        )
+    return value
+
+
 def run_lighter_testnet_create_cancel_smoke(
     *,
     admission: LighterTestnetAdmission,
@@ -322,20 +377,81 @@ def run_lighter_testnet_create_cancel_smoke(
 ) -> LighterTestnetSmokeResult:
     """Submit one post-only testnet limit and cancel it through replay-safe actions."""
 
-    _require_same_ready_transport(admission, transport)
-    actions = LighterOrderActions(session_factory=session_factory, transport=transport)
-    create_ack = actions.create_limit(
-        market=market,
-        client_order_id=client_order_id,
-        quantity=quantity,
-        price=price,
-        is_ask=is_ask,
-        post_only=True,
+    actions = _actions_for_verified_admission(
+        admission=admission,
+        session_factory=session_factory,
+        transport=transport,
     )
-    cancel_ack = actions.cancel(market=market, client_order_id=client_order_id)
+    create_error: LighterTestnetSmokeError | None = None
+    try:
+        create_ack = actions.create_limit(
+            market=market,
+            client_order_id=client_order_id,
+            quantity=quantity,
+            price=price,
+            is_ask=is_ask,
+            post_only=True,
+        )
+    except Exception:
+        create_error = _smoke_action_error(
+            stage="CREATE",
+            client_order_id=client_order_id,
+            create_tx_hash=None,
+        )
+    if create_error is not None:
+        raise create_error
+
+    cancel_error: LighterTestnetSmokeError | None = None
+    try:
+        cancel_ack = actions.cancel(market=market, client_order_id=client_order_id)
+    except Exception:
+        cancel_error = _smoke_action_error(
+            stage="CANCEL",
+            client_order_id=client_order_id,
+            create_tx_hash=create_ack.tx_hash,
+        )
+    if cancel_error is not None:
+        raise cancel_error
+
     return LighterTestnetSmokeResult(
         client_order_id=client_order_id,
         create_tx_hash=create_ack.tx_hash,
+        cancel_tx_hash=cancel_ack.tx_hash,
+    )
+
+
+def run_lighter_testnet_cancel_recovery(
+    *,
+    admission: LighterTestnetAdmission,
+    session_factory: SessionFactory,
+    transport: LighterTestnetTransport,
+    market: LighterMarketFact,
+    client_order_id: str,
+    create_tx_hash: str,
+) -> LighterTestnetSmokeResult:
+    """Retry only the durable CANCEL action for a previously created testnet order."""
+
+    validated_create_tx_hash = _require_create_tx_hash(create_tx_hash)
+    actions = _actions_for_verified_admission(
+        admission=admission,
+        session_factory=session_factory,
+        transport=transport,
+    )
+    cancel_error: LighterTestnetSmokeError | None = None
+    try:
+        cancel_ack = actions.cancel(market=market, client_order_id=client_order_id)
+    except Exception:
+        cancel_error = _smoke_action_error(
+            stage="CANCEL",
+            client_order_id=client_order_id,
+            create_tx_hash=validated_create_tx_hash,
+        )
+    if cancel_error is not None:
+        raise cancel_error
+
+    return LighterTestnetSmokeResult(
+        client_order_id=client_order_id,
+        create_tx_hash=validated_create_tx_hash,
         cancel_tx_hash=cancel_ack.tx_hash,
     )
 
@@ -344,8 +460,10 @@ __all__ = [
     "LighterTestnetAdmission",
     "LighterTestnetAdmissionError",
     "LighterTestnetAdmissionStatus",
+    "LighterTestnetSmokeError",
     "LighterTestnetSmokeResult",
     "LighterTestnetTransport",
+    "run_lighter_testnet_cancel_recovery",
     "run_lighter_testnet_create_cancel_smoke",
     "verify_lighter_testnet_admission",
 ]
