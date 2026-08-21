@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 from decimal import Decimal
+from unittest.mock import ANY
 
 import pytest
 from sqlalchemy import select, text
@@ -112,7 +113,7 @@ def test_limit_create_scales_exactly_and_commits_nonce_before_provider_io(sessio
     assert transport.create_calls == [
         {
             "market_index": 0,
-            "client_order_index": pytest.ANY,
+            "client_order_index": ANY,
             "base_amount": 1250,
             "price": 405025,
             "is_ask": False,
