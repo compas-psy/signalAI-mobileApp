@@ -74,7 +74,7 @@ jobs:
 
           echo
           echo "──────── scheduler logs (30h) ────────"
-          $COMPOSE logs --since 30h --tail 600 scheduler
+          $COMPOSE logs --since 30h --tail 600 scheduler scheduler-heavy
 
           echo
           echo "──────── market status ────────"
