@@ -55,7 +55,11 @@ from .experiments import (
     PromotionDecision,
 )
 from .ideas import IdeaEvent, IdeaOutcome, IdeaSkip, TradeIdea
-from .lighter_execution import LighterNonceReservation, LighterOrderIdentity
+from .lighter_execution import (
+    LighterNonceReservation,
+    LighterOrderActionBinding,
+    LighterOrderIdentity,
+)
 from .management import ExecutionManagementPolicySnapshot
 from .manual_control import ExecutionManualTradeControl
 from .notifications import NotificationOutbox
@@ -129,6 +133,7 @@ __all__ = [
     "ExecutionManagementPolicySnapshot",
     "ExecutionManualTradeControl",
     "LighterOrderIdentity",
+    "LighterOrderActionBinding",
     "LighterNonceReservation",
     # delivery
     "NotificationOutbox",
