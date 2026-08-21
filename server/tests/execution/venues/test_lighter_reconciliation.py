@@ -252,7 +252,6 @@ def test_provider_nonce_regression_fails_closed_and_keeps_reservation(session) -
             ),
         )
 
-    session.rollback()
     reservation = session.scalar(
         select(LighterNonceReservation).where(
             LighterNonceReservation.replay_key == action_key
@@ -291,7 +290,6 @@ def test_mismatched_provider_order_fact_fails_closed_without_consuming_nonce(ses
             ),
         )
 
-    session.rollback()
     reservation = session.scalar(
         select(LighterNonceReservation).where(
             LighterNonceReservation.replay_key == action_key
