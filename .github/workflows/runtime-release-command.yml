@@ -19,7 +19,8 @@ jobs:
       (github.event.comment.body == '/build-apk' ||
        github.event.comment.body == '/release-full' ||
        github.event.comment.body == '/apk-status' ||
-       github.event.comment.body == '/telegram-sample')
+       github.event.comment.body == '/telegram-sample' ||
+       github.event.comment.body == '/runtime-logs')
     runs-on: ubuntu-latest
     steps:
       - name: Run owner release command
@@ -94,6 +95,18 @@ jobs:
                 workflow_id: 'telegram-sample.yml',
                 ref: defaultBranch,
                 inputs: { source_ref: sourceSha },
+              });
+            } else if (command === '/runtime-logs') {
+              await github.rest.actions.createWorkflowDispatch({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                workflow_id: 'deploy-server.yml',
+                ref: defaultBranch,
+                inputs: {
+                  source_ref: sourceSha,
+                  admin_ip: '127.0.0.1',
+                  action: 'logs',
+                },
               });
             } else {
               core.setFailed(`Unsupported command: ${command}`);
