@@ -66,6 +66,19 @@ def test_production_compose_runs_market_and_heavy_lanes_as_separate_processes() 
     assert 'command: ["python", "-m", "app.scheduler.heavy"]' in heavy
 
 
+def test_heavy_lane_reuses_the_same_explicit_scheduler_image() -> None:
+    compose = (_root() / "server/docker-compose.yml").read_text()
+    market = compose.split("  scheduler:", 1)[1].split("  scheduler-heavy:", 1)[0]
+    heavy = compose.split("  scheduler-heavy:", 1)[1].split("\n  execution:", 1)[0]
+    deploy = (_root() / ".github/workflows/deploy-release.yml").read_text()
+
+    assert "image: signalai-scheduler" in market
+    assert "image: signalai-scheduler" in heavy
+    assert "build: ." in market
+    assert "build:" not in heavy
+    assert 'docker compose --env-file "$ENV_FILE" build api scheduler' in deploy
+
+
 def test_market_runtime_filters_default_jobs_before_returning_scheduler() -> None:
     runtime = (_root() / "server/app/scheduler/p0_runtime.py").read_text()
 
@@ -82,12 +95,6 @@ def test_heavy_entrypoint_has_no_market_startup_bootstrap() -> None:
     assert "purge_premature_moex_bars" not in heavy
     assert "materialize(" not in heavy
     assert "paper_live" not in heavy
-
-
-def test_canonical_deploy_builds_the_heavy_scheduler_image() -> None:
-    deploy = (_root() / ".github/workflows/deploy-release.yml").read_text()
-
-    assert "docker compose --env-file \"$ENV_FILE\" build api scheduler scheduler-heavy" in deploy
 
 
 def test_runtime_logs_include_both_scheduler_lanes() -> None:
