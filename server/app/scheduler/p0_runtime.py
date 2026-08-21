@@ -1,7 +1,9 @@
 """P0 production scheduler hardening installed by package import.
 
-Keeps the tested generic Scheduler intact while replacing two runtime jobs:
+Keeps the tested generic Scheduler intact while replacing/adding runtime jobs:
 - scan wake-up is keyed by FORTS/crypto closed-bar watermarks;
+- Shadow candidate measurement has its own closed-bar watermark and never calls
+  the owner scan/lifecycle path;
 - owner capital refreshes server-side from read-only broker credentials.
 """
 
@@ -67,6 +69,63 @@ def _replace_scan_job(scheduler) -> None:
     raise RuntimeError("default scheduler has no scan job")
 
 
+def _add_shadow_job(scheduler, *, every: timedelta, shadow_runner=None) -> None:
+    """Insert isolated candidate measurement after ingest and before owner scan.
+
+    The production path is data-driven, not clock-driven: it advances only when
+    a FORTS/crypto closed-bar lane changes.  ``evaluated_at`` is pinned to the
+    newest visible closed H1 timestamp, so a scheduler/process restart over the
+    same market snapshot reproduces the same observation identity instead of
+    manufacturing another OOS denominator.
+
+    ``shadow_runner`` is an explicit test seam.  When supplied it is used
+    verbatim and is still placed as its own scheduler job; it cannot call the
+    owner scan unless the caller deliberately gives it such a function.
+    """
+
+    if not isinstance(every, timedelta) or every <= timedelta(0):
+        raise ValueError("shadow_every must be a positive timedelta")
+
+    if shadow_runner is not None:
+        run = shadow_runner
+    else:
+        previous: dict = {}
+
+        def run(session) -> str:
+            nonlocal previous
+            current = snapshot(session)
+            if not current:
+                return "закрытых H1 FORTS/crypto нет — Shadow пропущен"
+            changed = changed_lanes(previous, current)
+            if previous and not changed:
+                detail = ", ".join(
+                    f"{lane}={stamp.isoformat()}#{count}"
+                    for lane, (stamp, count) in sorted(current.items())
+                )
+                return f"новых баров нет по контурам ({detail}) — Shadow пропущен"
+
+            # Import lazily to keep scheduler bootstrap light and to preserve
+            # the hard dependency direction: Shadow may observe market data,
+            # but owner scan/lifecycle code never depends on Shadow.
+            from ..shadow.collector_v1 import collect_shadow
+
+            evaluated_at = max(stamp for stamp, _count in current.values())
+            report = collect_shadow(session, evaluated_at=evaluated_at)
+            # Advance only after successful collection/persistence.  On error
+            # Scheduler rolls back and the same market state is retried.
+            previous = dict(current)
+            lanes = changed or tuple(sorted(current))
+            return f"контуры {','.join(lanes)}; {report.summary()}"
+
+    scheduler.add("shadow", every, run)
+    job = scheduler.jobs.pop()
+    for index, existing in enumerate(scheduler.jobs):
+        if existing.name == "scan":
+            scheduler.jobs.insert(index, job)
+            return
+    raise RuntimeError("default scheduler has no scan job")
+
+
 def _add_capital_job(scheduler) -> None:
     scheduler.add(
         "capital",
@@ -81,8 +140,19 @@ def _add_capital_job(scheduler) -> None:
 
 
 def build_default_scheduler(*args, **kwargs):
+    # Shadow belongs to this production hardening layer rather than the generic
+    # Scheduler API.  Pop its arguments before delegating to the original
+    # builder so existing callers and tests remain source-compatible.
+    shadow_every = kwargs.pop("shadow_every", timedelta(minutes=15))
+    shadow_runner = kwargs.pop("shadow_runner", None)
+
     scheduler = _ORIGINAL_BUILD(*args, **kwargs)
     _replace_scan_job(scheduler)
+    _add_shadow_job(
+        scheduler,
+        every=shadow_every,
+        shadow_runner=shadow_runner,
+    )
     _add_capital_job(scheduler)
     return scheduler
 
