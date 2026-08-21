@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -34,6 +35,14 @@ class IntegrationSpec:
     environment: str
     fields: tuple[str, ...]
     required: bool = True
+
+
+_LIGHTER_FIELDS = ("account_index", "api_key_index", "api_private_key")
+_LIGHTER_SLOTS = {
+    "lighter_read",
+    "lighter_testnet_trade",
+    "lighter_trade",
+}
 
 
 SPECS: tuple[IntegrationSpec, ...] = (
@@ -59,6 +68,21 @@ SPECS: tuple[IntegrationSpec, ...] = (
         "bybit_trade", "BYBIT", "Live · торговля",
         "исполнение подтверждённых крипто-сделок; Withdraw запрещён", "live",
         ("api_key", "api_secret"),
+    ),
+    IntegrationSpec(
+        "lighter_read", "LIGHTER", "Lighter · чтение",
+        "приватные данные счёта; торговые действия этим слотом не выполняются",
+        "live", _LIGHTER_FIELDS,
+    ),
+    IntegrationSpec(
+        "lighter_testnet_trade", "LIGHTER", "Lighter · Testnet",
+        "необязательная testnet-подпись для будущей проверки execution path",
+        "testnet", _LIGHTER_FIELDS, required=False,
+    ),
+    IntegrationSpec(
+        "lighter_trade", "LIGHTER", "Lighter · торговля",
+        "server-side API-key signing material; LIVE остаётся закрыт отдельным gate",
+        "live", _LIGHTER_FIELDS,
     ),
 )
 
@@ -90,6 +114,31 @@ def ensure_store(db: Session) -> None:
     """))
 
 
+def _parse_lighter_index(field: str, value: str, *, maximum: int | None = None) -> int:
+    if not value.isascii() or not value.isdigit():
+        raise ValueError(f"поле {field} должно быть целым неотрицательным числом")
+    parsed = int(value)
+    if maximum is not None and parsed > maximum:
+        raise ValueError(f"поле {field} должно быть в диапазоне 0..{maximum}")
+    return parsed
+
+
+def _validate_lighter_values(values: dict[str, str]) -> None:
+    _parse_lighter_index("account_index", values["account_index"])
+    _parse_lighter_index("api_key_index", values["api_key_index"], maximum=253)
+
+    private_key = values["api_private_key"]
+    encoded = private_key[2:] if private_key.lower().startswith("0x") else private_key
+    if (
+        not encoded
+        or len(encoded) % 2 != 0
+        or re.fullmatch(r"[0-9a-fA-F]+", encoded) is None
+    ):
+        raise ValueError(
+            "поле api_private_key должно быть непустым hex-encoded API private key"
+        )
+
+
 def validate_values(spec: IntegrationSpec, values: dict[str, str]) -> dict[str, str]:
     if set(values) != set(spec.fields):
         expected = ", ".join(spec.fields)
@@ -104,6 +153,8 @@ def validate_values(spec: IntegrationSpec, values: dict[str, str]) -> dict[str, 
         if len(value) > 8192:
             raise ValueError(f"поле {field} слишком длинное")
         cleaned[field] = value
+    if spec.slot in _LIGHTER_SLOTS:
+        _validate_lighter_values(cleaned)
     return cleaned
 
 
