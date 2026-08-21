@@ -4,6 +4,8 @@ Keeps the tested generic Scheduler intact while replacing/adding runtime jobs:
 - scan wake-up is keyed by FORTS/crypto closed-bar watermarks;
 - Shadow candidate measurement has its own closed-bar watermark and never calls
   the owner scan/lifecycle path;
+- Paper A/B consumes immutable Shadow facts and writes only its isolated
+  counterfactual measurement journal;
 - owner capital refreshes server-side from read-only broker credentials.
 """
 
@@ -43,8 +45,6 @@ def _replace_scan_job(scheduler) -> None:
                 f"{lane}={stamp.isoformat()}#{count}"
                 for lane, (stamp, count) in sorted(current.items())
             )
-            # Keep the long-standing operator/test phrase while adding the
-            # per-lane evidence that explains *which* markets did not move.
             return f"новых баров нет по контурам ({detail}) — скан пропущен"
 
         # Resolve the scan function at execution time. Scheduler bootstrap
@@ -104,15 +104,10 @@ def _add_shadow_job(scheduler, *, every: timedelta, shadow_runner=None) -> None:
                 )
                 return f"новых баров нет по контурам ({detail}) — Shadow пропущен"
 
-            # Import lazily to keep scheduler bootstrap light and to preserve
-            # the hard dependency direction: Shadow may observe market data,
-            # but owner scan/lifecycle code never depends on Shadow.
             from ..shadow.collector_v1 import collect_shadow
 
             evaluated_at = max(stamp for stamp, _count in current.values())
             report = collect_shadow(session, evaluated_at=evaluated_at)
-            # Advance only after successful collection/persistence.  On error
-            # Scheduler rolls back and the same market state is retried.
             previous = dict(current)
             lanes = changed or tuple(sorted(current))
             return f"контуры {','.join(lanes)}; {report.summary()}"
@@ -124,6 +119,38 @@ def _add_shadow_job(scheduler, *, every: timedelta, shadow_runner=None) -> None:
             scheduler.jobs.insert(index, job)
             return
     raise RuntimeError("default scheduler has no scan job")
+
+
+def _add_paper_ab_job(scheduler, *, every: timedelta, paper_ab_runner=None) -> None:
+    """Run counterfactual Paper measurement after Shadow and before owner scan.
+
+    Unlike Shadow, this job must run on cadence even if a market watermark did
+    not change: a previously emitted decision can mature and become resolvable.
+    Seeding/outcome writes are idempotent and append-only, so cadence cannot
+    manufacture extra opportunities or rewrite old PnL.
+    """
+
+    if not isinstance(every, timedelta) or every <= timedelta(0):
+        raise ValueError("paper_ab_every must be a positive timedelta")
+
+    if paper_ab_runner is not None:
+        run = paper_ab_runner
+    else:
+        def run(session) -> str:
+            from ..experiments.paper_ab_runtime_v1 import run_paper_ab_cycle
+
+            return run_paper_ab_cycle(session).summary()
+
+    scheduler.add("paper_ab", every, run)
+    job = scheduler.jobs.pop()
+    # The canonical placement is immediately after Shadow.  If a custom
+    # scheduler somehow omits Shadow, fail closed rather than silently placing
+    # Paper after the owner scan/lifecycle.
+    for index, existing in enumerate(scheduler.jobs):
+        if existing.name == "shadow":
+            scheduler.jobs.insert(index + 1, job)
+            return
+    raise RuntimeError("default scheduler has no shadow job")
 
 
 def _add_capital_job(scheduler) -> None:
@@ -140,11 +167,13 @@ def _add_capital_job(scheduler) -> None:
 
 
 def build_default_scheduler(*args, **kwargs):
-    # Shadow belongs to this production hardening layer rather than the generic
-    # Scheduler API.  Pop its arguments before delegating to the original
-    # builder so existing callers and tests remain source-compatible.
+    # Candidate measurement belongs to this production hardening layer rather
+    # than the generic Scheduler API.  Pop its arguments before delegating to
+    # the original builder so existing callers stay source-compatible.
     shadow_every = kwargs.pop("shadow_every", timedelta(minutes=15))
     shadow_runner = kwargs.pop("shadow_runner", None)
+    paper_ab_every = kwargs.pop("paper_ab_every", timedelta(minutes=15))
+    paper_ab_runner = kwargs.pop("paper_ab_runner", None)
 
     scheduler = _ORIGINAL_BUILD(*args, **kwargs)
     _replace_scan_job(scheduler)
@@ -152,6 +181,11 @@ def build_default_scheduler(*args, **kwargs):
         scheduler,
         every=shadow_every,
         shadow_runner=shadow_runner,
+    )
+    _add_paper_ab_job(
+        scheduler,
+        every=paper_ab_every,
+        paper_ab_runner=paper_ab_runner,
     )
     _add_capital_job(scheduler)
     return scheduler
