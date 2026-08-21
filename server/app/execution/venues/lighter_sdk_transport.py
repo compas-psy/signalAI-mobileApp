@@ -1,15 +1,17 @@
 """Official Lighter SDK transport pinned to testnet for SAI-076.
 
 This module is the first provider-I/O implementation behind the transport seam
-introduced by SAI-070 and admitted by SAI-075.  It is deliberately narrow:
-only testnet trade credentials can construct it, every signed action must use
-an explicit replay-safe nonce, and it exposes no LIVE/mainnet factory.
+introduced by SAI-070 and admitted by SAI-075. It is deliberately narrow: only
+testnet trade credentials can construct it, every signed action must use an
+explicit replay-safe nonce, and it exposes no LIVE/mainnet factory.
 """
 
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import threading
+import weakref
 from collections.abc import Awaitable, Callable
 from typing import Any, TypeVar
 
@@ -39,36 +41,68 @@ def _valid_int(value: object, *, maximum: int) -> bool:
     )
 
 
-def _run_awaitable(awaitable: Awaitable[_T]) -> _T:
-    """Run one SDK coroutine from either sync or already-async call sites.
+class _SdkLoopThread:
+    """Own one event loop for the entire lifetime of one SDK client.
 
-    The execution domain currently owns a synchronous transport contract.  When
-    it is invoked from a thread that already has an asyncio loop, a short-lived
-    helper thread owns a separate loop rather than attempting nested run_until_complete.
+    Lighter's generated REST client creates aiohttp.ClientSession during
+    SignerClient construction. Construction and every async SDK operation must
+    therefore stay on the same live event loop instead of using one asyncio.run
+    per action.
     """
 
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(awaitable)
+    def __init__(self) -> None:
+        self._loop = asyncio.new_event_loop()
+        self._ready = threading.Event()
+        self._closed = False
+        self._thread = threading.Thread(
+            target=self._serve,
+            name="lighter-sdk-loop",
+            daemon=True,
+        )
+        self._thread.start()
+        self._ready.wait()
 
-    result: list[_T] = []
-    failure: list[BaseException] = []
+    def _serve(self) -> None:
+        asyncio.set_event_loop(self._loop)
+        self._ready.set()
+        self._loop.run_forever()
+        self._loop.close()
 
-    def runner() -> None:
+    def run(self, awaitable: Awaitable[_T]) -> _T:
+        if self._closed:
+            raise RuntimeError("Lighter SDK event loop is closed")
+        future = asyncio.run_coroutine_threadsafe(awaitable, self._loop)
+        return future.result()
+
+    def call(self, function: Callable[[], _T]) -> _T:
+        async def invoke() -> _T:
+            return function()
+
+        return self.run(invoke())
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
         try:
-            result.append(asyncio.run(awaitable))
-        except BaseException as exc:  # noqa: BLE001 - re-raised in caller thread
-            failure.append(exc)
+            self._loop.call_soon_threadsafe(self._loop.stop)
+        except RuntimeError:
+            return
+        if threading.current_thread() is not self._thread:
+            self._thread.join()
 
-    thread = threading.Thread(target=runner, name="lighter-sdk-call", daemon=True)
-    thread.start()
-    thread.join()
-    if failure:
-        raise failure[0]
-    if not result:
-        raise RuntimeError("Lighter SDK coroutine returned no result")
-    return result[0]
+
+def _finalize_sdk_client(runner: _SdkLoopThread, client: Any) -> None:
+    try:
+        close = getattr(client, "close", None)
+        if callable(close):
+            result = runner.call(close)
+            if isinstance(result, Awaitable):
+                runner.run(result)
+    except Exception:
+        pass
+    finally:
+        runner.close()
 
 
 def _official_signer_client_factory(**kwargs: Any) -> Any:
@@ -106,6 +140,7 @@ class LighterSdkTestnetTransport:
         self,
         *,
         client: Any,
+        runner: _SdkLoopThread,
         account_index: int,
         api_key_index: int,
     ) -> None:
@@ -114,6 +149,13 @@ class LighterSdkTestnetTransport:
         if not _valid_int(api_key_index, maximum=_MAX_API_KEY_INDEX):
             raise LighterSdkTransportError("Lighter testnet API-key scope is invalid")
         self._client = client
+        self._runner = runner
+        self._finalizer = weakref.finalize(
+            self,
+            _finalize_sdk_client,
+            runner,
+            client,
+        )
         self.account_index = account_index
         self.api_key_index = api_key_index
 
@@ -128,9 +170,14 @@ class LighterSdkTestnetTransport:
     def eligible_for_live(self) -> bool:
         return False
 
+    def close(self) -> None:
+        """Close the provider HTTP session and its dedicated event loop."""
+
+        self._finalizer()
+
     def check_client(self) -> str | None:
         try:
-            error = self._client.check_client()
+            error = self._runner.call(self._client.check_client)
         except Exception:
             raise LighterSdkTransportError("Lighter testnet credential check failed") from None
         if error is None:
@@ -139,11 +186,9 @@ class LighterSdkTestnetTransport:
 
     def next_nonce(self) -> int:
         try:
-            response = _run_awaitable(
+            response = self._runner.run(
                 self._client.tx_api.next_nonce(self.account_index, self.api_key_index)
             )
-        except LighterSdkTransportError:
-            raise
         except Exception:
             raise LighterSdkTransportError("Lighter testnet nonce lookup failed") from None
 
@@ -181,9 +226,7 @@ class LighterSdkTestnetTransport:
     def create_order(self, **kwargs: Any) -> LighterActionAck:
         self._validate_action_scope(kwargs)
         try:
-            result = _run_awaitable(self._client.create_order(**kwargs))
-        except LighterSdkTransportError:
-            raise
+            result = self._runner.run(self._client.create_order(**kwargs))
         except Exception:
             raise LighterSdkTransportError("Lighter testnet create order failed") from None
         return self._normalize_ack(result, action="create order")
@@ -191,9 +234,7 @@ class LighterSdkTestnetTransport:
     def cancel_order(self, **kwargs: Any) -> LighterActionAck:
         self._validate_action_scope(kwargs)
         try:
-            result = _run_awaitable(self._client.cancel_order(**kwargs))
-        except LighterSdkTransportError:
-            raise
+            result = self._runner.run(self._client.cancel_order(**kwargs))
         except Exception:
             raise LighterSdkTransportError("Lighter testnet cancel order failed") from None
         return self._normalize_ack(result, action="cancel order")
@@ -208,20 +249,23 @@ def build_lighter_testnet_transport(
 
     _require_testnet_trade_credentials(credentials)
     factory = signer_client_factory or _official_signer_client_factory
+    runner = _SdkLoopThread()
     try:
-        client = factory(
-            url=_LIGHTER_TESTNET_BASE_URL,
-            account_index=credentials.account_index,
-            api_private_keys={credentials.api_key_index: credentials.api_private_key},
-            chain_id=_LIGHTER_TESTNET_CHAIN_ID,
+        client = runner.call(
+            lambda: factory(
+                url=_LIGHTER_TESTNET_BASE_URL,
+                account_index=credentials.account_index,
+                api_private_keys={credentials.api_key_index: credentials.api_private_key},
+                chain_id=_LIGHTER_TESTNET_CHAIN_ID,
+            )
         )
-    except LighterSdkTransportError:
-        raise
     except Exception:
+        runner.close()
         raise LighterSdkTransportError("Lighter testnet SDK client construction failed") from None
 
     return LighterSdkTestnetTransport(
         client=client,
+        runner=runner,
         account_index=credentials.account_index,
         api_key_index=credentials.api_key_index,
     )
