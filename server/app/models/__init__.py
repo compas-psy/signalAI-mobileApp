@@ -6,6 +6,7 @@
 """
 
 from .base import Base
+from .canary_policy import CanaryPolicySnapshot, LighterCredentialGeneration
 from .datasets import DatasetSnapshot
 from .device import DeviceCredential, DevicePairingSession
 from .enums import (
@@ -142,6 +143,8 @@ __all__ = [
     "LighterNonceReservation",
     "LighterReconciliationEvidence",
     "LighterTestnetSmokeEvidence",
+    "LighterCredentialGeneration",
+    "CanaryPolicySnapshot",
     # device lifecycle
     "DeviceCredential",
     "DevicePairingSession",
