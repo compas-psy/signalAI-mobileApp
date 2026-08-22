@@ -36,15 +36,22 @@ class LighterServerCredentials:
     api_private_key: str
     environment: str
     purpose: str
+    credential_generation_id: str | None = None
 
     def __repr__(self) -> str:
+        generation = (
+            repr(self.credential_generation_id)
+            if self.credential_generation_id is not None
+            else "None"
+        )
         return (
             "LighterServerCredentials("
             f"account_index={self.account_index}, "
             f"api_key_index={self.api_key_index}, "
             "api_private_key=<redacted>, "
             f"environment={self.environment!r}, "
-            f"purpose={self.purpose!r})"
+            f"purpose={self.purpose!r}, "
+            f"credential_generation_id={generation})"
         )
 
 
@@ -83,12 +90,33 @@ def load_lighter_server_credentials(
         raise LighterCredentialError("stored Lighter credential fields do not match contract")
 
     environment, purpose = context
+    account_index = _parse_index("account_index", raw["account_index"])
+    api_key_index = _parse_index("api_key_index", raw["api_key_index"], maximum=253)
+    generation_id: str | None = None
+    if slot == LIGHTER_TRADE_SLOT:
+        from ..canary_policy import current_lighter_trade_generation
+
+        generation = current_lighter_trade_generation(db)
+        if generation is None:
+            raise LighterCredentialError(
+                "live trade credential generation is missing or revoked"
+            )
+        if (
+            generation.account_index != account_index
+            or generation.api_key_index != api_key_index
+        ):
+            raise LighterCredentialError(
+                "live trade credential generation scope does not match stored credential"
+            )
+        generation_id = generation.generation_id
+
     return LighterServerCredentials(
-        account_index=_parse_index("account_index", raw["account_index"]),
-        api_key_index=_parse_index("api_key_index", raw["api_key_index"], maximum=253),
+        account_index=account_index,
+        api_key_index=api_key_index,
         api_private_key=_normalize_private_key(raw["api_private_key"]),
         environment=environment,
         purpose=purpose,
+        credential_generation_id=generation_id,
     )
 
 
