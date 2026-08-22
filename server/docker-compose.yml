@@ -51,6 +51,8 @@ services:
     environment:
       SIGNALAI_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-signalai}
       SIGNALAI_REDIS_URL: redis://redis:6379/0
+      # Immutable release provenance used by read-only Canary preflight.
+      SIGNALAI_SOURCE_SHA: ${SIGNALAI_SOURCE_SHA:-}
       # Bootstrap secret для initial pairing. Он никогда не authorizes
       # business API и не зашивается в APK.
       SIGNALAI_DEVICE_TOKEN: ${SIGNALAI_DEVICE_TOKEN:?нужен SIGNALAI_DEVICE_TOKEN}
@@ -213,6 +215,7 @@ services:
         condition: service_healthy
     environment:
       SIGNALAI_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-signalai}
+      SIGNALAI_SOURCE_SHA: ${SIGNALAI_SOURCE_SHA:-}
       SIGNALAI_ROLE: execution
     command: ["python", "-m", "app.execution.worker"]
 
