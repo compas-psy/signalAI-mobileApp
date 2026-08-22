@@ -38,6 +38,7 @@ class _FakeApi extends ApiClient {
     String path, {
     Map<String, dynamic>? body,
     String? idempotencyKey,
+    String? pairingSessionId,
   }) async {
     paths.add(path);
     lastBody = body;
