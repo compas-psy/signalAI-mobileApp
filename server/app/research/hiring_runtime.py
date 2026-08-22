@@ -213,6 +213,12 @@ def _persist_vacancy_observation(
                 "region_code": row.region_code,
                 "region_name": row.region_name,
                 "url": row.source_url,
+                "source_created_at": (
+                    row.published_at.isoformat() if row.published_at is not None else ""
+                ),
+                "source_modified_at": (
+                    row.modified_at.isoformat() if row.modified_at is not None else ""
+                ),
             },
             raw_sha256=raw_sha256,
             value_text=row.title,
@@ -246,10 +252,10 @@ def _fetch(url: str, now: datetime) -> Fetched | None:
 
 
 def _vacancy(row: trudvsem.VacancyDatum, issuer: Issuer, now: datetime) -> hiring.Vacancy | None:
-    published = row.published_at or row.modified_at
-    if published is None:
+    information_time = row.information_time
+    if information_time is None:
         return None
-    age = max(0, (now - published).days)
+    age = max(0, (now - information_time).days)
     if age > 84:
         return None
     return hiring.Vacancy(
@@ -257,7 +263,7 @@ def _vacancy(row: trudvsem.VacancyDatum, issuer: Issuer, now: datetime) -> hirin
         normalized_title=row.title,
         function=_function(row.title),
         region=row.region_name or row.region_code,
-        published_day=published.date().toordinal(),
+        published_day=information_time.date().toordinal(),
         salary=row.salary_mid,
         baseline_salary=None,
         age_days=age,
