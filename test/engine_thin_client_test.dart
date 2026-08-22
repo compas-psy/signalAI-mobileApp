@@ -61,7 +61,11 @@ Map<String, dynamic> _idea(String id) => {
       'expires_at': '2026-08-07T09:00:00Z',
     };
 
-Map<String, dynamic> _detail(String id) => {
+Map<String, dynamic> _detail(
+  String id, {
+  bool eventCalendarUnavailable = false,
+}) =>
+    {
       ..._idea(id),
       'context_timeframe': 'D1',
       'setup_timeframe': 'H4',
@@ -82,13 +86,14 @@ Map<String, dynamic> _detail(String id) => {
         'risk_per_unit': '1000',
         'tradable': true,
       },
-      'event_calendar': {
-        'status': 'UNAVAILABLE',
-        'reason_code': 'EVENT_SOURCE_UNAVAILABLE',
-        'detail': 'календарь событий недоступен',
-        'blocks_admission': true,
-        'event': null,
-      },
+      if (eventCalendarUnavailable)
+        'event_calendar': {
+          'status': 'UNAVAILABLE',
+          'reason_code': 'EVENT_SOURCE_UNAVAILABLE',
+          'detail': 'календарь событий недоступен',
+          'blocks_admission': true,
+          'event': null,
+        },
     };
 
 Map<String, dynamic> _trade() => {
@@ -109,7 +114,9 @@ Map<String, dynamic> _trade() => {
 void main() {
   group('readiness выдачи', () {
     test('неизвестный календарь остаётся блокирующим риском на карточке', () {
-      final idea = EngineContract.idea(_detail('calendar-unavailable'));
+      final idea = EngineContract.idea(
+        _detail('calendar-unavailable', eventCalendarUnavailable: true),
+      );
 
       expect(idea.eventRisk?.blocksEntry, isTrue);
       expect(idea.eventRisk?.policy, 'EVENT_SOURCE_UNAVAILABLE');
