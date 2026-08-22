@@ -50,6 +50,7 @@ class _ModeApi extends ApiClient {
     String path, {
     Map<String, dynamic>? body,
     String? idempotencyKey,
+    String? pairingSessionId,
   }) async {
     posts.add((path: path, body: body, key: idempotencyKey));
     if (path == '/api/v1/execution/mode/preview') {
