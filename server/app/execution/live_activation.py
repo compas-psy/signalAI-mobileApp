@@ -22,12 +22,7 @@ from ..config import get_config
 from ..models.execution import ExecutionModeActivationRequest
 from ..models.risk import AuditEvent
 from .enums import ExecutionLifecycleMode
-from .mode import (
-    ExecutionModeChangeRejected,
-    ModeChangeAuthorization,
-    change_execution_mode,
-    get_execution_mode,
-)
+from .mode import get_execution_mode
 from .promotion_guard import (
     PromotionDecision,
     PromotionEvidence,
@@ -35,6 +30,10 @@ from .promotion_guard import (
     evaluate_promotion,
 )
 from .promotion_evidence import PromotionEvidenceScope, record_promotion_evidence_decision
+
+
+_OWNER_STEP_UP_BLOCKER = "OWNER_STEP_UP_NOT_IMPLEMENTED"
+_LEGACY_OWNER_CONFIRMATION_BLOCKER = "explicit owner confirmation missing"
 
 
 class LiveActivationRejected(ValueError):
@@ -316,7 +315,13 @@ def confirm_live_activation(
     context_provider: ContextProvider = _default_context,
     evidence_provider: EvidenceProvider = _default_evidence,
 ) -> LiveActivationResult:
-    """Second confirmation with replay protection and authoritative recheck."""
+    """Record owner intent, recheck server gates and fail closed without step-up.
+
+    ``owner_confirmed`` remains an explicit UX intent signal for compatibility.
+    It is not cryptographic owner authority. Until a fresh server-verifiable
+    owner step-up is implemented, CANARY→LIVE always records a durable BLOCKED
+    result and never constructs a mode-change authorization.
+    """
 
     preview_hash = preview_hash.strip()
     idempotency_key = idempotency_key.strip()
@@ -364,6 +369,7 @@ def confirm_live_activation(
     if _displayed_context_changed(row, context):
         blockers.append("activation preview is stale: displayed context changed")
 
+    decision: PromotionDecision | None = None
     if not blockers:
         base_evidence = (
             current_server_promotion_evidence(
@@ -372,24 +378,32 @@ def confirm_live_activation(
             if evidence_provider is _default_evidence
             else evidence_provider(db, current_mode, target)
         )
-        confirmed_evidence = replace(base_evidence, owner_confirmed=True)
+        # A server evidence provider is not an owner-presence channel either.
+        # Force the legacy boolean proof bit off, then preserve every other
+        # server gate blocker for diagnostics/audit.
+        unconfirmed_evidence = replace(base_evidence, owner_confirmed=False)
         decision = evaluate_promotion(
             current=current_mode,
             target=target,
-            evidence=confirmed_evidence,
+            evidence=unconfirmed_evidence,
         )
-        blockers.extend(decision.blockers)
+        blockers.extend(
+            blocker
+            for blocker in decision.blockers
+            if blocker != _LEGACY_OWNER_CONFIRMATION_BLOCKER
+        )
         blockers.extend(_activation_blockers(context))
-    else:
-        decision = None
+
+    if _OWNER_STEP_UP_BLOCKER not in blockers:
+        blockers.append(_OWNER_STEP_UP_BLOCKER)
 
     decision_for_audit = PromotionDecision(
         current=current_mode,
         target=target,
-        allowed=not bool(blockers),
+        allowed=False,
         blockers=tuple(blockers),
         evidence_notes=(decision.evidence_notes if decision is not None else ()),
-        authorization=(decision.authorization if decision is not None else None),
+        authorization=None,
         evidence_snapshot_ids=(
             decision.evidence_snapshot_ids if decision is not None else ()
         ),
@@ -402,54 +416,13 @@ def confirm_live_activation(
     )
 
     row.idempotency_key = idempotency_key
+    # This timestamp records the explicit UX confirmation intent only. It does
+    # not mean cryptographic owner step-up has occurred.
     row.owner_confirmed_at = datetime.now(UTC)
     row.blockers_json = list(blockers)
     row.updated_at = datetime.now(UTC)
-
-    if blockers:
-        row.status = "BLOCKED"
-        row.outcome_mode = current_mode
-        _audit_confirmation(
-            db,
-            row=row,
-            promotion_evidence_correlation_id=promotion_evidence_correlation_id,
-            evidence_snapshot_ids=decision_for_audit.evidence_snapshot_ids,
-        )
-        db.flush()
-        return _row_result(row)
-
-    if decision is None or decision.authorization is None:
-        raise LiveActivationRejected("promotion guard did not authorize LIVE activation")
-
-    authorization = ModeChangeAuthorization(
-        allowed=True,
-        actor=decision.authorization.actor,
-        reason=decision.authorization.reason,
-        detail_json={
-            **decision.authorization.detail_json,
-            "activation_preview_hash": row.preview_hash,
-            "activation_idempotency_key": idempotency_key,
-            "activation_venue": row.venue,
-            "activation_account": row.account,
-            "promotion_evidence_correlation_id": promotion_evidence_correlation_id,
-            "promotion_evidence_snapshot_ids": list(
-                decision_for_audit.evidence_snapshot_ids
-            ),
-        },
-    )
-    try:
-        snapshot = change_execution_mode(
-            db,
-            target=target,
-            actor="owner",
-            reason="two-step LIVE activation confirmed",
-            authorization=authorization,
-        )
-    except ExecutionModeChangeRejected as exc:
-        raise LiveActivationRejected(str(exc)) from exc
-
-    row.status = "APPLIED"
-    row.outcome_mode = snapshot.mode
+    row.status = "BLOCKED"
+    row.outcome_mode = current_mode
     _audit_confirmation(
         db,
         row=row,

@@ -116,7 +116,7 @@ def test_confirm_requires_explicit_second_owner_confirmation(session):
     assert row.status == "PREVIEWED"
 
 
-def test_confirm_rechecks_server_gates_instead_of_trusting_preview(session):
+def test_confirm_rechecks_server_gates_and_preserves_diagnostics_while_step_up_blocks(session):
     activation = _activation()
     _set_mode(session, ExecutionLifecycleMode.CANARY)
     context = _ready_context(activation)
@@ -147,7 +147,10 @@ def test_confirm_rechecks_server_gates_instead_of_trusting_preview(session):
 
     assert result.status == "BLOCKED"
     assert result.mode == ExecutionLifecycleMode.CANARY
-    assert result.blockers == ("ops gates not verified",)
+    assert result.blockers == (
+        "ops gates not verified",
+        "OWNER_STEP_UP_NOT_IMPLEMENTED",
+    )
     assert get_execution_mode(session).mode == ExecutionLifecycleMode.CANARY
     assert session.query(ExecutionModeEvent).filter_by(
         to_mode=ExecutionLifecycleMode.LIVE
@@ -160,10 +163,13 @@ def test_confirm_rechecks_server_gates_instead_of_trusting_preview(session):
         correlation_id=correlation_id
     ).one()
     assert decision_row.allowed is False
-    assert decision_row.blockers_json == ["ops gates not verified"]
+    assert decision_row.blockers_json == [
+        "ops gates not verified",
+        "OWNER_STEP_UP_NOT_IMPLEMENTED",
+    ]
 
 
-def test_confirm_changes_mode_only_after_second_confirmation_and_gate_recheck(session):
+def test_confirm_never_changes_mode_without_server_verified_owner_step_up(session):
     activation = _activation()
     _set_mode(session, ExecutionLifecycleMode.CANARY)
     context = _ready_context(activation)
@@ -183,17 +189,13 @@ def test_confirm_changes_mode_only_after_second_confirmation_and_gate_recheck(se
     )
     session.flush()
 
-    assert result.status == "APPLIED"
-    assert result.mode == ExecutionLifecycleMode.LIVE
-    assert result.blockers == ()
-    assert get_execution_mode(session).mode == ExecutionLifecycleMode.LIVE
-    event = session.query(ExecutionModeEvent).order_by(
-        ExecutionModeEvent.occurred_at.desc()
-    ).first()
-    assert event is not None
-    assert event.from_mode == ExecutionLifecycleMode.CANARY
-    assert event.to_mode == ExecutionLifecycleMode.LIVE
-    assert event.detail_json["activation_preview_hash"] == preview.preview_hash
+    assert result.status == "BLOCKED"
+    assert result.mode == ExecutionLifecycleMode.CANARY
+    assert result.blockers == ("OWNER_STEP_UP_NOT_IMPLEMENTED",)
+    assert get_execution_mode(session).mode == ExecutionLifecycleMode.CANARY
+    assert session.query(ExecutionModeEvent).filter_by(
+        to_mode=ExecutionLifecycleMode.LIVE
+    ).count() == 0
 
 
 def test_retry_after_lost_response_is_idempotent_and_does_not_write_second_event(session):
@@ -215,6 +217,8 @@ def test_retry_after_lost_response_is_idempotent_and_does_not_write_second_event
         evidence_provider=_ready_evidence,
     )
     session.flush()
+    assert first.status == "BLOCKED"
+    assert first.blockers == ("OWNER_STEP_UP_NOT_IMPLEMENTED",)
     live_events_before = session.query(ExecutionModeEvent).filter_by(
         to_mode=ExecutionLifecycleMode.LIVE
     ).count()
@@ -235,7 +239,7 @@ def test_retry_after_lost_response_is_idempotent_and_does_not_write_second_event
     assert second == first
     assert session.query(ExecutionModeEvent).filter_by(
         to_mode=ExecutionLifecycleMode.LIVE
-    ).count() == live_events_before
+    ).count() == live_events_before == 0
     assert session.query(AuditEvent).filter_by(
         action="execution_live_activation_confirm"
     ).count() == audits_before
@@ -297,6 +301,7 @@ def test_config_or_mode_change_makes_preview_stale_before_activation(session):
 
     assert result.status == "BLOCKED"
     assert "activation preview is stale: config changed" in result.blockers
+    assert "OWNER_STEP_UP_NOT_IMPLEMENTED" in result.blockers
     assert get_execution_mode(session).mode == ExecutionLifecycleMode.CANARY
 
 
@@ -340,3 +345,4 @@ def test_live_activation_api_requires_preview_hash_confirmation_and_idempotency_
     assert result.status == "BLOCKED"
     assert result.mode == ExecutionLifecycleMode.CANARY
     assert result.idempotency_key == "api-confirm-1"
+    assert "OWNER_STEP_UP_NOT_IMPLEMENTED" in result.blockers
