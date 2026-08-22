@@ -12,7 +12,11 @@ from dataclasses import dataclass
 from sqlalchemy.orm import Session
 
 from .enums import ExecutionKillSwitchLevel, ExecutionLifecycleMode
-from .kill_switch import get_execution_kill_switch_level, set_execution_kill_switch
+from .kill_switch import (
+    _set_execution_kill_switch_locked,
+    execution_control_lock,
+    get_execution_kill_switch_level,
+)
 from .mode import get_execution_mode
 from .promotion_guard import authorize_halt_new_entries, change_mode_with_guard
 
@@ -82,19 +86,17 @@ def automatic_downshift(
     )
 
 
-def automatic_halt_new_entries(
+def _automatic_halt_new_entries_locked(
     db: Session,
     *,
     reason: str,
 ) -> AutomaticHaltResult:
-    """Apply HALT_NEW_ENTRIES without ever weakening a stronger owner action."""
+    """Apply HALT while the caller already holds ``execution_control_lock``."""
 
     reason = reason.strip()
     if not reason:
         raise AutomaticSafetyRejected("automatic halt reason is required")
 
-    # Keep policy ownership in the promotion/safety guard. SAI-033 performs the
-    # durable state mutation only after that policy explicitly permits HALT.
     authorization = authorize_halt_new_entries(reason=reason)
     if not authorization.allowed:
         raise AutomaticSafetyRejected("automatic HALT_NEW_ENTRIES was not authorized")
@@ -105,7 +107,7 @@ def automatic_halt_new_entries(
     ]:
         return AutomaticHaltResult(before=before, after=before, changed=False)
 
-    state = set_execution_kill_switch(
+    state = _set_execution_kill_switch_locked(
         db,
         level=ExecutionKillSwitchLevel.HALT_NEW_ENTRIES,
         actor="system",
@@ -116,6 +118,20 @@ def automatic_halt_new_entries(
     if not state.kill_switch or after != ExecutionKillSwitchLevel.HALT_NEW_ENTRIES:
         raise RuntimeError("automatic HALT_NEW_ENTRIES did not persist fail-closed state")
     return AutomaticHaltResult(before=before, after=after, changed=True)
+
+
+def automatic_halt_new_entries(
+    db: Session,
+    *,
+    reason: str,
+) -> AutomaticHaltResult:
+    """Apply HALT_NEW_ENTRIES without ever weakening a stronger owner action."""
+
+    # Use one execution-control lock for the read/decision/write sequence. The
+    # private locked helper is also used by submit-time code that already owns
+    # the same dedicated advisory lock and therefore must not acquire it twice.
+    with execution_control_lock(db):
+        return _automatic_halt_new_entries_locked(db, reason=reason)
 
 
 __all__ = [
