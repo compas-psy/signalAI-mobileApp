@@ -6,7 +6,6 @@
 """
 
 from .base import Base
-from .device import DeviceCredential, DevicePairingSession
 from .datasets import DatasetSnapshot
 from .enums import (
     AssetClass,
@@ -84,7 +83,6 @@ from .portfolio import (
     PortfolioWeight,
     RebalanceDraft,
 )
-from .promotion_evidence import PromotionEvidenceDecision, PromotionEvidenceSnapshot
 from .research import (
     CollectionPermit,
     HypothesisEvidence,
@@ -98,15 +96,12 @@ from .research_trials import (
     ResearchTrial,
     ResearchTrialOutcome,
 )
-from .retention import RetentionAttemptIntent, RetentionAttemptOutcome
 from .risk import AuditEvent, BacktestRun, ModelRegistry, RiskSnapshot, RiskState
 from .shadow import ShadowObservation
 from .strategies import StrategyPromotionEvent, StrategyVersion
 
 __all__ = [
     "Base",
-    "DeviceCredential",
-    "DevicePairingSession",
     # dataset lineage
     "DatasetSnapshot",
     # market
@@ -158,8 +153,6 @@ __all__ = [
     "RiskSnapshot",
     "RiskState",
     "AuditEvent",
-    "RetentionAttemptIntent",
-    "RetentionAttemptOutcome",
     "BacktestRun",
     "ModelRegistry",
     "StrategyVersion",
@@ -172,8 +165,6 @@ __all__ = [
     "ExperimentRun",
     "ExperimentMetric",
     "PromotionDecision",
-    "PromotionEvidenceDecision",
-    "PromotionEvidenceSnapshot",
     # early signals
     "CollectionPermit",
     "HypothesisEvidence",
