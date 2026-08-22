@@ -94,7 +94,7 @@ def test_limit_create_scales_exactly_and_commits_nonce_before_provider_io(sessio
             )
             assert reservation is not None
             assert reservation.nonce == 120
-            assert reservation.state == "RESERVED"
+            assert reservation.state == "SUBMITTING"
 
     transport.before_create = assert_durable_before_io
     actions = LighterOrderActions(session_factory=sessions, transport=transport)
@@ -193,8 +193,11 @@ def test_successful_action_is_never_blindly_resubmitted(session) -> None:
     assert len(transport.create_calls) == 1
 
 
-def test_timeout_keeps_reserved_nonce_and_exact_retry_reuses_it(session) -> None:
-    from app.execution.venues.lighter_actions import LighterOrderActions
+def test_timeout_keeps_submitting_nonce_and_exact_retry_requires_reconciliation(session) -> None:
+    from app.execution.venues.lighter_actions import (
+        LighterActionRequiresReconciliation,
+        LighterOrderActions,
+    )
     from app.models.lighter_execution import LighterNonceReservation
 
     sessions = _sessions(session)
@@ -220,14 +223,15 @@ def test_timeout_keeps_reserved_nonce_and_exact_retry_reuses_it(session) -> None
             )
         )
         assert reservation is not None
-        assert reservation.state == "RESERVED"
+        assert reservation.state == "SUBMITTING"
         assert reservation.nonce == 77
 
     transport.create_error = None
-    actions.create_limit(**kwargs)
+    with pytest.raises(LighterActionRequiresReconciliation, match="reconciliation"):
+        actions.create_limit(**kwargs)
 
     assert transport.next_nonce_calls == 1
-    assert [call["nonce"] for call in transport.create_calls] == [77, 77]
+    assert [call["nonce"] for call in transport.create_calls] == [77]
 
 
 def test_changed_payload_cannot_reuse_same_action_identity_after_timeout(session) -> None:
@@ -356,7 +360,7 @@ def test_provider_rejection_keeps_nonce_unresolved_for_later_reconciliation(sess
             )
         )
         assert reservation is not None
-        assert reservation.state == "RESERVED"
+        assert reservation.state == "SUBMITTING"
 
 
 def test_invalid_market_or_unrepresentable_order_fails_before_nonce_or_transport(session) -> None:
