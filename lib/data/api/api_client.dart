@@ -70,7 +70,24 @@ class ApiClient {
     String path, {
     Map<String, dynamic>? body,
     String? idempotencyKey,
-    String? pairingSessionId,
+  }) async =>
+      await _send(
+        'POST',
+        path,
+        body: body,
+        idempotencyKey: idempotencyKey,
+      )
+          as Map<String, dynamic>;
+
+  /// Pairing is deliberately a separate transport capability instead of a
+  /// generic caller-supplied header. This keeps ordinary ApiClient.post
+  /// implementations substitutable and prevents unrelated features from
+  /// attaching the short-lived pairing capability to arbitrary requests.
+  Future<Map<String, dynamic>> postForPairing(
+    String path, {
+    Map<String, dynamic>? body,
+    String? idempotencyKey,
+    required String pairingSessionId,
   }) async =>
       await _send(
         'POST',
@@ -182,7 +199,7 @@ class ApiClient {
     }
     // This is deliberately a narrow argument rather than a generic caller
     // header map: no feature may override the bearer or TLS-safe transport
-    // controls.  The value exists only for this request and is never logged.
+    // controls. The value exists only for this request and is never logged.
     if (pairingSessionId != null) {
       request.headers.set('X-Pairing-Session-Id', pairingSessionId);
     }
