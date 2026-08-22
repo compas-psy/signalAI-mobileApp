@@ -17,8 +17,13 @@ from .kill_switch import (
     execution_control_lock,
     get_execution_kill_switch_level,
 )
-from .mode import get_execution_mode
-from .promotion_guard import authorize_halt_new_entries, change_mode_with_guard
+from .mode import _change_execution_mode_locked, get_execution_mode
+from .promotion_guard import (
+    PromotionEvidence,
+    authorize_halt_new_entries,
+    change_mode_with_guard,
+    evaluate_promotion,
+)
 
 
 class AutomaticSafetyRejected(ValueError):
@@ -37,6 +42,12 @@ class AutomaticHaltResult:
     before: ExecutionKillSwitchLevel
     after: ExecutionKillSwitchLevel
     changed: bool
+
+
+@dataclass(frozen=True)
+class AutomaticHaltDownshiftResult:
+    halt: AutomaticHaltResult
+    downshift: AutomaticDownshiftResult
 
 
 _MODE_RISK_RANK = {
@@ -134,10 +145,81 @@ def automatic_halt_new_entries(
         return _automatic_halt_new_entries_locked(db, reason=reason)
 
 
+def automatic_halt_and_downshift(
+    db: Session,
+    *,
+    target: ExecutionLifecycleMode,
+    reason: str,
+) -> AutomaticHaltDownshiftResult:
+    """Persist HALT first, then apply an explicitly selected lower-risk mode.
+
+    SAI-083 deliberately does not choose the failure-class→mode mapping: that is
+    an unresolved ADR-0002 owner decision. This primitive only guarantees the
+    safety order once a caller supplies a target. HALT is committed before target
+    validation/mutation so a bad mapping or later failure remains fail-closed.
+    """
+
+    reason = reason.strip()
+    if not reason:
+        raise AutomaticSafetyRejected("automatic safety reason is required")
+
+    with execution_control_lock(db):
+        before_mode = get_execution_mode(db).mode
+        halt = _automatic_halt_new_entries_locked(db, reason=reason)
+
+        try:
+            parsed_target = ExecutionLifecycleMode(target)
+        except (TypeError, ValueError) as exc:
+            raise AutomaticSafetyRejected(
+                "automatic mode action must target a strictly lower-risk mode"
+            ) from exc
+
+        if _MODE_RISK_RANK[parsed_target] >= _MODE_RISK_RANK[before_mode]:
+            raise AutomaticSafetyRejected(
+                "automatic mode action must target a strictly lower-risk mode"
+            )
+
+        decision = evaluate_promotion(
+            current=before_mode,
+            target=parsed_target,
+            evidence=PromotionEvidence(),
+        )
+        if not decision.allowed or decision.authorization is None:
+            raise AutomaticSafetyRejected(
+                "automatic lower-risk mode transition was not authorized"
+            )
+
+        try:
+            snapshot = _change_execution_mode_locked(
+                db,
+                target=parsed_target,
+                actor="system",
+                reason=reason,
+                authorization=decision.authorization,
+            )
+            db.commit()
+        except Exception:
+            # The HALT helper commits before we reach mode mutation. Rolling
+            # back only this later unit of work cannot reopen entries.
+            db.rollback()
+            raise
+
+        return AutomaticHaltDownshiftResult(
+            halt=halt,
+            downshift=AutomaticDownshiftResult(
+                before=before_mode,
+                after=snapshot.mode,
+                changed=snapshot.mode != before_mode,
+            ),
+        )
+
+
 __all__ = [
     "AutomaticDownshiftResult",
+    "AutomaticHaltDownshiftResult",
     "AutomaticHaltResult",
     "AutomaticSafetyRejected",
     "automatic_downshift",
+    "automatic_halt_and_downshift",
     "automatic_halt_new_entries",
 ]
