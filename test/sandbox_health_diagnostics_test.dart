@@ -16,6 +16,7 @@ class _ApproveApi extends ApiClient {
     String path, {
     Map<String, dynamic>? body,
     String? idempotencyKey,
+    String? pairingSessionId,
   }) async =>
       {
         'idea_id': ideaId,
