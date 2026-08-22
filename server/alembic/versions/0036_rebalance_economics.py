@@ -10,7 +10,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision = "0036_rebalance_economics"
-down_revision = "0035_lighter_reconciliation"
+down_revision = "0037_lighter_smoke_event_clock"
 branch_labels = None
 depends_on = None
 
@@ -48,7 +48,6 @@ def upgrade() -> None:
         "rebalance_drafts",
         sa.Column("broker_final_tax", sa.Numeric(precision=24, scale=8), nullable=True),
     )
-    # Historic zero was a placeholder, not a known zero-cost broker result.
     op.execute(
         "UPDATE rebalance_drafts "
         "SET estimated_costs = NULL, estimated_tax = NULL, "
