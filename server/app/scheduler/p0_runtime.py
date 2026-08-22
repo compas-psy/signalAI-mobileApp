@@ -135,13 +135,22 @@ def _add_paper_ab_job(scheduler, *, every: timedelta, paper_ab_runner=None) -> N
         raise ValueError("paper_ab_every must be a positive timedelta")
 
     if paper_ab_runner is not None:
-        run = paper_ab_runner
+        upstream = paper_ab_runner
     else:
 
-        def run(session) -> str:
+        def upstream(session) -> str:
             from ..experiments.paper_ab_runtime_v1 import run_paper_ab_cycle
 
             return run_paper_ab_cycle(session).summary()
+
+    def run(session) -> str:
+        """Persist fail-closed promotion measurements in the committed worker cycle."""
+
+        from ..execution.promotion_evidence import collect_registered_promotion_evidence
+
+        detail = upstream(session)
+        reports = collect_registered_promotion_evidence(session)
+        return f"{detail}; promotion evidence scopes={len(reports)}"
 
     scheduler.add("paper_ab", every, run)
     job = scheduler.jobs.pop()

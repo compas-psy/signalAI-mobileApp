@@ -186,14 +186,48 @@ class RebalanceDraft(UuidPk, Base):
     actions_json: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     before_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     after_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
-    estimated_costs: Mapped[Money] = mapped_column(nullable=False, default=0)
-    estimated_tax: Mapped[Money] = mapped_column(nullable=True)
-    # §15.1 UX-ТЗ: налоговые расчёты маркируются оценочными, окончательная
-    # сумма — за брокером как налоговым агентом.
+    # ``None`` is semantically different from zero: it means fee inputs were
+    # unavailable, so this is not an economics-actionable manual proposal.
+    estimated_costs: Mapped[Money | None] = mapped_column(nullable=True)
+    estimated_tax: Mapped[Money | None] = mapped_column(nullable=True)
+    # Kept for legacy readers.  ``economics_status`` distinguishes UNKNOWN
+    # from ESTIMATED; a boolean alone cannot make that safety distinction.
     tax_is_estimate: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True
     )
+    economics_status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="UNKNOWN"
+    )
+    economics_provenance_json: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )
+    # Broker settlement is never written over the owner-facing estimate.
+    broker_final_costs: Mapped[Money | None] = mapped_column(nullable=True)
+    broker_final_tax: Mapped[Money | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = utcnow_column()
+
+    __table_args__ = (
+        CheckConstraint(
+            "economics_status IN ('UNKNOWN','ESTIMATED','BROKER_FINAL')",
+            name="economics_status_known",
+        ),
+        CheckConstraint(
+            "estimated_costs IS NULL OR estimated_costs >= 0",
+            name="estimated_costs_non_negative",
+        ),
+        CheckConstraint(
+            "estimated_tax IS NULL OR estimated_tax >= 0",
+            name="estimated_tax_non_negative",
+        ),
+        CheckConstraint(
+            "broker_final_costs IS NULL OR broker_final_costs >= 0",
+            name="broker_final_costs_non_negative",
+        ),
+        CheckConstraint(
+            "broker_final_tax IS NULL OR broker_final_tax >= 0",
+            name="broker_final_tax_non_negative",
+        ),
+    )
 
 
 class PortfolioRun(UuidPk, Base):

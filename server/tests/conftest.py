@@ -9,6 +9,7 @@ append-only, `NUMERIC` с сохранением точности, `CHECK` с у
 
 from __future__ import annotations
 
+import hashlib
 import os
 import subprocess
 import uuid
@@ -16,11 +17,23 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.models import Base, Instrument
+from app.device_enrollment import token_verifier
+from app.market.economic_events import EventAssessment
+from app.models import (
+    Base,
+    DeviceCredential,
+    Instrument,
+    RetentionAttemptIntent,
+    RetentionAttemptOutcome,
+)
 from app.models.enums import AssetClass, Venue
+from tests.calendar_support import (
+    CLEAR_EVENT_CALENDAR_BLOCK,
+    configure_clear_event_calendar,
+)
 
 ADMIN_DSN = os.environ.get(
     "SIGNALAI_ADMIN_DSN",
@@ -28,14 +41,45 @@ ADMIN_DSN = os.environ.get(
 )
 TEST_DB = os.environ.get("SIGNALAI_TEST_DB", "signalai_test")
 TEST_DSN = ADMIN_DSN.rsplit("/", 1)[0] + f"/{TEST_DB}"
-DEVICE_TOKEN = "ci-device-token"
+DEVICE_TOKEN = "c" * 43
+PAIRING_SESSION_ID = "p" * 43
 DEVICE_HEADERS = {"Authorization": f"Bearer {DEVICE_TOKEN}"}
+_ACTIONABLE_CALENDAR_MODULES = {
+    "test_api",
+    "test_decision_replay_diagnostics",
+    "test_thin_lifecycle_regressions",
+}
+_DURABLE_RETENTION_TEST = "test_unresolved_older_intent_blocks_new_period_before_unlink"
 
 
 @pytest.fixture(autouse=True)
 def configured_device_token(monkeypatch):
     """Real app tests cross the same device-auth boundary as production."""
     monkeypatch.setenv("SIGNALAI_DEVICE_TOKEN", DEVICE_TOKEN)
+    # A bootstrap token alone must never be enough to mint device bearers.
+    # Tests receive a separate, short-lived-in-production pairing capability.
+    monkeypatch.setenv("SIGNALAI_DEVICE_PAIRING_SESSION_ID", PAIRING_SESSION_ID)
+    monkeypatch.setenv("SIGNALAI_DEVICE_PAIRING_EXPIRES_AT", "2030-01-01T00:00:00Z")
+    monkeypatch.setenv("SIGNALAI_DEVICE_PAIRING_MAX_USES", "8")
+    monkeypatch.setenv("SIGNALAI_RISK_PREVIEW_SIGNING_KEY", "ci-risk-preview-secret")
+
+
+@pytest.fixture(autouse=True)
+def configured_actionable_calendar(request, monkeypatch, tmp_path):
+    """Supply explicit safe prerequisites only to tests that require them."""
+    module_name = getattr(request.module, "__name__", "").rsplit(".", 1)[-1]
+    if module_name in _ACTIONABLE_CALENDAR_MODULES:
+        configure_clear_event_calendar(monkeypatch, tmp_path)
+        monkeypatch.setenv("SIGNALAI_TEST_CLEAR_CALENDAR_FIXTURE", "1")
+        return
+    if module_name == "test_scoring" and hasattr(request.module, "GOOD"):
+        # GOOD means every admission prerequisite is known-good. Missing event
+        # data is intentionally fail-closed in production, so make CLEAR an
+        # explicit part of this legacy convenience fixture rather than changing
+        # admit()'s default.
+        request.module.GOOD["event_assessment"] = EventAssessment(
+            "CLEAR", "NO_BLOCKING_EVENT", "проверка календаря завершена"
+        )
 
 
 def _recreate_database() -> None:
@@ -73,6 +117,21 @@ def database_url() -> str:
     )
     if result.returncode != 0:
         raise RuntimeError(f"миграции не применились:\n{result.stderr}")
+    fixture_engine = create_engine(TEST_DSN, future=True)
+    with Session(fixture_engine) as session:
+        session.add(
+            DeviceCredential(
+                device_id="ci-device-enrollment-fixture",
+                generation=1,
+                token_verifier=token_verifier(DEVICE_TOKEN),
+                issued_request_hash=hashlib.sha256(
+                    b"ci-device-fixture"
+                ).hexdigest(),
+                metadata_json={"label": "CI", "platform": "test"},
+            )
+        )
+        session.commit()
+    fixture_engine.dispose()
     return TEST_DSN
 
 
@@ -83,13 +142,57 @@ def engine(database_url: str):
     eng.dispose()
 
 
-@pytest.fixture
-def session(engine) -> Session:
-    """Сессия с откатом после теста.
+def _resolve_committed_retention_intents(db: Session) -> None:
+    unresolved = list(
+        db.scalars(
+            select(RetentionAttemptIntent)
+            .outerjoin(
+                RetentionAttemptOutcome,
+                RetentionAttemptOutcome.attempt_id == RetentionAttemptIntent.attempt_id,
+            )
+            .where(RetentionAttemptOutcome.attempt_id.is_(None))
+        )
+    )
+    for intent in unresolved:
+        db.add(
+            RetentionAttemptOutcome(
+                attempt_id=intent.attempt_id,
+                occurred_at=datetime.now(UTC),
+                status="FAILED",
+                result_json={
+                    "status": "FAILED",
+                    "candidate_files": 0,
+                    "candidate_bytes": 0,
+                    "deleted_files": 0,
+                    "deleted_bytes": 0,
+                    "errors": ["test fixture resolved committed intent"],
+                },
+            )
+        )
+    if unresolved:
+        db.commit()
 
-    Каждый тест работает во вложенной транзакции, которая откатывается: база
-    остаётся чистой, и порядок тестов ни на что не влияет.
+
+@pytest.fixture
+def session(engine, request) -> Session:
+    """Normally roll back each test; one retention test needs real durability.
+
+    The retention executor deliberately opens another PostgreSQL connection
+    before unlinking. Its unresolved-intent contract therefore cannot be tested
+    with an uncommitted outer test transaction. That one test receives a real
+    committing session, then teardown appends an outcome so later tests are not
+    poisoned by an intentionally unresolved audit record.
     """
+    if request.node.name == _DURABLE_RETENTION_TEST:
+        db = Session(engine, expire_on_commit=False, future=True)
+        try:
+            yield db
+        finally:
+            db.rollback()
+            _resolve_committed_retention_intents(db)
+            db.close()
+        return
+
     connection = engine.connect()
     transaction = connection.begin()
     factory = sessionmaker(bind=connection, expire_on_commit=False, future=True)
@@ -146,6 +249,11 @@ def idea_kwargs(instrument_id: str, moment: datetime, **overrides) -> dict:
     Собрана так, чтобы проходить все ограничения таблицы: тест на конкретное
     ограничение ломает ровно одно поле и видит именно свою ошибку.
     """
+    explanation = (
+        {"event_calendar": dict(CLEAR_EVENT_CALENDAR_BLOCK)}
+        if os.environ.get("SIGNALAI_TEST_CLEAR_CALENDAR_FIXTURE") == "1"
+        else {}
+    )
     base = dict(
         instrument_id=instrument_id,
         strategy="TREND_PULLBACK",
@@ -182,7 +290,7 @@ def idea_kwargs(instrument_id: str, moment: datetime, **overrides) -> dict:
         risk_per_unit=Decimal("700"),
         correlation_cluster="rub_fx",
         drawdown_multiplier=Decimal("1"),
-        explanation_json={},
+        explanation_json=explanation,
         data_warnings=[],
         signal_time=moment,
         expires_at=moment + timedelta(days=5),

@@ -29,6 +29,7 @@ from sqlalchemy.orm import Session
 from ..models import Bar, DataQualityEvent
 from ..models.enums import Timeframe
 from ..market.blindness import annotate as annotate_blind
+from ..ops.retention import RetentionAutopilotConfig
 
 log = logging.getLogger("signalai.scheduler")
 
@@ -135,6 +136,9 @@ def build_default_scheduler(
     scan_every: timedelta = timedelta(minutes=15),
     portfolio_every: timedelta = timedelta(hours=24),
     research_every: timedelta = timedelta(hours=12),
+    retention_every: timedelta = timedelta(minutes=15),
+    retention_config: RetentionAutopilotConfig | None = None,
+    resource_snapshot_provider=None,
     fetch=None,
 ) -> Scheduler:
     """Расписание по умолчанию: вселенная → загрузка → допуск → скан.
@@ -164,9 +168,22 @@ def build_default_scheduler(
     from ..research.sources import readiness, sync_registry
     from ..portfolio.build import build_all
     from ..portfolio.lifecycle import rebuild_due
+    from ..ops.backpressure import build_backpressure_plan
+    from ..ops.ollama_shed import shed_ollama_for_plan
+    from ..ops.pressure import PressureClassifier
+    from ..ops.remediation import record_resource_remediation
+    from ..ops.resources import collect_resource_snapshot
+    from ..ops.retention import run_safe_retention
+    from ..ops.retention_attempts import (
+        derive_retention_attempt_id,
+        execute_retention_attempt,
+    )
 
     scheduler = Scheduler()
     state: dict[str, datetime | None] = {"last_bar": None}
+    retention = retention_config or RetentionAutopilotConfig()
+    resource_snapshot = resource_snapshot_provider or collect_resource_snapshot
+    pressure_classifier = PressureClassifier()
 
     def universe(session: Session) -> str:
         parts = []
@@ -254,7 +271,8 @@ def build_default_scheduler(
         if state["last_bar"] is not None and newest <= state["last_bar"]:
             return f"новых баров нет с {newest.isoformat()} — скан пропущен"
         state["last_bar"] = newest
-        result = run_scan(session)
+        from ..market.economic_events import load_owned_calendar
+        result = run_scan(session, event_calendar=load_owned_calendar(now=datetime.now(UTC)))
         return (
             f"просмотрено {result.scanned}, идей {result.produced}, "
             f"пропущено {len(result.skipped)}, отказов {len(result.rejections)}"
@@ -306,6 +324,52 @@ def build_default_scheduler(
             detail += f", протухло гипотез {expired}"
         return detail
 
+    def resource_autopilot(session: Session) -> str:
+        snapshot = resource_snapshot()
+        assessment = pressure_classifier.evaluate(snapshot)
+        plan = build_backpressure_plan(state=assessment.state)
+        retention_attempt_id = None
+        if retention.dry_run:
+            retention_result = run_safe_retention(
+                assessment=assessment,
+                targets=retention.targets,
+                now=snapshot.collected_at,
+                dry_run=True,
+            )
+            attempt_detail = "dry-run"
+        else:
+            stable_attempt_id = derive_retention_attempt_id(
+                targets=retention.targets,
+                now=snapshot.collected_at,
+                budget_period=retention.budget_period,
+            )
+            attempt = execute_retention_attempt(
+                session,
+                assessment=assessment,
+                targets=retention.targets,
+                now=snapshot.collected_at,
+                dry_run=False,
+                attempt_id=stable_attempt_id,
+            )
+            retention_result = attempt.retention
+            retention_attempt_id = attempt.attempt_id
+            attempt_detail = f"attempt={attempt.attempt_id}; execution={attempt.status.value}"
+        ollama = shed_ollama_for_plan(plan)
+        evidence = record_resource_remediation(
+            session,
+            assessment=assessment,
+            plan=plan,
+            ollama=ollama,
+            retention=retention_result,
+            now=snapshot.collected_at,
+            force_audit=True,
+            retention_attempt_id=retention_attempt_id,
+        )
+        return (
+            f"pressure={assessment.state.value}; retention={retention_result.status.value}; "
+            f"audit={'recorded' if evidence.recorded else 'deduplicated'}; {attempt_detail}"
+        )
+
     scheduler.add("universe", universe_every, universe)
     scheduler.add("ingest", ingest_every, ingest)
     scheduler.add("review", review_every, review)
@@ -315,6 +379,8 @@ def build_default_scheduler(
     scheduler.add("scan", scan_every, scan)
     scheduler.add("portfolio", portfolio_every, portfolio)
     scheduler.add("research", research_every, research)
+    if retention.enabled:
+        scheduler.add("resource-autopilot", retention_every, resource_autopilot)
     return scheduler
 
 

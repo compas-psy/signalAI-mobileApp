@@ -97,22 +97,16 @@ def test_metrics_endpoint_fails_closed_without_any_owner_secret_and_health_stays
     assert health.status_code == 200
 
 
-def test_metrics_endpoint_reuses_existing_owner_device_token_by_default(monkeypatch):
+def test_metrics_endpoint_never_reuses_bootstrap_pairing_token(monkeypatch):
     reset_http_metrics_for_tests()
     monkeypatch.delenv("SIGNALAI_METRICS_TOKEN", raising=False)
     monkeypatch.setenv("SIGNALAI_DEVICE_TOKEN", "owner-device-secret")
     client = TestClient(app)
 
-    denied = client.get("/metrics", headers={"Authorization": "Bearer wrong"})
-    assert denied.status_code == 401
-
-    allowed = client.get(
+    denied = client.get(
         "/metrics", headers={"Authorization": "Bearer owner-device-secret"}
     )
-    assert allowed.status_code == 200
-    assert allowed.headers["content-type"].startswith("text/plain")
-    assert "signalai_http_request_duration_seconds" in allowed.text
-    assert "signalai_http_requests_total" in allowed.text
+    assert denied.status_code == 503
 
 
 def test_dedicated_metrics_token_overrides_device_token_when_configured(monkeypatch):

@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 from ..models.enums import LiquidityRegime, QualityStatus
+from ..market.economic_events import EventAssessment
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +57,7 @@ def admit(
     has_trigger: bool,
     risk_blocked: bool,
     risk_block_reason: str = "",
+    event_assessment: EventAssessment | None = None,
     thresholds: AdmissionThresholds | None = None,
 ) -> Admission:
     """Решить судьбу идеи по §15.6.
@@ -95,8 +97,16 @@ def admit(
         ),
         Gate("trigger", "Триггер", has_trigger, "триггер есть" if has_trigger else "триггера нет"),
     ]
+    event_assessment = event_assessment or EventAssessment(
+        "UNAVAILABLE", "EVENT_SOURCE_UNAVAILABLE", "календарь событий не передан"
+    )
+    gates.insert(1, Gate("economic_event", "Экономический календарь", not event_assessment.blocks_admission, event_assessment.detail))
 
-    blocking = [g for g in gates if g.name in ("risk_block", "liquidity") and not g.passed]
+    blocking = [
+        g
+        for g in gates
+        if g.name in ("risk_block", "economic_event", "liquidity") and not g.passed
+    ]
     if blocking:
         return Admission(
             QualityStatus.REJECTED,

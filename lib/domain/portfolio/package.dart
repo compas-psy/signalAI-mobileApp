@@ -225,6 +225,16 @@ class PortfolioRebalanceAction {
     required this.actualWeight,
     required this.amountRub,
     required this.reason,
+    this.economicsStatus = 'UNKNOWN',
+    this.actionable = false,
+    this.orderQuantity,
+    this.orderNotionalRub,
+    this.estimatedCostsRub,
+    this.estimatedTaxRub,
+    this.brokerFinalCostsRub,
+    this.brokerFinalTaxRub,
+    this.economicsProvenance = const {},
+    this.economicsBlockers = const [],
   });
 
   final String instrumentId;
@@ -234,6 +244,16 @@ class PortfolioRebalanceAction {
   final double actualWeight;
   final double amountRub;
   final String reason;
+  final String economicsStatus;
+  final bool actionable;
+  final double? orderQuantity;
+  final double? orderNotionalRub;
+  final double? estimatedCostsRub;
+  final double? estimatedTaxRub;
+  final double? brokerFinalCostsRub;
+  final double? brokerFinalTaxRub;
+  final Map<String, String> economicsProvenance;
+  final List<String> economicsBlockers;
 }
 
 /// Advisory-only сверка текущего инвестиционного счёта с одним пакетом.
@@ -249,6 +269,12 @@ class PortfolioRebalance {
     required this.maxDrift,
     required this.totalValue,
     required this.actions,
+    this.actionable = false,
+    this.economicsStatus = 'UNKNOWN',
+    this.estimatedCostsRub,
+    this.estimatedTaxRub,
+    this.brokerFinalCostsRub,
+    this.brokerFinalTaxRub,
     this.unavailableReason,
   });
 
@@ -260,6 +286,12 @@ class PortfolioRebalance {
         maxDrift = 0,
         totalValue = 0,
         actions = const [],
+        actionable = false,
+        economicsStatus = 'UNKNOWN',
+        estimatedCostsRub = null,
+        estimatedTaxRub = null,
+        brokerFinalCostsRub = null,
+        brokerFinalTaxRub = null,
         unavailableReason = reason;
 
   final String modelId;
@@ -269,6 +301,12 @@ class PortfolioRebalance {
   final double maxDrift;
   final double totalValue;
   final List<PortfolioRebalanceAction> actions;
+  final bool actionable;
+  final String economicsStatus;
+  final double? estimatedCostsRub;
+  final double? estimatedTaxRub;
+  final double? brokerFinalCostsRub;
+  final double? brokerFinalTaxRub;
   final String? unavailableReason;
 
   bool get isAvailable => unavailableReason == null;

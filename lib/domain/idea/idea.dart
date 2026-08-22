@@ -55,14 +55,14 @@ enum IdeaReadiness {
 class EventRisk {
   const EventRisk({
     required this.title,
-    required this.at,
+    this.at,
     required this.impact,
     required this.policy,
     this.blocksEntry = false,
   });
 
   final String title;
-  final DateTime at;
+  final DateTime? at;
   final EventImpact impact;
 
   /// Что политика делает с идеей: запрещает вход, режет риск, только метка.
@@ -71,7 +71,7 @@ class EventRisk {
   /// Запрещает ли политика вход в окне события (ТЗ §11.1).
   final bool blocksEntry;
 
-  Duration until(DateTime now) => at.difference(now);
+  Duration? until(DateTime now) => at?.difference(now);
 }
 
 /// Торговая идея — центральный объект ТЗ (§8, §9, §17).
@@ -181,6 +181,7 @@ class Idea {
       actionable &&
       state.canConfirm &&
       plan != null &&
+      eventRisk?.blocksEntry != true &&
       sizingBlocker.isEmpty;
 
   /// Тикер для подписи: «CRYPTO:PERP:BTCUSDT» → «BTCUSDT».

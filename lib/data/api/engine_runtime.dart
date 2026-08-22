@@ -22,11 +22,12 @@ class EngineRuntimeCredentials {
       baseUrl.startsWith('https://') && deviceToken.isNotEmpty && issue == null;
 }
 
-/// Восстановить адрес из JSON, а токен — только из Android Keystore.
+/// Восстановить адрес из JSON, а active-device token — только из Keystore.
 ///
-/// Старый plaintext `engine.device_token` переносится один раз. JSON сразу
-/// переписывается без секрета; если Keystore недоступен, токен не остаётся на
-/// диске и контур закрывается с понятной причиной.
+/// Предыдущая версия хранила общий bootstrap secret как `device_token`.
+/// Его нельзя переносить: сервер выдаёт активный bearer только после pairing.
+/// Поэтому миграция стирает legacy секрет и требует перепривязку, а не пытается
+/// угадать его тип и случайно открыть business API старым credential.
 Future<EngineRuntimeCredentials> restoreEngineRuntime(
   LocalStore store,
   NativeBridge bridge,
@@ -38,11 +39,13 @@ Future<EngineRuntimeCredentials> restoreEngineRuntime(
 
   final effectiveUrl = ApiConfig.baseUrl;
   final legacy = saved?['device_token'] as String? ?? '';
-  final hadPlaintext = saved?.containsKey('device_token') == true;
+  final enrolled = saved?['device_enrollment_v1'] == true;
+  final deviceId = saved?['device_id'] as String?;
+  final hadLegacy = legacy.isNotEmpty || !enrolled;
   final vaultAvailable = await bridge.vaultAvailable();
 
   if (!vaultAvailable) {
-    if (hadPlaintext) await store.write('engine', {'base_url': savedUrl});
+    if (hadLegacy) await store.write('engine', {'base_url': savedUrl});
     return EngineRuntimeCredentials(
       baseUrl: effectiveUrl,
       deviceToken: '',
@@ -52,13 +55,24 @@ Future<EngineRuntimeCredentials> restoreEngineRuntime(
     );
   }
 
-  var token = '';
-  if (legacy.isNotEmpty) {
-    if (await bridge.putEngineDeviceToken(legacy)) token = legacy;
-  } else {
-    token = await bridge.engineDeviceToken() ?? '';
+  if (hadLegacy) {
+    // Explicitly remove the old raw value from both stores.  It might be the
+    // bootstrap secret and must never become a runtime API bearer again.
+    await bridge.deleteEngineDeviceToken();
+    await store.write('engine', {
+      'base_url': savedUrl,
+      'device_id': ?deviceId,
+    });
+    return EngineRuntimeCredentials(
+      baseUrl: effectiveUrl,
+      deviceToken: '',
+      issue: effectiveUrl.isEmpty
+          ? 'Адрес движка не задан.'
+          : 'Устройство не привязано: пройдите привязку заново.',
+    );
   }
-  if (hadPlaintext) await store.write('engine', {'base_url': savedUrl});
+
+  final token = await bridge.engineDeviceToken() ?? '';
 
   ApiConfig.setDeviceToken(token);
   return EngineRuntimeCredentials(
@@ -67,7 +81,7 @@ Future<EngineRuntimeCredentials> restoreEngineRuntime(
     issue: effectiveUrl.isEmpty
         ? 'Адрес движка не задан.'
         : (token.isEmpty
-            ? 'Устройство не привязано: задайте токен в «Подключениях».'
+            ? 'Устройство не привязано: пройдите привязку в «Подключениях».'
             : null),
   );
 }

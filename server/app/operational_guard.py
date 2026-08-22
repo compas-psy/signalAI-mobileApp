@@ -12,8 +12,6 @@ of invariants that must never be violated in the owner UI:
 
 from __future__ import annotations
 
-import hmac
-import os
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import UUID
@@ -309,16 +307,7 @@ def reconcile_operational_lifecycle(
 
 
 def _authorized(request: Request) -> bool:
-    expected = os.environ.get("SIGNALAI_DEVICE_TOKEN", "").strip()
-    if not expected:
-        return False
-    authorization = request.headers.get("authorization", "")
-    scheme, _, supplied = authorization.partition(" ")
-    return (
-        scheme.lower() == "bearer"
-        and bool(supplied)
-        and hmac.compare_digest(supplied.strip(), expected)
-    )
+    return bool(getattr(request.state, "device_authenticated", False))
 
 
 def _terminal_approval_response(session: Session, request: Request) -> Response | None:

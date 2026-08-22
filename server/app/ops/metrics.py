@@ -243,10 +243,7 @@ def render_metrics(
 
 
 def metrics_response(request: Request) -> Response:
-    expected = (
-        os.environ.get("SIGNALAI_METRICS_TOKEN", "").strip()
-        or os.environ.get("SIGNALAI_DEVICE_TOKEN", "").strip()
-    )
+    expected = os.environ.get("SIGNALAI_METRICS_TOKEN", "").strip()
     if not expected:
         return Response(
             status_code=503,

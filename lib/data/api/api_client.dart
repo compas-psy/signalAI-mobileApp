@@ -71,7 +71,31 @@ class ApiClient {
     Map<String, dynamic>? body,
     String? idempotencyKey,
   }) async =>
-      await _send('POST', path, body: body, idempotencyKey: idempotencyKey)
+      await _send(
+        'POST',
+        path,
+        body: body,
+        idempotencyKey: idempotencyKey,
+      )
+          as Map<String, dynamic>;
+
+  /// Pairing is deliberately a separate transport capability instead of a
+  /// generic caller-supplied header. This keeps ordinary ApiClient.post
+  /// implementations substitutable and prevents unrelated features from
+  /// attaching the short-lived pairing capability to arbitrary requests.
+  Future<Map<String, dynamic>> postForPairing(
+    String path, {
+    Map<String, dynamic>? body,
+    String? idempotencyKey,
+    required String pairingSessionId,
+  }) async =>
+      await _send(
+        'POST',
+        path,
+        body: body,
+        idempotencyKey: idempotencyKey,
+        pairingSessionId: pairingSessionId,
+      )
           as Map<String, dynamic>;
 
   Future<Map<String, dynamic>> put(
@@ -92,6 +116,7 @@ class ApiClient {
     String path, {
     Map<String, dynamic>? body,
     String? idempotencyKey,
+    String? pairingSessionId,
   }) async {
     final routes = _routes.where((e) => e.trim().isNotEmpty).toList();
     if (routes.isEmpty) {
@@ -123,6 +148,7 @@ class ApiClient {
             path,
             body: body,
             idempotencyKey: idempotencyKey,
+            pairingSessionId: pairingSessionId,
           );
         } on _TransportFailure catch (failure) {
           lastFailure = failure.cause;
@@ -146,6 +172,7 @@ class ApiClient {
     String path, {
     Map<String, dynamic>? body,
     String? idempotencyKey,
+    String? pairingSessionId,
   }) async {
     final uri = Uri.parse('$route$path');
     final HttpClientRequest request;
@@ -169,6 +196,12 @@ class ApiClient {
     }
     if (idempotencyKey != null) {
       request.headers.set('X-Idempotency-Key', idempotencyKey);
+    }
+    // This is deliberately a narrow argument rather than a generic caller
+    // header map: no feature may override the bearer or TLS-safe transport
+    // controls. The value exists only for this request and is never logged.
+    if (pairingSessionId != null) {
+      request.headers.set('X-Pairing-Session-Id', pairingSessionId);
     }
     if (body != null) {
       request.headers.contentType = ContentType.json;

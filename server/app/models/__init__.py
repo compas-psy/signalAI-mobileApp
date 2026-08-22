@@ -7,6 +7,7 @@
 
 from .base import Base
 from .datasets import DatasetSnapshot
+from .device import DeviceCredential, DevicePairingSession
 from .enums import (
     AssetClass,
     BarrierOutcome,
@@ -83,6 +84,7 @@ from .portfolio import (
     PortfolioWeight,
     RebalanceDraft,
 )
+from .promotion_evidence import PromotionEvidenceDecision, PromotionEvidenceSnapshot
 from .research import (
     CollectionPermit,
     HypothesisEvidence,
@@ -96,6 +98,7 @@ from .research_trials import (
     ResearchTrial,
     ResearchTrialOutcome,
 )
+from .retention import RetentionAttemptIntent, RetentionAttemptOutcome
 from .risk import AuditEvent, BacktestRun, ModelRegistry, RiskSnapshot, RiskState
 from .shadow import ShadowObservation
 from .strategies import StrategyPromotionEvent, StrategyVersion
@@ -139,6 +142,9 @@ __all__ = [
     "LighterNonceReservation",
     "LighterReconciliationEvidence",
     "LighterTestnetSmokeEvidence",
+    # device lifecycle
+    "DeviceCredential",
+    "DevicePairingSession",
     # delivery
     "NotificationOutbox",
     # portfolio
@@ -153,6 +159,8 @@ __all__ = [
     "RiskSnapshot",
     "RiskState",
     "AuditEvent",
+    "RetentionAttemptIntent",
+    "RetentionAttemptOutcome",
     "BacktestRun",
     "ModelRegistry",
     "StrategyVersion",
@@ -165,6 +173,8 @@ __all__ = [
     "ExperimentRun",
     "ExperimentMetric",
     "PromotionDecision",
+    "PromotionEvidenceDecision",
+    "PromotionEvidenceSnapshot",
     # early signals
     "CollectionPermit",
     "HypothesisEvidence",

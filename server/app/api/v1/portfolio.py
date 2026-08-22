@@ -20,11 +20,17 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from ...config import get_config
 from ...db import get_db
 from ...market.investments import INVESTMENT_CLASSES, investment_universe
 from ...portfolio import holdings as holdings_store
 from ...portfolio.lifecycle import current_models
-from ...portfolio.rebalance import latest_holdings, plan
+from ...portfolio.rebalance import (
+    EconomicsStatus,
+    economics_policy_from_config,
+    latest_holdings,
+    plan,
+)
 from ...schemas.common import ApiModel, Money
 from pydantic import Field
 from uuid import UUID
@@ -323,6 +329,16 @@ class RebalanceActionOut(ApiModel):
     actual_weight: Money
     amount_rub: Money
     reason: str
+    economics_status: EconomicsStatus
+    actionable: bool
+    order_quantity: Money | None = None
+    order_notional_rub: Money | None = None
+    estimated_costs_rub: Money | None = None
+    estimated_tax_rub: Money | None = None
+    broker_final_costs_rub: Money | None = None
+    broker_final_tax_rub: Money | None = None
+    economics_provenance: dict[str, str] = Field(default_factory=dict)
+    economics_blockers: list[str] = Field(default_factory=list)
 
 
 class RebalanceOut(ApiModel):
@@ -340,6 +356,12 @@ class RebalanceOut(ApiModel):
     reason: str = ""
     max_drift: Money = Decimal(0)
     total_value: Money = Decimal(0)
+    actionable: bool = False
+    economics_status: EconomicsStatus = EconomicsStatus.UNKNOWN
+    estimated_costs_rub: Money | None = None
+    estimated_tax_rub: Money | None = None
+    broker_final_costs_rub: Money | None = None
+    broker_final_tax_rub: Money | None = None
     actions: list[RebalanceActionOut] = Field(default_factory=list)
 
 
@@ -382,7 +404,22 @@ def rebalance(
             )
         model = models[0]
 
-    draft = plan(model, holdings)
+    lot_sizes = {
+        instrument_id: lot_size
+        for instrument_id, lot_size in session.execute(
+            select(Instrument.instrument_id, Instrument.lot_size).where(
+                Instrument.instrument_id.in_(
+                    [action.instrument_id for action in model.weights]
+                )
+            )
+        ).all()
+    }
+    draft = plan(
+        model,
+        holdings,
+        economics_policy=economics_policy_from_config(get_config()),
+        lot_sizes=lot_sizes,
+    )
     return RebalanceOut(
         model_id=str(model.id),
         needed=draft.needed,
@@ -390,6 +427,12 @@ def rebalance(
         reason=draft.reason,
         max_drift=draft.max_drift,
         total_value=draft.total_value,
+        actionable=draft.actionable,
+        economics_status=draft.economics_status,
+        estimated_costs_rub=draft.estimated_costs_rub,
+        estimated_tax_rub=draft.estimated_tax_rub,
+        broker_final_costs_rub=draft.broker_final_costs_rub,
+        broker_final_tax_rub=draft.broker_final_tax_rub,
         actions=[
             RebalanceActionOut(
                 instrument_id=a.instrument_id,
@@ -399,6 +442,16 @@ def rebalance(
                 actual_weight=a.actual_weight,
                 amount_rub=a.amount_rub,
                 reason=a.reason,
+                economics_status=a.economics.status,
+                actionable=a.economics.actionable,
+                order_quantity=a.economics.order_quantity,
+                order_notional_rub=a.economics.order_notional_rub,
+                estimated_costs_rub=a.economics.estimated_costs_rub,
+                estimated_tax_rub=a.economics.estimated_tax_rub,
+                broker_final_costs_rub=a.economics.broker_final_costs_rub,
+                broker_final_tax_rub=a.economics.broker_final_tax_rub,
+                economics_provenance=a.economics.provenance,
+                economics_blockers=list(a.economics.blockers),
             )
             for a in draft.actions
         ],

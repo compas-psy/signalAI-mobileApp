@@ -29,10 +29,12 @@ from .mode import (
     get_execution_mode,
 )
 from .promotion_guard import (
+    PromotionDecision,
     PromotionEvidence,
     current_server_promotion_evidence,
     evaluate_promotion,
 )
+from .promotion_evidence import PromotionEvidenceScope, record_promotion_evidence_decision
 
 
 class LiveActivationRejected(ValueError):
@@ -128,6 +130,19 @@ def _default_evidence(
     )
 
 
+def _activation_evidence_scope(context: LiveActivationContext) -> PromotionEvidenceScope:
+    """Server-derived correlation scope; default evidence still blocks LIVE."""
+
+    return PromotionEvidenceScope(
+        strategy_family="EXECUTION_LIFECYCLE",
+        strategy_version="activation_v1",
+        venue=context.venue,
+        source_hash=hashlib.sha256(b"execution-live-activation/v1").hexdigest(),
+        config_hash=context.config_hash,
+        policy_hash=hashlib.sha256(b"ADR-0001").hexdigest(),
+    )
+
+
 def _activation_blockers(context: LiveActivationContext) -> tuple[str, ...]:
     blockers: list[str] = []
     if context.paper_only:
@@ -197,7 +212,12 @@ def create_live_activation_preview(
     current = get_execution_mode(db).mode
     target = ExecutionLifecycleMode.LIVE
     context = context_provider(db, current, target)
-    evidence = evidence_provider(db, current, target)
+    scope = _activation_evidence_scope(context)
+    evidence = (
+        current_server_promotion_evidence(db, current=current, target=target, scope=scope)
+        if evidence_provider is _default_evidence
+        else evidence_provider(db, current, target)
+    )
     decision = evaluate_promotion(
         current=current,
         target=target,
@@ -259,6 +279,8 @@ def _audit_confirmation(
     db: Session,
     *,
     row: ExecutionModeActivationRequest,
+    promotion_evidence_correlation_id: str,
+    evidence_snapshot_ids: tuple[str, ...],
 ) -> None:
     db.add(
         AuditEvent(
@@ -278,6 +300,8 @@ def _audit_confirmation(
                     else ExecutionLifecycleMode(row.from_mode).value
                 ),
                 "blockers": list(row.blockers_json),
+                "promotion_evidence_correlation_id": promotion_evidence_correlation_id,
+                "promotion_evidence_snapshot_ids": list(evidence_snapshot_ids),
             },
         )
     )
@@ -331,6 +355,7 @@ def confirm_live_activation(
     current_mode = get_execution_mode(db).mode
     target = ExecutionLifecycleMode.LIVE
     context = context_provider(db, current_mode, target)
+    scope = _activation_evidence_scope(context)
     blockers: list[str] = []
     if current_mode != ExecutionLifecycleMode(row.from_mode):
         blockers.append("activation preview is stale: mode changed")
@@ -340,7 +365,13 @@ def confirm_live_activation(
         blockers.append("activation preview is stale: displayed context changed")
 
     if not blockers:
-        base_evidence = evidence_provider(db, current_mode, target)
+        base_evidence = (
+            current_server_promotion_evidence(
+                db, current=current_mode, target=target, scope=scope
+            )
+            if evidence_provider is _default_evidence
+            else evidence_provider(db, current_mode, target)
+        )
         confirmed_evidence = replace(base_evidence, owner_confirmed=True)
         decision = evaluate_promotion(
             current=current_mode,
@@ -352,6 +383,24 @@ def confirm_live_activation(
     else:
         decision = None
 
+    decision_for_audit = PromotionDecision(
+        current=current_mode,
+        target=target,
+        allowed=not bool(blockers),
+        blockers=tuple(blockers),
+        evidence_notes=(decision.evidence_notes if decision is not None else ()),
+        authorization=(decision.authorization if decision is not None else None),
+        evidence_snapshot_ids=(
+            decision.evidence_snapshot_ids if decision is not None else ()
+        ),
+    )
+    promotion_evidence_correlation_id = record_promotion_evidence_decision(
+        db,
+        decision=decision_for_audit,
+        scope=scope,
+        actor="live-activation",
+    )
+
     row.idempotency_key = idempotency_key
     row.owner_confirmed_at = datetime.now(UTC)
     row.blockers_json = list(blockers)
@@ -360,7 +409,12 @@ def confirm_live_activation(
     if blockers:
         row.status = "BLOCKED"
         row.outcome_mode = current_mode
-        _audit_confirmation(db, row=row)
+        _audit_confirmation(
+            db,
+            row=row,
+            promotion_evidence_correlation_id=promotion_evidence_correlation_id,
+            evidence_snapshot_ids=decision_for_audit.evidence_snapshot_ids,
+        )
         db.flush()
         return _row_result(row)
 
@@ -377,6 +431,10 @@ def confirm_live_activation(
             "activation_idempotency_key": idempotency_key,
             "activation_venue": row.venue,
             "activation_account": row.account,
+            "promotion_evidence_correlation_id": promotion_evidence_correlation_id,
+            "promotion_evidence_snapshot_ids": list(
+                decision_for_audit.evidence_snapshot_ids
+            ),
         },
     )
     try:
@@ -392,7 +450,12 @@ def confirm_live_activation(
 
     row.status = "APPLIED"
     row.outcome_mode = snapshot.mode
-    _audit_confirmation(db, row=row)
+    _audit_confirmation(
+        db,
+        row=row,
+        promotion_evidence_correlation_id=promotion_evidence_correlation_id,
+        evidence_snapshot_ids=decision_for_audit.evidence_snapshot_ids,
+    )
     db.flush()
     return _row_result(row)
 

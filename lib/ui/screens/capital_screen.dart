@@ -844,6 +844,7 @@ class _SelectedPackageRebalanceState
         ),
       );
     }
+    final economicsBlocked = rebalance.needed && !rebalance.actionable;
 
     return SectionCard(
       child: Column(
@@ -853,14 +854,20 @@ class _SelectedPackageRebalanceState
             children: [
               const Expanded(child: SectionLabel('МОЙ СЧЁТ → ЭТОТ ПАКЕТ')),
               OutlineBadge(
-                label: rebalance.urgent
+                label: economicsBlocked
+                    ? 'экономика не готова'
+                    : rebalance.urgent
                     ? 'срочно'
                     : (rebalance.needed ? 'нужно поправить' : 'в норме'),
-                color: rebalance.needed ? C.warning : C.green,
-                borderColor:
-                    rebalance.needed ? C.warningBorder : C.greenBorder,
-                background:
-                    rebalance.needed ? C.warningFaint : C.greenFaint,
+                color: economicsBlocked
+                    ? C.red
+                    : (rebalance.needed ? C.warning : C.green),
+                borderColor: economicsBlocked
+                    ? C.red
+                    : (rebalance.needed ? C.warningBorder : C.greenBorder),
+                background: economicsBlocked
+                    ? C.redFaint
+                    : (rebalance.needed ? C.warningFaint : C.greenFaint),
                 fontWeight: 700,
               ),
             ],
@@ -874,6 +881,8 @@ class _SelectedPackageRebalanceState
                     : 'Отклонения ниже порога ребаланса.'),
             style: T.body(11.5, color: C.muted, height: 1.45),
           ),
+          const SizedBox(height: 10),
+          _RebalanceEconomicsSummary(rebalance: rebalance),
           if (rebalance.actions.isNotEmpty) ...[
             const SizedBox(height: 10),
             for (final action in rebalance.actions) ...[
@@ -902,16 +911,39 @@ class _SelectedPackageRebalanceState
                   ),
                   const SizedBox(width: 10),
                   Text(
-                    '${action.side == 'BUY' ? 'Купить' : 'Сократить'} '
-                    '${action.amountRub.round()} ₽',
+                    rebalance.actionable && action.actionable
+                        ? '${action.side == 'BUY' ? 'Купить' : 'Сократить'} '
+                            '${(action.orderNotionalRub ?? action.amountRub).round()} ₽'
+                        : 'Не готово к ручной операции',
                     style: T.mono(
                       11.5,
                       weight: 700,
-                      color: action.side == 'BUY' ? C.green : C.warning,
+                      color: rebalance.actionable && action.actionable
+                          ? (action.side == 'BUY' ? C.green : C.warning)
+                          : C.red,
                     ),
                   ),
                 ],
               ),
+              const SizedBox(height: 4),
+              Text(
+                _actionEconomicsText(action),
+                style: T.mono(10, color: C.faint, height: 1.35),
+              ),
+              if (action.economicsBlockers.isNotEmpty) ...[
+                const SizedBox(height: 3),
+                Text(
+                  'Блокировка: ${action.economicsBlockers.join(', ')}',
+                  style: T.mono(10, color: C.red, height: 1.35),
+                ),
+              ],
+              if (action.economicsProvenance.isNotEmpty) ...[
+                const SizedBox(height: 3),
+                Text(
+                  'Источник: ${action.economicsProvenance.entries.map((item) => '${item.key}=${item.value}').join(' · ')}',
+                  style: T.mono(9.5, color: C.faint, height: 1.35),
+                ),
+              ],
               const SizedBox(height: 8),
             ],
           ],
@@ -925,6 +957,75 @@ class _SelectedPackageRebalanceState
     );
   }
 }
+
+class _RebalanceEconomicsSummary extends StatelessWidget {
+  const _RebalanceEconomicsSummary({required this.rebalance});
+
+  final PortfolioRebalance rebalance;
+
+  @override
+  Widget build(BuildContext context) {
+    final finalAmounts = rebalance.economicsStatus == 'BROKER_FINAL';
+    final costs = finalAmounts
+        ? rebalance.brokerFinalCostsRub
+        : rebalance.estimatedCostsRub;
+    final tax = finalAmounts
+        ? rebalance.brokerFinalTaxRub
+        : rebalance.estimatedTaxRub;
+    final blocked = rebalance.needed && !rebalance.actionable;
+    return InsetBox(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            !rebalance.needed
+                ? 'ЭКОНОМИКА НЕ ТРЕБУЕТСЯ'
+                : blocked
+                ? 'ЭКОНОМИКА НЕ ГОТОВА — РУЧНОЕ ДЕЙСТВИЕ ЗАБЛОКИРОВАНО'
+                : 'ЭКОНОМИКА ЧЕРНОВИКА',
+            style: T.microLabel(color: blocked ? C.red : C.info),
+          ),
+          const SizedBox(height: 5),
+          Text(
+            'Статус: ${_economicsStatusLabel(rebalance.economicsStatus)} · '
+            'комиссия: ${_rubOrUnknown(costs)} · налог: ${_rubOrUnknown(tax)}',
+            style: T.mono(10.5, color: blocked ? C.red : C.muted, height: 1.4),
+          ),
+          if (blocked) ...[
+            const SizedBox(height: 4),
+            Text(
+              'Суммы нулём не подставляются: проверьте blockers и provenance по каждому действию.',
+              style: T.body(10, color: C.faint, height: 1.35),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+String _actionEconomicsText(PortfolioRebalanceAction action) {
+  final finalAmounts = action.economicsStatus == 'BROKER_FINAL';
+  final costs =
+      finalAmounts ? action.brokerFinalCostsRub : action.estimatedCostsRub;
+  final tax = finalAmounts ? action.brokerFinalTaxRub : action.estimatedTaxRub;
+  return 'Статус: ${_economicsStatusLabel(action.economicsStatus)} · '
+      'кол-во: ${_numberOrUnknown(action.orderQuantity)} · '
+      'notional: ${_rubOrUnknown(action.orderNotionalRub)} · '
+      'комиссия: ${_rubOrUnknown(costs)} · налог: ${_rubOrUnknown(tax)}';
+}
+
+String _economicsStatusLabel(String status) => switch (status) {
+      'BROKER_FINAL' => 'факт брокера',
+      'ESTIMATED' => 'оценка',
+      _ => 'неизвестно',
+    };
+
+String _numberOrUnknown(double? value) =>
+    value == null ? 'неизвестно' : value.toStringAsFixed(4);
+
+String _rubOrUnknown(double? value) =>
+    value == null ? 'неизвестно' : '${value.toStringAsFixed(2)} ₽';
 
 /// Шапка пакета: диапазон доходности, риск, полоса состава.
 class _PackageHead extends StatelessWidget {

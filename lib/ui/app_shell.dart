@@ -52,7 +52,11 @@ class AppShell extends StatelessWidget {
           context,
           current: controller.engineBaseUrl,
           currentToken: '',
-          onSubmit: (url, token) => controller.setEngineBaseUrl(url, token: token),
+          onSubmit: (url, token, pairingSessionId) => controller.setEngineBaseUrl(
+            url,
+            token: token,
+            pairingSessionId: pairingSessionId,
+          ),
         ),
       );
     }

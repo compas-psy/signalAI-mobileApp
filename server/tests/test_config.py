@@ -14,6 +14,7 @@ import pytest
 import yaml
 
 from app.config import ConfigError, load_config
+from app.portfolio.rebalance import economics_policy_from_config
 
 
 @pytest.fixture(scope="module")
@@ -173,3 +174,34 @@ def test_missing_parameter_is_an_error_not_none(cfg):
     with pytest.raises(ConfigError, match="нет параметра"):
         cfg.get("risk.no_such_limit")
     assert cfg.get("risk.no_such_limit", default=None) is None
+
+
+def test_rebalance_economics_stays_unconfigured_until_all_inputs_are_approved(cfg):
+    assert economics_policy_from_config(cfg) is None
+
+
+def test_rejects_partial_rebalance_economics_policy(tmp_path):
+    def mutate(data):
+        data["portfolio"]["rebalance_economics"] = {
+            "policy_id": "broker-a-v1",
+            "fee_bps": 15,
+            "capital_gain_tax_rate": None,
+        }
+
+    with pytest.raises(ConfigError, match="rebalance_economics требует"):
+        load_config(_write(tmp_path, mutate))
+
+
+def test_complete_rebalance_economics_policy_is_read_from_config(tmp_path):
+    def mutate(data):
+        data["portfolio"]["rebalance_economics"] = {
+            "policy_id": "broker-a-v1",
+            "fee_bps": "15",
+            "capital_gain_tax_rate": "0.13",
+        }
+
+    policy = economics_policy_from_config(load_config(_write(tmp_path, mutate)))
+    assert policy is not None
+    assert policy.policy_id == "broker-a-v1"
+    assert policy.fee_bps == Decimal("15")
+    assert policy.capital_gain_tax_rate == Decimal("0.13")

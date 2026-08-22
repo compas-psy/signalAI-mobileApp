@@ -3,15 +3,28 @@
 Базовый адрес задаётся при сборке: `--dart-define=SIGNALAI_API_BASE_URL=https://…`
 Только HTTPS — клиент отказывается работать по http.
 
-Аутентификация: `Authorization: Bearer <токен устройства>`.
-В первой поставке владелец заранее создаёт и сохраняет `SIGNALAI_DEVICE_TOKEN`,
-задаёт его как repository secret для VPS deploy и один раз вводит то же значение в
-приложении. Токен хранится в Android Keystore и к биржевым ключам отношения не
-имеет (ТЗ §11). Pairing endpoint пока не реализован и является отдельным
-следующим контрактом.
+Аутентификация business API: `Authorization: Bearer <активный токен устройства>`.
+Политика сервера только `active_only` и по умолчанию fail-closed: bootstrap
+`SIGNALAI_DEVICE_TOKEN` допустим лишь в `POST /api/v1/device-enrollment/pair`
+и там обязательно дополняется `X-Pairing-Session-Id`: отдельным
+owner-provisioned high-entropy значением с UTC expiry и max-uses (default 1,
+bounded). Сервер хранит только verifier session и блокирует счётчик использований
+в транзакции; отсутствие, истечение или исчерпание закрывает pairing.
+Успешный pair возвращает единственный раз новый 256-bit token конкретного
+device generation; сервер сохраняет только verifier. `POST /rotate` с активным
+token немедленно отзывает старый, `POST /revoke` закрывает текущий token.
 
-Идемпотентность: команды исполнения шлют `X-Idempotency-Key`; повтор с тем же
-ключом не создаёт второй ордер (ТЗ §7).
+`/pair` требует `X-Idempotency-Key`, `X-Pairing-Session-Id` и JSON `{ "device_id": "…", "metadata":
+{ "label": "…", "platform": "android", "app_version": "…" } }`. Metadata
+allowlisted и ограничена по размеру. Повтор завершённого ключа возвращает 409:
+raw token не хранится и не может быть выдан повторно.
+
+Идемпотентность: pairing и rotation требуют `X-Idempotency-Key`; повтор не
+создаёт второй token. Команды исполнения используют свой независимый ключ (ТЗ §7).
+`POST /revoke` отвечает `{"status":"revoked"}` либо явным
+`{"status":"already_revoked"}` — только после одного из этих исходов телефон
+стирает свой Keystore bearer. `POST /revoke-lost` принимает `{device_id,
+generation}` и доступен только другому active owner device.
 
 Ошибки: `{"error": {"message": "текст для человека", "code": "…"}}` с кодом 4xx/5xx.
 `401/403` — устройство не авторизовано, `409` — сигнал больше не актуален.
