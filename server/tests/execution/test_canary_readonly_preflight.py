@@ -117,6 +117,38 @@ def _persist_policy(session, *, source_sha: str, valid_until: datetime):
     return snapshot
 
 
+def _persist_evidence_refs(session, snapshot) -> None:
+    from app.execution.canary_evidence import (
+        CanaryEvidenceReferenceInput,
+        CanaryEvidenceScope,
+        persist_canary_evidence_reference,
+    )
+
+    now = datetime.now(UTC)
+    scope = CanaryEvidenceScope(
+        source_sha=snapshot.source_sha,
+        engine_config_hash=snapshot.engine_config_hash,
+        strategy_family=snapshot.strategy_family,
+        strategy_version=snapshot.strategy_version,
+        venue="LIGHTER",
+    )
+    for category, evidence_ref in snapshot.payload_json["evidence_refs"].items():
+        persist_canary_evidence_reference(
+            session,
+            CanaryEvidenceReferenceInput(
+                category=category,
+                evidence_ref=evidence_ref,
+                scope=scope,
+                source="preflight-test-evidence/v1",
+                artifact_sha256="c" * 64,
+                verdict="VERIFIED",
+                observed_at=now,
+                fresh_until=now + timedelta(hours=1),
+            ),
+        )
+    session.flush()
+
+
 def test_preflight_is_read_only_and_never_eligible_while_adr_and_step_up_are_unresolved(session) -> None:
     from app.execution.canary_preflight import evaluate_canary_preflight
 
@@ -126,6 +158,7 @@ def test_preflight_is_read_only_and_never_eligible_while_adr_and_step_up_are_unr
         source_sha=source_sha,
         valid_until=datetime.now(UTC) + timedelta(hours=1),
     )
+    _persist_evidence_refs(session, snapshot)
     _set_mode(session, ExecutionLifecycleMode.SANDBOX)
     mode_before = get_execution_mode(session)
 
@@ -140,9 +173,32 @@ def test_preflight_is_read_only_and_never_eligible_while_adr_and_step_up_are_unr
     assert result.blockers == (
         "ADR_0002_NOT_ACCEPTED",
         "CANARY_OWNER_STEP_UP_NOT_IMPLEMENTED",
-        "CANARY_EVIDENCE_BINDING_NOT_IMPLEMENTED",
     )
     assert get_execution_mode(session) == mode_before
+
+
+def test_preflight_blocks_when_exact_durable_evidence_refs_are_missing(session) -> None:
+    from app.execution.canary_preflight import evaluate_canary_preflight
+
+    source_sha = "9" * 40
+    snapshot = _persist_policy(
+        session,
+        source_sha=source_sha,
+        valid_until=datetime.now(UTC) + timedelta(hours=1),
+    )
+    _set_mode(session, ExecutionLifecycleMode.SANDBOX)
+
+    result = evaluate_canary_preflight(
+        session,
+        snapshot_hash=snapshot.snapshot_hash,
+        context_provider=lambda: _runtime(source_sha=source_sha),
+    )
+
+    assert result.eligible_for_canary is False
+    assert result.structural_checks_passed is False
+    assert "CANARY_EVIDENCE_MISSING:strategy_performance" in result.blockers
+    assert "CANARY_EVIDENCE_MISSING:security_scan" in result.blockers
+    assert "CANARY_EVIDENCE_MISSING:operational_health" in result.blockers
 
 
 def test_preflight_fails_closed_on_missing_or_malformed_policy_hash(session) -> None:
@@ -283,9 +339,6 @@ def test_preflight_detects_snapshot_payload_hash_tampering_before_any_authorizat
         source_sha=source_sha,
         valid_until=datetime.now(UTC) + timedelta(hours=1),
     )
-    # Bypass ORM mutability only for this corruption simulation: the production
-    # append-only trigger prevents UPDATE, so calculate the expected hash locally
-    # and then feed the verifier a direct helper instead of mutating the row.
     tampered = dict(snapshot.payload_json)
     tampered["capital_amount"] = "999999"
     canonical = json.dumps(tampered, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
