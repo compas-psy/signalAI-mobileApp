@@ -37,6 +37,7 @@ class _RiskApi extends ApiClient {
     String path, {
     Map<String, dynamic>? body,
     String? idempotencyKey,
+    String? pairingSessionId,
   }) async {
     posts.add((path: path, body: body));
     if (path == '/api/v1/risk/resume') {
