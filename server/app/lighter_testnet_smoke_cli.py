@@ -1,8 +1,7 @@
 """Server-local SAI-077 Lighter testnet smoke command.
 
-The command deliberately has no credential arguments. It can only use the
-server-side encrypted ``lighter_testnet_trade`` slot through the operator
-module. Request files describe market/order facts only.
+Credentials are never accepted by CLI. They are loaded only from the encrypted
+server-side ``lighter_testnet_trade`` slot inside the operator boundary.
 """
 
 from __future__ import annotations
@@ -26,19 +25,9 @@ from .execution.venues.lighter_testnet_operator import (
 _REQUEST_SCHEMA = "signalai.lighter.testnet-smoke-request.v1"
 _REQUEST_FIELDS = {"schema", "client_order_id", "quantity", "price", "is_ask", "market"}
 _MARKET_FIELDS = {
-    "market_id",
-    "symbol",
-    "status",
-    "min_base_amount",
-    "min_quote_amount",
-    "size_decimals",
-    "price_decimals",
-    "quote_decimals",
-    "maker_fee_pct",
-    "taker_fee_pct",
-    "liquidation_fee_pct",
-    "order_quote_limit",
-    "multiplier",
+    "market_id", "symbol", "status", "min_base_amount", "min_quote_amount",
+    "size_decimals", "price_decimals", "quote_decimals", "maker_fee_pct",
+    "taker_fee_pct", "liquidation_fee_pct", "order_quote_limit", "multiplier",
     "observed_at",
 }
 
@@ -56,18 +45,25 @@ class LighterSmokeRequest:
     market: LighterMarketFact
 
 
-def _decimal(value: object, field: str) -> Decimal:
+def _finite_decimal(value: object, field: str) -> Decimal:
     try:
         result = Decimal(str(value))
     except (InvalidOperation, TypeError, ValueError):
         raise LighterSmokeCliError(f"{field} must be a finite decimal") from None
-    if not result.is_finite() or result <= 0:
-        raise LighterSmokeCliError(f"{field} must be positive and finite")
+    if not result.is_finite():
+        raise LighterSmokeCliError(f"{field} must be a finite decimal")
+    return result
+
+
+def _positive_decimal(value: object, field: str) -> Decimal:
+    result = _finite_decimal(value, field)
+    if result <= 0:
+        raise LighterSmokeCliError(f"{field} must be positive")
     return result
 
 
 def _nonnegative_decimal(value: object, field: str) -> Decimal:
-    result = _decimal(value, field)
+    result = _finite_decimal(value, field)
     if result < 0:
         raise LighterSmokeCliError(f"{field} must not be negative")
     return result
@@ -118,22 +114,22 @@ def load_smoke_request(path: str | Path) -> LighterSmokeRequest:
         market_id=_integer(market_raw.get("market_id"), "market.market_id"),
         symbol=_text(market_raw.get("symbol"), "market.symbol"),
         status=_text(market_raw.get("status"), "market.status"),
-        min_base_amount=_decimal(market_raw.get("min_base_amount"), "market.min_base_amount"),
-        min_quote_amount=_decimal(market_raw.get("min_quote_amount"), "market.min_quote_amount"),
+        min_base_amount=_positive_decimal(market_raw.get("min_base_amount"), "market.min_base_amount"),
+        min_quote_amount=_positive_decimal(market_raw.get("min_quote_amount"), "market.min_quote_amount"),
         size_decimals=_integer(market_raw.get("size_decimals"), "market.size_decimals"),
         price_decimals=_integer(market_raw.get("price_decimals"), "market.price_decimals"),
         quote_decimals=_integer(market_raw.get("quote_decimals"), "market.quote_decimals"),
         maker_fee_pct=_nonnegative_decimal(market_raw.get("maker_fee_pct"), "market.maker_fee_pct"),
         taker_fee_pct=_nonnegative_decimal(market_raw.get("taker_fee_pct"), "market.taker_fee_pct"),
         liquidation_fee_pct=_nonnegative_decimal(market_raw.get("liquidation_fee_pct"), "market.liquidation_fee_pct"),
-        order_quote_limit=_decimal(market_raw.get("order_quote_limit"), "market.order_quote_limit"),
-        multiplier=_decimal(market_raw.get("multiplier"), "market.multiplier"),
+        order_quote_limit=_positive_decimal(market_raw.get("order_quote_limit"), "market.order_quote_limit"),
+        multiplier=_positive_decimal(market_raw.get("multiplier"), "market.multiplier"),
         observed_at=_time(market_raw.get("observed_at"), "market.observed_at"),
     )
     return LighterSmokeRequest(
         client_order_id=_text(document.get("client_order_id"), "client_order_id"),
-        quantity=_decimal(document.get("quantity"), "quantity"),
-        price=_decimal(document.get("price"), "price"),
+        quantity=_positive_decimal(document.get("quantity"), "quantity"),
+        price=_positive_decimal(document.get("price"), "price"),
         is_ask=is_ask,
         market=market,
     )
@@ -188,7 +184,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (LighterSmokeCliError, LighterTestnetOperatorError):
         print(json.dumps({"status": "BLOCKED", "eligible_for_live": False}, sort_keys=True))
         return 1
-
     print(json.dumps(_summary(result), sort_keys=True))
     if result.status == "SUCCESS":
         return 0
