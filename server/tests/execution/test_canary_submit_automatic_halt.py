@@ -183,6 +183,22 @@ def test_source_drift_halts_new_entries_before_guard_yields_without_downshift(se
         assert get_execution_mode(session).mode is ExecutionLifecycleMode.CANARY
 
 
+def test_unknown_deployed_source_is_structural_drift_and_halts(session) -> None:
+    snapshot = _snapshot(session)
+    _set_mode(session, ExecutionLifecycleMode.CANARY)
+
+    with _guard(
+        session,
+        snapshot,
+        context_provider=lambda: replace(_runtime(), source_sha="unknown"),
+    ) as result:
+        assert "DEPLOYED_SOURCE_SHA_UNKNOWN" in result.blockers
+        assert result.automatic_halt_applied is True
+        assert result.automatic_safety_triggers == ("SOURCE_CONFIG_POLICY_DRIFT",)
+        assert get_execution_kill_switch_level(session) is ExecutionKillSwitchLevel.HALT_NEW_ENTRIES
+        assert get_execution_mode(session).mode is ExecutionLifecycleMode.CANARY
+
+
 def test_allowlist_or_cap_breach_halts_globally_not_just_this_order(session) -> None:
     snapshot = _snapshot(session)
     _set_mode(session, ExecutionLifecycleMode.CANARY)
