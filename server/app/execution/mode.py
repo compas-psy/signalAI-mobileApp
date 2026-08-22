@@ -109,6 +109,72 @@ def preview_execution_mode(
     )
 
 
+def _change_execution_mode_locked(
+    db: Session,
+    *,
+    target: ExecutionLifecycleMode,
+    actor: str,
+    reason: str,
+    authorization: ModeChangeAuthorization | None = None,
+) -> ExecutionModeSnapshot:
+    """Apply one authorized mode change while execution control is already held.
+
+    This private primitive exists for composite safety sequences that must keep
+    HALT and lifecycle demotion inside one session-level execution advisory
+    lock. Calling the public ``change_execution_mode`` from such a sequence
+    would acquire that lock again on a second dedicated PostgreSQL connection
+    and could deadlock.
+    """
+
+    target = ExecutionLifecycleMode(target)
+    actor = actor.strip()
+    reason = reason.strip()
+    if not actor:
+        raise ExecutionModeChangeRejected("actor is required")
+    if not reason:
+        raise ExecutionModeChangeRejected("reason is required")
+
+    _materialize_state(db)
+    state = db.execute(
+        select(ExecutionModeState)
+        .where(ExecutionModeState.id == 1)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one()
+    current = ExecutionLifecycleMode(state.mode)
+
+    if target == current:
+        return _snapshot(state)
+
+    if authorization is None or not authorization.allowed:
+        raise ExecutionModeChangeRejected(_PROMOTION_GUARD_BLOCKER)
+    if not authorization.actor.strip() or not authorization.reason.strip():
+        raise ExecutionModeChangeRejected(
+            "promotion guard authorization actor and reason are required"
+        )
+
+    state.mode = target
+    state.updated_at = datetime.now(UTC)
+    detail = dict(authorization.detail_json)
+    detail.update(
+        {
+            "authorization_actor": authorization.actor.strip(),
+            "authorization_reason": authorization.reason.strip(),
+        }
+    )
+    db.add(
+        ExecutionModeEvent(
+            from_mode=current,
+            to_mode=target,
+            actor=actor,
+            reason=reason,
+            detail_json=detail,
+        )
+    )
+    db.flush()
+    return _snapshot(state)
+
+
 def change_execution_mode(
     db: Session,
     *,
@@ -130,54 +196,14 @@ def change_execution_mode(
     after persisting SUBMITTING, so mode cannot drift inside that write window.
     """
 
-    target = ExecutionLifecycleMode(target)
-    actor = actor.strip()
-    reason = reason.strip()
-    if not actor:
-        raise ExecutionModeChangeRejected("actor is required")
-    if not reason:
-        raise ExecutionModeChangeRejected("reason is required")
-
     with execution_control_lock(db):
-        _materialize_state(db)
-        state = db.execute(
-            select(ExecutionModeState)
-            .where(ExecutionModeState.id == 1)
-            .with_for_update()
-            .execution_options(populate_existing=True)
-        ).scalar_one()
-        current = ExecutionLifecycleMode(state.mode)
-
-        if target == current:
-            return _snapshot(state)
-
-        if authorization is None or not authorization.allowed:
-            raise ExecutionModeChangeRejected(_PROMOTION_GUARD_BLOCKER)
-        if not authorization.actor.strip() or not authorization.reason.strip():
-            raise ExecutionModeChangeRejected(
-                "promotion guard authorization actor and reason are required"
-            )
-
-        state.mode = target
-        state.updated_at = datetime.now(UTC)
-        detail = dict(authorization.detail_json)
-        detail.update(
-            {
-                "authorization_actor": authorization.actor.strip(),
-                "authorization_reason": authorization.reason.strip(),
-            }
+        return _change_execution_mode_locked(
+            db,
+            target=target,
+            actor=actor,
+            reason=reason,
+            authorization=authorization,
         )
-        db.add(
-            ExecutionModeEvent(
-                from_mode=current,
-                to_mode=target,
-                actor=actor,
-                reason=reason,
-                detail_json=detail,
-            )
-        )
-        db.flush()
-        return _snapshot(state)
 
 
 __all__ = [
