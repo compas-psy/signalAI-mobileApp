@@ -1,8 +1,6 @@
-"""One-time bootstrap pairing and active-device credential lifecycle."""
+"""One-time owner pairing and active-device credential lifecycle."""
 from __future__ import annotations
 
-import hmac
-import os
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -16,12 +14,12 @@ from ...device_enrollment import (
     DeviceEnrollmentError,
     DeviceEnrollmentReplay,
     IssuedDeviceCredential,
-    bootstrap_pairing_session_config,
     pair_device,
     revoke_device_token,
     revoke_lost_device,
     rotate_device,
 )
+from ...device_pairing import authenticate_pairing_session
 from ...schemas.common import ApiModel
 
 router = APIRouter(prefix="/device-enrollment", tags=["device-enrollment"])
@@ -66,23 +64,14 @@ def _idempotency_key(request: Request) -> str:
     return key
 
 
-def _bootstrap_pairing_authorized(request: Request) -> BootstrapPairingSession:
-    expected = os.environ.get("SIGNALAI_DEVICE_TOKEN", "").strip()
-    authorization = request.headers.get("authorization", "")
-    scheme, _, supplied = authorization.partition(" ")
-    if not expected:
-        raise HTTPException(503, "device bootstrap pairing is not configured")
-    if scheme.lower() != "bearer" or not hmac.compare_digest(supplied.strip(), expected):
-        raise HTTPException(401, "bootstrap pairing is not authorized")
-    try:
-        pairing_session = bootstrap_pairing_session_config()
-    except DeviceEnrollmentError as exc:
-        raise HTTPException(503, "bootstrap pairing session is unavailable") from exc
-    supplied_session = request.headers.get("x-pairing-session-id", "").strip()
-    if not supplied_session:
-        raise HTTPException(503, "bootstrap pairing session is required")
-    if not hmac.compare_digest(supplied_session, pairing_session.session_id):
-        raise HTTPException(401, "bootstrap pairing is not authorized")
+def _pairing_authorized(request: Request, db: Session) -> BootstrapPairingSession:
+    """Accept only a server-provisioned, short-lived, one-use pairing code."""
+    supplied = request.headers.get("x-pairing-session-id", "").strip()
+    if not supplied:
+        raise HTTPException(401, "pairing code is required")
+    pairing_session = authenticate_pairing_session(db, supplied)
+    if pairing_session is None:
+        raise HTTPException(401, "pairing code is not authorized")
     return pairing_session
 
 
@@ -100,7 +89,7 @@ def pair(
     response: Response,
     db: Session = Depends(get_db),
 ) -> IssuedDeviceToken:
-    pairing_session = _bootstrap_pairing_authorized(request)
+    pairing_session = _pairing_authorized(request, db)
     try:
         result = pair_device(
             db,
@@ -117,7 +106,7 @@ def pair(
             "device enrollment changed; retry with a new key",
         ) from exc
     except ValueError as exc:
-        # DeviceEnrollmentError is a ValueError subclass.  Keeping this
+        # DeviceEnrollmentError is a ValueError subclass. Keeping this
         # boundary slightly wider also converts legacy validator ValueErrors
         # into the same fail-closed API contract instead of leaking a 500.
         raise HTTPException(422, "device enrollment request is invalid") from exc
