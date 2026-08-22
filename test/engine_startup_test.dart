@@ -118,6 +118,12 @@ class _SlowStore extends LocalStore {
   Future<void> write(String name, Map<String, dynamic> value) async {
     if (name == 'engine') lastWritten = Map<String, dynamic>.from(value);
   }
+
+  @override
+  Future<bool> writeDurably(String name, Map<String, dynamic> value) async {
+    await write(name, value);
+    return true;
+  }
 }
 
 class _VaultBridge extends NativeBridge {
