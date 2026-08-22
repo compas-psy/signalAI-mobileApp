@@ -56,7 +56,10 @@ class AppLockState {
     if (_authenticating) return false;
     final backgroundedAt = _backgroundedAt;
     _backgroundedAt = null;
-    if (_locked) return shouldAuthenticate;
+    // A locked screen after an explicit cancel stays passive. BiometricPrompt
+    // itself commonly causes a resume event; auto-prompting here would trap the
+    // owner in a cancellation loop. Cold start has its own one-shot prompt.
+    if (_locked && backgroundedAt == null) return false;
     if (backgroundedAt == null) return false;
 
     final elapsed = at.toUtc().difference(backgroundedAt);
