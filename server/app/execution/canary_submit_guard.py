@@ -2,10 +2,10 @@
 
 The context manager deliberately holds the same execution-control advisory lock
 used by the kill switch for the entire evaluation and for the caller's ``with``
-body.  A future provider adapter may therefore perform its final network write
-inside this boundary only after separate activation/owner-authority work exists.
+body. It additionally row-locks the mutable execution-mode singleton and live
+credential slot so their existing writers cannot race a later provider write.
 
-This module itself cannot authorize provider I/O.  Even a structurally clean
+This module itself cannot authorize provider I/O. Even a structurally clean
 result remains blocked by unresolved ADR-0002 and cryptographic owner step-up.
 It imports no Lighter SDK, secret decryption, signer, transport or order sink.
 """
@@ -113,9 +113,13 @@ def _row_binding_is_consistent(
 
 
 def _fresh_mode(db: Session) -> ExecutionLifecycleMode:
+    # Mode writers already take FOR UPDATE on this singleton. Holding the same
+    # row lock through the caller's with-body closes a check-then-mode-change
+    # race without changing transaction semantics in the existing mode service.
     state = db.execute(
         select(ExecutionModeState)
         .where(ExecutionModeState.id == 1)
+        .with_for_update()
         .execution_options(populate_existing=True)
     ).scalar_one_or_none()
     if state is None:
@@ -124,6 +128,7 @@ def _fresh_mode(db: Session) -> ExecutionLifecycleMode:
 
 
 def _fresh_kill_switch(db: Session) -> ExecutionKillSwitchLevel:
+    # Kill-switch writers are serialized by execution_control_lock itself.
     state = db.execute(
         select(RiskState)
         .where(RiskState.id == 1)
@@ -132,11 +137,14 @@ def _fresh_kill_switch(db: Session) -> ExecutionKillSwitchLevel:
     return effective_execution_kill_switch_level(state)
 
 
-def _live_secret_configured(db: Session) -> bool:
+def _lock_live_secret_slot(db: Session) -> bool:
+    # save_secret rotates by UPSERT and delete_secret deletes this exact primary
+    # key. FOR UPDATE therefore makes rotation/revocation wait until the guarded
+    # provider-write window is over. No private key is decrypted or selected.
     row = db.execute(
         text(
-            "SELECT 1 FROM signalai_integration_secrets "
-            "WHERE slot = 'lighter_trade' LIMIT 1"
+            "SELECT slot FROM signalai_integration_secrets "
+            "WHERE slot = 'lighter_trade' FOR UPDATE"
         )
     ).first()
     return row is not None
@@ -218,7 +226,7 @@ def _evaluate_locked(
     elif valid_until.astimezone(UTC) <= now:
         blockers.append("CANARY_POLICY_EXPIRED")
 
-    live_configured = _live_secret_configured(db)
+    live_configured = _lock_live_secret_slot(db)
     generation = current_lighter_trade_generation(db)
     if not live_configured:
         blockers.append("LIGHTER_LIVE_CREDENTIAL_NOT_CONFIGURED")
@@ -280,11 +288,11 @@ def canary_submit_guard(
     exposure_provider: ExposureProvider,
     dynamic_limits_provider: DynamicLimitsProvider,
 ) -> Iterator[CanarySubmitGuardResult]:
-    """Hold execution serialization across final mutable-fact evaluation.
+    """Hold final submit serialization through the caller's entire ``with`` body.
 
-    The yielded result is always ``provider_io_eligible=False`` in this slice.
-    Keeping the lock through the caller's ``with`` body prevents a later safe
-    transport integration from accidentally creating a check-then-submit race.
+    ``provider_io_eligible`` is always false in this slice. The surrounding lock
+    lifetime is nevertheless shaped exactly for a future adapter so adding the
+    provider later cannot accidentally move network I/O outside the race guard.
     """
 
     with execution_control_lock(db):
