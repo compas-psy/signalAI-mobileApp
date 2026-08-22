@@ -16,6 +16,7 @@ class _RecordingApi extends ApiClient {
     String path, {
     Map<String, dynamic>? body,
     String? idempotencyKey,
+    String? pairingSessionId,
   }) async {
     lastPath = path;
     lastBody = body == null ? null : Map<String, dynamic>.from(body);
