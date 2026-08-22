@@ -7,21 +7,32 @@ void main() {
       final lock = AppLockState(timeout: const Duration(minutes: 5));
 
       expect(lock.locked, isTrue);
+      expect(lock.shouldHideContent, isTrue);
       expect(lock.shouldAuthenticate, isTrue);
 
       lock.authenticationSucceeded();
       expect(lock.locked, isFalse);
+      expect(lock.obscured, isFalse);
+      expect(lock.shouldHideContent, isFalse);
       expect(lock.shouldAuthenticate, isFalse);
     });
 
-    test('short background trip stays unlocked', () {
+    test('background hides content immediately but short trip needs no auth', () {
       final lock = AppLockState(timeout: const Duration(minutes: 5));
       final t0 = DateTime.utc(2026, 8, 22, 7, 0);
       lock.authenticationSucceeded();
       lock.backgrounded(t0);
 
+      expect(lock.locked, isFalse);
+      expect(lock.obscured, isTrue);
+      expect(lock.shouldHideContent, isTrue);
+      expect(lock.shouldAuthenticate, isFalse);
+
       expect(lock.resume(t0.add(const Duration(minutes: 4, seconds: 59))), isFalse);
       expect(lock.locked, isFalse);
+      expect(lock.obscured, isFalse);
+      expect(lock.shouldHideContent, isFalse);
+      expect(lock.shouldAuthenticate, isFalse);
     });
 
     test('five minutes in background requires authentication again', () {
@@ -30,21 +41,27 @@ void main() {
       lock.authenticationSucceeded();
       lock.backgrounded(t0);
 
+      expect(lock.obscured, isTrue);
       expect(lock.resume(t0.add(const Duration(minutes: 5))), isTrue);
+      expect(lock.obscured, isFalse);
       expect(lock.locked, isTrue);
+      expect(lock.shouldHideContent, isTrue);
       expect(lock.shouldAuthenticate, isTrue);
     });
 
-    test('biometric prompt lifecycle does not relock itself', () {
+    test('biometric prompt lifecycle does not hide or relock itself', () {
       final lock = AppLockState(timeout: const Duration(minutes: 5));
       final t0 = DateTime.utc(2026, 8, 22, 7, 0);
 
       expect(lock.beginAuthentication(), isTrue);
       lock.backgrounded(t0);
+      expect(lock.obscured, isFalse);
       lock.authenticationSucceeded();
 
       expect(lock.resume(t0.add(const Duration(minutes: 30))), isFalse);
       expect(lock.locked, isFalse);
+      expect(lock.obscured, isFalse);
+      expect(lock.shouldHideContent, isFalse);
     });
 
     test('cancelled authentication stays on lock screen without prompt loop', () {
@@ -54,6 +71,8 @@ void main() {
       expect(lock.beginAuthentication(), isTrue);
       lock.authenticationFailed();
       expect(lock.locked, isTrue);
+      expect(lock.obscured, isFalse);
+      expect(lock.shouldHideContent, isTrue);
       expect(lock.shouldAuthenticate, isTrue);
 
       // BiometricPrompt commonly generates an Activity resume after its own
@@ -66,11 +85,17 @@ void main() {
       expect(lock.beginAuthentication(), isTrue);
     });
 
-    test('no local authenticator degrades to unlocked read-only app UX', () {
+    test('no local authenticator clears both lock and privacy cover', () {
       final lock = AppLockState(timeout: const Duration(minutes: 5));
+      final t0 = DateTime.utc(2026, 8, 22, 7, 0);
+      lock.authenticationSucceeded();
+      lock.backgrounded(t0);
+      expect(lock.shouldHideContent, isTrue);
 
       lock.authenticationUnavailable();
       expect(lock.locked, isFalse);
+      expect(lock.obscured, isFalse);
+      expect(lock.shouldHideContent, isFalse);
       expect(lock.shouldAuthenticate, isFalse);
     });
   });
