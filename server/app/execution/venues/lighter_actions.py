@@ -28,6 +28,7 @@ from .lighter_facts import LighterMarketFact
 from .lighter_replay import (
     LighterReplayError,
     mark_lighter_nonce_consumed,
+    mark_lighter_nonce_submitting,
     reserve_lighter_nonce,
     resolve_lighter_order_identity,
 )
@@ -58,6 +59,10 @@ class LighterActionReplayMismatch(LighterOrderActionError):
 
 class LighterActionAlreadyConsumed(LighterOrderActionError):
     """A provider action already has explicit consumed nonce evidence."""
+
+
+class LighterActionRequiresReconciliation(LighterOrderActionError):
+    """Provider I/O may have happened; facts must reconcile before any retry."""
 
 
 class LighterActionRejected(LighterOrderActionError):
@@ -354,6 +359,10 @@ class LighterOrderActions:
                     raise LighterActionAlreadyConsumed(
                         f"{action_key} was already consumed and will not be resubmitted"
                     )
+                if reservation.state == "SUBMITTING":
+                    raise LighterActionRequiresReconciliation(
+                        f"{action_key} requires reconciliation before any retry"
+                    )
                 if reservation.state != "RESERVED":
                     raise LighterOrderActionError(
                         f"unexpected nonce reservation state {reservation.state!r}"
@@ -373,8 +382,15 @@ class LighterOrderActions:
                     raise LighterOrderActionError(str(exc)) from exc
                 nonce = reservation.nonce
 
-            # Identity, immutable request binding and nonce ownership must be
-            # durable before provider I/O begins.
+            # Arm the nonce durably before returning to the caller. Every
+            # provider-write path calls _prepare first, so a restart or timeout
+            # after this commit can never turn into a blind resubmission.
+            try:
+                mark_lighter_nonce_submitting(db, replay_key=action_key)
+            except LighterReplayError as exc:
+                raise LighterActionRequiresReconciliation(
+                    f"{action_key} requires reconciliation before any retry"
+                ) from exc
             db.commit()
             return identity, nonce
 
@@ -643,6 +659,7 @@ __all__ = [
     "LighterActionAlreadyConsumed",
     "LighterActionRejected",
     "LighterActionReplayMismatch",
+    "LighterActionRequiresReconciliation",
     "LighterActionTransport",
     "LighterOrderActionError",
     "LighterOrderActions",
