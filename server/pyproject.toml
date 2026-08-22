@@ -19,6 +19,9 @@ dependencies = [
     "numpy>=2.0,<3.0",
     "python-dateutil>=2.9,<3.0",
     "redis>=5.2,<9.0",
+    # Trading dependency is exact-pinned because its bundled native signer and
+    # wire contract are part of the SAI-076 execution safety boundary.
+    "lighter-sdk==1.1.2",
 ]
 
 [project.optional-dependencies]

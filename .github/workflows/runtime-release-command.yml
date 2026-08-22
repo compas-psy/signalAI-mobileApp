@@ -20,7 +20,8 @@ jobs:
        github.event.comment.body == '/release-full' ||
        github.event.comment.body == '/apk-status' ||
        github.event.comment.body == '/telegram-sample' ||
-       github.event.comment.body == '/runtime-logs')
+       github.event.comment.body == '/runtime-logs' ||
+       github.event.comment.body == '/lighter-testnet-smoke')
     runs-on: ubuntu-latest
     steps:
       - name: Run owner release command
@@ -120,6 +121,14 @@ jobs:
                   (run) => run.head_sha === sourceSha,
                 ) ?? null;
               }
+            } else if (command === '/lighter-testnet-smoke') {
+              await github.rest.actions.createWorkflowDispatch({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                workflow_id: 'lighter-testnet-smoke.yml',
+                ref: defaultBranch,
+                inputs: { source_ref: sourceSha },
+              });
             } else {
               core.setFailed(`Unsupported command: ${command}`);
               return;
