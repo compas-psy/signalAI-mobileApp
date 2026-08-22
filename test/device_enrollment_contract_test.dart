@@ -59,13 +59,13 @@ class _PairingApi implements DeviceEnrollmentApi {
   String? revocationBearer;
   Map<String, String>? metadata;
   final String issuedToken;
-  final String rotatedToken;
+  final String rotatedToken =
+      'rRrRrRrRrRrRrRrRrRrRrRrRrRrRrRrRrRrRrRrRrRrRrRr';
   DeviceRevocationOutcome revocationOutcome;
   bool revokeFails = false;
 
   _PairingApi({
     this.issuedToken = 'iIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIi',
-    this.rotatedToken = 'rRrRrRrRrRrRrRrRrRrRrRrRrRrRrRrRrRrRrRrRrRrRrRr',
     this.revocationOutcome = DeviceRevocationOutcome.revoked,
   });
 
