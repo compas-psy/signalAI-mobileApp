@@ -84,8 +84,13 @@ class _ExecutionModeShellState extends State<ExecutionModeShell> {
       );
     }
 
-    // The privacy gate wraps the banner as well as the app body: account mode,
-    // balances and signal state must not flash on screen before authentication.
+    // Device-local authentication is a production privacy boundary. Demo/local
+    // modes are deterministic development fixtures and intentionally have no
+    // Android platform authenticator, so wrapping them would hide the test UI.
+    if (!app.thinMode) return content;
+
+    // In production, the gate wraps the banner as well as the app body: account
+    // mode, balances and signal state must not flash before authentication.
     return AppLockGate(child: content);
   }
 }
