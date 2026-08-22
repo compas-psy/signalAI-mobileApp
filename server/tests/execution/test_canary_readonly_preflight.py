@@ -307,4 +307,4 @@ def test_release_pipeline_exports_exact_qa_sha_to_api_and_execution_runtime() ->
     deploy = (repo / ".github" / "workflows" / "deploy-release.yml").read_text(encoding="utf-8")
 
     assert compose.count("SIGNALAI_SOURCE_SHA: ${SIGNALAI_SOURCE_SHA:-}") >= 2
-    assert "SIGNALAI_SOURCE_SHA=$SOURCE_SHA" in deploy
+    assert "SIGNALAI_SOURCE_SHA='$SOURCE_SHA' bash /tmp/signalai-update.sh" in deploy
