@@ -15,7 +15,7 @@ import hashlib
 import json
 import re
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, Callable, Iterator, Mapping
@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session
 from ..models.canary_policy import CanaryPolicySnapshot
 from ..models.execution import ExecutionModeState
 from ..models.risk import RiskState
+from .automatic_safety import _automatic_halt_new_entries_locked
 from .canary_limits import (
     CanaryDynamicLimits,
     CanaryEntryProposal,
@@ -43,6 +44,42 @@ _GOVERNANCE_BLOCKERS = (
     "ADR_0002_NOT_ACCEPTED",
     "CANARY_OWNER_STEP_UP_NOT_IMPLEMENTED",
 )
+_SOURCE_CONFIG_POLICY_DRIFT_BLOCKERS = frozenset(
+    {
+        "CANARY_POLICY_HASH_INTEGRITY_FAILED",
+        "CANARY_POLICY_ROW_BINDING_MISMATCH",
+        "CANARY_POLICY_EXPIRED",
+        "DEPLOYED_SOURCE_SHA_MISMATCH",
+        "ENGINE_CONFIG_HASH_MISMATCH",
+        "RISK_PAPER_ONLY",
+        "POLICY_EXPIRED",
+    }
+)
+_CREDENTIAL_DRIFT_BLOCKERS = frozenset(
+    {
+        "LIGHTER_LIVE_CREDENTIAL_NOT_CONFIGURED",
+        "LIVE_CREDENTIAL_GENERATION_MISSING_OR_REVOKED",
+        "CREDENTIAL_GENERATION_MISMATCH",
+        "CREDENTIAL_SCOPE_MISMATCH",
+    }
+)
+_CAP_OR_ALLOWLIST_BREACH_BLOCKERS = frozenset(
+    {
+        "MARKET_NOT_ALLOWED",
+        "INSTRUMENT_NOT_ALLOWED",
+        "ORDER_NOTIONAL_LIMIT",
+        "INSTRUMENT_NOTIONAL_LIMIT",
+        "GROSS_NOTIONAL_LIMIT",
+        "CAPITAL_LEVERAGE_LIMIT",
+        "LEVERAGE_LIMIT",
+        "OPEN_POSITIONS_LIMIT",
+        "ENTRY_ORDERS_LIMIT",
+        "ORDER_COUNT_LIMIT",
+        "TRADE_COUNT_LIMIT",
+        "DAILY_LOSS_LIMIT",
+        "TOTAL_LOSS_LIMIT",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +90,8 @@ class CanarySubmitGuardResult:
     structural_checks_passed: bool
     blockers: tuple[str, ...]
     effective_order_notional_cap: Decimal | None = None
+    automatic_halt_applied: bool = False
+    automatic_safety_triggers: tuple[str, ...] = ()
 
     def to_public_dict(self) -> dict[str, object]:
         return {
@@ -64,6 +103,8 @@ class CanarySubmitGuardResult:
                 if self.effective_order_notional_cap is not None
                 else None
             ),
+            "automatic_halt_applied": self.automatic_halt_applied,
+            "automatic_safety_triggers": list(self.automatic_safety_triggers),
         }
 
 
@@ -84,6 +125,26 @@ def _result(
         blockers=tuple(blockers),
         effective_order_notional_cap=effective_order_notional_cap,
     )
+
+
+def _automatic_safety_triggers(blockers: tuple[str, ...]) -> tuple[str, ...]:
+    """Classify only authoritative breach facts that justify immediate HALT.
+
+    Caller-selected/malformed snapshot identifiers, transient fact-provider
+    failures and unresolved governance gates remain fail-closed for this submit
+    but do not gain the authority to trip the global switch. That distinction
+    prevents an untrusted request from becoming a kill-switch DoS primitive.
+    """
+
+    blocker_set = frozenset(blockers)
+    triggers: list[str] = []
+    if blocker_set & _SOURCE_CONFIG_POLICY_DRIFT_BLOCKERS:
+        triggers.append("SOURCE_CONFIG_POLICY_DRIFT")
+    if blocker_set & _CREDENTIAL_DRIFT_BLOCKERS:
+        triggers.append("CREDENTIAL_DRIFT")
+    if blocker_set & _CAP_OR_ALLOWLIST_BREACH_BLOCKERS:
+        triggers.append("CAP_OR_ALLOWLIST_BREACH")
+    return tuple(triggers)
 
 
 def _canonical_payload_hash(payload: Mapping[str, Any]) -> str:
@@ -293,10 +354,13 @@ def canary_submit_guard(
     ``provider_io_eligible`` is always false in this slice. The surrounding lock
     lifetime is nevertheless shaped exactly for a future adapter so adding the
     provider later cannot accidentally move network I/O outside the race guard.
+    Authoritative drift/cap breaches persist HALT before the result is yielded;
+    no automatic downshift is chosen until ADR-0002 supplies owner-approved
+    failure-class targets.
     """
 
     with execution_control_lock(db):
-        yield _evaluate_locked(
+        result = _evaluate_locked(
             db,
             snapshot_hash=snapshot_hash,
             context_provider=context_provider,
@@ -304,6 +368,18 @@ def canary_submit_guard(
             exposure_provider=exposure_provider,
             dynamic_limits_provider=dynamic_limits_provider,
         )
+        triggers = _automatic_safety_triggers(result.blockers)
+        if triggers:
+            halt = _automatic_halt_new_entries_locked(
+                db,
+                reason="canary submit structural safety: " + ",".join(triggers),
+            )
+            result = replace(
+                result,
+                automatic_halt_applied=halt.changed,
+                automatic_safety_triggers=triggers,
+            )
+        yield result
 
 
 __all__ = [
