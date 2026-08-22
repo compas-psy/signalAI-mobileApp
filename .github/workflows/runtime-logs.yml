@@ -77,9 +77,19 @@ jobs:
           $COMPOSE logs --since 30h --tail 600 scheduler scheduler-heavy
 
           echo
-          echo "──────── market status ────────"
-          curl -fsS --max-time 20 http://127.0.0.1:8000/api/v1/market/status || echo "market status unavailable"
+          echo "──────── public health ────────"
+          curl -fsS --max-time 20 http://127.0.0.1:8000/health
           echo
+
+          echo "──────── protected API boundary ────────"
+          status="$(curl -sS --max-time 20 -o /tmp/signalai-market-status.out -w '%{http_code}' \
+            http://127.0.0.1:8000/api/v1/market/status)"
+          rm -f /tmp/signalai-market-status.out
+          [ "$status" = "401" ] || {
+            echo "protected market status returned HTTP $status; expected 401 without device credential" >&2
+            exit 1
+          }
+          echo "market/status correctly rejects unauthenticated diagnostics with HTTP 401"
           REMOTE
 
       - name: Remove SSH key
