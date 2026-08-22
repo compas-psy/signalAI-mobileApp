@@ -1,10 +1,16 @@
-"""Evidence-driven reconciliation for ambiguous Lighter actions (SAI-073).
+"""Evidence-driven reconciliation for ambiguous Lighter actions (SAI-073/083).
 
-The provider lookup result is treated as evidence only.  This module never
+The provider lookup result is treated as evidence only. This module never
 submits or retries provider transactions and never mutates SignalAI's generic
-ExecutionIntent/ExecutionOrder lifecycle.  Its only mutable local state change
+ExecutionIntent/ExecutionOrder lifecycle. Its only mutable Lighter state change
 is retiring an already-reserved explicit nonce when provider facts prove that
 nonce can no longer be safely reused.
+
+The SAI-083 orchestration boundary additionally applies a one-way execution
+HALT only when a *new* reconciliation fact proves ambiguity for an action that
+was already durably ``SUBMITTING`` while lifecycle mode is ``CANARY``. Historical
+evidence replay, pre-submit ``RESERVED`` state and non-Canary reconciliation do
+not gain global kill-switch authority.
 """
 
 from __future__ import annotations
@@ -22,9 +28,18 @@ from ...models.lighter_execution import (
     LighterOrderActionBinding,
     LighterReconciliationEvidence,
 )
-from .lighter_replay import mark_lighter_nonce_consumed, LighterReplayError
+from ..automatic_safety import _automatic_halt_new_entries_locked
+from ..enums import ExecutionLifecycleMode
+from ..kill_switch import execution_control_lock
+from ..mode import get_execution_mode
+from .lighter_replay import (
+    LighterReplayError,
+    mark_lighter_nonce_consumed,
+)
 
 _INT64_MAX = (1 << 63) - 1
+_RECONCILIATION_AMBIGUITY = frozenset({"AMBIGUOUS", "CONSUMED_UNKNOWN"})
+_RECONCILIATION_SAFETY_TRIGGER = "NONCE_RECONCILIATION_AMBIGUITY"
 
 
 class LighterReconciliationError(RuntimeError):
@@ -74,6 +89,23 @@ class LighterReconciliationResult:
     provider_tx_hash: str | None = None
     provider_tx_status: int | None = None
     observed_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class LighterReconciliationSafetyResult:
+    """Committed reconciliation plus monotonic automatic-safety outcome."""
+
+    reconciliation: LighterReconciliationResult
+    evidence_created: bool
+    automatic_halt_applied: bool
+    automatic_safety_trigger: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _ReconciliationMetadata:
+    result: LighterReconciliationResult
+    evidence_created: bool
+    nonce_was_submitting: bool
 
 
 def _aware(field: str, value: datetime) -> datetime:
@@ -258,18 +290,13 @@ def _persist_evidence(
     return row
 
 
-def reconcile_lighter_action(
+def _reconcile_lighter_action(
     db: Session,
     *,
     action_key: str,
     snapshot: LighterReconciliationSnapshot,
-) -> LighterReconciliationResult:
-    """Reconcile one durable action from already-fetched provider facts.
-
-    A missing order is never interpreted as safe-to-resend.  If the provider
-    nonce has not advanced the action stays unresolved; if it has advanced the
-    nonce is retired but the semantic outcome remains explicitly unknown.
-    """
+) -> _ReconciliationMetadata:
+    """Reconcile and retain causality metadata for SAI-083 safety decisions."""
 
     if not isinstance(action_key, str) or not action_key or len(action_key) > 192:
         raise LighterReconciliationStateError("action_key must be non-empty")
@@ -281,15 +308,13 @@ def reconcile_lighter_action(
             LighterOrderActionBinding.action_key == action_key
         )
     )
-    reservation = db.scalar(
-        select(LighterNonceReservation).where(
-            LighterNonceReservation.replay_key == action_key
-        )
-    )
-    if binding is None or reservation is None:
+    if binding is None:
         raise LighterReconciliationStateError("unknown durable Lighter action")
 
     # Match the global SAI-069/070 lock order: identity -> replay -> nonce scope.
+    # Binding is immutable. Reservation is deliberately re-read *after* these
+    # transaction locks so an action that changed while we waited cannot leave
+    # stale ORM state behind the safety decision.
     _lock(db, "lighter-client-order-id", binding.client_order_id)
     _lock(db, "lighter-replay-key", action_key)
     _lock(
@@ -297,8 +322,16 @@ def reconcile_lighter_action(
         "lighter-nonce-scope",
         f"{binding.account_index}:{binding.api_key_index}",
     )
+    reservation = db.execute(
+        select(LighterNonceReservation)
+        .where(LighterNonceReservation.replay_key == action_key)
+        .execution_options(populate_existing=True)
+    ).scalar_one_or_none()
+    if reservation is None:
+        raise LighterReconciliationStateError("unknown durable Lighter action")
 
     _validate_snapshot_scope(binding, reservation, snapshot)
+    nonce_was_submitting = reservation.state == "SUBMITTING"
     key = _evidence_key(action_key, snapshot)
     prior = db.scalar(
         select(LighterReconciliationEvidence).where(
@@ -306,7 +339,11 @@ def reconcile_lighter_action(
         )
     )
     if prior is not None:
-        return _result_from_evidence(prior)
+        return _ReconciliationMetadata(
+            result=_result_from_evidence(prior),
+            evidence_created=False,
+            nonce_was_submitting=nonce_was_submitting,
+        )
 
     order = snapshot.order
     transaction = snapshot.transaction
@@ -361,7 +398,92 @@ def reconcile_lighter_action(
         order=resolved_order,
         transaction=resolved_tx,
     )
-    return _result_from_evidence(row)
+    return _ReconciliationMetadata(
+        result=_result_from_evidence(row),
+        evidence_created=True,
+        nonce_was_submitting=nonce_was_submitting,
+    )
+
+
+def reconcile_lighter_action(
+    db: Session,
+    *,
+    action_key: str,
+    snapshot: LighterReconciliationSnapshot,
+) -> LighterReconciliationResult:
+    """Reconcile one durable action from already-fetched provider facts.
+
+    A missing order is never interpreted as safe-to-resend. If the provider
+    nonce has not advanced the action stays unresolved; if it has advanced the
+    nonce is retired but the semantic outcome remains explicitly unknown.
+
+    This foundational boundary keeps its original transaction ownership. Use
+    ``reconcile_lighter_action_with_automatic_safety`` for the CANARY runtime
+    orchestration that must commit reconciliation and HALT atomically under the
+    shared execution-control serialization boundary.
+    """
+
+    return _reconcile_lighter_action(
+        db,
+        action_key=action_key,
+        snapshot=snapshot,
+    ).result
+
+
+def reconcile_lighter_action_with_automatic_safety(
+    db: Session,
+    *,
+    action_key: str,
+    snapshot: LighterReconciliationSnapshot,
+) -> LighterReconciliationSafetyResult:
+    """Commit authoritative reconciliation and monotonic CANARY HALT together.
+
+    The shared execution-control lock is acquired *before* replay/nonce locks,
+    matching the future live submit lock order. Only newly-created evidence for
+    a nonce that was already SUBMITTING can prove provider-I/O ambiguity. This
+    prevents replay of historical snapshots or pre-submit local state from
+    becoming a global kill-switch DoS primitive.
+    """
+
+    with execution_control_lock(db):
+        try:
+            metadata = _reconcile_lighter_action(
+                db,
+                action_key=action_key,
+                snapshot=snapshot,
+            )
+            trigger: str | None = None
+            automatic_halt_applied = False
+            if (
+                metadata.evidence_created
+                and metadata.nonce_was_submitting
+                and metadata.result.outcome in _RECONCILIATION_AMBIGUITY
+                and get_execution_mode(db).mode is ExecutionLifecycleMode.CANARY
+            ):
+                trigger = _RECONCILIATION_SAFETY_TRIGGER
+                halt = _automatic_halt_new_entries_locked(
+                    db,
+                    reason=(
+                        "Lighter Canary reconciliation ambiguity: "
+                        f"{metadata.result.outcome}"
+                    ),
+                )
+                automatic_halt_applied = halt.changed
+
+            # The locked halt helper commits when it changes state. A final
+            # commit is intentional and harmless in that case; otherwise it is
+            # what makes reconciliation evidence durable before the global lock
+            # is released, including when a stronger owner switch already exists.
+            db.commit()
+            return LighterReconciliationSafetyResult(
+                reconciliation=metadata.result,
+                evidence_created=metadata.evidence_created,
+                automatic_halt_applied=automatic_halt_applied,
+                automatic_safety_trigger=trigger,
+            )
+        except Exception:
+            db.rollback()
+            raise
 
 
 __all__ = [
@@ -369,7 +491,9 @@ __all__ = [
     "LighterProviderTransactionFact",
     "LighterReconciliationError",
     "LighterReconciliationResult",
+    "LighterReconciliationSafetyResult",
     "LighterReconciliationSnapshot",
     "LighterReconciliationStateError",
     "reconcile_lighter_action",
+    "reconcile_lighter_action_with_automatic_safety",
 ]
