@@ -23,6 +23,10 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.device_enrollment import token_verifier
 from app.models import Base, DeviceCredential, Instrument
 from app.models.enums import AssetClass, Venue
+from tests.calendar_support import (
+    CLEAR_EVENT_CALENDAR_BLOCK,
+    configure_clear_event_calendar,
+)
 
 ADMIN_DSN = os.environ.get(
     "SIGNALAI_ADMIN_DSN",
@@ -33,6 +37,11 @@ TEST_DSN = ADMIN_DSN.rsplit("/", 1)[0] + f"/{TEST_DB}"
 DEVICE_TOKEN = "c" * 43
 PAIRING_SESSION_ID = "p" * 43
 DEVICE_HEADERS = {"Authorization": f"Bearer {DEVICE_TOKEN}"}
+_ACTIONABLE_CALENDAR_MODULES = {
+    "test_api",
+    "test_decision_replay_diagnostics",
+    "test_thin_lifecycle_regressions",
+}
 
 
 @pytest.fixture(autouse=True)
@@ -45,6 +54,21 @@ def configured_device_token(monkeypatch):
     monkeypatch.setenv("SIGNALAI_DEVICE_PAIRING_EXPIRES_AT", "2030-01-01T00:00:00Z")
     monkeypatch.setenv("SIGNALAI_DEVICE_PAIRING_MAX_USES", "8")
     monkeypatch.setenv("SIGNALAI_RISK_PREVIEW_SIGNING_KEY", "ci-risk-preview-secret")
+
+
+@pytest.fixture(autouse=True)
+def configured_actionable_calendar(request, monkeypatch, tmp_path):
+    """Give legacy successful-approval suites a real fresh owned calendar.
+
+    Production remains fail-closed. Only modules whose contract is about an
+    otherwise actionable idea opt into this fixture; dedicated calendar tests
+    keep exercising absent/stale/ambiguous source behavior independently.
+    """
+    module_name = getattr(request.module, "__name__", "").rsplit(".", 1)[-1]
+    if module_name not in _ACTIONABLE_CALENDAR_MODULES:
+        return
+    configure_clear_event_calendar(monkeypatch, tmp_path)
+    monkeypatch.setenv("SIGNALAI_TEST_CLEAR_CALENDAR_FIXTURE", "1")
 
 
 def _recreate_database() -> None:
@@ -170,6 +194,11 @@ def idea_kwargs(instrument_id: str, moment: datetime, **overrides) -> dict:
     Собрана так, чтобы проходить все ограничения таблицы: тест на конкретное
     ограничение ломает ровно одно поле и видит именно свою ошибку.
     """
+    explanation = (
+        {"event_calendar": dict(CLEAR_EVENT_CALENDAR_BLOCK)}
+        if os.environ.get("SIGNALAI_TEST_CLEAR_CALENDAR_FIXTURE") == "1"
+        else {}
+    )
     base = dict(
         instrument_id=instrument_id,
         strategy="TREND_PULLBACK",
@@ -206,7 +235,7 @@ def idea_kwargs(instrument_id: str, moment: datetime, **overrides) -> dict:
         risk_per_unit=Decimal("700"),
         correlation_cluster="rub_fx",
         drawdown_multiplier=Decimal("1"),
-        explanation_json={},
+        explanation_json=explanation,
         data_warnings=[],
         signal_time=moment,
         expires_at=moment + timedelta(days=5),
