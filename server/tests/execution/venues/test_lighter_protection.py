@@ -182,8 +182,11 @@ def test_stop_prices_must_match_provider_precision_before_nonce_io(session) -> N
     assert transport.next_nonce_calls == 0
 
 
-def test_timeout_keeps_protection_nonce_reserved_and_exact_retry_reuses_it(session) -> None:
-    from app.execution.venues.lighter_actions import LighterOrderActions
+def test_timeout_keeps_protection_submitting_and_exact_retry_requires_reconciliation(session) -> None:
+    from app.execution.venues.lighter_actions import (
+        LighterActionRequiresReconciliation,
+        LighterOrderActions,
+    )
     from app.models.lighter_execution import LighterNonceReservation
 
     sessions = _sessions(session)
@@ -209,12 +212,13 @@ def test_timeout_keeps_protection_nonce_reserved_and_exact_retry_reuses_it(sessi
         )
         assert reservation is not None
         assert reservation.nonce == 333
-        assert reservation.state == "RESERVED"
+        assert reservation.state == "SUBMITTING"
 
     transport.create_error = None
-    actions.arm_position_stop(**kwargs)
+    with pytest.raises(LighterActionRequiresReconciliation, match="reconciliation"):
+        actions.arm_position_stop(**kwargs)
     assert transport.next_nonce_calls == 1
-    assert [call["nonce"] for call in transport.create_calls] == [333, 333]
+    assert [call["nonce"] for call in transport.create_calls] == [333]
 
 
 def test_same_protection_identity_cannot_be_mutated_on_retry(session) -> None:
