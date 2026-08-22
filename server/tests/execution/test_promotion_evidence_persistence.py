@@ -25,6 +25,7 @@ def test_persisted_evidence_is_append_only_and_evaluated_by_exact_scope(session)
     from app.execution.promotion_evidence import (
         PromotionEvidenceKind,
         PromotionEvidenceSnapshotInput,
+        PromotionVenueCapability,
         current_persisted_promotion_evidence,
         persist_promotion_evidence_snapshot,
     )
@@ -48,6 +49,11 @@ def test_persisted_evidence_is_append_only_and_evaluated_by_exact_scope(session)
                 reconciliation_verified=True,
                 protection_verified=True,
                 kill_switch_verified=True,
+                capability=(
+                    PromotionVenueCapability.LIGHTER_TESTNET_ACTIONS_ONLY
+                    if kind is PromotionEvidenceKind.TECHNICAL
+                    else None
+                ),
             ),
         )
     session.flush()
