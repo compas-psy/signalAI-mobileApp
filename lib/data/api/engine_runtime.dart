@@ -61,7 +61,7 @@ Future<EngineRuntimeCredentials> restoreEngineRuntime(
     await bridge.deleteEngineDeviceToken();
     await store.write('engine', {
       'base_url': savedUrl,
-      if (deviceId != null) 'device_id': deviceId,
+      'device_id': ?deviceId,
     });
     return EngineRuntimeCredentials(
       baseUrl: effectiveUrl,
