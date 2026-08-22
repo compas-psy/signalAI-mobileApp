@@ -46,6 +46,7 @@ class _PanelApi extends ApiClient {
     String path, {
     Map<String, dynamic>? body,
     String? idempotencyKey,
+    String? pairingSessionId,
   }) async {
     posts.add((path: path, body: body, key: idempotencyKey));
     if (path.endsWith('/mode/preview')) return modePreview;
