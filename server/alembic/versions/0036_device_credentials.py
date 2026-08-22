@@ -51,24 +51,24 @@ def upgrade() -> None:
         sa.UniqueConstraint("issued_request_hash", name="uq_device_credentials_request"),
         sa.CheckConstraint(
             "generation > 0",
-            name="ck_device_credentials_generation_positive",
+            name=op.f("ck_device_credentials_generation_positive"),
         ),
         sa.CheckConstraint(
             "char_length(device_id) BETWEEN 16 AND 64",
-            name="ck_device_credentials_device_id_width",
+            name=op.f("ck_device_credentials_device_id_width"),
         ),
         sa.CheckConstraint(
             "char_length(token_verifier) = 64",
-            name="ck_device_credentials_verifier_width",
+            name=op.f("ck_device_credentials_verifier_width"),
         ),
         sa.CheckConstraint(
             "char_length(issued_request_hash) = 64",
-            name="ck_device_credentials_request_hash_width",
+            name=op.f("ck_device_credentials_request_hash_width"),
         ),
         sa.CheckConstraint(
             "jsonb_typeof(metadata_json) = 'object' "
             "AND octet_length(metadata_json::text) <= 256",
-            name="ck_device_credentials_metadata_bounded",
+            name=op.f("ck_device_credentials_metadata_bounded"),
         ),
     )
     op.create_index(
