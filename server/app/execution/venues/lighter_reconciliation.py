@@ -32,7 +32,10 @@ from ..automatic_safety import _automatic_halt_new_entries_locked
 from ..enums import ExecutionLifecycleMode
 from ..kill_switch import execution_control_lock
 from ..mode import get_execution_mode
-from .lighter_replay import LighterReplayError, mark_lighter_nonce_consumed
+from .lighter_replay import (
+    LighterReplayError,
+    mark_lighter_nonce_consumed,
+)
 
 _INT64_MAX = (1 << 63) - 1
 _RECONCILIATION_AMBIGUITY = frozenset({"AMBIGUOUS", "CONSUMED_UNKNOWN"})
