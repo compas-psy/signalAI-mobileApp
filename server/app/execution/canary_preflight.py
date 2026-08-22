@@ -1,25 +1,27 @@
 """Read-only fail-closed preflight for a future Lighter Canary run.
 
 This module is deliberately incapable of authorizing a mode change or touching a
-provider.  It only re-checks immutable non-secret policy facts against the
-currently deployed runtime and credential generation.  Governance/owner/evidence
-step-up remains unresolved, so even a structurally clean result is never eligible
-for Canary yet.
+provider.  It re-checks immutable non-secret policy facts against the currently
+deployed runtime, credential generation and exact server evidence refs.
+Governance/owner step-up remains unresolved, so even a fully clean result is
+never eligible for Canary yet.
 """
 from __future__ import annotations
 
 import hashlib
 import json
 import re
+import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Callable, Mapping, Any
+from typing import Any, Callable, Mapping
 
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from ..models.canary_policy import CanaryPolicySnapshot
 from ..models.execution import ExecutionModeState
+from .canary_evidence import evaluate_canary_evidence_bindings
 from .canary_policy import current_lighter_trade_generation
 from .enums import ExecutionLifecycleMode
 
@@ -28,8 +30,8 @@ _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _GOVERNANCE_BLOCKERS = (
     "ADR_0002_NOT_ACCEPTED",
     "CANARY_OWNER_STEP_UP_NOT_IMPLEMENTED",
-    "CANARY_EVIDENCE_BINDING_NOT_IMPLEMENTED",
 )
+_LEGACY_EVIDENCE_BLOCKER = "CANARY_EVIDENCE_BINDING_NOT_IMPLEMENTED"
 
 
 class CanaryPreflightError(ValueError):
@@ -69,11 +71,7 @@ def _canonical_payload_hash(payload: Mapping[str, Any]) -> str:
 
 
 def _current_mode_read_only(db: Session) -> ExecutionLifecycleMode:
-    """Read the singleton without materializing it as ``get_execution_mode`` does.
-
-    An absent state is semantically PAPER, but preflight must not create rows or
-    otherwise mutate the database merely because an operator asked a question.
-    """
+    """Read the singleton without materializing it as ``get_execution_mode`` does."""
     state = db.execute(
         select(ExecutionModeState).where(ExecutionModeState.id == 1)
     ).scalar_one_or_none()
@@ -110,6 +108,23 @@ def _row_binding_is_consistent(
     )
 
 
+def _authoritative_ref_shape(evidence_refs: object) -> bool:
+    """Distinguish exact snapshot refs from old placeholder policy strings.
+
+    Old proposed-policy fixtures used arbitrary labels.  They remain permanently
+    blocked by the legacy blocker rather than being silently reinterpreted.  New
+    policies use seven UUID refs and must pass the authoritative resolver.
+    """
+    if not isinstance(evidence_refs, Mapping) or len(evidence_refs) != 7:
+        return False
+    try:
+        for value in evidence_refs.values():
+            uuid.UUID(str(value).strip())
+    except (ValueError, AttributeError, TypeError):
+        return False
+    return True
+
+
 def _failed(*blockers: str) -> CanaryPreflightResult:
     return CanaryPreflightResult(
         eligible_for_canary=False,
@@ -128,9 +143,8 @@ def evaluate_canary_preflight(
     """Re-check one exact immutable Canary policy without granting authority.
 
     Ordering is intentional: malformed/missing/corrupt policy facts fail before
-    runtime, credential or any future authorization checks.  The function never
-    changes execution mode, never decrypts a key and never constructs a provider
-    transport.
+    runtime, credential or evidence checks.  The function never changes execution
+    mode, never decrypts a key and never constructs a provider transport.
     """
     normalized_hash = str(snapshot_hash).strip().lower()
     if _HEX64.fullmatch(normalized_hash) is None:
@@ -205,9 +219,31 @@ def evaluate_canary_preflight(
     if blockers:
         return _failed(*blockers)
 
-    # Deliberately no authorization proof is minted here.  These blockers are
-    # constants until ADR-0002 is accepted and separate owner/evidence step-up
-    # mechanisms exist and are independently verified.
+    evidence_refs = payload.get("evidence_refs")
+    if not _authoritative_ref_shape(evidence_refs):
+        # Never reinterpret old arbitrary labels as durable authority. They stay
+        # blocked until a new immutable policy snapshot names exact UUID facts.
+        return CanaryPreflightResult(
+            eligible_for_canary=False,
+            structural_checks_passed=True,
+            blockers=_GOVERNANCE_BLOCKERS + (_LEGACY_EVIDENCE_BLOCKER,),
+        )
+
+    evidence = evaluate_canary_evidence_bindings(
+        db,
+        evidence_refs=evidence_refs,  # type: ignore[arg-type]
+        source_sha=snapshot.source_sha,
+        config_hash=snapshot.engine_config_hash,
+        strategy_family=snapshot.strategy_family,
+        strategy_version=snapshot.strategy_version,
+        venue="LIGHTER",
+        now=datetime.now(UTC),
+    )
+    if not evidence.ready:
+        return _failed(*evidence.blockers)
+
+    # Evidence is now structurally proven, but it is still not authorization.
+    # ADR acceptance and a separate fresh owner step-up remain mandatory.
     return CanaryPreflightResult(
         eligible_for_canary=False,
         structural_checks_passed=True,
