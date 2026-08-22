@@ -20,6 +20,7 @@ from ...models.lighter_execution import (
 )
 
 _INT64_MAX = (1 << 63) - 1
+_ACTIVE_NONCE_STATES = ("RESERVED", "SUBMITTING")
 
 
 class LighterReplayError(RuntimeError):
@@ -170,7 +171,7 @@ def reserve_lighter_nonce(
         select(NonceReservation).where(
             NonceReservation.account_index == account_index,
             NonceReservation.api_key_index == api_key_index,
-            NonceReservation.state == "RESERVED",
+            NonceReservation.state.in_(_ACTIVE_NONCE_STATES),
         )
     ).scalar_one_or_none()
     if active is not None:
@@ -203,6 +204,44 @@ def reserve_lighter_nonce(
     return reservation
 
 
+def mark_lighter_nonce_submitting(
+    db: Session,
+    *,
+    replay_key: str,
+) -> NonceReservation:
+    """Durably arm one reserved nonce immediately before provider write I/O.
+
+    SUBMITTING is intentionally non-replayable. Once this transition commits,
+    any process restart or duplicate caller must reconcile provider facts before
+    another transaction may use the nonce lane.
+    """
+
+    if not isinstance(replay_key, str) or not replay_key or len(replay_key) > 192:
+        raise LighterReplayError("replay_key must be a non-empty string up to 192 chars")
+
+    _lock(db, "lighter-replay-key", replay_key)
+    reservation = db.execute(
+        select(NonceReservation).where(NonceReservation.replay_key == replay_key)
+    ).scalar_one_or_none()
+    if reservation is None:
+        raise LighterReplayError("unknown Lighter replay_key")
+
+    _lock(
+        db,
+        "lighter-nonce-scope",
+        f"{reservation.account_index}:{reservation.api_key_index}",
+    )
+    if reservation.state != "RESERVED":
+        raise LighterNonceStateMismatch(
+            f"Lighter nonce cannot begin submit from state {reservation.state!r}"
+        )
+
+    reservation.state = "SUBMITTING"
+    reservation.consumed_at = None
+    db.flush()
+    return reservation
+
+
 def mark_lighter_nonce_consumed(
     db: Session,
     *,
@@ -222,7 +261,7 @@ def mark_lighter_nonce_consumed(
         raise LighterReplayError("unknown Lighter replay_key")
     if reservation.state == "CONSUMED":
         return reservation
-    if reservation.state != "RESERVED":
+    if reservation.state not in _ACTIVE_NONCE_STATES:
         raise LighterNonceStateMismatch(
             f"unexpected Lighter nonce reservation state {reservation.state!r}"
         )
@@ -244,6 +283,7 @@ __all__ = [
     "LighterReplayError",
     "derive_lighter_client_order_index",
     "mark_lighter_nonce_consumed",
+    "mark_lighter_nonce_submitting",
     "reserve_lighter_nonce",
     "resolve_lighter_order_identity",
 ]
