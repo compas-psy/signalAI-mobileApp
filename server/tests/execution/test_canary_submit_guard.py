@@ -42,6 +42,16 @@ def _set_mode(session, target: ExecutionLifecycleMode) -> None:
     session.flush()
 
 
+def _clear_automatic_halt(session) -> None:
+    from app.execution.kill_switch import clear_execution_kill_switch
+
+    clear_execution_kill_switch(
+        session,
+        actor="test-owner",
+        reason="continue isolated submit-guard assertion",
+    )
+
+
 def _policy(generation_id: str):
     from app.execution.canary_policy import CanaryPolicy
 
@@ -267,6 +277,7 @@ def test_source_config_and_live_credential_generation_drift_fail_closed(session)
         context_provider=lambda: replace(_runtime(), source_sha="b" * 40),
     ) as wrong_source:
         assert "DEPLOYED_SOURCE_SHA_MISMATCH" in wrong_source.blockers
+    _clear_automatic_halt(session)
 
     with _guard(
         session,
@@ -274,6 +285,7 @@ def test_source_config_and_live_credential_generation_drift_fail_closed(session)
         context_provider=lambda: replace(_runtime(), config_hash="c" * 64),
     ) as wrong_config:
         assert "ENGINE_CONFIG_HASH_MISMATCH" in wrong_config.blockers
+    _clear_automatic_halt(session)
 
     rotated = dict(LIVE_VALUES)
     rotated["api_private_key"] = "cd" * 32
@@ -289,10 +301,12 @@ def test_allowlist_caps_and_missing_dynamic_limit_are_enforced_at_submit_time(se
     foreign = replace(_proposal(), instrument_id="CRYPTO:PERP:SOLUSDT")
     with _guard(session, snapshot, proposal=foreign) as decision:
         assert "INSTRUMENT_NOT_ALLOWED" in decision.blockers
+    _clear_automatic_halt(session)
 
     oversized = replace(_proposal(), order_notional=Decimal("1700"))
     with _guard(session, snapshot, proposal=oversized) as decision:
         assert "ORDER_NOTIONAL_LIMIT" in decision.blockers
+    _clear_automatic_halt(session)
 
     missing_provider_cap = replace(_dynamic(), provider_order_notional=None)
     with _guard(
