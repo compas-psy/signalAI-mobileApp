@@ -3,15 +3,25 @@
 These tables map SignalAI's provider-neutral order identity to Lighter's signed
 64-bit client-order index, serialize explicit nonce ownership across worker
 restarts, bind each provider action identity to one immutable request hash and
-persist append-only reconciliation facts.  They do not send or sign provider
-transactions and do not own the generic ExecutionIntent lifecycle.
+persist append-only provider/testnet evidence. They do not own the generic
+ExecutionIntent lifecycle or enable LIVE execution.
 """
 
 from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, CheckConstraint, DateTime, Index, Integer, String, text
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    Index,
+    Integer,
+    String,
+    text,
+)
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base, UuidPk, utcnow_column
@@ -184,9 +194,76 @@ class LighterReconciliationEvidence(UuidPk, Base):
     )
 
 
+class LighterTestnetSmokeEvidence(UuidPk, Base):
+    """Append-only, redacted evidence from one owner-authorized testnet smoke."""
+
+    __tablename__ = "lighter_testnet_smoke_evidence"
+
+    evidence_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    run_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    reason_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    scorecard_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    scorecard_reasons: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    scorecard_observed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    account_index: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    api_key_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    market_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    symbol: Mapped[str] = mapped_column(String(64), nullable=False)
+    client_order_id: Mapped[str] = mapped_column(String(96), nullable=False)
+    create_tx_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    cancel_tx_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    eligible_for_live: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = utcnow_column()
+
+    __table_args__ = (
+        CheckConstraint(
+            "char_length(evidence_key) = 64",
+            name="evidence_key_sha256_width",
+        ),
+        CheckConstraint("char_length(run_key) = 64", name="run_key_sha256_width"),
+        CheckConstraint(
+            "char_length(source_sha256) = 64",
+            name="source_sha256_width",
+        ),
+        CheckConstraint(
+            "event_type IN ('BLOCKED','SUCCESS','CREATE_FAILED','CANCEL_FAILED',"
+            "'RECOVERY_SUCCESS')",
+            name="event_type_valid",
+        ),
+        CheckConstraint(
+            "account_index IS NULL OR account_index >= 0",
+            name="account_index_non_negative",
+        ),
+        CheckConstraint(
+            "api_key_index IS NULL OR (api_key_index >= 0 AND api_key_index <= 253)",
+            name="api_key_index_range",
+        ),
+        CheckConstraint("market_index >= 0", name="market_index_non_negative"),
+        CheckConstraint("eligible_for_live = false", name="live_always_false"),
+        Index(
+            "uq_lighter_testnet_smoke_evidence_key",
+            "evidence_key",
+            unique=True,
+        ),
+        Index(
+            "ix_lighter_testnet_smoke_evidence_run",
+            "run_key",
+            "observed_at",
+        ),
+    )
+
+
 __all__ = [
     "LighterNonceReservation",
     "LighterOrderActionBinding",
     "LighterOrderIdentity",
     "LighterReconciliationEvidence",
+    "LighterTestnetSmokeEvidence",
 ]
