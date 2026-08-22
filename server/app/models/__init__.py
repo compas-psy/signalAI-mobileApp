@@ -61,6 +61,7 @@ from .lighter_execution import (
     LighterOrderActionBinding,
     LighterOrderIdentity,
     LighterReconciliationEvidence,
+    LighterTestnetSmokeEvidence,
 )
 from .management import ExecutionManagementPolicySnapshot
 from .manual_control import ExecutionManualTradeControl
@@ -106,26 +107,21 @@ __all__ = [
     "Base",
     "DeviceCredential",
     "DevicePairingSession",
-    # dataset lineage
     "DatasetSnapshot",
-    # market
     "Instrument",
     "Bar",
     "MarketFeature",
     "RegimeSnapshot",
     "DataQualityEvent",
     "FxRate",
-    # ideas / owner paper
     "PaperTrade",
     "TradeIdea",
     "IdeaEvent",
     "IdeaOutcome",
     "IdeaSkip",
-    # isolated candidate measurement
     "ShadowObservation",
     "PaperAbDecision",
     "PaperAbOutcome",
-    # durable execution domain
     "ExecutionModeState",
     "ExecutionModeEvent",
     "ExecutionModeActivationRequest",
@@ -142,9 +138,8 @@ __all__ = [
     "LighterOrderActionBinding",
     "LighterNonceReservation",
     "LighterReconciliationEvidence",
-    # delivery
+    "LighterTestnetSmokeEvidence",
     "NotificationOutbox",
-    # portfolio
     "Account",
     "Holding",
     "EquityRankingSnapshot",
@@ -152,7 +147,6 @@ __all__ = [
     "PortfolioRun",
     "PortfolioWeight",
     "RebalanceDraft",
-    # risk / research / strategy governance / experiments
     "RiskSnapshot",
     "RiskState",
     "AuditEvent",
@@ -172,14 +166,12 @@ __all__ = [
     "PromotionDecision",
     "PromotionEvidenceDecision",
     "PromotionEvidenceSnapshot",
-    # early signals
     "CollectionPermit",
     "HypothesisEvidence",
     "ResearchHypothesis",
     "ResearchObservation",
     "ResearchSignal",
     "ResearchSource",
-    # enums
     "AssetClass",
     "BarrierOutcome",
     "DerivativesFlow",
