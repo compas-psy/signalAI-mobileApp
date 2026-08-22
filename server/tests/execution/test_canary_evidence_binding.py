@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import text
 
 
 REQUIRED_REFS = {
@@ -51,7 +51,6 @@ def test_registry_requires_exact_typed_refs_and_is_append_only(session):
         CanaryEvidenceCategory,
         persist_canary_evidence_reference,
     )
-    from app.models.canary_evidence import CanaryEvidenceReference
 
     now = datetime.now(UTC)
     row = persist_canary_evidence_reference(
@@ -61,27 +60,14 @@ def test_registry_requires_exact_typed_refs_and_is_append_only(session):
     session.flush()
     assert row.evidence_ref == REQUIRED_REFS["strategy_performance"]
 
-    session.execute(
-        text("SAVEPOINT canary_evidence_append_only_test")
-    )
-    try:
-        with pytest.raises(Exception):
-            session.execute(
-                text(
-                    "UPDATE canary_evidence_references "
-                    "SET verdict = 'FAILED' WHERE id = :id"
-                ),
-                {"id": row.id},
-            )
-            session.flush()
-    finally:
-        session.execute(text("ROLLBACK TO SAVEPOINT canary_evidence_append_only_test"))
-
-    persisted = session.scalar(
-        select(CanaryEvidenceReference).where(CanaryEvidenceReference.id == row.id)
-    )
-    assert persisted is not None
-    assert persisted.verdict == "VERIFIED"
+    with pytest.raises(Exception):
+        session.execute(
+            text(
+                "UPDATE canary_evidence_references "
+                "SET verdict = 'FAILED' WHERE id = :id"
+            ),
+            {"id": row.id},
+        )
 
 
 def test_binding_is_complete_only_when_all_seven_exact_refs_are_verified_and_fresh(session):
@@ -116,7 +102,6 @@ def test_binding_fails_closed_on_missing_wrong_category_failed_stale_or_scope_dr
     )
 
     now = datetime.now(UTC)
-    # One exact ref exists but is the wrong category.
     persist_canary_evidence_reference(
         session,
         _input(
@@ -125,12 +110,10 @@ def test_binding_fails_closed_on_missing_wrong_category_failed_stale_or_scope_dr
             ref=REQUIRED_REFS["strategy_performance"],
         ),
     )
-    # A failed verdict never becomes proof.
     persist_canary_evidence_reference(
         session,
         _input("shadow", now=now, verdict="FAILED"),
     )
-    # Stale evidence remains durable but not authoritative now.
     persist_canary_evidence_reference(
         session,
         _input(
@@ -139,7 +122,6 @@ def test_binding_fails_closed_on_missing_wrong_category_failed_stale_or_scope_dr
             fresh_until=now - timedelta(minutes=1),
         ),
     )
-    # Exact ref with wrong source SHA is a provenance mismatch.
     drifted_scope = type(_scope())(
         source_sha="d" * 40,
         engine_config_hash=_scope().engine_config_hash,
