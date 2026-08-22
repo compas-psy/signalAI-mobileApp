@@ -111,9 +111,12 @@ class LighterNonceReservation(UuidPk, Base):
             name="api_key_index_range",
         ),
         CheckConstraint("nonce >= 0", name="nonce_non_negative"),
-        CheckConstraint("state IN ('RESERVED','CONSUMED')", name="state_valid"),
         CheckConstraint(
-            "(state = 'RESERVED' AND consumed_at IS NULL) OR "
+            "state IN ('RESERVED','SUBMITTING','CONSUMED')",
+            name="state_valid",
+        ),
+        CheckConstraint(
+            "(state IN ('RESERVED','SUBMITTING') AND consumed_at IS NULL) OR "
             "(state = 'CONSUMED' AND consumed_at IS NOT NULL)",
             name="state_consumed_at_consistent",
         ),
@@ -134,7 +137,7 @@ class LighterNonceReservation(UuidPk, Base):
             "account_index",
             "api_key_index",
             unique=True,
-            postgresql_where=text("state = 'RESERVED'"),
+            postgresql_where=text("state IN ('RESERVED','SUBMITTING')"),
         ),
         Index(
             "ix_lighter_nonce_reservations_scope_state",
