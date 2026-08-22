@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from ..models.execution import ExecutionModeEvent, ExecutionModeState
 from .enums import ExecutionLifecycleMode
+from .kill_switch import execution_control_lock
 
 
 class ExecutionModeChangeRejected(ValueError):
@@ -122,6 +123,11 @@ def change_execution_mode(
     remain fail-closed. SAI-031 will be the only component allowed to mint this
     proof after rechecking its gates. The append-only event preserves both the
     owner request and the guard evidence used to permit it.
+
+    Mode mutation shares the session-level execution-control lock with the
+    Canary submit guard. Unlike transaction row locks, this advisory lock
+    survives the crash-safety commit that a future provider adapter performs
+    after persisting SUBMITTING, so mode cannot drift inside that write window.
     """
 
     target = ExecutionLifecycleMode(target)
@@ -132,45 +138,46 @@ def change_execution_mode(
     if not reason:
         raise ExecutionModeChangeRejected("reason is required")
 
-    _materialize_state(db)
-    state = db.execute(
-        select(ExecutionModeState)
-        .where(ExecutionModeState.id == 1)
-        .with_for_update()
-        .execution_options(populate_existing=True)
-    ).scalar_one()
-    current = ExecutionLifecycleMode(state.mode)
+    with execution_control_lock(db):
+        _materialize_state(db)
+        state = db.execute(
+            select(ExecutionModeState)
+            .where(ExecutionModeState.id == 1)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).scalar_one()
+        current = ExecutionLifecycleMode(state.mode)
 
-    if target == current:
+        if target == current:
+            return _snapshot(state)
+
+        if authorization is None or not authorization.allowed:
+            raise ExecutionModeChangeRejected(_PROMOTION_GUARD_BLOCKER)
+        if not authorization.actor.strip() or not authorization.reason.strip():
+            raise ExecutionModeChangeRejected(
+                "promotion guard authorization actor and reason are required"
+            )
+
+        state.mode = target
+        state.updated_at = datetime.now(UTC)
+        detail = dict(authorization.detail_json)
+        detail.update(
+            {
+                "authorization_actor": authorization.actor.strip(),
+                "authorization_reason": authorization.reason.strip(),
+            }
+        )
+        db.add(
+            ExecutionModeEvent(
+                from_mode=current,
+                to_mode=target,
+                actor=actor,
+                reason=reason,
+                detail_json=detail,
+            )
+        )
+        db.flush()
         return _snapshot(state)
-
-    if authorization is None or not authorization.allowed:
-        raise ExecutionModeChangeRejected(_PROMOTION_GUARD_BLOCKER)
-    if not authorization.actor.strip() or not authorization.reason.strip():
-        raise ExecutionModeChangeRejected(
-            "promotion guard authorization actor and reason are required"
-        )
-
-    state.mode = target
-    state.updated_at = datetime.now(UTC)
-    detail = dict(authorization.detail_json)
-    detail.update(
-        {
-            "authorization_actor": authorization.actor.strip(),
-            "authorization_reason": authorization.reason.strip(),
-        }
-    )
-    db.add(
-        ExecutionModeEvent(
-            from_mode=current,
-            to_mode=target,
-            actor=actor,
-            reason=reason,
-            detail_json=detail,
-        )
-    )
-    db.flush()
-    return _snapshot(state)
 
 
 __all__ = [
