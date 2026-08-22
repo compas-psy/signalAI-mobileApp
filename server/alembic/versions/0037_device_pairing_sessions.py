@@ -29,15 +29,15 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("session_verifier"),
         sa.CheckConstraint(
             "char_length(session_verifier) = 64",
-            name="ck_device_pairing_sessions_verifier_width",
+            name=op.f("ck_device_pairing_sessions_verifier_width"),
         ),
         sa.CheckConstraint(
             "max_uses BETWEEN 1 AND 16",
-            name="ck_device_pairing_sessions_max_uses_bounded",
+            name=op.f("ck_device_pairing_sessions_max_uses_bounded"),
         ),
         sa.CheckConstraint(
             "uses BETWEEN 0 AND max_uses",
-            name="ck_device_pairing_sessions_uses_bounded",
+            name=op.f("ck_device_pairing_sessions_uses_bounded"),
         ),
     )
 
