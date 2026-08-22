@@ -116,7 +116,10 @@ def pair(
             409,
             "device enrollment changed; retry with a new key",
         ) from exc
-    except DeviceEnrollmentError as exc:
+    except ValueError as exc:
+        # DeviceEnrollmentError is a ValueError subclass.  Keeping this
+        # boundary slightly wider also converts legacy validator ValueErrors
+        # into the same fail-closed API contract instead of leaking a 500.
         raise HTTPException(422, "device enrollment request is invalid") from exc
     return _response(result, response)
 
