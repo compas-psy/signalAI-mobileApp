@@ -61,12 +61,29 @@ from .lighter_execution import (
     LighterOrderActionBinding,
     LighterOrderIdentity,
     LighterReconciliationEvidence,
+    LighterTestnetSmokeEvidence,
 )
 from .management import ExecutionManagementPolicySnapshot
 from .manual_control import ExecutionManualTradeControl
+from .market import (
+    Bar,
+    DataQualityEvent,
+    FxRate,
+    Instrument,
+    MarketFeature,
+    RegimeSnapshot,
+)
 from .notifications import NotificationOutbox
 from .paper import PaperTrade
 from .paper_ab import PaperAbDecision, PaperAbOutcome
+from .portfolio import (
+    Account,
+    Holding,
+    PortfolioModel,
+    PortfolioRun,
+    PortfolioWeight,
+    RebalanceDraft,
+)
 from .promotion_evidence import PromotionEvidenceDecision, PromotionEvidenceSnapshot
 from .research import (
     CollectionPermit,
@@ -81,24 +98,8 @@ from .research_trials import (
     ResearchTrial,
     ResearchTrialOutcome,
 )
-from .market import (
-    Bar,
-    DataQualityEvent,
-    FxRate,
-    Instrument,
-    MarketFeature,
-    RegimeSnapshot,
-)
-from .portfolio import (
-    Account,
-    Holding,
-    PortfolioModel,
-    PortfolioRun,
-    PortfolioWeight,
-    RebalanceDraft,
-)
-from .risk import AuditEvent, BacktestRun, ModelRegistry, RiskSnapshot, RiskState
 from .retention import RetentionAttemptIntent, RetentionAttemptOutcome
+from .risk import AuditEvent, BacktestRun, ModelRegistry, RiskSnapshot, RiskState
 from .shadow import ShadowObservation
 from .strategies import StrategyPromotionEvent, StrategyVersion
 
@@ -142,6 +143,7 @@ __all__ = [
     "LighterOrderActionBinding",
     "LighterNonceReservation",
     "LighterReconciliationEvidence",
+    "LighterTestnetSmokeEvidence",
     # delivery
     "NotificationOutbox",
     # portfolio
