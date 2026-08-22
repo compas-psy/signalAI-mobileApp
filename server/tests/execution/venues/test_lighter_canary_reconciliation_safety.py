@@ -217,9 +217,9 @@ def test_non_canary_ambiguity_and_stronger_owner_switch_are_never_weakened(sessi
     sandbox = reconcile_lighter_action_with_automatic_safety(
         session,
         action_key=action_key,
-        snapshot=_snapshot(nonce=840, provider_next_nonce=840),
+        snapshot=_snapshot(nonce=840, provider_next_nonce=841),
     )
-    assert sandbox.reconciliation.outcome == "AMBIGUOUS"
+    assert sandbox.reconciliation.outcome == "CONSUMED_UNKNOWN"
     assert sandbox.automatic_halt_applied is False
     assert sandbox.automatic_safety_trigger is None
     assert get_execution_kill_switch_level(session) is ExecutionKillSwitchLevel.CLEAR
