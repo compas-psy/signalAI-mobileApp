@@ -86,11 +86,10 @@ https://github.com/compas-psy/signalAI-mobileApp/releases/download/sideload/sign
 
 В том же pre-release лежат APK с `source_ref` и коротким SHA в имени, а также
 `signalai-sideload.json` с полным SHA коммита, SHA-256 APK, отпечатком подписи и
-ссылкой на run. Общий bearer-token в APK не компилируется: авторизация
-устройства настраивается после установки. Владелец один раз вводит в приложении
-тот же `SIGNALAI_DEVICE_TOKEN`, который заранее сохранил и добавил в repository
-Secrets. После мобильной доработки токен хранится в Android Keystore. Автоматического
-pairing endpoint в первой поставке нет.
+ссылкой на run. Bootstrap secret в APK не компилируется: после установки владелец
+вводит `SIGNALAI_DEVICE_TOKEN`, а сервер обменивает его на отдельный token
+устройства. В Android Keystore сохраняется только выданный token; bootstrap
+secret не авторизует обычные API.
 
 Второй способ запустить — тег:
 

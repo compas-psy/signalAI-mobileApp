@@ -62,6 +62,15 @@ def test_actionable_idea_detail_accepts_persisted_evidence_shape(session, instru
             "display_priority": 80,
         }
     ]
+    idea.explanation_json = {
+        "event_calendar": {
+            "status": "UNAVAILABLE",
+            "reason_code": "EVENT_SOURCE_UNAVAILABLE",
+            "detail": "календарь событий недоступен",
+            "blocks_admission": True,
+            "event": None,
+        }
+    }
     session.add(idea)
     session.flush()
 
@@ -81,3 +90,5 @@ def test_actionable_idea_detail_accepts_persisted_evidence_shape(session, instru
     assert detail.evidence[0].kind == "smc_context"
     assert detail.evidence[0].detector_version == "smc-1.0.0"
     assert detail.evidence[0].measures[0].status == "measured"
+    assert detail.event_calendar.reason_code == "EVENT_SOURCE_UNAVAILABLE"
+    assert detail.event_calendar.blocks_admission is True

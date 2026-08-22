@@ -80,7 +80,7 @@ def test_sandbox_to_canary_requires_adr_gates_and_owner_confirmation():
     assert allowed.allowed is True
 
 
-def test_canary_to_live_requires_owner_performance_and_ops_gates():
+def test_canary_to_live_requires_adr_owner_performance_and_ops_gates():
     guard = _guard()
 
     decision = guard.evaluate_promotion(
@@ -91,6 +91,7 @@ def test_canary_to_live_requires_owner_performance_and_ops_gates():
 
     assert decision.allowed is False
     assert decision.blockers == (
+        "ADR gates not verified",
         "performance gates not verified",
         "ops gates not verified",
     )
@@ -99,6 +100,7 @@ def test_canary_to_live_requires_owner_performance_and_ops_gates():
         current=ExecutionLifecycleMode.CANARY,
         target=ExecutionLifecycleMode.LIVE,
         evidence=guard.PromotionEvidence(
+            adr_gates_passed=True,
             owner_confirmed=True,
             performance_gates_passed=True,
             ops_gates_passed=True,

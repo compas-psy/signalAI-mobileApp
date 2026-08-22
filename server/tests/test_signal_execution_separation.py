@@ -1,3 +1,5 @@
+import json
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from inspect import getsource
 
@@ -73,4 +75,46 @@ def test_zero_quantity_still_blocks_user_approval(session, instrument, now):
     session.flush()
 
     with pytest.raises(HTTPException, match="размер позиции равен нулю"):
+        _validate_approval(idea, now=now)
+
+
+def test_approval_revalidates_current_owner_calendar_over_saved_clear(
+    tmp_path, monkeypatch
+):
+    """A calendar event added after scan must still block owner approval."""
+    now = datetime(2026, 8, 22, 12, tzinfo=UTC)
+    snapshot = tmp_path / "events.json"
+    snapshot.write_text(
+        json.dumps(
+            {
+                "source": "owner-feed-v1",
+                "fetched_at": (now - timedelta(minutes=5)).isoformat(),
+                "coverage_until": (now + timedelta(hours=2)).isoformat(),
+                "events": [
+                    {
+                        "provider_event_id": "rate-1",
+                        "title": "Rate decision",
+                        "scheduled_at": (now + timedelta(minutes=20)).isoformat(),
+                        "observed_at": (now - timedelta(minutes=10)).isoformat(),
+                        "tradable_at": (now - timedelta(minutes=5)).isoformat(),
+                        "instrument_tags": ["USD"],
+                        "impact": "HIGH",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SIGNALAI_EVENT_CALENDAR_PATH", str(snapshot))
+    idea = TradeIdea(
+        **idea_kwargs(
+            "MOEX:FUT:SIU6",
+            now,
+            status=IdeaStatus.TRIGGERED.value,
+            quality_status=QualityStatus.ACTIVE.value,
+            explanation_json={"event_calendar": {"blocks_admission": False}},
+        )
+    )
+
+    with pytest.raises(HTTPException, match="HIGH_IMPACT_EVENT_WINDOW"):
         _validate_approval(idea, now=now)

@@ -51,9 +51,13 @@ services:
     environment:
       SIGNALAI_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-signalai}
       SIGNALAI_REDIS_URL: redis://redis:6379/0
-      # Тот же токен зашивается в sideload APK. Без него внешний API должен
-      # закрыться, а не работать публично.
+      # Bootstrap secret для initial pairing. Он никогда не authorizes
+      # business API и не зашивается в APK.
       SIGNALAI_DEVICE_TOKEN: ${SIGNALAI_DEVICE_TOKEN:?нужен SIGNALAI_DEVICE_TOKEN}
+      # Эти owner-only keys намеренно отделены от bootstrap secret; endpoints
+      # fail closed when a dedicated key is missing.
+      SIGNALAI_RISK_PREVIEW_SIGNING_KEY: ${SIGNALAI_RISK_PREVIEW_SIGNING_KEY:-}
+      SIGNALAI_METRICS_TOKEN: ${SIGNALAI_METRICS_TOKEN:-}
       TELEGRAM_TOKEN: ${TELEGRAM_TOKEN:-}
       TELEGRAM_CHATID: ${TELEGRAM_CHATID:-}
       # api модель не опрашивает — он только показывает её состояние в

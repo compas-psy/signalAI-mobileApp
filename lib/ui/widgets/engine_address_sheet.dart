@@ -13,7 +13,7 @@ Future<void> showEngineAddressSheet(
   BuildContext context, {
   required String current,
   required String currentToken,
-  required void Function(String url, String token) onSubmit,
+  required void Function(String url, String token, String pairingSessionId) onSubmit,
 }) =>
     showModalBottomSheet<void>(
       context: context,
@@ -33,7 +33,7 @@ class _EngineAddressSheet extends StatefulWidget {
 
   final String current;
   final String currentToken;
-  final void Function(String url, String token) onSubmit;
+  final void Function(String url, String token, String pairingSessionId) onSubmit;
 
   @override
   State<_EngineAddressSheet> createState() => _EngineAddressSheetState();
@@ -44,11 +44,13 @@ class _EngineAddressSheetState extends State<_EngineAddressSheet> {
       TextEditingController(text: widget.current);
   late final TextEditingController _token =
       TextEditingController(text: widget.currentToken);
+  final TextEditingController _pairingSession = TextEditingController();
 
   @override
   void dispose() {
     _field.dispose();
     _token.dispose();
+    _pairingSession.dispose();
     super.dispose();
   }
 
@@ -70,7 +72,11 @@ class _EngineAddressSheetState extends State<_EngineAddressSheet> {
 
   void _submit() {
     if (_problem != null) return;
-    widget.onSubmit(_field.text.trim(), _token.text.trim());
+    widget.onSubmit(
+      _field.text.trim(),
+      _token.text.trim(),
+      _pairingSession.text.trim(),
+    );
     Navigator.of(context).pop();
   }
 
@@ -135,9 +141,8 @@ class _EngineAddressSheetState extends State<_EngineAddressSheet> {
               ),
             ),
             const SizedBox(height: 10),
-            // Токен устройства: развёрнутый движок отвечает 401 без него.
-            // Такая же оперативная настройка, как адрес, — пересборка APK
-            // ради вставки токена недопустима.
+            // Bootstrap-пароль используется ровно один раз: сервер выдаёт
+            // отдельный токен конкретного устройства и исходный не хранится.
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
               decoration: BoxDecoration(
@@ -154,7 +159,29 @@ class _EngineAddressSheetState extends State<_EngineAddressSheet> {
                 onSubmitted: (_) => _submit(),
                 decoration: InputDecoration(
                   border: InputBorder.none,
-                  hintText: 'токен устройства (если движок требует)',
+                  hintText: 'одноразовый токен привязки',
+                  hintStyle: T.mono(12, color: C.dim),
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+              decoration: BoxDecoration(
+                color: C.inset,
+                border: Border.all(color: C.border),
+                borderRadius: BorderRadius.circular(R.inner),
+              ),
+              child: TextField(
+                controller: _pairingSession,
+                autocorrect: false,
+                obscureText: true,
+                style: T.mono(13, weight: 600),
+                cursorColor: C.accent,
+                onSubmitted: (_) => _submit(),
+                decoration: InputDecoration(
+                  border: InputBorder.none,
+                  hintText: 'одноразовая сессия привязки',
                   hintStyle: T.mono(12, color: C.dim),
                 ),
               ),
@@ -164,8 +191,8 @@ class _EngineAddressSheetState extends State<_EngineAddressSheet> {
               problem ??
                   (empty
                       ? 'Пусто — вернёмся к адресу из сборки.'
-                      : 'Токен сохранится в Android Keystore; пустое поле '
-                          'удалит привязку. Затем лента перечитается.'),
+                      : 'Bootstrap-токен и отдельная сессия обменяются на токен '
+                          'устройства в Android Keystore; пустой bootstrap отзовёт привязку.'),
               style: T.body(11, color: problem == null ? C.faint : C.red, height: 1.4),
             ),
             const SizedBox(height: 14),

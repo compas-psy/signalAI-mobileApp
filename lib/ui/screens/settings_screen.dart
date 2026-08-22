@@ -1100,9 +1100,10 @@ class _EngineCard extends StatelessWidget {
                     context,
                     current: controller.engineBaseUrl,
                     currentToken: '',
-                    onSubmit: (url, token) => controller.setEngineBaseUrl(
+                    onSubmit: (url, token, pairingSessionId) => controller.setEngineBaseUrl(
                       url,
                       token: token,
+                      pairingSessionId: pairingSessionId,
                     ),
                   ),
                 ),

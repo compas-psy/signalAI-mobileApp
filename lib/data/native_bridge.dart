@@ -9,7 +9,7 @@ class NativeBridge {
 
   static const _channel = MethodChannel('ru.signalai.app/native');
 
-  /// Токен привязки движка хранится только в Android Keystore.
+  /// Выданный active-device token движка хранится только в Android Keystore.
   static const engineDeviceTokenKey = 'signalai.engine.device_token';
 
   /// Каталог файлов приложения для JSON-хранилища. null — канала нет.

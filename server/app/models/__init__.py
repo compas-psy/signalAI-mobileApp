@@ -6,6 +6,7 @@
 """
 
 from .base import Base
+from .device import DeviceCredential, DevicePairingSession
 from .datasets import DatasetSnapshot
 from .enums import (
     AssetClass,
@@ -60,29 +61,13 @@ from .lighter_execution import (
     LighterOrderActionBinding,
     LighterOrderIdentity,
     LighterReconciliationEvidence,
-    LighterTestnetSmokeEvidence,
 )
 from .management import ExecutionManagementPolicySnapshot
 from .manual_control import ExecutionManualTradeControl
-from .market import (
-    Bar,
-    DataQualityEvent,
-    FxRate,
-    Instrument,
-    MarketFeature,
-    RegimeSnapshot,
-)
 from .notifications import NotificationOutbox
 from .paper import PaperTrade
 from .paper_ab import PaperAbDecision, PaperAbOutcome
-from .portfolio import (
-    Account,
-    Holding,
-    PortfolioModel,
-    PortfolioRun,
-    PortfolioWeight,
-    RebalanceDraft,
-)
+from .promotion_evidence import PromotionEvidenceDecision, PromotionEvidenceSnapshot
 from .research import (
     CollectionPermit,
     HypothesisEvidence,
@@ -96,12 +81,31 @@ from .research_trials import (
     ResearchTrial,
     ResearchTrialOutcome,
 )
+from .market import (
+    Bar,
+    DataQualityEvent,
+    FxRate,
+    Instrument,
+    MarketFeature,
+    RegimeSnapshot,
+)
+from .portfolio import (
+    Account,
+    Holding,
+    PortfolioModel,
+    PortfolioRun,
+    PortfolioWeight,
+    RebalanceDraft,
+)
 from .risk import AuditEvent, BacktestRun, ModelRegistry, RiskSnapshot, RiskState
+from .retention import RetentionAttemptIntent, RetentionAttemptOutcome
 from .shadow import ShadowObservation
 from .strategies import StrategyPromotionEvent, StrategyVersion
 
 __all__ = [
     "Base",
+    "DeviceCredential",
+    "DevicePairingSession",
     # dataset lineage
     "DatasetSnapshot",
     # market
@@ -138,7 +142,6 @@ __all__ = [
     "LighterOrderActionBinding",
     "LighterNonceReservation",
     "LighterReconciliationEvidence",
-    "LighterTestnetSmokeEvidence",
     # delivery
     "NotificationOutbox",
     # portfolio
@@ -153,6 +156,8 @@ __all__ = [
     "RiskSnapshot",
     "RiskState",
     "AuditEvent",
+    "RetentionAttemptIntent",
+    "RetentionAttemptOutcome",
     "BacktestRun",
     "ModelRegistry",
     "StrategyVersion",
@@ -165,6 +170,8 @@ __all__ = [
     "ExperimentRun",
     "ExperimentMetric",
     "PromotionDecision",
+    "PromotionEvidenceDecision",
+    "PromotionEvidenceSnapshot",
     # early signals
     "CollectionPermit",
     "HypothesisEvidence",

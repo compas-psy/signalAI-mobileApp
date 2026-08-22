@@ -206,21 +206,14 @@ def _execution_scope(
 def _preview_signing_key() -> bytes:
     """Derive a domain-separated signing key from server-only secrets.
 
-    A dedicated key wins when configured. Otherwise we derive a separate HMAC
-    key from SIGNALAI_DEVICE_TOKEN, which is already mandatory for every
-    business API request. The raw device token is never used as the MAC key.
+    The key is dedicated: SIGNALAI_DEVICE_TOKEN is restricted to bootstrap
+    pairing and must never become a secondary business-secret dependency.
     """
 
     dedicated = os.environ.get("SIGNALAI_RISK_PREVIEW_SIGNING_KEY", "").strip()
-    if dedicated:
-        source = dedicated.encode("utf-8")
-    else:
-        device = os.environ.get("SIGNALAI_DEVICE_TOKEN", "").strip()
-        if not device:
-            raise ManualRiskPreviewRejected(
-                "server risk-preview signing secret is not configured"
-            )
-        source = device.encode("utf-8")
+    if not dedicated:
+        raise ManualRiskPreviewRejected("server risk-preview signing secret is not configured")
+    source = dedicated.encode("utf-8")
     return hashlib.sha256(b"signalai:risk-preview:v1\x00" + source).digest()
 
 

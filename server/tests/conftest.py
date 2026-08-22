@@ -9,6 +9,7 @@ append-only, `NUMERIC` с сохранением точности, `CHECK` с у
 
 from __future__ import annotations
 
+import hashlib
 import os
 import subprocess
 import uuid
@@ -19,7 +20,8 @@ import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.models import Base, Instrument
+from app.device_enrollment import token_verifier
+from app.models import Base, DeviceCredential, Instrument
 from app.models.enums import AssetClass, Venue
 
 ADMIN_DSN = os.environ.get(
@@ -28,7 +30,8 @@ ADMIN_DSN = os.environ.get(
 )
 TEST_DB = os.environ.get("SIGNALAI_TEST_DB", "signalai_test")
 TEST_DSN = ADMIN_DSN.rsplit("/", 1)[0] + f"/{TEST_DB}"
-DEVICE_TOKEN = "ci-device-token"
+DEVICE_TOKEN = "c" * 43
+PAIRING_SESSION_ID = "p" * 43
 DEVICE_HEADERS = {"Authorization": f"Bearer {DEVICE_TOKEN}"}
 
 
@@ -36,6 +39,12 @@ DEVICE_HEADERS = {"Authorization": f"Bearer {DEVICE_TOKEN}"}
 def configured_device_token(monkeypatch):
     """Real app tests cross the same device-auth boundary as production."""
     monkeypatch.setenv("SIGNALAI_DEVICE_TOKEN", DEVICE_TOKEN)
+    # A bootstrap token alone must never be enough to mint device bearers.
+    # Tests receive a separate, short-lived-in-production pairing capability.
+    monkeypatch.setenv("SIGNALAI_DEVICE_PAIRING_SESSION_ID", PAIRING_SESSION_ID)
+    monkeypatch.setenv("SIGNALAI_DEVICE_PAIRING_EXPIRES_AT", "2030-01-01T00:00:00Z")
+    monkeypatch.setenv("SIGNALAI_DEVICE_PAIRING_MAX_USES", "8")
+    monkeypatch.setenv("SIGNALAI_RISK_PREVIEW_SIGNING_KEY", "ci-risk-preview-secret")
 
 
 def _recreate_database() -> None:
@@ -73,6 +82,21 @@ def database_url() -> str:
     )
     if result.returncode != 0:
         raise RuntimeError(f"миграции не применились:\n{result.stderr}")
+    fixture_engine = create_engine(TEST_DSN, future=True)
+    with Session(fixture_engine) as session:
+        session.add(
+            DeviceCredential(
+                device_id="ci-device-enrollment-fixture",
+                generation=1,
+                token_verifier=token_verifier(DEVICE_TOKEN),
+                issued_request_hash=hashlib.sha256(
+                    b"ci-device-fixture"
+                ).hexdigest(),
+                metadata_json={"label": "CI", "platform": "test"},
+            )
+        )
+        session.commit()
+    fixture_engine.dispose()
     return TEST_DSN
 
 

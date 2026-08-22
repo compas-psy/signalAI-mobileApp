@@ -327,8 +327,12 @@ class _EngineConnectionCard extends StatelessWidget {
               context,
               current: controller.engineBaseUrl,
               currentToken: '',
-              onSubmit: (url, token) async {
-                await controller.setEngineBaseUrl(url, token: token);
+              onSubmit: (url, token, pairingSessionId) async {
+                await controller.setEngineBaseUrl(
+                  url,
+                  token: token,
+                  pairingSessionId: pairingSessionId,
+                );
                 await onSaved();
               },
             ),

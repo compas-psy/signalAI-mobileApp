@@ -114,6 +114,16 @@ abstract final class EngineContract {
             actualWeight: _num(raw['actual_weight']),
             amountRub: _num(raw['amount_rub']),
             reason: '${raw['reason'] ?? ''}',
+            economicsStatus: '${raw['economics_status'] ?? 'UNKNOWN'}',
+            actionable: raw['actionable'] == true,
+            orderQuantity: _numOrNull(raw['order_quantity']),
+            orderNotionalRub: _numOrNull(raw['order_notional_rub']),
+            estimatedCostsRub: _numOrNull(raw['estimated_costs_rub']),
+            estimatedTaxRub: _numOrNull(raw['estimated_tax_rub']),
+            brokerFinalCostsRub: _numOrNull(raw['broker_final_costs_rub']),
+            brokerFinalTaxRub: _numOrNull(raw['broker_final_tax_rub']),
+            economicsProvenance: _stringMap(raw['economics_provenance']),
+            economicsBlockers: _strings(raw['economics_blockers']),
           ),
         );
       }
@@ -126,6 +136,12 @@ abstract final class EngineContract {
       maxDrift: _num(json['max_drift']),
       totalValue: _num(json['total_value']),
       actions: actions,
+      actionable: json['actionable'] == true,
+      economicsStatus: '${json['economics_status'] ?? 'UNKNOWN'}',
+      estimatedCostsRub: _numOrNull(json['estimated_costs_rub']),
+      estimatedTaxRub: _numOrNull(json['estimated_tax_rub']),
+      brokerFinalCostsRub: _numOrNull(json['broker_final_costs_rub']),
+      brokerFinalTaxRub: _numOrNull(json['broker_final_tax_rub']),
     );
   }
 
@@ -283,6 +299,7 @@ abstract final class EngineContract {
       evidence: evidence(j['evidence'] as List<dynamic>? ?? const []),
       annotations:
           annotations(j['annotations'] as List<dynamic>? ?? const []),
+      eventRisk: _eventRisk(j['event_calendar'] as Map<String, dynamic>?),
       dataFlags: _flags(j['data_warnings'] as List<dynamic>? ?? const []),
       // Отказ движка исполнять объём переносится дословно. Раньше поле
       // `tradable` не читалось вовсе: сервер писал «идея информационная»,
@@ -300,6 +317,23 @@ abstract final class EngineContract {
     if (sizing['tradable'] != false) return '';
     final reason = sizing['not_tradable_reason'] as String? ?? '';
     return reason.isEmpty ? 'движок не считает объём исполнимым' : reason;
+  }
+
+  /// The engine owns the calendar verdict.  Missing/ambiguous data stays a
+  /// blocking warning; the phone never infers a safe event window itself.
+  static EventRisk? _eventRisk(Map<String, dynamic>? raw) {
+    if (raw == null) return null;
+    final event = raw['event'] as Map<String, dynamic>?;
+    final at = DateTime.tryParse(event?['scheduled_at'] as String? ?? '');
+    final status = raw['status'] as String? ?? 'UNAVAILABLE';
+    final detail = raw['detail'] as String? ?? 'календарь событий недоступен';
+    return EventRisk(
+      title: event?['title'] as String? ?? detail,
+      at: at,
+      impact: EventImpact.parse(event?['impact'] as String? ?? 'high'),
+      policy: raw['reason_code'] as String? ?? status,
+      blocksEntry: raw['blocks_admission'] as bool? ?? true,
+    );
   }
 
   static List<Evidence> evidence(List<dynamic> raw) {
@@ -685,6 +719,16 @@ abstract final class EngineContract {
       raw is String ? DateTime.tryParse(raw)?.toLocal() : null;
 
   static double _num(Object? v) => _numOrNull(v) ?? 0;
+
+  static Map<String, String> _stringMap(Object? raw) => raw is Map
+      ? {
+          for (final entry in raw.entries) '${entry.key}': '${entry.value}',
+        }
+      : const {};
+
+  static List<String> _strings(Object? raw) => raw is List
+      ? [for (final value in raw) '$value']
+      : const [];
 
   static double? _numOrNull(Object? v) => switch (v) {
         num n => n.toDouble(),

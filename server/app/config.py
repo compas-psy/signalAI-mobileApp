@@ -130,6 +130,39 @@ def _validate_risk_management(risk: dict[str, Any]) -> None:
         raise ConfigError("optimizer обязан содержать candidate baseline")
 
 
+def _validate_rebalance_economics(portfolio: dict[str, Any]) -> None:
+    """Validate a generic estimate policy without embedding tax law in code."""
+
+    raw = portfolio.get("rebalance_economics")
+    if raw is None:
+        return
+    if not isinstance(raw, dict):
+        raise ConfigError(
+            "portfolio.rebalance_economics должен быть словарём"
+        )
+    policy_id = str(raw.get("policy_id") or "").strip()
+    fee_bps = raw.get("fee_bps")
+    tax_rate = raw.get("capital_gain_tax_rate")
+    if not policy_id and fee_bps is None and tax_rate is None:
+        return
+    if not policy_id or fee_bps is None or tax_rate is None:
+        raise ConfigError(
+            "portfolio.rebalance_economics требует policy_id, fee_bps и "
+            "capital_gain_tax_rate вместе"
+        )
+    fee = Decimal(str(fee_bps))
+    if not fee.is_finite() or fee < 0:
+        raise ConfigError(
+            "portfolio.rebalance_economics.fee_bps "
+            "не может быть отрицательным"
+        )
+    rate = Decimal(str(tax_rate))
+    if not rate.is_finite() or not (Decimal(0) <= rate <= Decimal(1)):
+        raise ConfigError(
+            "portfolio.rebalance_economics.capital_gain_tax_rate вне [0,1]"
+        )
+
+
 def _validate(data: dict[str, Any]) -> None:
     weights = data.get("scoring", {}).get("weights", {})
     if not weights:
@@ -172,6 +205,10 @@ def _validate(data: dict[str, Any]) -> None:
         )
 
     _validate_risk_management(risk)
+    portfolio = data.get("portfolio", {})
+    if not isinstance(portfolio, dict):
+        raise ConfigError("portfolio должен быть словарём")
+    _validate_rebalance_economics(portfolio)
 
 
 def load_config(path: str | os.PathLike[str] | None = None) -> EngineConfig:

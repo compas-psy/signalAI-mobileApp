@@ -4,13 +4,24 @@
 
 **Ни один секрет не встраивается в APK, исходный код или `--dart-define`.**
 Мобильный thin-client получает торговые идеи от сервера, но текущая архитектура
-имеет два явных device-only credential:
+имеет раздельные device-only credential:
 
-1. `SIGNALAI_DEVICE_TOKEN` — владелец один раз вводит токен привязки; он хранится
-   в Android Keystore и используется для доступа приложения к мобильному API.
-2. Токен **T-Invest Sandbox** — владелец вводит его в Thin → Settings →
+1. `SIGNALAI_DEVICE_TOKEN` — server-side bootstrap secret только для
+   `POST /api/v1/device-enrollment/pair`. Он не авторизует business API и не
+   сохраняется телефоном после pairing. Pairing дополнительно требует отдельную
+   high-entropy `SIGNALAI_DEVICE_PAIRING_SESSION_ID`; сервер хранит только
+   verifier, UTC expiry и bounded use count. Raw bootstrap/session не попадают
+   в БД, аудит, ошибки или телефонное JSON-хранилище.
+2. Выпущенный сервером token устройства — случайный bearer конкретного device
+   generation. Сервер хранит только SHA-256 verifier, device id и audit time;
+   телефон кладёт исходное значение только в Android Keystore. Rotation сразу
+   отзывает старый generation, revoke закрывает его навсегда.
+3. Токен **T-Invest Sandbox** — владелец вводит его в Thin → Settings →
    Connections; он хранится только в Android Keystore и используется только
    мобильным sandbox adapter.
+
+`SIGNALAI_RISK_PREVIEW_SIGNING_KEY` и `SIGNALAI_METRICS_TOKEN` — отдельные
+server-side secrets. Они не могут использовать bootstrap secret как fallback.
 
 T-Invest Sandbox token **не должен** попадать в GitHub Secrets, VPS `.env`,
 серверный credential registry, логи или сборочные параметры. Это подтверждено
@@ -108,9 +119,9 @@ owner device.
 Правила:
 
 - постоянный signing key не хранится в репозитории;
-- `SIGNALAI_DEVICE_TOKEN` не компилируется в APK;
+- `SIGNALAI_DEVICE_TOKEN` не компилируется в APK и не сохраняется после pair;
 - workflow не печатает secret values;
-- device token после ручного ввода хранится в Android Keystore;
+- только выданный device token хранится в Android Keystore;
 - production delivery идёт только из явно принятого immutable source SHA;
 - временная debug/signing identity не считается production identity.
 

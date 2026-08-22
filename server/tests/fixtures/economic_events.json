@@ -1,0 +1,29 @@
+[
+  {
+    "provider_event_id": "us-cpi-2026-08",
+    "title": "US CPI",
+    "scheduled_at": "2026-08-21T10:00:00Z",
+    "observed_at": "2026-08-20T12:00:00Z",
+    "tradable_at": "2026-08-20T12:05:00Z",
+    "instrument_tags": ["USD"],
+    "impact": "HIGH"
+  },
+  {
+    "provider_event_id": "us-cpi-2026-08",
+    "title": "US CPI revised title",
+    "scheduled_at": "2026-08-21T10:00:00Z",
+    "observed_at": "2026-08-20T12:00:00Z",
+    "tradable_at": "2026-08-20T12:05:00Z",
+    "instrument_tags": ["USD"],
+    "impact": "HIGH"
+  },
+  {
+    "provider_event_id": "future",
+    "title": "Future known only later",
+    "scheduled_at": "2026-08-21T10:00:00Z",
+    "observed_at": "2026-08-21T09:30:00Z",
+    "tradable_at": "2026-08-21T09:35:00Z",
+    "instrument_tags": ["USD"],
+    "impact": "HIGH"
+  }
+]

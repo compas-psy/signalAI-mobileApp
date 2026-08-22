@@ -31,6 +31,7 @@ from ..detectors.price_action import PriceZone
 from ..features.indicators import atr
 from ..market.candles import Candle, resample_hours
 from ..market.fx import rate_note, rate_to_rub
+from ..market.economic_events import EconomicEventCalendar, load_owned_calendar
 from ..models import Bar, IdeaEvent, Instrument, TradeIdea
 from ..models.enums import (
     AssetClass,
@@ -315,6 +316,7 @@ def scan_instrument(
     cfg: EngineConfig,
     risk_state: RiskState,
     now: datetime,
+    event_calendar: EconomicEventCalendar | None = None,
 ) -> tuple[TradeIdea | None, list[Skipped], list[Rejection]]:
     """Прогнать один инструмент по всему конвейеру."""
     skipped: list[Skipped] = []
@@ -436,6 +438,9 @@ def scan_instrument(
     )
 
     # ── Допуск §15.6 ─────────────────────────────────────────────────────
+    calendar_assessment = (event_calendar or EconomicEventCalendar((), source_available=False)).assess(
+        iid, as_of=now
+    )
     verdict = admit(
         probability=probability.p_tp1_before_sl,
         expected_r=ev,
@@ -444,6 +449,7 @@ def scan_instrument(
         liquidity=liquidity,
         has_trigger=trigger_confirmed(pa_reading),
         risk_blocked=False,
+        event_assessment=calendar_assessment,
         thresholds=AdmissionThresholds(
             active_probability_min=Decimal(str(cfg.get("ideas.active_probability_min"))),
             active_expected_r_min=Decimal(str(cfg.get("ideas.active_expected_r_min"))),
@@ -552,6 +558,7 @@ def scan_instrument(
             "counter_factors": list(candidate.counter_factors),
             "admission": verdict.reason,
             "admission_failed": [g.name for g in verdict.failed],
+            "event_calendar": calendar_assessment.as_json(),
             "confidence_unmeasured": unmeasured_components(conf_weights),
             "binding_limit": budget.binding,
             "score_breakdown": [
@@ -612,10 +619,12 @@ def scan(
     cfg: EngineConfig | None = None,
     risk_state: RiskState | None = None,
     now: datetime | None = None,
+    event_calendar: EconomicEventCalendar | None = None,
 ) -> ScanResult:
     """Просканировать вселенную и записать найденное."""
-    config = cfg or get_config()
     moment = now or datetime.now(UTC)
+    config = cfg or get_config()
+    calendar = event_calendar or load_owned_calendar(now=moment)
     state = risk_state or RiskState(risk_equity=Decimal(100_000))
     result = ScanResult(started_at=moment)
 
@@ -635,7 +644,8 @@ def scan(
     for instrument in instruments:
         try:
             idea, skipped, rejections = scan_instrument(
-                session, instrument, cfg=config, risk_state=state, now=moment
+                session, instrument, cfg=config, risk_state=state, now=moment,
+                event_calendar=calendar,
             )
         except Exception as exc:
             result.skipped.append(

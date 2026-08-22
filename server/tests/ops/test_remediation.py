@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime
 
 from sqlalchemy import select
@@ -179,6 +180,65 @@ def test_initial_normal_state_is_silent_but_recovery_after_pressure_is_recorded(
     event = session.get(NotificationOutbox, recovered.notification_id)
     assert event is not None
     assert "восстанов" in event.title.lower()
+
+
+def test_enabled_retention_job_audits_initial_not_required_skip(session: Session):
+    result = record_resource_remediation(
+        session,
+        assessment=_assessment(PressureState.NORMAL),
+        plan=build_backpressure_plan(state=PressureState.NORMAL),
+        ollama=_ollama(OllamaShedStatus.NOT_REQUIRED),
+        retention=_retention(RetentionStatus.NOT_REQUIRED),
+        now=NOW,
+        force_audit=True,
+    )
+
+    assert result.recorded is True
+    assert session.get(AuditEvent, result.audit_id) is not None
+
+
+def test_forced_retention_attempts_are_not_fingerprint_deduplicated(session: Session):
+    assessment = _assessment(PressureState.PRESSURE, "disk_headroom_pressure")
+    plan = build_backpressure_plan(state=PressureState.PRESSURE)
+    first_id = uuid.uuid4()
+    second_id = uuid.uuid4()
+
+    first = record_resource_remediation(
+        session,
+        assessment=assessment,
+        plan=plan,
+        ollama=_ollama(OllamaShedStatus.UNLOADED),
+        retention=_retention(RetentionStatus.CLEANED, deleted_files=1, deleted_bytes=128),
+        now=NOW,
+        force_audit=True,
+        retention_attempt_id=first_id,
+    )
+    second = record_resource_remediation(
+        session,
+        assessment=assessment,
+        plan=plan,
+        ollama=_ollama(OllamaShedStatus.UNLOADED),
+        retention=_retention(RetentionStatus.CLEANED, deleted_files=1, deleted_bytes=128),
+        now=NOW,
+        force_audit=True,
+        retention_attempt_id=second_id,
+    )
+    session.flush()
+
+    assert first.recorded is True
+    assert second.recorded is True
+    audits = list(
+        session.execute(
+            select(AuditEvent)
+            .where(AuditEvent.action == "RESOURCE_REMEDIATION")
+            .order_by(AuditEvent.id)
+        ).scalars()
+    )
+    assert len(audits) == 2
+    assert {audit.after_json["retention_attempt_id"] for audit in audits} == {
+        str(first_id),
+        str(second_id),
+    }
 
 
 def test_entry_halt_is_applied_without_changing_legacy_execution_mode(session: Session):

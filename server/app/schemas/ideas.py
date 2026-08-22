@@ -137,6 +137,16 @@ class ExplanationBlock(ApiModel):
     data_warnings: list[str] = Field(default_factory=list)
 
 
+class EconomicEventCalendarBlock(ApiModel):
+    """Server-owned event-calendar result shown with the immutable idea."""
+
+    status: str = "UNAVAILABLE"
+    reason_code: str = "EVENT_SOURCE_UNAVAILABLE"
+    detail: str = "календарь событий недоступен"
+    blocks_admission: bool = True
+    event: dict | None = None
+
+
 class EvidenceMeasureOut(ApiModel):
     """Одно измерение внутри доказательства детектора.
 
@@ -224,6 +234,9 @@ class IdeaDetail(IdeaSummary):
     annotations: list[AnnotationOut]
     score_breakdown: ScoreBlock
     explanation: ExplanationBlock
+    event_calendar: EconomicEventCalendarBlock = Field(
+        default_factory=EconomicEventCalendarBlock
+    )
     config_hash: str
     engine_version: str
     feature_version: str
