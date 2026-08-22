@@ -1,6 +1,7 @@
 """End-to-end contract for bootstrap pairing and active device credentials."""
 from __future__ import annotations
 
+import pytest
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 from sqlalchemy import select
@@ -11,6 +12,14 @@ from app.device_enrollment import authenticate_active_device
 from app.models import DeviceCredential, DevicePairingSession
 from app.security import DeviceTokenMiddleware
 from tests.conftest import DEVICE_TOKEN, PAIRING_SESSION_ID
+
+BOOTSTRAP_TOKEN = "b" * 43
+
+
+@pytest.fixture(autouse=True)
+def distinct_bootstrap_token(configured_device_token, monkeypatch):
+    """Bootstrap capability must never be the pre-enrolled business bearer."""
+    monkeypatch.setenv("SIGNALAI_DEVICE_TOKEN", BOOTSTRAP_TOKEN)
 
 
 def _client(session) -> TestClient:
@@ -34,7 +43,7 @@ def _client(session) -> TestClient:
 
 def _pair_headers(key: str) -> dict[str, str]:
     return {
-        "Authorization": f"Bearer {DEVICE_TOKEN}",
+        "Authorization": f"Bearer {BOOTSTRAP_TOKEN}",
         "X-Pairing-Session-Id": PAIRING_SESSION_ID,
         "X-Idempotency-Key": key,
     }
@@ -60,7 +69,7 @@ def test_pair_rotate_and_revoke_are_active_token_only_and_replay_safe(session):
     assert paired.status_code == 201
     assert paired.headers["cache-control"] == "no-store"
     issued = paired.json()["device_token"]
-    assert issued != DEVICE_TOKEN
+    assert issued != BOOTSTRAP_TOKEN
     assert len(issued) >= 43
 
     # The completed request cannot mint another bearer, including after a
@@ -83,7 +92,7 @@ def test_pair_rotate_and_revoke_are_active_token_only_and_replay_safe(session):
     assert all(issued not in str(row.metadata_json) for row in rows)
 
     bootstrap_business = client.get(
-        "/api/v1/business", headers={"Authorization": f"Bearer {DEVICE_TOKEN}"}
+        "/api/v1/business", headers={"Authorization": f"Bearer {BOOTSTRAP_TOKEN}"}
     )
     assert bootstrap_business.status_code == 401
     active_business = client.get(
@@ -146,12 +155,12 @@ def test_pair_rejects_missing_bootstrap_or_unbounded_metadata(session, monkeypat
         == 503
     )
 
-    monkeypatch.setenv("SIGNALAI_DEVICE_TOKEN", DEVICE_TOKEN)
+    monkeypatch.setenv("SIGNALAI_DEVICE_TOKEN", BOOTSTRAP_TOKEN)
     response = client.post(
         "/api/v1/device-enrollment/pair",
         headers={
             **headers,
-            "Authorization": f"Bearer {DEVICE_TOKEN}",
+            "Authorization": f"Bearer {BOOTSTRAP_TOKEN}",
             "X-Pairing-Session-Id": PAIRING_SESSION_ID,
         },
         json=payload,
@@ -172,7 +181,7 @@ def test_pair_requires_durable_bounded_session_and_never_replaces_known_device(
     missing_session = client.post(
         "/api/v1/device-enrollment/pair",
         headers={
-            "Authorization": f"Bearer {DEVICE_TOKEN}",
+            "Authorization": f"Bearer {BOOTSTRAP_TOKEN}",
             "X-Idempotency-Key": "session-pairing-key-01",
         },
         json=payload,
