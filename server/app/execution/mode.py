@@ -196,6 +196,17 @@ def change_execution_mode(
     after persisting SUBMITTING, so mode cannot drift inside that write window.
     """
 
+    # Preserve the original cheap-failure boundary: malformed/untrusted caller
+    # input must not acquire the global execution lock and become a contention
+    # primitive. The private helper repeats validation for internal callers.
+    target = ExecutionLifecycleMode(target)
+    actor = actor.strip()
+    reason = reason.strip()
+    if not actor:
+        raise ExecutionModeChangeRejected("actor is required")
+    if not reason:
+        raise ExecutionModeChangeRejected("reason is required")
+
     with execution_control_lock(db):
         return _change_execution_mode_locked(
             db,
