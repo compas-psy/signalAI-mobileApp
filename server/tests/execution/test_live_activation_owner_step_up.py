@@ -1,20 +1,71 @@
 from __future__ import annotations
 
+from decimal import Decimal
+
 import pytest
 
+from app.execution.enums import ExecutionLifecycleMode
+from app.execution.mode import (
+    ModeChangeAuthorization,
+    change_execution_mode,
+    get_execution_mode,
+)
+from app.execution.promotion_guard import PromotionEvidence
 
-def test_live_confirmation_rejects_client_boolean_without_cryptographic_step_up(session) -> None:
+
+def _set_canary(session) -> None:
+    change_execution_mode(
+        session,
+        target=ExecutionLifecycleMode.CANARY,
+        actor="test",
+        reason="owner-step-up regression setup",
+        authorization=ModeChangeAuthorization(
+            allowed=True,
+            actor="test-guard",
+            reason="test-only setup",
+            detail_json={"test_only": True},
+        ),
+    )
+    session.flush()
+
+
+def test_boolean_only_live_confirmation_is_rejected_before_mode_change(session) -> None:
     """A stolen device bearer plus owner_confirmed=true is never owner authority."""
 
-    from app.execution.live_activation import (
-        LiveActivationRejected,
-        confirm_live_activation,
+    from app.execution import live_activation
+
+    _set_canary(session)
+    context = live_activation.LiveActivationContext(
+        venue="LIGHTER",
+        account="canary-main",
+        capital_rub=Decimal("10000"),
+        hard_caps={"max_risk_per_trade": "0.0025"},
+        config_hash="a" * 64,
+        paper_only=False,
     )
 
-    with pytest.raises(LiveActivationRejected, match="step-up"):
-        confirm_live_activation(
-            session,
-            preview_hash="attacker-controlled-preview",
-            idempotency_key="attacker-controlled-replay-key",
-            owner_confirmed=True,
+    def ready_evidence(*_args, **_kwargs) -> PromotionEvidence:
+        return PromotionEvidence(
+            adr_gates_passed=True,
+            performance_gates_passed=True,
+            ops_gates_passed=True,
         )
+
+    preview = live_activation.create_live_activation_preview(
+        session,
+        context_provider=lambda *_: context,
+        evidence_provider=ready_evidence,
+    )
+    assert preview.blockers == ("explicit owner confirmation missing",)
+
+    with pytest.raises(live_activation.LiveActivationRejected, match="step-up"):
+        live_activation.confirm_live_activation(
+            session,
+            preview_hash=preview.preview_hash,
+            idempotency_key="stolen-device-replay-key",
+            owner_confirmed=True,
+            context_provider=lambda *_: context,
+            evidence_provider=ready_evidence,
+        )
+
+    assert get_execution_mode(session).mode == ExecutionLifecycleMode.CANARY
