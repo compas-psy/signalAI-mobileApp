@@ -233,6 +233,8 @@ def test_authoritative_runtime_and_limit_reads_happen_while_execution_lock_is_he
 
 
 def test_mode_and_kill_switch_are_rechecked_inside_submit_boundary(session) -> None:
+    from app.execution.kill_switch import get_execution_kill_switch_level
+
     snapshot = _snapshot(session)
     _set_mode(session, ExecutionLifecycleMode.SANDBOX)
 
@@ -241,6 +243,7 @@ def test_mode_and_kill_switch_are_rechecked_inside_submit_boundary(session) -> N
         assert "EXECUTION_MODE_NOT_CANARY" in wrong_mode.blockers
 
     _set_mode(session, ExecutionLifecycleMode.CANARY)
+    assert get_execution_kill_switch_level(session).value == "CLEAR"
     session.execute(
         text(
             "UPDATE risk_state SET kill_switch = true, "
@@ -323,3 +326,5 @@ def test_submit_guard_source_has_no_provider_sdk_or_network_sink() -> None:
     assert "signerclient" not in lowered
     assert "sendtx" not in lowered
     assert "create_order(" not in lowered
+    assert ".with_for_update()" in source
+    assert "WHERE slot = 'lighter_trade' FOR UPDATE" in source
