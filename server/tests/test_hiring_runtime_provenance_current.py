@@ -108,12 +108,15 @@ def test_same_revision_reuses_original_availability_and_persists_source_clocks(s
     assert repeated.id == original.id
     assert repeated.first_seen_at == first_seen
     assert repeated.tradable_at == original.tradable_at
-    assert _runtime_vacancy(
+    mature = _runtime_vacancy(
         session,
         row=row,
         issuer=issuer,
         as_of=mature_at,
-    ) is not None
+    )
+    assert mature is not None
+    assert mature.published_day == row.modified_at.date().toordinal()
+    assert mature.age_days == max(0, (mature_at - row.modified_at).days)
 
 
 def test_modified_source_revision_resets_first_seen_and_availability_lag(session) -> None:
@@ -157,3 +160,14 @@ def test_modified_source_revision_resets_first_seen_and_availability_lag(session
         issuer=issuer,
         as_of=revision_seen,
     ) is None
+
+    mature_at = revision.tradable_at + timedelta(seconds=1)
+    mature = _runtime_vacancy(
+        session,
+        row=revised,
+        issuer=issuer,
+        as_of=mature_at,
+    )
+    assert mature is not None
+    assert mature.published_day == revised.modified_at.date().toordinal()
+    assert mature.age_days == max(0, (mature_at - revised.modified_at).days)
