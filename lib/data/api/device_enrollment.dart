@@ -68,7 +68,7 @@ class HttpDeviceEnrollmentApi implements DeviceEnrollmentApi {
   }) async {
     final client = ApiClient(baseUrl: baseUrl, deviceToken: bootstrapToken);
     try {
-      final body = await client.post(
+      final body = await client.postForPairing(
         '/api/v1/device-enrollment/pair',
         body: {'device_id': deviceId, 'metadata': metadata},
         idempotencyKey: idempotencyKey,
@@ -143,8 +143,7 @@ DeviceEnrollmentReceipt _receipt(
   final returnedId = body['device_id'];
   final generation = body['generation'];
   final token = body['device_token'];
-  if (
-      !_isDeviceId(returnedId) ||
+  if (!_isDeviceId(returnedId) ||
       (expectedDeviceId != null && returnedId != expectedDeviceId) ||
       generation is! int ||
       generation < 1 ||
