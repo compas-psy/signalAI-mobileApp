@@ -33,6 +33,9 @@ class _Vault extends NativeBridge {
   Future<bool> vaultAvailable() async => true;
 
   @override
+  Future<String?> appVersion() async => null;
+
+  @override
   Future<bool> putEngineDeviceToken(String value) async {
     token = value;
     return true;
