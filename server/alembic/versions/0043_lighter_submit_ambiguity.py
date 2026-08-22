@@ -20,22 +20,22 @@ def upgrade() -> None:
         table_name="lighter_nonce_reservations",
     )
     op.drop_constraint(
-        "ck_lighter_nonce_reservations_state_consumed_at_consistent",
+        op.f("ck_lighter_nonce_reservations_state_consumed_at_consistent"),
         "lighter_nonce_reservations",
         type_="check",
     )
     op.drop_constraint(
-        "ck_lighter_nonce_reservations_state_valid",
+        op.f("ck_lighter_nonce_reservations_state_valid"),
         "lighter_nonce_reservations",
         type_="check",
     )
     op.create_check_constraint(
-        "ck_lighter_nonce_reservations_state_valid",
+        op.f("ck_lighter_nonce_reservations_state_valid"),
         "lighter_nonce_reservations",
         "state IN ('RESERVED','SUBMITTING','CONSUMED')",
     )
     op.create_check_constraint(
-        "ck_lighter_nonce_reservations_state_consumed_at_consistent",
+        op.f("ck_lighter_nonce_reservations_state_consumed_at_consistent"),
         "lighter_nonce_reservations",
         "(state IN ('RESERVED','SUBMITTING') AND consumed_at IS NULL) OR "
         "(state = 'CONSUMED' AND consumed_at IS NOT NULL)",
@@ -55,12 +55,12 @@ def downgrade() -> None:
         table_name="lighter_nonce_reservations",
     )
     op.drop_constraint(
-        "ck_lighter_nonce_reservations_state_consumed_at_consistent",
+        op.f("ck_lighter_nonce_reservations_state_consumed_at_consistent"),
         "lighter_nonce_reservations",
         type_="check",
     )
     op.drop_constraint(
-        "ck_lighter_nonce_reservations_state_valid",
+        op.f("ck_lighter_nonce_reservations_state_valid"),
         "lighter_nonce_reservations",
         type_="check",
     )
@@ -69,12 +69,12 @@ def downgrade() -> None:
         "WHERE state = 'SUBMITTING'"
     )
     op.create_check_constraint(
-        "ck_lighter_nonce_reservations_state_valid",
+        op.f("ck_lighter_nonce_reservations_state_valid"),
         "lighter_nonce_reservations",
         "state IN ('RESERVED','CONSUMED')",
     )
     op.create_check_constraint(
-        "ck_lighter_nonce_reservations_state_consumed_at_consistent",
+        op.f("ck_lighter_nonce_reservations_state_consumed_at_consistent"),
         "lighter_nonce_reservations",
         "(state = 'RESERVED' AND consumed_at IS NULL) OR "
         "(state = 'CONSUMED' AND consumed_at IS NOT NULL)",
