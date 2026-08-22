@@ -47,13 +47,22 @@ void main() {
       expect(lock.locked, isFalse);
     });
 
-    test('cancelled authentication remains locked and can be retried', () {
+    test('cancelled authentication stays on lock screen without prompt loop', () {
       final lock = AppLockState(timeout: const Duration(minutes: 5));
+      final t0 = DateTime.utc(2026, 8, 22, 7, 0);
 
       expect(lock.beginAuthentication(), isTrue);
       lock.authenticationFailed();
       expect(lock.locked, isTrue);
       expect(lock.shouldAuthenticate, isTrue);
+
+      // BiometricPrompt commonly generates an Activity resume after its own
+      // cancellation. That lifecycle event must not immediately prompt again.
+      expect(lock.resume(t0), isFalse);
+      expect(lock.locked, isTrue);
+      expect(lock.shouldAuthenticate, isTrue);
+
+      // The owner can retry explicitly from the lock screen.
       expect(lock.beginAuthentication(), isTrue);
     });
 
