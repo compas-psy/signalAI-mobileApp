@@ -43,6 +43,7 @@ _LIGHTER_SLOTS = {
     "lighter_testnet_trade",
     "lighter_trade",
 }
+_LIGHTER_LIVE_TRADE_SLOT = "lighter_trade"
 
 
 SPECS: tuple[IntegrationSpec, ...] = (
@@ -158,9 +159,27 @@ def validate_values(spec: IntegrationSpec, values: dict[str, str]) -> dict[str, 
     return cleaned
 
 
-def save_secret(db: Session, spec: IntegrationSpec, values: dict[str, str]) -> datetime:
+def save_secret(
+    db: Session,
+    spec: IntegrationSpec,
+    values: dict[str, str],
+    *,
+    actor: str = "server_internal",
+) -> datetime:
+    """Store one encrypted secret and rotate live Lighter generation atomically."""
     ensure_store(db)
-    payload = json.dumps(validate_values(spec, values), ensure_ascii=False, sort_keys=True)
+    cleaned = validate_values(spec, values)
+    existed = False
+    if spec.slot == _LIGHTER_LIVE_TRADE_SLOT:
+        existed = (
+            db.execute(
+                text("SELECT 1 FROM signalai_integration_secrets WHERE slot = :slot"),
+                {"slot": spec.slot},
+            ).first()
+            is not None
+        )
+
+    payload = json.dumps(cleaned, ensure_ascii=False, sort_keys=True)
     row = db.execute(text("""
         INSERT INTO signalai_integration_secrets(slot, encrypted_payload, updated_at)
         VALUES (:slot, pgp_sym_encrypt(:payload, :secret_key, 'cipher-algo=aes256'), now())
@@ -169,12 +188,53 @@ def save_secret(db: Session, spec: IntegrationSpec, values: dict[str, str]) -> d
             updated_at = now()
         RETURNING updated_at
     """), {"slot": spec.slot, "payload": payload, "secret_key": _encryption_key()}).one()
+
+    if spec.slot == _LIGHTER_LIVE_TRADE_SLOT:
+        # Lazy import keeps the generic vault independent from execution model
+        # initialization while preserving a single transaction boundary.
+        from .execution.canary_policy import record_lighter_trade_generation
+
+        record_lighter_trade_generation(
+            db,
+            action="ROTATED" if existed else "CREATED",
+            actor=actor,
+            account_index=int(cleaned["account_index"]),
+            api_key_index=int(cleaned["api_key_index"]),
+        )
     return row[0]
 
 
-def delete_secret(db: Session, slot: str) -> None:
+def delete_secret(
+    db: Session,
+    slot: str,
+    *,
+    actor: str = "server_internal",
+) -> None:
     ensure_store(db)
-    db.execute(text("DELETE FROM signalai_integration_secrets WHERE slot = :slot"), {"slot": slot})
+    current_generation = None
+    if slot == _LIGHTER_LIVE_TRADE_SLOT:
+        from .execution.canary_policy import current_lighter_trade_generation
+
+        current_generation = current_lighter_trade_generation(db)
+
+    result = db.execute(
+        text("DELETE FROM signalai_integration_secrets WHERE slot = :slot"),
+        {"slot": slot},
+    )
+    if (
+        slot == _LIGHTER_LIVE_TRADE_SLOT
+        and result.rowcount
+        and current_generation is not None
+    ):
+        from .execution.canary_policy import record_lighter_trade_generation
+
+        record_lighter_trade_generation(
+            db,
+            action="REVOKED",
+            actor=actor,
+            account_index=current_generation.account_index,
+            api_key_index=current_generation.api_key_index,
+        )
 
 
 def configured_slots(db: Session) -> dict[str, datetime]:
