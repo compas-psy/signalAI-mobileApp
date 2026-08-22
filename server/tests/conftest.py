@@ -17,11 +17,18 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.device_enrollment import token_verifier
-from app.models import Base, DeviceCredential, Instrument
+from app.market.economic_events import EventAssessment
+from app.models import (
+    Base,
+    DeviceCredential,
+    Instrument,
+    RetentionAttemptIntent,
+    RetentionAttemptOutcome,
+)
 from app.models.enums import AssetClass, Venue
 from tests.calendar_support import (
     CLEAR_EVENT_CALENDAR_BLOCK,
@@ -42,6 +49,7 @@ _ACTIONABLE_CALENDAR_MODULES = {
     "test_decision_replay_diagnostics",
     "test_thin_lifecycle_regressions",
 }
+_DURABLE_RETENTION_TEST = "test_unresolved_older_intent_blocks_new_period_before_unlink"
 
 
 @pytest.fixture(autouse=True)
@@ -58,17 +66,20 @@ def configured_device_token(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def configured_actionable_calendar(request, monkeypatch, tmp_path):
-    """Give legacy successful-approval suites a real fresh owned calendar.
-
-    Production remains fail-closed. Only modules whose contract is about an
-    otherwise actionable idea opt into this fixture; dedicated calendar tests
-    keep exercising absent/stale/ambiguous source behavior independently.
-    """
+    """Supply explicit safe prerequisites only to tests that require them."""
     module_name = getattr(request.module, "__name__", "").rsplit(".", 1)[-1]
-    if module_name not in _ACTIONABLE_CALENDAR_MODULES:
+    if module_name in _ACTIONABLE_CALENDAR_MODULES:
+        configure_clear_event_calendar(monkeypatch, tmp_path)
+        monkeypatch.setenv("SIGNALAI_TEST_CLEAR_CALENDAR_FIXTURE", "1")
         return
-    configure_clear_event_calendar(monkeypatch, tmp_path)
-    monkeypatch.setenv("SIGNALAI_TEST_CLEAR_CALENDAR_FIXTURE", "1")
+    if module_name == "test_scoring" and hasattr(request.module, "GOOD"):
+        # GOOD means every admission prerequisite is known-good. Missing event
+        # data is intentionally fail-closed in production, so make CLEAR an
+        # explicit part of this legacy convenience fixture rather than changing
+        # admit()'s default.
+        request.module.GOOD["event_assessment"] = EventAssessment(
+            "CLEAR", "NO_BLOCKING_EVENT", "проверка календаря завершена"
+        )
 
 
 def _recreate_database() -> None:
@@ -131,13 +142,57 @@ def engine(database_url: str):
     eng.dispose()
 
 
-@pytest.fixture
-def session(engine) -> Session:
-    """Сессия с откатом после теста.
+def _resolve_committed_retention_intents(db: Session) -> None:
+    unresolved = list(
+        db.scalars(
+            select(RetentionAttemptIntent)
+            .outerjoin(
+                RetentionAttemptOutcome,
+                RetentionAttemptOutcome.attempt_id == RetentionAttemptIntent.attempt_id,
+            )
+            .where(RetentionAttemptOutcome.attempt_id.is_(None))
+        )
+    )
+    for intent in unresolved:
+        db.add(
+            RetentionAttemptOutcome(
+                attempt_id=intent.attempt_id,
+                occurred_at=datetime.now(UTC),
+                status="FAILED",
+                result_json={
+                    "status": "FAILED",
+                    "candidate_files": 0,
+                    "candidate_bytes": 0,
+                    "deleted_files": 0,
+                    "deleted_bytes": 0,
+                    "errors": ["test fixture resolved committed intent"],
+                },
+            )
+        )
+    if unresolved:
+        db.commit()
 
-    Каждый тест работает во вложенной транзакции, которая откатывается: база
-    остаётся чистой, и порядок тестов ни на что не влияет.
+
+@pytest.fixture
+def session(engine, request) -> Session:
+    """Normally roll back each test; one retention test needs real durability.
+
+    The retention executor deliberately opens another PostgreSQL connection
+    before unlinking. Its unresolved-intent contract therefore cannot be tested
+    with an uncommitted outer test transaction. That one test receives a real
+    committing session, then teardown appends an outcome so later tests are not
+    poisoned by an intentionally unresolved audit record.
     """
+    if request.node.name == _DURABLE_RETENTION_TEST:
+        db = Session(engine, expire_on_commit=False, future=True)
+        try:
+            yield db
+        finally:
+            db.rollback()
+            _resolve_committed_retention_intents(db)
+            db.close()
+        return
+
     connection = engine.connect()
     transaction = connection.begin()
     factory = sessionmaker(bind=connection, expire_on_commit=False, future=True)
