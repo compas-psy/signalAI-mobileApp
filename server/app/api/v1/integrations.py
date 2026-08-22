@@ -20,9 +20,12 @@ from ...integration_secrets import (
     configured_slots,
     delete_secret,
     save_secret,
+    validate_values,
 )
 
 router = APIRouter(prefix="/integrations", tags=["integrations"])
+_LIGHTER_LIVE_TRADE_SLOT = "lighter_trade"
+_LIGHTER_LIVE_STEP_UP_REQUIRED = "LIGHTER_LIVE_STEP_UP_REQUIRED"
 
 
 class IntegrationUpdate(BaseModel):
@@ -70,6 +73,24 @@ def put_integration(
     spec = BY_SLOT.get(slot)
     if spec is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="неизвестный слот интеграции")
+
+    if slot == _LIGHTER_LIVE_TRADE_SLOT:
+        # Keep input-validation semantics deterministic, but never let the
+        # ordinary device bearer provision a live signing credential.  A
+        # future owner-sensitive step-up flow will call the vault only after
+        # accepted ADR decisions and exact challenge binding exist.
+        try:
+            validate_values(spec, payload.values)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=str(exc),
+            ) from exc
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=_LIGHTER_LIVE_STEP_UP_REQUIRED,
+        )
+
     try:
         updated = save_secret(db, spec, payload.values)
     except ValueError as exc:
@@ -91,5 +112,10 @@ def put_integration(
 def remove_integration(slot: str, db: Session = Depends(get_db)) -> dict[str, bool]:
     if slot not in BY_SLOT:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="неизвестный слот интеграции")
+    if slot == _LIGHTER_LIVE_TRADE_SLOT:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=_LIGHTER_LIVE_STEP_UP_REQUIRED,
+        )
     delete_secret(db, slot)
     return {"ok": True}
