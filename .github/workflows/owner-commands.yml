@@ -1,0 +1,50 @@
+name: Owner commands
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  command:
+    name: Execute owner command
+    if: >-
+      github.event.issue.pull_request != null &&
+      github.actor == github.repository_owner &&
+      (github.event.comment.body == '/release-current' || github.event.comment.body == '/pair-device')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch pinned owner operation
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const command = context.payload.comment.body.trim();
+            const repo = await github.rest.repos.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+            });
+            const branch = repo.data.default_branch;
+            const ref = await github.rest.git.getRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: `heads/${branch}`,
+            });
+            const sha = ref.data.object.sha;
+            if (!/^[0-9a-f]{40}$/.test(sha)) {
+              core.setFailed('default branch did not resolve to an immutable commit');
+              return;
+            }
+            const workflow_id = command === '/release-current'
+              ? 'release-cumulative.yml'
+              : 'provision-device-pairing.yml';
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id,
+              ref: branch,
+              inputs: { source_ref: sha },
+            });
+            core.notice(`${command} dispatched for ${sha}`);
