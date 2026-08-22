@@ -24,6 +24,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 
 from .db import database_url
+from .execution.kill_switch import execution_control_lock
 
 
 @dataclass(frozen=True)
@@ -159,16 +160,15 @@ def validate_values(spec: IntegrationSpec, values: dict[str, str]) -> dict[str, 
     return cleaned
 
 
-def save_secret(
+def _save_secret_unlocked(
     db: Session,
     spec: IntegrationSpec,
-    values: dict[str, str],
+    cleaned: dict[str, str],
     *,
-    actor: str = "server_internal",
+    actor: str,
 ) -> datetime:
-    """Store one encrypted secret and rotate live Lighter generation atomically."""
-    ensure_store(db)
-    cleaned = validate_values(spec, values)
+    """Persist one already-validated secret; caller owns any required lock."""
+
     existed = False
     if spec.slot == _LIGHTER_LIVE_TRADE_SLOT:
         existed = (
@@ -204,13 +204,37 @@ def save_secret(
     return row[0]
 
 
-def delete_secret(
+def save_secret(
+    db: Session,
+    spec: IntegrationSpec,
+    values: dict[str, str],
+    *,
+    actor: str = "server_internal",
+) -> datetime:
+    """Store one encrypted secret and rotate live Lighter generation atomically.
+
+    Only the live Lighter trade slot shares the session-level execution lock
+    with the Canary submit window. This lock survives the submit-side durability
+    commit, unlike transaction row locks. Unrelated integration writes retain
+    their previous independent behavior.
+    """
+
+    ensure_store(db)
+    cleaned = validate_values(spec, values)
+    if spec.slot != _LIGHTER_LIVE_TRADE_SLOT:
+        return _save_secret_unlocked(db, spec, cleaned, actor=actor)
+    with execution_control_lock(db):
+        return _save_secret_unlocked(db, spec, cleaned, actor=actor)
+
+
+def _delete_secret_unlocked(
     db: Session,
     slot: str,
     *,
-    actor: str = "server_internal",
+    actor: str,
 ) -> None:
-    ensure_store(db)
+    """Delete one secret; caller owns any required execution serialization."""
+
     current_generation = None
     if slot == _LIGHTER_LIVE_TRADE_SLOT:
         from .execution.canary_policy import current_lighter_trade_generation
@@ -235,6 +259,20 @@ def delete_secret(
             account_index=current_generation.account_index,
             api_key_index=current_generation.api_key_index,
         )
+
+
+def delete_secret(
+    db: Session,
+    slot: str,
+    *,
+    actor: str = "server_internal",
+) -> None:
+    ensure_store(db)
+    if slot != _LIGHTER_LIVE_TRADE_SLOT:
+        _delete_secret_unlocked(db, slot, actor=actor)
+        return
+    with execution_control_lock(db):
+        _delete_secret_unlocked(db, slot, actor=actor)
 
 
 def configured_slots(db: Session) -> dict[str, datetime]:
