@@ -394,6 +394,37 @@ class LighterOrderActions:
             db.commit()
             return identity, nonce
 
+    def _release_explicit_api_rejection(self, *, action_key: str) -> None:
+        """Return only a proven API-level rejection to RESERVED.
+
+        Lighter documents that a nonce does not advance when a transaction fails
+        at the API-server level.  We therefore permit one exact retry only when
+        the provider returned a non-200 acknowledgement *without* a transaction
+        hash.  Timeouts, malformed acknowledgements and any hash-bearing result
+        remain SUBMITTING and require reconciliation.
+        """
+
+        with self._session_factory() as db:
+            _lock(db, "lighter-replay-key", action_key)
+            _lock(
+                db,
+                "lighter-nonce-scope",
+                f"{self._account_index}:{self._api_key_index}",
+            )
+            reservation = _reservation_for_action(
+                db,
+                action_key=action_key,
+                account_index=self._account_index,
+                api_key_index=self._api_key_index,
+            )
+            if reservation is None or reservation.state != "SUBMITTING":
+                raise LighterActionRequiresReconciliation(
+                    f"{action_key} requires reconciliation before any retry"
+                )
+            reservation.state = "RESERVED"
+            reservation.consumed_at = None
+            db.commit()
+
     def _accept_or_raise(
         self,
         *,
@@ -402,7 +433,17 @@ class LighterOrderActions:
     ) -> LighterActionAck:
         if not isinstance(ack, LighterActionAck):
             raise LighterActionRejected("invalid Lighter provider acknowledgement")
-        if ack.code != 200 or not isinstance(ack.tx_hash, str) or not ack.tx_hash.strip():
+
+        tx_hash = ack.tx_hash.strip() if isinstance(ack.tx_hash, str) else ""
+        if ack.code != 200:
+            if not tx_hash:
+                self._release_explicit_api_rejection(action_key=action_key)
+            raise LighterActionRejected(
+                f"Lighter action rejected with code {ack.code}: {ack.message or 'no message'}"
+            )
+        if not tx_hash:
+            # Syntax/API acceptance without a usable transaction identity is
+            # ambiguous: never reopen the nonce lane for a blind retry.
             raise LighterActionRejected(
                 f"Lighter action rejected with code {ack.code}: {ack.message or 'no message'}"
             )
