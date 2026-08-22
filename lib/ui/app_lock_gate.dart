@@ -9,7 +9,7 @@ import '../theme/typography.dart';
 
 /// Keeps account and signal data out of view until the device owner unlocks it.
 ///
-/// This is a local privacy gate, not trading authority.  Order confirmation and
+/// This is a local privacy gate, not trading authority. Order confirmation and
 /// server execution gates remain independent and fail closed on their own.
 class AppLockGate extends StatefulWidget {
   const AppLockGate({
@@ -57,6 +57,9 @@ class _AppLockGateState extends State<AppLockGate> with WidgetsBindingObserver {
       case AppLifecycleState.hidden:
       case AppLifecycleState.detached:
         _lock.backgrounded(DateTime.now());
+        // Render the privacy cover immediately so the Android recent-apps
+        // thumbnail cannot retain balances, positions or signal details.
+        if (mounted) setState(() {});
       case AppLifecycleState.inactive:
         // BiometricPrompt itself can make the Activity inactive. It must not
         // start the five-minute timer or recursively open another prompt.
@@ -91,7 +94,7 @@ class _AppLockGateState extends State<AppLockGate> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
-    if (!_lock.locked) return widget.child;
+    if (!_lock.shouldHideContent) return widget.child;
 
     return ColoredBox(
       color: C.bg,
@@ -111,11 +114,13 @@ class _AppLockGateState extends State<AppLockGate> with WidgetsBindingObserver {
                   textAlign: TextAlign.center,
                   style: T.body(12, color: C.muted, height: 1.45),
                 ),
-                const SizedBox(height: 18),
-                FilledButton(
-                  onPressed: _lock.shouldAuthenticate ? () => unawaited(_authenticate()) : null,
-                  child: Text(_lock.authenticating ? 'Проверяю…' : 'Разблокировать'),
-                ),
+                if (!_lock.obscured) ...[
+                  const SizedBox(height: 18),
+                  FilledButton(
+                    onPressed: _lock.shouldAuthenticate ? () => unawaited(_authenticate()) : null,
+                    child: Text(_lock.authenticating ? 'Проверяю…' : 'Разблокировать'),
+                  ),
+                ],
               ],
             ),
           ),
