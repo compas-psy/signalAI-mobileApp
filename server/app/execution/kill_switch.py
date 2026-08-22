@@ -131,6 +131,61 @@ def _snapshot(state: RiskState) -> dict[str, object]:
     }
 
 
+def _set_execution_kill_switch_locked(
+    db: Session,
+    *,
+    level: ExecutionKillSwitchLevel,
+    actor: str,
+    reason: str,
+    confirm_flatten_all: bool = False,
+    audit_action: str = "execution_kill_switch_set",
+) -> RiskState:
+    """Persist an active level while the caller already holds execution control.
+
+    This private helper is the only mutation path used inside an existing
+    ``execution_control_lock`` scope. Acquiring the public lock again from a
+    second dedicated PostgreSQL connection would deadlock, so callers must keep
+    this function private to already-serialized execution code.
+    """
+
+    try:
+        level = ExecutionKillSwitchLevel(level)
+    except ValueError as exc:
+        raise ExecutionKillSwitchError("unknown execution kill-switch level") from exc
+
+    if level == ExecutionKillSwitchLevel.CLEAR:
+        raise ExecutionKillSwitchError("use clear_execution_kill_switch to resume")
+
+    reason = reason.strip()
+    if not reason:
+        raise ExecutionKillSwitchError("kill-switch reason is required")
+    if level == ExecutionKillSwitchLevel.FLATTEN_ALL and not confirm_flatten_all:
+        raise ExecutionKillSwitchError(
+            "FLATTEN_ALL requires explicit confirm_flatten_all=true"
+        )
+
+    state = _state(db)
+    before = _snapshot(state)
+    state.kill_switch = True
+    state.kill_switch_level = level.value
+    state.kill_switch_reason = reason
+    state.updated_at = datetime.now(UTC)
+    after = {"active": True, "level": level.value, "reason": reason}
+    db.add(
+        AuditEvent(
+            actor=actor,
+            action=audit_action,
+            subject="risk_state",
+            detail=reason,
+            before_json=before,
+            after_json=after,
+        )
+    )
+    db.flush()
+    db.commit()
+    return state
+
+
 def set_execution_kill_switch(
     db: Session,
     *,
@@ -156,43 +211,15 @@ def set_execution_kill_switch(
     SAI-028 action name.
     """
 
-    try:
-        level = ExecutionKillSwitchLevel(level)
-    except ValueError as exc:
-        raise ExecutionKillSwitchError("unknown execution kill-switch level") from exc
-
-    if level == ExecutionKillSwitchLevel.CLEAR:
-        raise ExecutionKillSwitchError("use clear_execution_kill_switch to resume")
-
-    reason = reason.strip()
-    if not reason:
-        raise ExecutionKillSwitchError("kill-switch reason is required")
-    if level == ExecutionKillSwitchLevel.FLATTEN_ALL and not confirm_flatten_all:
-        raise ExecutionKillSwitchError(
-            "FLATTEN_ALL requires explicit confirm_flatten_all=true"
-        )
-
     with execution_control_lock(db):
-        state = _state(db)
-        before = _snapshot(state)
-        state.kill_switch = True
-        state.kill_switch_level = level.value
-        state.kill_switch_reason = reason
-        state.updated_at = datetime.now(UTC)
-        after = {"active": True, "level": level.value, "reason": reason}
-        db.add(
-            AuditEvent(
-                actor=actor,
-                action=audit_action,
-                subject="risk_state",
-                detail=reason,
-                before_json=before,
-                after_json=after,
-            )
+        return _set_execution_kill_switch_locked(
+            db,
+            level=level,
+            actor=actor,
+            reason=reason,
+            confirm_flatten_all=confirm_flatten_all,
+            audit_action=audit_action,
         )
-        db.flush()
-        db.commit()
-        return state
 
 
 def clear_execution_kill_switch(
