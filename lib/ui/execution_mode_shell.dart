@@ -6,6 +6,7 @@ import '../state/app_controller.dart';
 import '../state/app_scope.dart';
 import '../state/execution_mode_controller.dart';
 import '../state/navigation.dart';
+import 'app_lock_gate.dart';
 import 'widgets/execution_mode_banner.dart';
 
 /// Thin-client shell for the server-owned execution lifecycle mode.
@@ -60,26 +61,36 @@ class _ExecutionModeShellState extends State<ExecutionModeShell> {
   @override
   Widget build(BuildContext context) {
     final app = AppScope.of(context);
+    Widget content;
     if (!app.thinMode || app.isLoading || app.engineAuthIssue != null) {
-      return widget.child;
+      content = widget.child;
+    } else {
+      _scheduleModeSync(app);
+      final mode = _modeController!;
+      content = ExecutionModeScope(
+        controller: mode,
+        child: Column(
+          children: [
+            ExecutionModeBanner(
+              controller: mode,
+              onManage: () {
+                app.goSection(AppSection.settings);
+                app.goPill(0);
+              },
+            ),
+            Expanded(child: widget.child),
+          ],
+        ),
+      );
     }
 
-    _scheduleModeSync(app);
-    final mode = _modeController!;
-    return ExecutionModeScope(
-      controller: mode,
-      child: Column(
-        children: [
-          ExecutionModeBanner(
-            controller: mode,
-            onManage: () {
-              app.goSection(AppSection.settings);
-              app.goPill(0);
-            },
-          ),
-          Expanded(child: widget.child),
-        ],
-      ),
-    );
+    // Device-local authentication is a production privacy boundary. Demo/local
+    // modes are deterministic development fixtures and intentionally have no
+    // Android platform authenticator, so wrapping them would hide the test UI.
+    if (!app.thinMode) return content;
+
+    // In production, the gate wraps the banner as well as the app body: account
+    // mode, balances and signal state must not flash before authentication.
+    return AppLockGate(child: content);
   }
 }
