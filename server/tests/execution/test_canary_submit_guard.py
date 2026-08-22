@@ -292,6 +292,8 @@ def test_source_config_and_live_credential_generation_drift_fail_closed(session)
     save_secret(session, BY_SLOT["lighter_trade"], rotated, actor="submit_guard_test")
     with _guard(session, snapshot) as wrong_generation:
         assert "CREDENTIAL_GENERATION_MISMATCH" in wrong_generation.blockers
+        assert wrong_generation.automatic_halt_applied is True
+        assert wrong_generation.automatic_safety_triggers == ("CREDENTIAL_DRIFT",)
 
 
 def test_allowlist_caps_and_missing_dynamic_limit_are_enforced_at_submit_time(session) -> None:
@@ -315,6 +317,8 @@ def test_allowlist_caps_and_missing_dynamic_limit_are_enforced_at_submit_time(se
         dynamic_limits_provider=lambda: missing_provider_cap,
     ) as decision:
         assert "DYNAMIC_LIMIT_MISSING_OR_INVALID" in decision.blockers
+        assert decision.automatic_halt_applied is False
+        assert decision.automatic_safety_triggers == ()
 
 
 def test_authoritative_fact_provider_failure_is_fail_closed(session) -> None:
