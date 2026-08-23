@@ -39,23 +39,6 @@ class TInvestSandboxSmokeResult:
     sell_executed_lots: int
     position_flat: bool
 
-    # Backward-compatible single-leg aliases for old diagnostics consumers.
-    @property
-    def filled(self) -> bool:
-        return self.buy_executed_lots > 0
-
-    @property
-    def provider_order_id(self) -> str:
-        return self.buy_provider_order_id
-
-    @property
-    def execution_status(self) -> str:
-        return self.buy_execution_status
-
-    @property
-    def executed_lots(self) -> int:
-        return self.buy_executed_lots
-
 
 def sandbox_smoke_request_id(diagnostic_key: str, *, leg: str = "buy") -> str:
     if not isinstance(diagnostic_key, str) or _DIAGNOSTIC_KEY_RE.fullmatch(diagnostic_key) is None:
@@ -287,20 +270,26 @@ def _reconcile_after_submit(
     *,
     account_id: str,
     request_id: str,
-    submitted: Mapping[str, object],
+    required_lots: int,
     attempts: int,
     sleeper: Callable[[float], None],
-) -> Mapping[str, object]:
-    state: Mapping[str, object] | None = None
+) -> Mapping[str, object] | None:
+    """Require an independent state read; the write response is never proof."""
+
+    last_state: Mapping[str, object] | None = None
     for attempt in range(attempts):
         if attempt:
             sleeper(0.5)
         state = _reconcile(transport, account_id=account_id, request_id=request_id)
-        if state is not None:
+        if state is None:
+            continue
+        last_state = state
+        if _state_lots(state) >= required_lots:
             return state
-    # Never re-submit because of read-after-write delay. A later retry will
-    # reconcile this same request id before it can submit anything.
-    return submitted
+        status = str(state.get("executionReportStatus") or "")
+        if status.endswith("REJECTED") or status.endswith("CANCELLED"):
+            return state
+    return last_state
 
 
 def _state_lots(state: Mapping[str, object] | None) -> int:
@@ -381,12 +370,12 @@ def _result(
         account_suffix=account_id[-6:] if len(account_id) >= 6 else account_id,
         buy_provider_order_id=str((buy_state or {}).get("orderId") or buy_request_id),
         buy_execution_status=str(
-            (buy_state or {}).get("executionReportStatus") or "NOT_SUBMITTED"
+            (buy_state or {}).get("executionReportStatus") or "NOT_CONFIRMED"
         ),
         buy_executed_lots=buy_lots,
         sell_provider_order_id=str((sell_state or {}).get("orderId") or sell_request_id),
         sell_execution_status=str(
-            (sell_state or {}).get("executionReportStatus") or "NOT_SUBMITTED"
+            (sell_state or {}).get("executionReportStatus") or "NOT_CONFIRMED"
         ),
         sell_executed_lots=sell_lots,
         position_flat=position_flat,
@@ -421,7 +410,7 @@ def run_tinvest_sandbox_smoke(
                 "amount": {"currency": "rub", "units": _PAY_IN_RUB, "nano": 0},
             },
         )
-        submitted_buy = _mapping(
+        _mapping(
             provider.call(
                 "SandboxService",
                 "PostSandboxOrder",
@@ -440,7 +429,7 @@ def run_tinvest_sandbox_smoke(
             provider,
             account_id=account_id,
             request_id=buy_id,
-            submitted=submitted_buy,
+            required_lots=1,
             attempts=attempts,
             sleeper=sleeper,
         )
@@ -466,7 +455,7 @@ def run_tinvest_sandbox_smoke(
             instrument_uid=instrument_uid,
             side="sell",
         )
-        submitted_sell = _mapping(
+        _mapping(
             provider.call(
                 "SandboxService",
                 "PostSandboxOrder",
@@ -485,7 +474,7 @@ def run_tinvest_sandbox_smoke(
             provider,
             account_id=account_id,
             request_id=sell_id,
-            submitted=submitted_sell,
+            required_lots=buy_lots,
             attempts=attempts,
             sleeper=sleeper,
         )
