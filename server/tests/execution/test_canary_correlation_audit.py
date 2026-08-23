@@ -331,7 +331,7 @@ def test_correlation_complete_chain_is_exact_hash_scope_and_secret_free(session,
         snapshot_hash=snapshot.snapshot_hash,
     )
 
-    assert report.status == "COMPLETE"
+    assert report.status == "COMPLETE", report.to_public_dict()
     assert report.blockers == ()
     assert report.activation_request_id is not None
     assert report.mode_event_id is not None
