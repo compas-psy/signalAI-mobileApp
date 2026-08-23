@@ -578,19 +578,21 @@ def test_risk_limits_match_engine_tz(client):
     assert Decimal(limits["cluster"]) == Decimal("0.01")
 
 
-def test_halt_and_resume_are_audited(client, session):
-    """Каждое действие с деньгами оставляет след (§23 UX-ТЗ)."""
+def test_halt_and_resume_require_owner_step_up_and_keep_audit_monotonic(client, session):
+    """Bearer may strengthen safety, but cannot clear it without fresh owner step-up."""
     from sqlalchemy import text
 
     on = client.post("/api/v1/risk/halt", json={"reason": "проверка"}).json()
     assert on["kill_switch"] is True and on["kill_switch_reason"] == "проверка"
 
-    off = client.post("/api/v1/risk/resume", json={"reason": "отбой"}).json()
-    assert off["kill_switch"] is False
+    resume = client.post("/api/v1/risk/resume", json={"reason": "отбой"})
+    assert resume.status_code == 409
+    assert resume.json()["detail"] == "EXECUTION_KILL_SWITCH_CLEAR_STEP_UP_REQUIRED"
 
-    # AuditEvent — общий append-only ledger. Независимые REJECTED-события
-    # других money-bearing действий могут законно переживать rollback своих
-    # запросов, поэтому этот тест проверяет ровно свой kill-switch domain.
+    still_halted = client.get("/api/v1/risk/dashboard").json()
+    assert still_halted["kill_switch"] is True
+    assert still_halted["kill_switch_reason"] == "проверка"
+
     actions = [
         r[0]
         for r in session.execute(
@@ -601,7 +603,7 @@ def test_halt_and_resume_are_audited(client, session):
             )
         )
     ]
-    assert actions == ["kill_switch_on", "kill_switch_off"]
+    assert actions == ["kill_switch_on"]
 
 
 # ─── Состояние загрузки ───────────────────────────────────────────────────
