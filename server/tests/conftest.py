@@ -62,6 +62,10 @@ def configured_device_token(monkeypatch):
     monkeypatch.setenv("SIGNALAI_DEVICE_PAIRING_EXPIRES_AT", "2030-01-01T00:00:00Z")
     monkeypatch.setenv("SIGNALAI_DEVICE_PAIRING_MAX_USES", "8")
     monkeypatch.setenv("SIGNALAI_RISK_PREVIEW_SIGNING_KEY", "ci-risk-preview-secret")
+    monkeypatch.setenv(
+        "SIGNALAI_LIGHTER_LIVE_SECRETS_KEY",
+        "ci-only-lighter-live-vault-key-material-000000000001",
+    )
 
 
 @pytest.fixture(autouse=True)
