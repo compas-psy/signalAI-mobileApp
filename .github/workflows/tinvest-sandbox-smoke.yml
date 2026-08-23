@@ -7,9 +7,15 @@ on:
         description: 'Exact deployed 40-char commit SHA to verify and smoke'
         required: true
         type: string
+      report_issue:
+        description: 'Optional issue/PR number to receive sanitized acceptance evidence'
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
+  issues: write
 
 concurrency:
   group: signalai-tinvest-sandbox-provider-smoke
@@ -17,13 +23,14 @@ concurrency:
 
 jobs:
   smoke:
-    name: Provider-confirmed sandbox fill
+    name: Provider-confirmed sandbox round trip
     if: github.actor == github.repository_owner
     runs-on: ubuntu-latest
     steps:
-      - name: Validate immutable source
+      - name: Validate immutable source and report target
         env:
           SOURCE_SHA: ${{ inputs.source_ref }}
+          REPORT_ISSUE: ${{ inputs.report_issue }}
         run: |
           set -euo pipefail
           case "$SOURCE_SHA" in
@@ -33,6 +40,11 @@ jobs:
             echo '::error::source_ref must contain exactly 40 hex characters'
             exit 1
           }
+          if [ -n "$REPORT_ISSUE" ]; then
+            case "$REPORT_ISSUE" in
+              *[!0-9]*) echo '::error::report_issue must be numeric'; exit 1 ;;
+            esac
+          fi
 
       - uses: actions/checkout@v4
         with:
@@ -73,18 +85,21 @@ jobs:
           chmod 600 ~/.ssh/id_deploy
           bash .github/scripts/prepare_known_host.sh "$HOST" "$HOST_KEY_SHA256"
 
-      - name: Execute real T-Invest Sandbox fill on exact deployed VPS source
+      - name: Execute real T-Invest Sandbox round trip on exact deployed VPS source
+        id: acceptance
         env:
           HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
           USER_NAME: ${{ secrets.VPS_USER || 'root' }}
           SOURCE_SHA: ${{ inputs.source_ref }}
         run: |
           set -euo pipefail
-          # SOURCE_SHA is already constrained to lowercase hex, so it is safe
-          # to pass as an inline environment assignment to the remote shell.
+          stdout_file="$RUNNER_TEMP/tinvest-sandbox-smoke.stdout"
+          stderr_file="$RUNNER_TEMP/tinvest-sandbox-smoke.stderr"
+
+          set +e
           ssh -i ~/.ssh/id_deploy -o BatchMode=yes \
             "$USER_NAME@$HOST" \
-            "SIGNALAI_SOURCE_SHA=$SOURCE_SHA bash -s" <<'REMOTE'
+            "SIGNALAI_SOURCE_SHA=$SOURCE_SHA bash -s" >"$stdout_file" 2>"$stderr_file" <<'REMOTE'
           set -euo pipefail
           SOURCE_SHA="${SIGNALAI_SOURCE_SHA:?source SHA is required}"
           DIR="$HOME/signalai"
@@ -98,7 +113,7 @@ jobs:
           }
           DEPLOYED_SHA="$(tr -d '\r\n' < "$DIR/.signalai-source-sha")"
           [ "$DEPLOYED_SHA" = "$SOURCE_SHA" ] || {
-            echo "deployed SHA mismatch: expected $SOURCE_SHA, found $DEPLOYED_SHA" >&2
+            echo 'deployed SHA does not match requested acceptance source' >&2
             exit 1
           }
           test -f "$ENV_FILE" || { echo 'server env file is missing' >&2; exit 1; }
@@ -109,13 +124,99 @@ jobs:
             exit 1
           }
 
-          DIAGNOSTIC_KEY="signalai-smoke-$SOURCE_SHA"
           echo "Running provider-confirmed T-Invest Sandbox acceptance on $SOURCE_SHA"
           # No token is passed by Actions. The command reads the encrypted
           # tinvest_sandbox_trade slot from the production database internally.
-          # The CLI prints only sanitized evidence and exits 0 exclusively for
-          # a provider-confirmed fill with lotsExecuted > 0.
+          # Its stdout contract is a single sanitized JSON result after the
+          # informational line above. Provider exception text is not emitted.
           $SUDO docker compose --env-file "$ENV_FILE" exec -T api \
-            python -m app.ops.tinvest_sandbox_acceptance \
-            --diagnostic-key "$DIAGNOSTIC_KEY"
+            python -m app.ops.tinvest_sandbox_acceptance
           REMOTE
+          exit_code=$?
+          set -e
+
+          cat "$stdout_file"
+          # Do not echo remote stderr into the report path: failures are reduced
+          # to a bounded workflow code below and broker/provider text cannot leak.
+          result_json="$(tail -n 1 "$stdout_file" | tr -d '\r')"
+          sanitized=''
+          if [ -n "$result_json" ]; then
+            sanitized="$(RESULT_JSON="$result_json" python - <<'PY' || true
+          import json
+          import os
+
+          allowed = {
+              'accepted', 'error_code', 'round_trip_complete', 'symbol',
+              'account_suffix', 'buy_order_id', 'buy_status', 'buy_executed_lots',
+              'sell_order_id', 'sell_status', 'sell_executed_lots',
+              'position_flat', 'readiness_proof_id', 'promotion_ready',
+          }
+          try:
+              value = json.loads(os.environ['RESULT_JSON'])
+              if not isinstance(value, dict) or not set(value).issubset(allowed):
+                  raise ValueError('unexpected result shape')
+              if not isinstance(value.get('accepted'), bool):
+                  raise ValueError('accepted must be boolean')
+              print(json.dumps(value, ensure_ascii=False, separators=(',', ':')))
+          except Exception:
+              pass
+          PY
+          )"
+          fi
+          if [ -z "$sanitized" ]; then
+            sanitized='{"accepted":false,"error_code":"WORKFLOW_OR_DEPLOY_BLOCKED"}'
+          fi
+
+          printf 'exit_code=%s\n' "$exit_code" >> "$GITHUB_OUTPUT"
+          printf 'result_b64=%s\n' "$(printf '%s' "$sanitized" | base64 -w0)" >> "$GITHUB_OUTPUT"
+
+      - name: Report sanitized RoundTrip evidence to requesting PR
+        if: always() && inputs.report_issue != ''
+        uses: actions/github-script@v7
+        env:
+          SOURCE_SHA: ${{ inputs.source_ref }}
+          REPORT_ISSUE: ${{ inputs.report_issue }}
+          RESULT_B64: ${{ steps.acceptance.outputs.result_b64 }}
+          ACCEPTANCE_EXIT: ${{ steps.acceptance.outputs.exit_code }}
+        with:
+          script: |
+            const issueNumber = Number(process.env.REPORT_ISSUE);
+            let result = {accepted: false, error_code: 'WORKFLOW_OR_DEPLOY_BLOCKED'};
+            try {
+              if (process.env.RESULT_B64) {
+                result = JSON.parse(Buffer.from(process.env.RESULT_B64, 'base64').toString('utf8'));
+              }
+            } catch (_) {
+              result = {accepted: false, error_code: 'RESULT_DECODE_FAILED'};
+            }
+            const ok = result.accepted === true && process.env.ACCEPTANCE_EXIT === '0';
+            const body = [
+              '### T-Invest Sandbox RoundTrip evidence',
+              '',
+              `Source SHA: \`${process.env.SOURCE_SHA}\``,
+              '',
+              '```json',
+              JSON.stringify(result, null, 2),
+              '```',
+              '',
+              ok
+                ? '✅ Provider acceptance completed for this exact deployed SHA.'
+                : '❌ Provider acceptance is not complete for this exact deployed SHA.',
+            ].join('\n');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              body,
+            });
+
+      - name: Enforce provider acceptance
+        if: always()
+        env:
+          ACCEPTANCE_EXIT: ${{ steps.acceptance.outputs.exit_code }}
+        run: |
+          set -euo pipefail
+          [ "${ACCEPTANCE_EXIT:-}" = '0' ] || {
+            echo '::error::T-Invest Sandbox RoundTrip acceptance did not complete'
+            exit 1
+          }
