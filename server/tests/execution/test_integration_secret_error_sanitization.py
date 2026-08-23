@@ -86,3 +86,29 @@ def test_secret_read_sql_failure_cannot_expose_pgcrypto_key(
         secret_store.load_secret(session, "lighter_trade")
 
     _assert_sanitized(captured.value, forbidden=(usable_vault_key,))
+
+
+def test_malformed_decrypted_payload_cannot_escape_in_json_error(
+    session,
+    monkeypatch,
+) -> None:
+    secret_store.ensure_store(session)
+    original_execute = session.execute
+    raw_decrypted_secret = '{"api_private_key":"' + ("cd" * 32) + '"'
+
+    class _Row:
+        def __getitem__(self, index: int) -> str:
+            assert index == 0
+            return raw_decrypted_secret
+
+    def malformed_decrypt(statement, params=None, *args, **kwargs):
+        if "pgp_sym_decrypt" in str(statement):
+            return type("_Result", (), {"first": lambda self: _Row()})()
+        return original_execute(statement, params, *args, **kwargs)
+
+    monkeypatch.setattr(session, "execute", malformed_decrypt)
+
+    with pytest.raises(Exception) as captured:
+        secret_store.load_secret(session, "lighter_trade")
+
+    _assert_sanitized(captured.value, forbidden=(raw_decrypted_secret, "cd" * 32))
