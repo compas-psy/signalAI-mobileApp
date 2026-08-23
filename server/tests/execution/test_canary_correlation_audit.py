@@ -145,7 +145,29 @@ def _set_canary(session) -> None:
 
 def _execution_chain(session, instrument, snapshot) -> None:
     _set_canary(session)
-    event_time = datetime.now(UTC)
+
+    # Production mode events use the database clock.  The outer PostgreSQL test
+    # transaction deliberately gives every server-default now() the same
+    # transaction timestamp, so use that exact clock here instead of a later
+    # process wall clock.  This models a durable activation boundary without
+    # making a later intent appear to predate it merely because of test-fixture
+    # clock semantics.
+    bound_event = ExecutionModeEvent(
+        from_mode=ExecutionLifecycleMode.SANDBOX,
+        to_mode=ExecutionLifecycleMode.CANARY,
+        actor="owner",
+        reason="owner approved exact Canary snapshot",
+        detail_json={
+            "canary_policy_snapshot_hash": snapshot.snapshot_hash,
+            "correlation_id": snapshot.correlation_id,
+            "source_sha": snapshot.source_sha,
+            "engine_config_hash": snapshot.engine_config_hash,
+        },
+    )
+    session.add(bound_event)
+    session.flush()
+    event_time = bound_event.occurred_at
+
     session.add(
         ExecutionModeActivationRequest(
             preview_hash=snapshot.snapshot_hash,
@@ -163,20 +185,6 @@ def _execution_chain(session, instrument, snapshot) -> None:
             owner_confirmed_at=event_time,
         )
     )
-    bound_event = ExecutionModeEvent(
-        from_mode=ExecutionLifecycleMode.SANDBOX,
-        to_mode=ExecutionLifecycleMode.CANARY,
-        actor="owner",
-        reason="owner approved exact Canary snapshot",
-        detail_json={
-            "canary_policy_snapshot_hash": snapshot.snapshot_hash,
-            "correlation_id": snapshot.correlation_id,
-            "source_sha": snapshot.source_sha,
-            "engine_config_hash": snapshot.engine_config_hash,
-        },
-        occurred_at=event_time,
-    )
-    session.add(bound_event)
     session.flush()
 
     idea = TradeIdea(
@@ -331,7 +339,7 @@ def test_correlation_complete_chain_is_exact_hash_scope_and_secret_free(session,
         snapshot_hash=snapshot.snapshot_hash,
     )
 
-    assert report.status == "COMPLETE", report.to_public_dict()
+    assert report.status == "COMPLETE", report.blockers
     assert report.blockers == ()
     assert report.activation_request_id is not None
     assert report.mode_event_id is not None
