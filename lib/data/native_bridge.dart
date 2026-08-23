@@ -76,8 +76,18 @@ class NativeBridge {
   Future<bool> putEngineDeviceToken(String token) =>
       vaultPut(engineDeviceTokenKey, token);
 
-  Future<bool> deleteEngineDeviceToken() =>
-      vaultDelete(engineDeviceTokenKey);
+  Future<bool> deleteEngineDeviceToken() => vaultDelete(engineDeviceTokenKey);
+
+  /// Create/reuse the hardware owner key and return only its public SPKI.
+  /// The private key never crosses the native channel.
+  Future<String?> ownerStepUpPublicKey() => _string('ownerStepUpPublicKey');
+
+  /// Sign one exact server challenge after per-use BIOMETRIC_STRONG auth.
+  Future<String?> ownerStepUpSign(String message) =>
+      _string('ownerStepUpSign', {'message': message});
+
+  /// Remove local owner authority after server-confirmed device revocation.
+  Future<bool> deleteOwnerStepUpKey() => _bool('ownerStepUpDelete');
 
   /// HMAC-SHA256 сообщения секретом [name], hex. null — секрета нет.
   ///
