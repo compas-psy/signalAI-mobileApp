@@ -1,0 +1,84 @@
+name: Focused T-Invest sandbox TDD
+
+on:
+  push:
+    branches: [feat/tinvest-sandbox-thin-client]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tinvest-sandbox-focused
+  cancel-in-progress: true
+
+jobs:
+  server:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: signalai
+          POSTGRES_PASSWORD: signalai_local_dev
+          POSTGRES_DB: postgres
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U signalai -d postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.11.33'
+          enable-cache: true
+          cache-dependency-glob: server/uv.lock
+      - run: uv sync --frozen --extra test
+      - name: Focused server tests
+        env:
+          SIGNALAI_ADMIN_DSN: postgresql+psycopg://signalai:signalai_local_dev@127.0.0.1:5432/postgres
+          SIGNALAI_DEVICE_TOKEN: ci-device-token
+        run: |
+          .venv/bin/alembic upgrade head
+          .venv/bin/python -m pytest -q \
+            tests/test_tinvest_sandbox_integration_slot.py \
+            tests/execution/venues/test_tinvest_sandbox_transport.py \
+            tests/execution/venues/test_tinvest_sandbox_smoke.py \
+            tests/test_tinvest_sandbox_api.py --ignore-glob='*' || status=$?
+          # Missing future TDD files are not an error at earlier tasks; rerun the files that exist.
+          files=()
+          for f in \
+            tests/test_tinvest_sandbox_integration_slot.py \
+            tests/execution/venues/test_tinvest_sandbox_transport.py \
+            tests/execution/venues/test_tinvest_sandbox_smoke.py \
+            tests/test_tinvest_sandbox_api.py; do
+            [ -f "$f" ] && files+=("$f")
+          done
+          .venv/bin/python -m pytest -q "${files[@]}"
+
+  mobile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.8'
+          channel: stable
+          cache: true
+      - run: flutter pub get --enforce-lockfile
+      - name: Focused mobile tests when present
+        run: |
+          if [ -f test/tinvest_sandbox_thin_client_migration_test.dart ]; then
+            flutter test test/tinvest_sandbox_thin_client_migration_test.dart
+          else
+            echo 'mobile TDD file not added yet'
+          fi
