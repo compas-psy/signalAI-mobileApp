@@ -49,6 +49,25 @@ class CanaryCorrelationError(ValueError):
 
 
 @dataclass(frozen=True, slots=True)
+class CanaryExecutionScope:
+    """Exact owner-bound execution window for one immutable Canary policy.
+
+    This object is factual scope only.  It never implies that Canary evidence is
+    sufficient for promotion and it carries no provider-write authority.
+    """
+
+    snapshot: CanaryPolicySnapshot
+    activation: ExecutionModeActivationRequest | None
+    mode_event: ExecutionModeEvent | None
+    intents: tuple[ExecutionIntent, ...]
+    blockers: tuple[str, ...]
+
+    @property
+    def fully_bound(self) -> bool:
+        return not self.blockers and self.activation is not None and self.mode_event is not None
+
+
+@dataclass(frozen=True, slots=True)
 class CanaryCorrelationReport:
     status: str
     snapshot_hash: str
@@ -287,6 +306,47 @@ def _scoped_intents(
     )
 
 
+def resolve_canary_execution_scope(
+    db: Session,
+    *,
+    snapshot_hash: str,
+) -> CanaryExecutionScope:
+    """Resolve the one execution window that is fully bound to an owner policy.
+
+    Evidence freshness/quality and promotion thresholds are intentionally not
+    evaluated here.  The resolver answers only which durable execution facts
+    belong to the exact policy session, and fails closed when owner activation
+    or the full immutable mode-event binding is absent.
+    """
+
+    snapshot = _exact_snapshot(db, snapshot_hash)
+    blockers: list[str] = []
+    activation = _bound_activation_request(db, snapshot)
+    if activation is None:
+        blockers.append("ACTIVATION_REQUEST_BINDING_MISSING")
+
+    mode_event, owner_scope_incomplete = _bound_mode_event(
+        db,
+        snapshot=snapshot,
+        activation=activation,
+    )
+    if mode_event is None:
+        blockers.append(
+            "CANARY_MODE_EVENT_OWNER_SCOPE_INCOMPLETE"
+            if owner_scope_incomplete
+            else "CANARY_MODE_EVENT_BINDING_MISSING"
+        )
+
+    intents = _scoped_intents(db, snapshot=snapshot, event=mode_event)
+    return CanaryExecutionScope(
+        snapshot=snapshot,
+        activation=activation,
+        mode_event=mode_event,
+        intents=intents,
+        blockers=tuple(blockers),
+    )
+
+
 def _execution_counts(
     db: Session,
     intents: tuple[ExecutionIntent, ...],
@@ -337,7 +397,8 @@ def build_canary_correlation_report(
     *,
     snapshot_hash: str,
 ) -> CanaryCorrelationReport:
-    snapshot = _exact_snapshot(db, snapshot_hash)
+    scope = resolve_canary_execution_scope(db, snapshot_hash=snapshot_hash)
+    snapshot = scope.snapshot
     blockers: list[str] = []
 
     credential_generation_found = _credential_generation_bound(db, snapshot)
@@ -350,21 +411,8 @@ def build_canary_correlation_report(
     if not evidence_complete:
         blockers.append("CANARY_EVIDENCE_BINDING_INCOMPLETE")
 
-    activation = _bound_activation_request(db, snapshot)
-    if activation is None:
-        blockers.append("ACTIVATION_REQUEST_BINDING_MISSING")
-
-    mode_event, owner_scope_incomplete = _bound_mode_event(
-        db, snapshot=snapshot, activation=activation
-    )
-    if mode_event is None:
-        blockers.append(
-            "CANARY_MODE_EVENT_OWNER_SCOPE_INCOMPLETE"
-            if owner_scope_incomplete
-            else "CANARY_MODE_EVENT_BINDING_MISSING"
-        )
-
-    intents = _scoped_intents(db, snapshot=snapshot, event=mode_event)
+    blockers.extend(scope.blockers)
+    intents = scope.intents
     if not intents:
         blockers.append("CANARY_EXECUTION_EVIDENCE_MISSING")
     order_count, fill_count, active_protection_count, reconciliation_event_count = (
@@ -388,8 +436,8 @@ def build_canary_correlation_report(
         engine_config_hash=snapshot.engine_config_hash,
         credential_generation_found=credential_generation_found,
         verified_evidence_ref_count=verified_evidence_ref_count,
-        activation_request_id=str(activation.id) if activation is not None else None,
-        mode_event_id=str(mode_event.id) if mode_event is not None else None,
+        activation_request_id=(str(scope.activation.id) if scope.activation is not None else None),
+        mode_event_id=(str(scope.mode_event.id) if scope.mode_event is not None else None),
         execution_intent_count=len(intents),
         order_count=order_count,
         fill_count=fill_count,
@@ -402,5 +450,7 @@ def build_canary_correlation_report(
 __all__ = [
     "CanaryCorrelationError",
     "CanaryCorrelationReport",
+    "CanaryExecutionScope",
     "build_canary_correlation_report",
+    "resolve_canary_execution_scope",
 ]

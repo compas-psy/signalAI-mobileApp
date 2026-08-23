@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
+from sqlalchemy import select
+
 from app.execution.enums import ExecutionLifecycleMode
 from app.execution.intent_service import (
     ExecutionIntentGate,
@@ -12,6 +14,7 @@ from app.execution.intent_service import (
 from app.execution.mode import ModeChangeAuthorization, change_execution_mode, get_execution_mode
 from app.models import (
     ExecutionFill,
+    ExecutionIntent,
     ExecutionOrder,
     ExecutionProtection,
     ExecutionReconciliationEvent,
@@ -115,6 +118,28 @@ def _add_fill(session, intent, *, price: Decimal = Decimal("101")) -> ExecutionO
     return order
 
 
+def _bound_canary_intent(session, instrument):
+    from tests.execution.test_canary_correlation_audit import (
+        _evidence,
+        _execution_chain,
+        _snapshot,
+    )
+
+    snapshot, refs = _snapshot(session, instrument_id=instrument.instrument_id)
+    _evidence(session, snapshot, refs)
+    _execution_chain(session, instrument, snapshot)
+    intent = session.execute(
+        select(ExecutionIntent).where(
+            ExecutionIntent.execution_mode_snapshot == ExecutionLifecycleMode.CANARY,
+            ExecutionIntent.venue == "LIGHTER",
+            ExecutionIntent.account == str(snapshot.account_index),
+            ExecutionIntent.strategy_version == snapshot.strategy_version,
+            ExecutionIntent.instrument_id == instrument.instrument_id,
+        )
+    ).scalar_one()
+    return snapshot, intent
+
+
 def test_canary_proof_is_insufficient_without_real_canary_execution(session) -> None:
     from app.execution.canary_proof import build_canary_proof_report
 
@@ -146,28 +171,20 @@ def test_sandbox_or_other_venue_execution_never_counts_as_canary_proof(session, 
     assert report.fees_by_currency == {}
 
 
-def test_real_canary_lighter_records_report_actual_fills_costs_protection_and_errors(
+def test_exact_bound_canary_records_actual_fills_costs_protection_and_errors(
     session,
     instrument,
 ) -> None:
     from app.execution.canary_proof import build_canary_proof_report
 
-    intent = _create_intent(session, instrument, mode=ExecutionLifecycleMode.CANARY)
-    entry = _add_fill(session, intent)
-    intent.duplicate_prevention_count = 2
-    session.add(
-        ExecutionProtection(
-            intent_id=intent.id,
-            order_id=entry.id,
-            protection_type="STOP",
-            status="ACTIVE",
-            provider_order_id=f"provider-stop-{intent.id.hex}",
-            quantity=Decimal("2"),
-            stop_price=Decimal("95"),
-            armed_at=BASE + timedelta(seconds=2, milliseconds=250),
-            last_reconciled_at=BASE + timedelta(seconds=3),
+    snapshot, intent = _bound_canary_intent(session, instrument)
+    entry = session.execute(
+        select(ExecutionOrder).where(
+            ExecutionOrder.intent_id == intent.id,
+            ExecutionOrder.order_type == "ENTRY",
         )
-    )
+    ).scalar_one()
+    intent.duplicate_prevention_count = 2
     session.add(
         ExecutionOrder(
             intent_id=intent.id,
@@ -176,11 +193,11 @@ def test_real_canary_lighter_records_report_actual_fills_costs_protection_and_er
             side="BUY",
             order_type="ENTRY_RETRY",
             status="REJECTED",
-            quantity=Decimal("2"),
+            quantity=Decimal("1"),
             limit_price=Decimal("100"),
             stop_price=None,
-            submitted_at=BASE + timedelta(seconds=4),
-            acknowledged_at=BASE + timedelta(seconds=4, milliseconds=50),
+            submitted_at=entry.submitted_at + timedelta(seconds=2),
+            acknowledged_at=entry.acknowledged_at + timedelta(seconds=2),
         )
     )
     session.add(
@@ -189,18 +206,23 @@ def test_real_canary_lighter_records_report_actual_fills_costs_protection_and_er
             event_type="SUBMISSION_RECOVERY",
             outcome="UNKNOWN",
             detail_json={"reason": "provider timeout"},
-            occurred_at=BASE + timedelta(seconds=5),
+            occurred_at=entry.submitted_at + timedelta(seconds=3),
         )
     )
     session.flush()
 
-    report = build_canary_proof_report(session, as_of=BASE + timedelta(minutes=5))
+    report = build_canary_proof_report(
+        session,
+        snapshot_hash=snapshot.snapshot_hash,
+        as_of=datetime.now(UTC) + timedelta(minutes=5),
+    )
 
     assert report.status == "OBSERVED"
+    assert report.policy_snapshot_hash == snapshot.snapshot_hash
     assert report.canary_intent_count == 1
     assert report.filled_intent_count == 1
     assert report.fill_count == 1
-    assert report.fees_by_currency == {"USDC": Decimal("0.50")}
+    assert report.fees_by_currency == {"USDC": Decimal("0.1")}
     assert report.average_fill_deviation_bps == Decimal("100.00")
     assert report.worst_fill_deviation_bps == Decimal("100.00")
     assert report.protection_slo_breach_count == 0
@@ -209,22 +231,28 @@ def test_real_canary_lighter_records_report_actual_fills_costs_protection_and_er
     assert report.rejected_order_count == 1
     assert report.duplicate_prevention_count == 2
     assert report.acceptance_ready is False
-    assert "CANARY_ACTIVATION_POLICY_BINDING_MISSING" in report.blockers
     assert "CANARY_PROOF_ACCEPTANCE_THRESHOLDS_NOT_APPROVED" in report.blockers
 
 
-def test_missing_current_protection_is_reported_even_without_inventing_acceptance_thresholds(
+def test_non_active_current_protection_is_reported_without_inventing_acceptance_thresholds(
     session,
     instrument,
 ) -> None:
     from app.execution.canary_proof import build_canary_proof_report
 
-    intent = _create_intent(session, instrument, mode=ExecutionLifecycleMode.CANARY)
-    _add_fill(session, intent)
+    snapshot, intent = _bound_canary_intent(session, instrument)
+    protection = session.execute(
+        select(ExecutionProtection).where(ExecutionProtection.intent_id == intent.id)
+    ).scalar_one()
+    protection.status = "CANCELLED"
+    session.flush()
 
-    report = build_canary_proof_report(session, as_of=BASE + timedelta(minutes=5))
+    report = build_canary_proof_report(
+        session,
+        snapshot_hash=snapshot.snapshot_hash,
+        as_of=datetime.now(UTC) + timedelta(minutes=5),
+    )
 
     assert report.status == "OBSERVED"
-    assert report.protection_slo_breach_count == 1
     assert report.current_unprotected_filled_intent_count == 1
     assert report.acceptance_ready is False
