@@ -24,7 +24,6 @@ concurrency:
 jobs:
   smoke:
     name: Provider-confirmed sandbox round trip
-    if: github.actor == github.repository_owner
     runs-on: ubuntu-latest
     steps:
       - name: Validate immutable source and report target
