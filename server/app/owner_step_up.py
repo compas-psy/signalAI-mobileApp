@@ -1,32 +1,123 @@
 """Cryptographic owner-presence primitives with no execution authority.
 
-This module intentionally contains only public-key validation/enrollment helpers
-at this stage.  A device bearer is never sufficient to create or replace an
-owner key; callers must already hold the short-lived owner pairing capability.
+The server stores only the public half of a P-256 key.  A bearer-authenticated
+owner device may request a bounded challenge, but a proof receipt is emitted
+only after a valid signature from the exact enrolled key.  Receipts are facts,
+not authorization: this module never changes execution mode, provider state,
+capital limits, or promotion state.
 """
 from __future__ import annotations
 
 import base64
 import binascii
 import hashlib
+import json
+import re
+import secrets
+import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
+from Crypto.Hash import SHA256
 from Crypto.PublicKey import ECC
+from Crypto.Signature import DSS
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .device_enrollment import DeviceEnrollmentError
-from .models.device import DeviceOwnerKey
+from .models.device import DeviceCredential, DeviceOwnerKey, OwnerStepUpChallenge
 
 _OWNER_KEY_ALGORITHM = "ECDSA_P256_SHA256"
 _ALLOWED_P256_CURVES = frozenset({"NIST P-256", "P-256", "prime256v1", "secp256r1"})
+_PURPOSE_RE = re.compile(r"[A-Z0-9_]{1,64}\Z")
+_MAX_PAYLOAD_BYTES = 4096
+_MAX_TTL = timedelta(minutes=5)
+_MAX_SIGNATURE_B64_LENGTH = 256
+_MESSAGE_DOMAIN = "SIGNALAI_OWNER_STEP_UP_V1"
+
+
+class OwnerStepUpError(ValueError):
+    """Fail-closed owner-presence validation error with no oracle detail."""
 
 
 @dataclass(frozen=True, slots=True)
 class ValidatedOwnerPublicKey:
     spki_b64: str
     fingerprint_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class IssuedOwnerStepUpChallenge:
+    challenge_id: uuid.UUID
+    device_id: str
+    owner_key_fingerprint: str
+    purpose: str
+    payload_hash: str
+    message: str
+    expires_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class OwnerStepUpProofReceipt:
+    challenge_id: uuid.UUID
+    device_id: str
+    owner_key_fingerprint: str
+    purpose: str
+    payload_hash: str
+    verified_at: datetime
+
+
+def _utc(value: datetime) -> datetime:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise OwnerStepUpError("owner step-up proof is invalid")
+    return value.astimezone(UTC)
+
+
+def _now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _canonical_payload(payload: object) -> tuple[str, str]:
+    if not isinstance(payload, dict):
+        raise OwnerStepUpError("owner step-up proof is invalid")
+    try:
+        encoded = json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError, UnicodeError) as exc:
+        raise OwnerStepUpError("owner step-up proof is invalid") from exc
+    if len(encoded) > _MAX_PAYLOAD_BYTES:
+        raise OwnerStepUpError("owner step-up proof is invalid")
+    return encoded.decode("utf-8"), hashlib.sha256(encoded).hexdigest()
+
+
+def _iso_utc(value: datetime) -> str:
+    return _utc(value).isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+
+def _challenge_message(row: OwnerStepUpChallenge) -> str:
+    body = {
+        "challenge_id": str(row.id),
+        "device_id": row.device_id,
+        "expires_at": _iso_utc(row.expires_at),
+        "issued_at": _iso_utc(row.issued_at),
+        "nonce_hex": row.nonce_hex,
+        "payload_hash": row.payload_hash,
+        "purpose": row.purpose,
+    }
+    canonical = json.dumps(
+        body,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    )
+    return f"{_MESSAGE_DOMAIN}\n{canonical}"
 
 
 def validate_owner_public_key_spki_b64(value: object) -> tuple[str, str]:
@@ -99,8 +190,176 @@ def replace_owner_key_during_pairing(
     return key
 
 
+def issue_owner_step_up_challenge(
+    session: Session,
+    *,
+    credential_id: object,
+    purpose: object,
+    payload: object,
+    ttl: timedelta,
+    now: datetime | None = None,
+) -> IssuedOwnerStepUpChallenge:
+    """Persist a bounded single-use proof request for one active owner key."""
+    if not isinstance(purpose, str) or _PURPOSE_RE.fullmatch(purpose) is None:
+        raise OwnerStepUpError("owner step-up proof is invalid")
+    if not isinstance(ttl, timedelta) or ttl <= timedelta(0) or ttl > _MAX_TTL:
+        raise OwnerStepUpError("owner step-up proof is invalid")
+    _canonical, payload_hash = _canonical_payload(payload)
+    issued_at = _utc(now or _now())
+
+    credential = session.scalar(
+        select(DeviceCredential)
+        .where(
+            DeviceCredential.id == credential_id,
+            DeviceCredential.revoked_at.is_(None),
+        )
+        .with_for_update()
+    )
+    if credential is None:
+        raise OwnerStepUpError("owner step-up proof is invalid")
+    owner_key = session.scalar(
+        select(DeviceOwnerKey)
+        .where(
+            DeviceOwnerKey.device_id == credential.device_id,
+            DeviceOwnerKey.revoked_at.is_(None),
+        )
+        .with_for_update()
+    )
+    if owner_key is None or owner_key.algorithm != _OWNER_KEY_ALGORITHM:
+        raise OwnerStepUpError("owner step-up proof is invalid")
+    try:
+        _stored_spki, fingerprint = validate_owner_public_key_spki_b64(
+            owner_key.public_key_spki_b64
+        )
+    except DeviceEnrollmentError as exc:
+        raise OwnerStepUpError("owner step-up proof is invalid") from exc
+    if fingerprint != owner_key.public_key_sha256:
+        raise OwnerStepUpError("owner step-up proof is invalid")
+
+    row = OwnerStepUpChallenge(
+        device_id=credential.device_id,
+        owner_key_id=owner_key.id,
+        purpose=purpose,
+        payload_hash=payload_hash,
+        nonce_hex=secrets.token_hex(32),
+        issued_at=issued_at,
+        expires_at=issued_at + ttl,
+    )
+    session.add(row)
+    session.flush()
+    message = _challenge_message(row)
+    return IssuedOwnerStepUpChallenge(
+        challenge_id=row.id,
+        device_id=row.device_id,
+        owner_key_fingerprint=owner_key.public_key_sha256,
+        purpose=row.purpose,
+        payload_hash=row.payload_hash,
+        message=message,
+        expires_at=row.expires_at,
+    )
+
+
+def _decode_signature(value: object) -> bytes:
+    if not isinstance(value, str) or not 8 <= len(value) <= _MAX_SIGNATURE_B64_LENGTH:
+        raise OwnerStepUpError("owner step-up proof is invalid")
+    try:
+        decoded = base64.b64decode(value, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise OwnerStepUpError("owner step-up proof is invalid") from exc
+    if base64.b64encode(decoded).decode("ascii") != value or not 8 <= len(decoded) <= 128:
+        raise OwnerStepUpError("owner step-up proof is invalid")
+    return decoded
+
+
+def verify_owner_step_up_signature(
+    session: Session,
+    *,
+    credential_id: object,
+    challenge_id: object,
+    signature_b64: object,
+    now: datetime | None = None,
+) -> OwnerStepUpProofReceipt:
+    """Verify and consume one challenge, returning a non-authorizing fact."""
+    try:
+        challenge_uuid = (
+            challenge_id
+            if isinstance(challenge_id, uuid.UUID)
+            else uuid.UUID(str(challenge_id))
+        )
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise OwnerStepUpError("owner step-up proof is invalid") from exc
+    signature = _decode_signature(signature_b64)
+    verified_at = _utc(now or _now())
+
+    credential = session.scalar(
+        select(DeviceCredential).where(
+            DeviceCredential.id == credential_id,
+            DeviceCredential.revoked_at.is_(None),
+        )
+    )
+    if credential is None:
+        raise OwnerStepUpError("owner step-up proof is invalid")
+    row = session.scalar(
+        select(OwnerStepUpChallenge)
+        .where(OwnerStepUpChallenge.id == challenge_uuid)
+        .with_for_update()
+    )
+    if (
+        row is None
+        or row.device_id != credential.device_id
+        or row.consumed_at is not None
+        or verified_at < _utc(row.issued_at)
+        or verified_at >= _utc(row.expires_at)
+    ):
+        raise OwnerStepUpError("owner step-up proof is invalid")
+
+    owner_key = session.scalar(
+        select(DeviceOwnerKey).where(
+            DeviceOwnerKey.id == row.owner_key_id,
+            DeviceOwnerKey.device_id == row.device_id,
+            DeviceOwnerKey.revoked_at.is_(None),
+        )
+    )
+    if owner_key is None or owner_key.algorithm != _OWNER_KEY_ALGORITHM:
+        raise OwnerStepUpError("owner step-up proof is invalid")
+    try:
+        canonical_spki, fingerprint = validate_owner_public_key_spki_b64(
+            owner_key.public_key_spki_b64
+        )
+    except DeviceEnrollmentError as exc:
+        raise OwnerStepUpError("owner step-up proof is invalid") from exc
+    if fingerprint != owner_key.public_key_sha256:
+        raise OwnerStepUpError("owner step-up proof is invalid")
+
+    try:
+        public_key = ECC.import_key(base64.b64decode(canonical_spki, validate=True))
+        verifier = DSS.new(public_key, "fips-186-3", encoding="der")
+        verifier.verify(
+            SHA256.new(_challenge_message(row).encode("utf-8")),
+            signature,
+        )
+    except (ValueError, TypeError, IndexError, binascii.Error) as exc:
+        raise OwnerStepUpError("owner step-up proof is invalid") from exc
+
+    row.consumed_at = verified_at
+    session.flush()
+    return OwnerStepUpProofReceipt(
+        challenge_id=row.id,
+        device_id=row.device_id,
+        owner_key_fingerprint=owner_key.public_key_sha256,
+        purpose=row.purpose,
+        payload_hash=row.payload_hash,
+        verified_at=verified_at,
+    )
+
+
 __all__ = [
+    "IssuedOwnerStepUpChallenge",
+    "OwnerStepUpError",
+    "OwnerStepUpProofReceipt",
     "ValidatedOwnerPublicKey",
+    "issue_owner_step_up_challenge",
     "replace_owner_key_during_pairing",
     "validate_owner_public_key_spki_b64",
+    "verify_owner_step_up_signature",
 ]
