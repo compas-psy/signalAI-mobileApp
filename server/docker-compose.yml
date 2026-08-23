@@ -60,6 +60,9 @@ services:
       # fail closed when a dedicated key is missing.
       SIGNALAI_RISK_PREVIEW_SIGNING_KEY: ${SIGNALAI_RISK_PREVIEW_SIGNING_KEY:-}
       SIGNALAI_METRICS_TOKEN: ${SIGNALAI_METRICS_TOKEN:-}
+      # Lighter mainnet signing material has an isolated vault key. API needs
+      # it only for the future owner-step-up credential lifecycle; schedulers do not.
+      SIGNALAI_LIGHTER_LIVE_SECRETS_KEY: ${SIGNALAI_LIGHTER_LIVE_SECRETS_KEY:-}
       TELEGRAM_TOKEN: ${TELEGRAM_TOKEN:-}
       TELEGRAM_CHATID: ${TELEGRAM_CHATID:-}
       # api модель не опрашивает — он только показывает её состояние в
@@ -216,6 +219,7 @@ services:
     environment:
       SIGNALAI_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-signalai}
       SIGNALAI_SOURCE_SHA: ${SIGNALAI_SOURCE_SHA:-}
+      SIGNALAI_LIGHTER_LIVE_SECRETS_KEY: ${SIGNALAI_LIGHTER_LIVE_SECRETS_KEY:-}
       SIGNALAI_ROLE: execution
     command: ["python", "-m", "app.execution.worker"]
 
