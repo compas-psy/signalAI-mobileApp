@@ -1,9 +1,6 @@
 name: One-shot T-Invest RoundTrip probe
 
 on:
-  push:
-    branches:
-      - 'ops/tinvest-roundtrip-probe-f67'
   pull_request:
     branches:
       - 'claude/release-y40hk5'
@@ -13,8 +10,8 @@ permissions:
   issues: write
 
 concurrency:
-  group: signalai-tinvest-roundtrip-one-shot-probe
-  cancel-in-progress: false
+  group: signalai-tinvest-roundtrip-one-shot-probe-pr
+  cancel-in-progress: true
 
 jobs:
   probe:
