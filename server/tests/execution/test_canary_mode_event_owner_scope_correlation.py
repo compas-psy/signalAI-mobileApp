@@ -15,7 +15,7 @@ def test_correlation_rejects_mode_event_missing_full_owner_scope(session, instru
 
     snapshot, refs = _correlation_snapshot(session, instrument_id=instrument.instrument_id)
     _evidence(session, snapshot, refs)
-    _execution_chain(session, instrument, snapshot)
+    _execution_chain(session, instrument, snapshot, full_owner_scope=False)
 
     event = session.execute(
         select(ExecutionModeEvent).where(
@@ -23,9 +23,6 @@ def test_correlation_rejects_mode_event_missing_full_owner_scope(session, instru
             == snapshot.snapshot_hash
         )
     ).scalar_one()
-    # Existing fixture intentionally has only the legacy four-field binding.
-    # A completed forensic chain must require the full owner scope in the
-    # append-only event, not recover authority later from the mutable challenge.
     report = build_canary_correlation_report(
         session,
         snapshot_hash=snapshot.snapshot_hash,
