@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from ..models.canary_policy import CanaryPolicySnapshot
 from ..models.execution import ExecutionModeState
+from .canary_policy import verify_persisted_canary_snapshot
 from .canary_preflight import (
     CanaryPreflightError,
     CanaryRuntimeContext,
@@ -105,6 +106,38 @@ def _tuple_text(value: object) -> tuple[str, ...]:
     return tuple(value)
 
 
+def build_canary_mode_event_detail(snapshot: CanaryPolicySnapshot) -> dict[str, object]:
+    """Build the complete non-secret scope future activation must append immutably.
+
+    This only prepares audit detail; it does not create an event or authorization.
+    Integrity is rechecked first so a future step-up path cannot copy a malformed
+    privileged/manual row into an append-only mode event.
+    """
+
+    payload = verify_persisted_canary_snapshot(snapshot)
+    return {
+        "canary_policy_snapshot_hash": snapshot.snapshot_hash,
+        "correlation_id": snapshot.correlation_id,
+        "source_sha": snapshot.source_sha,
+        "engine_config_hash": snapshot.engine_config_hash,
+        "policy_version": payload["policy_version"],
+        "credential_generation_id": payload["credential_generation_id"],
+        "account_index": payload["account_index"],
+        "api_key_index": payload["api_key_index"],
+        "strategy_family": payload["strategy_family"],
+        "strategy_version": payload["strategy_version"],
+        "market_allowlist": list(payload["market_allowlist"]),
+        "instrument_allowlist": list(payload["instrument_allowlist"]),
+        "capital_amount": payload["capital_amount"],
+        "capital_currency": payload["capital_currency"],
+        "valuation_source": payload["valuation_source"],
+        "valuation_observed_at": payload["valuation_observed_at"],
+        "valuation_rule": payload["valuation_rule"],
+        "hard_caps": dict(payload["hard_caps"]),
+        "valid_until": payload["valid_until"],
+    }
+
+
 def build_canary_activation_readiness(
     db: Session,
     *,
@@ -171,4 +204,5 @@ __all__ = [
     "CanaryActivationReadiness",
     "CanaryActivationReadinessError",
     "build_canary_activation_readiness",
+    "build_canary_mode_event_detail",
 ]
