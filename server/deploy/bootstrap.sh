@@ -180,6 +180,8 @@ EOF
   ok "создан $ENV_FILE (0600, root)"
   ok "device token записан только как server runtime secret"
 fi
+bash "$APP_DIR/deploy/ensure_runtime_secrets.sh" "$ENV_FILE"
+ok "изолированный vault key Lighter live обеспечен без вывода значения"
 unset DEVICE_TOKEN
 
 # ── Firewall ──────────────────────────────────────────────────────────────
