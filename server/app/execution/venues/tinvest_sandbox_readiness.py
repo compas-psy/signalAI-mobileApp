@@ -7,7 +7,6 @@ import os
 import re
 from dataclasses import dataclass
 from datetime import datetime
-from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
@@ -19,6 +18,7 @@ from .tinvest import TInvestProviderError
 
 _SOURCE_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _SANDBOX_SLOT = "tinvest_sandbox_trade"
+_FILL_STATUS = "EXECUTION_REPORT_STATUS_FILL"
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,11 +93,13 @@ def record_tinvest_sandbox_roundtrip_proof(
     position_flat: bool,
 ) -> str:
     if (
-        buy_executed_lots <= 0
+        buy_status != _FILL_STATUS
+        or sell_status != _FILL_STATUS
+        or buy_executed_lots <= 0
         or sell_executed_lots != buy_executed_lots
         or not position_flat
     ):
-        raise ValueError("only a complete flat sandbox round trip may become readiness proof")
+        raise ValueError("only a complete provider-FILL flat sandbox round trip may become readiness proof")
 
     statement = (
         insert(TInvestSandboxRoundTripProof)
