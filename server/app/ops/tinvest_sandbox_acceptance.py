@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import sys
-from uuid import uuid4
 
 from ..db import session_scope
 from ..execution.venues.tinvest import TInvestProviderError
@@ -15,6 +14,8 @@ from ..execution.venues.tinvest_sandbox_readiness import (
 )
 from ..execution.venues.tinvest_sandbox_smoke import run_tinvest_sandbox_smoke
 
+_VPS_ACCEPTANCE_KEY = "vps-sandbox-roundtrip-v1"
+
 
 def _safe_failure(code: str, message: str) -> int:
     print(json.dumps({"ok": False, "code": code, "message": message}, ensure_ascii=False))
@@ -22,11 +23,10 @@ def _safe_failure(code: str, message: str) -> int:
 
 
 def main() -> int:
-    client_key = f"vps-roundtrip-{uuid4()}"
     try:
         with session_scope() as db:
             context = current_tinvest_sandbox_context(db)
-            diagnostic_key = scoped_sandbox_diagnostic_key(client_key, context)
+            diagnostic_key = scoped_sandbox_diagnostic_key(_VPS_ACCEPTANCE_KEY, context)
             result = run_tinvest_sandbox_smoke(db, diagnostic_key=diagnostic_key)
             if not result.round_trip_complete:
                 return _safe_failure(
