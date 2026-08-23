@@ -10,6 +10,32 @@ WORKDIR /srv
 
 RUN adduser --system --group --home /srv signalai
 
+# T-Invest API uses the Russian National CA chain.  Keep normal TLS
+# verification enabled and extend Debian's system trust store with the two
+# official Gosuslugi certificates.  Pin the downloaded bytes so a changed
+# upstream file fails the image build instead of silently changing trust.
+ARG RUSSIAN_TRUSTED_ROOT_CA_SHA256=936a43fea6e8e525bcc0f81acd9c3d21b4fc4b9b68acea7906d698005afc6504
+ARG RUSSIAN_TRUSTED_SUB_CA_SHA256=f0ae589f36774f29ef3648f7984b08d42fcce6f1ffeeb6236d773daeb2744ea6
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates curl; \
+    curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+      https://gu-st.ru/content/lending/russian_trusted_root_ca_pem.crt \
+      --output /tmp/russian_trusted_root_ca_pem.crt; \
+    curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+      https://gu-st.ru/content/lending/russian_trusted_sub_ca_pem.crt \
+      --output /tmp/russian_trusted_sub_ca_pem.crt; \
+    echo "$RUSSIAN_TRUSTED_ROOT_CA_SHA256  /tmp/russian_trusted_root_ca_pem.crt" | sha256sum -c -; \
+    echo "$RUSSIAN_TRUSTED_SUB_CA_SHA256  /tmp/russian_trusted_sub_ca_pem.crt" | sha256sum -c -; \
+    install -m 0644 /tmp/russian_trusted_root_ca_pem.crt \
+      /usr/local/share/ca-certificates/russian_trusted_root_ca.crt; \
+    install -m 0644 /tmp/russian_trusted_sub_ca_pem.crt \
+      /usr/local/share/ca-certificates/russian_trusted_sub_ca.crt; \
+    update-ca-certificates; \
+    rm -f /tmp/russian_trusted_root_ca_pem.crt /tmp/russian_trusted_sub_ca_pem.crt; \
+    apt-get purge -y --auto-remove curl; \
+    rm -rf /var/lib/apt/lists/*
+
 COPY pyproject.toml ./
 RUN pip install --no-cache-dir --upgrade pip \
  && pip install --no-cache-dir \
