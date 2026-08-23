@@ -21,10 +21,18 @@ from datetime import datetime
 
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from .db import database_url
 from .execution.kill_switch import execution_control_lock
+
+
+class IntegrationSecretStoreError(RuntimeError):
+    """Stable secret-free failure raised by the encrypted credential store."""
+
+
+_SECRET_STORE_ERROR = "integration secret store unavailable"
 
 
 @dataclass(frozen=True)
@@ -215,14 +223,27 @@ def _save_secret_unlocked(
         )
 
     payload = json.dumps(cleaned, ensure_ascii=False, sort_keys=True)
-    row = db.execute(text("""
-        INSERT INTO signalai_integration_secrets(slot, encrypted_payload, updated_at)
-        VALUES (:slot, pgp_sym_encrypt(:payload, :secret_key, 'cipher-algo=aes256'), clock_timestamp())
-        ON CONFLICT (slot) DO UPDATE SET
-            encrypted_payload = EXCLUDED.encrypted_payload,
-            updated_at = clock_timestamp()
-        RETURNING updated_at
-    """), {"slot": spec.slot, "payload": payload, "secret_key": _encryption_key(spec.slot)}).one()
+    secret_key = _encryption_key(spec.slot)
+    row = None
+    store_failed = False
+    try:
+        row = db.execute(text("""
+            INSERT INTO signalai_integration_secrets(slot, encrypted_payload, updated_at)
+            VALUES (:slot, pgp_sym_encrypt(:payload, :secret_key, 'cipher-algo=aes256'), clock_timestamp())
+            ON CONFLICT (slot) DO UPDATE SET
+                encrypted_payload = EXCLUDED.encrypted_payload,
+                updated_at = clock_timestamp()
+            RETURNING updated_at
+        """), {"slot": spec.slot, "payload": payload, "secret_key": secret_key}).one()
+    except SQLAlchemyError:
+        # Never let SQLAlchemy's StatementError carry bound secret parameters
+        # into an API traceback or log record. Raise only after leaving the
+        # exception handler so the sanitized exception has no secret-bearing
+        # __context__ chain either.
+        store_failed = True
+    if store_failed:
+        raise IntegrationSecretStoreError(_SECRET_STORE_ERROR)
+    assert row is not None
 
     if spec.slot == _LIGHTER_LIVE_TRADE_SLOT:
         # Lazy import keeps the generic vault independent from execution model
@@ -319,12 +340,35 @@ def configured_slots(db: Session) -> dict[str, datetime]:
 def load_secret(db: Session, slot: str) -> dict[str, str] | None:
     """Decrypt a credential for server workers only. Never exposed by HTTP."""
     ensure_store(db)
-    row = db.execute(text("""
-        SELECT pgp_sym_decrypt(encrypted_payload, :secret_key)
-        FROM signalai_integration_secrets
-        WHERE slot = :slot
-    """), {"slot": slot, "secret_key": _encryption_key(slot)}).first()
+    secret_key = _encryption_key(slot)
+    row = None
+    store_failed = False
+    try:
+        row = db.execute(text("""
+            SELECT pgp_sym_decrypt(encrypted_payload, :secret_key)
+            FROM signalai_integration_secrets
+            WHERE slot = :slot
+        """), {"slot": slot, "secret_key": secret_key}).first()
+    except SQLAlchemyError:
+        store_failed = True
+    if store_failed:
+        raise IntegrationSecretStoreError(_SECRET_STORE_ERROR)
     if row is None:
         return None
-    decoded = json.loads(row[0])
-    return {str(key): str(value) for key, value in decoded.items()}
+
+    parsed: dict[str, str] | None = None
+    decode_failed = False
+    try:
+        decoded = json.loads(row[0])
+        if not isinstance(decoded, dict):
+            raise ValueError("credential payload must be an object")
+        parsed = {str(key): str(value) for key, value in decoded.items()}
+    except (json.JSONDecodeError, TypeError, ValueError, AttributeError):
+        # JSONDecodeError retains its input document on the exception object.
+        # Convert malformed decrypted content to the same secret-free boundary,
+        # again raising only after leaving the handler to sever __context__.
+        decode_failed = True
+    if decode_failed:
+        raise IntegrationSecretStoreError(_SECRET_STORE_ERROR)
+    assert parsed is not None
+    return parsed
