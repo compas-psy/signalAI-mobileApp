@@ -36,6 +36,9 @@ class _Vault extends NativeBridge {
   Future<String?> appVersion() async => null;
 
   @override
+  Future<String?> ownerStepUpPublicKey() async => null;
+
+  @override
   Future<bool> putEngineDeviceToken(String value) async {
     token = value;
     return true;
@@ -50,6 +53,9 @@ class _Vault extends NativeBridge {
     token = null;
     return true;
   }
+
+  @override
+  Future<bool> deleteOwnerStepUpKey() async => true;
 }
 
 class _PairingApi implements DeviceEnrollmentApi {
@@ -80,6 +86,7 @@ class _PairingApi implements DeviceEnrollmentApi {
     required String deviceId,
     required Map<String, String> metadata,
     required String idempotencyKey,
+    String? ownerPublicKeySpkiB64,
   }) async {
     bootstrap = bootstrapToken;
     pairingSession = pairingSessionId;
@@ -130,6 +137,7 @@ class _InterruptedPairingApi implements DeviceEnrollmentApi {
     required String deviceId,
     required Map<String, String> metadata,
     required String idempotencyKey,
+    String? ownerPublicKeySpkiB64,
   }) async =>
       throw const DeviceEnrollmentException('Сеть прервала pairing.');
 
