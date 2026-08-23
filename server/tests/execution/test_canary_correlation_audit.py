@@ -146,12 +146,10 @@ def _set_canary(session) -> None:
 def _execution_chain(session, instrument, snapshot) -> None:
     _set_canary(session)
 
-    # Production mode events use the database clock.  The outer PostgreSQL test
+    # Production mode events use the database clock. The outer PostgreSQL test
     # transaction deliberately gives every server-default now() the same
     # transaction timestamp, so use that exact clock here instead of a later
-    # process wall clock.  This models a durable activation boundary without
-    # making a later intent appear to predate it merely because of test-fixture
-    # clock semantics.
+    # process wall clock.
     bound_event = ExecutionModeEvent(
         from_mode=ExecutionLifecycleMode.SANDBOX,
         to_mode=ExecutionLifecycleMode.CANARY,
@@ -174,9 +172,9 @@ def _execution_chain(session, instrument, snapshot) -> None:
             from_mode=ExecutionLifecycleMode.SANDBOX,
             target_mode=ExecutionLifecycleMode.CANARY,
             venue="LIGHTER",
-            account="42",
-            capital_rub=Decimal("10000"),
-            hard_caps_json={"max_order_notional": "2500"},
+            account=str(snapshot.account_index),
+            capital_rub=Decimal(str(snapshot.payload_json["capital_amount"])),
+            hard_caps_json=dict(snapshot.payload_json["hard_caps"]),
             blockers_json=[],
             config_hash=snapshot.engine_config_hash,
             status="APPLIED",
@@ -209,7 +207,7 @@ def _execution_chain(session, instrument, snapshot) -> None:
             risk_policy_snapshot_id=risk.id,
             risk_override_id=None,
             venue="LIGHTER",
-            account="42",
+            account=str(snapshot.account_index),
             planned_quantity=Decimal("1"),
             planned_entry_price=Decimal("100"),
             planned_stop_price=Decimal("95"),
