@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - 'ops/tinvest-roundtrip-probe-f67'
+  pull_request:
+    branches:
+      - 'claude/release-y40hk5'
 
 permissions:
   contents: read
