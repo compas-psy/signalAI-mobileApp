@@ -1,90 +1,77 @@
-"""Owner-only CLI for provider-confirmed T-Invest Sandbox acceptance.
-
-The command is intentionally narrow and secret-safe. It delegates all broker
-I/O to the fixed-host sandbox smoke service and exits successfully only when
-the provider confirms at least one executed lot. No token value or provider
-error text is printed.
-"""
+"""VPS-local operator command for provider-confirmed T-Invest Sandbox round trip."""
 
 from __future__ import annotations
 
-import argparse
 import json
-from collections.abc import Callable
+import sys
+from uuid import uuid4
 
 from ..db import session_scope
 from ..execution.venues.tinvest import TInvestProviderError
-from ..execution.venues.tinvest_sandbox_smoke import (
-    TInvestSandboxSmokeResult,
-    run_tinvest_sandbox_smoke,
+from ..execution.venues.tinvest_sandbox_readiness import (
+    current_tinvest_sandbox_context,
+    record_tinvest_sandbox_roundtrip_proof,
+    scoped_sandbox_diagnostic_key,
 )
-
-SmokeRunner = Callable[[str], TInvestSandboxSmokeResult]
-
-
-def _production_runner(diagnostic_key: str) -> TInvestSandboxSmokeResult:
-    with session_scope() as session:
-        return run_tinvest_sandbox_smoke(
-            session,
-            diagnostic_key=diagnostic_key,
-        )
+from ..execution.venues.tinvest_sandbox_smoke import run_tinvest_sandbox_smoke
 
 
-def _safe_payload(result: TInvestSandboxSmokeResult) -> dict[str, object]:
-    accepted = bool(result.filled and result.executed_lots > 0)
-    return {
-        "accepted": accepted,
-        "symbol": result.symbol,
-        "account_suffix": result.account_suffix,
-        "provider_order_id": result.provider_order_id,
-        "execution_status": result.execution_status,
-        "executed_lots": result.executed_lots,
-    }
-
-
-def run_acceptance(
-    *,
-    diagnostic_key: str,
-    smoke_runner: SmokeRunner = _production_runner,
-) -> int:
-    """Run one idempotent sandbox smoke and print only sanitized evidence."""
-
-    try:
-        result = smoke_runner(diagnostic_key)
-    except TInvestProviderError as exc:
-        print(
-            json.dumps(
-                {"accepted": False, "error_code": exc.code},
-                sort_keys=True,
-                separators=(",", ":"),
-            )
-        )
-        return 2
-    except Exception:
-        # Do not serialize arbitrary exception text: it may contain transport
-        # headers or other sensitive values from a future dependency.
-        print(
-            json.dumps(
-                {"accepted": False, "error_code": "INTERNAL_ERROR"},
-                sort_keys=True,
-                separators=(",", ":"),
-            )
-        )
-        return 3
-
-    payload = _safe_payload(result)
-    print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
-    return 0 if payload["accepted"] is True else 1
+def _safe_failure(code: str, message: str) -> int:
+    print(json.dumps({"ok": False, "code": code, "message": message}, ensure_ascii=False))
+    return 2
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Run provider-confirmed T-Invest Sandbox acceptance smoke."
+    client_key = f"vps-roundtrip-{uuid4()}"
+    try:
+        with session_scope() as db:
+            context = current_tinvest_sandbox_context(db)
+            diagnostic_key = scoped_sandbox_diagnostic_key(client_key, context)
+            result = run_tinvest_sandbox_smoke(db, diagnostic_key=diagnostic_key)
+            if not result.round_trip_complete:
+                return _safe_failure(
+                    "ROUND_TRIP_INCOMPLETE",
+                    "provider did not confirm BUY fill, SELL fill and flat position",
+                )
+            proof_id = record_tinvest_sandbox_roundtrip_proof(
+                db,
+                context=context,
+                symbol=result.symbol,
+                account_suffix=result.account_suffix,
+                buy_order_id=result.buy_provider_order_id,
+                buy_status=result.buy_execution_status,
+                buy_executed_lots=result.buy_executed_lots,
+                sell_order_id=result.sell_provider_order_id,
+                sell_status=result.sell_execution_status,
+                sell_executed_lots=result.sell_executed_lots,
+                position_flat=result.position_flat,
+            )
+    except TInvestProviderError as exc:
+        return _safe_failure(exc.code, exc.message)
+    except Exception:
+        return _safe_failure("UNEXPECTED", "sandbox acceptance failed")
+
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "round_trip_complete": True,
+                "symbol": result.symbol,
+                "account_suffix": result.account_suffix,
+                "buy_order_id": result.buy_provider_order_id,
+                "buy_status": result.buy_execution_status,
+                "buy_executed_lots": result.buy_executed_lots,
+                "sell_order_id": result.sell_provider_order_id,
+                "sell_status": result.sell_execution_status,
+                "sell_executed_lots": result.sell_executed_lots,
+                "position_flat": result.position_flat,
+                "readiness_proof_id": proof_id,
+            },
+            ensure_ascii=False,
+        )
     )
-    parser.add_argument("--diagnostic-key", required=True)
-    args = parser.parse_args()
-    return run_acceptance(diagnostic_key=args.diagnostic_key)
+    return 0
 
 
-if __name__ == "__main__":  # pragma: no cover - exercised by VPS workflow
-    raise SystemExit(main())
+if __name__ == "__main__":
+    sys.exit(main())
