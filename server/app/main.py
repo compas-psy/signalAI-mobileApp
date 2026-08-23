@@ -40,6 +40,7 @@ from .api.v1 import live_market as live_market_routes
 from .api.v1 import market as market_routes
 from .api.v1 import measurements as measurement_routes
 from .api.v1 import notifications as notification_routes
+from .api.v1 import owner_step_up as owner_step_up_routes
 from .api.v1 import paper as paper_routes
 from .api.v1 import portfolio as portfolio_routes
 from .api.v1 import portfolio_headlines as portfolio_headline_routes
@@ -84,6 +85,7 @@ app.add_middleware(ObservabilityMiddleware)
 
 v1 = APIRouter(prefix="/api/v1")
 v1.include_router(device_enrollment_routes.router)
+v1.include_router(owner_step_up_routes.router)
 v1.include_router(market_routes.router)
 v1.include_router(live_market_routes.router)
 v1.include_router(ideas_routes.router)
