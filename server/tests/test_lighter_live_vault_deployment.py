@@ -7,8 +7,13 @@ from pathlib import Path
 
 
 SERVER_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = SERVER_ROOT.parent
 HELPER = SERVER_ROOT / "deploy" / "ensure_runtime_secrets.sh"
 COMPOSE = SERVER_ROOT / "docker-compose.yml"
+BOOTSTRAP = SERVER_ROOT / "deploy" / "bootstrap.sh"
+DEPLOY_RELEASE = REPO_ROOT / ".github" / "workflows" / "deploy-release.yml"
+DEPLOY_SERVER = REPO_ROOT / ".github" / "workflows" / "deploy-server.yml"
+DEPLOY_SERVER_PACKAGE = REPO_ROOT / ".github" / "workflows" / "deploy-server-package.yml"
 
 
 def _env_value(path: Path, name: str) -> str:
@@ -55,3 +60,11 @@ def test_only_api_and_execution_receive_lighter_live_vault_key() -> None:
     compose = COMPOSE.read_text(encoding="utf-8")
     binding = "SIGNALAI_LIGHTER_LIVE_SECRETS_KEY: ${SIGNALAI_LIGHTER_LIVE_SECRETS_KEY:-}"
     assert compose.count(binding) == 2
+
+
+def test_every_production_server_deploy_path_ensures_dedicated_live_vault_key() -> None:
+    helper_name = "ensure_runtime_secrets.sh"
+    assert helper_name in BOOTSTRAP.read_text(encoding="utf-8")
+    assert helper_name in DEPLOY_RELEASE.read_text(encoding="utf-8")
+    assert helper_name in DEPLOY_SERVER.read_text(encoding="utf-8")
+    assert helper_name in DEPLOY_SERVER_PACKAGE.read_text(encoding="utf-8")
