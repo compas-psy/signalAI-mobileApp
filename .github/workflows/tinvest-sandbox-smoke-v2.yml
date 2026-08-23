@@ -1,0 +1,122 @@
+name: Spike T-Invest sandbox trade v2
+
+on:
+  pull_request:
+    branches:
+      - claude/release-y40hk5
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare pinned SSH
+        env:
+          KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          HOST_KEY_SHA256: ${{ secrets.VPS_SSH_HOST_KEY_SHA256 || 'SHA256:cUfeWKyHoFIhKsV17Bpk076calxUaxd90XhuETb4vng' }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          bash .github/scripts/prepare_known_host.sh "$HOST" "$HOST_KEY_SHA256"
+      - name: Execute provider-confirmed sandbox BUY
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          USER_NAME: ${{ secrets.VPS_USER || 'root' }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$USER_NAME@$HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          umask 077
+          ENV_FILE=/etc/signalai/.env
+          ROOT=https://sandbox-invest-public-api.tbank.ru/rest
+          NS=tinkoff.public.invest.api.contract.v1
+          SUDO=''
+          [ "$(id -u)" -eq 0 ] || SUDO=sudo
+          get_env() { $SUDO awk -F= -v k="$1" '$1==k{sub(/^[^=]*=/,"");print;exit}' "$ENV_FILE"; }
+
+          token="$(get_env TINVEST_SANDBOX_TOKEN)"
+          token_source=sandbox
+          if [ -z "$token" ]; then
+            token="$(get_env TINVEST_TRADE_EXEC_TOKEN)"
+            token_source=server_trade_exec_to_sandbox_only
+          fi
+          if [ -z "$token" ]; then
+            token='TBankSandboxToken'
+            token_source=public_sandbox_probe
+          fi
+
+          tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"; unset token' EXIT
+          body="$tmp/body"; hdr="$tmp/hdr"
+          api() {
+            svc="$1"; meth="$2"; payload="$3"; :>"$body"; :>"$hdr"
+            code="$(curl -sS --connect-timeout 10 --max-time 25 -D "$hdr" -o "$body" -w '%{http_code}' \
+              -H "Authorization: Bearer $token" -H 'Content-Type: application/json' --data "$payload" \
+              "$ROOT/$NS.$svc/$meth" || true)"
+            tracking="$(awk 'BEGIN{IGNORECASE=1}/^x-tracking-id:/{gsub(/\r/,"",$2);print $2;exit}' "$hdr")"
+            if ! printf '%s' "$code" | grep -qE '^2[0-9][0-9]$'; then
+              pcode="$(jq -r '.code // .status // "unknown"' "$body" 2>/dev/null || echo unknown)"
+              pmsg="$(jq -r '.message // .description // "request failed"' "$body" 2>/dev/null | head -c 180 || true)"
+              echo "TINVEST_SANDBOX_PROVIDER_ERROR token_source=$token_source svc=$svc method=$meth http=$code code=$pcode tracking=${tracking:-none} message=$pmsg" >&2
+              exit 4
+            fi
+          }
+
+          egress="$(curl -sS --max-time 8 https://api.ipify.org 2>/dev/null || echo unknown)"
+          echo "TINVEST_SANDBOX_VPS_EGRESS=$egress token_source=$token_source"
+
+          api SandboxService GetSandboxAccounts '{}'
+          account="$(jq -r '.accounts[]? | select((.status|tostring|endswith("CLOSED")|not)) | .id' "$body" | head -1)"
+          if [ -z "$account" ]; then
+            api SandboxService OpenSandboxAccount '{"name":"SignalAI thin-client smoke"}'
+            account="$(jq -r '.accountId // empty' "$body")"
+          fi
+          [ -n "$account" ] || { echo 'TINVEST_SANDBOX_BLOCKED:no account'; exit 5; }
+
+          api SandboxService SandboxPayIn "$(jq -nc --arg a "$account" '{accountId:$a,amount:{currency:"rub",units:"100000",nano:0}}')"
+
+          api InstrumentsService ShareBy '{"idType":"INSTRUMENT_ID_TYPE_TICKER","classCode":"TQBR","id":"SBER"}'
+          uid="$(jq -r '.instrument.uid // empty' "$body")"
+          [ -n "$uid" ] || { echo 'TINVEST_SANDBOX_BLOCKED:no SBER uid'; exit 6; }
+
+          api MarketDataService GetTradingStatus "$(jq -nc --arg id "$uid" '{instrumentId:$id}')"
+          api_trade="$(jq -r '.apiTradeAvailableFlag // false' "$body")"
+          market_ok="$(jq -r '.marketOrderAvailableFlag // false' "$body")"
+          limit_ok="$(jq -r '.limitOrderAvailableFlag // false' "$body")"
+          [ "$api_trade" = true ] || { echo 'TINVEST_SANDBOX_BLOCKED:SBER api trade unavailable now'; exit 7; }
+
+          rid="$(cat /proc/sys/kernel/random/uuid)"
+          if [ "$market_ok" = true ]; then
+            kind=MARKET
+            payload="$(jq -nc --arg a "$account" --arg id "$uid" --arg r "$rid" '{accountId:$a,instrumentId:$id,quantity:"1",direction:"ORDER_DIRECTION_BUY",orderType:"ORDER_TYPE_MARKET",orderId:$r,priceType:"PRICE_TYPE_CURRENCY"}')"
+          elif [ "$limit_ok" = true ]; then
+            api MarketDataService GetOrderBook "$(jq -nc --arg id "$uid" '{instrumentId:$id,depth:1}')"
+            ask="$(jq -c '.asks[0].price // empty' "$body")"
+            [ -n "$ask" ] || { echo 'TINVEST_SANDBOX_BLOCKED:no ask'; exit 8; }
+            kind=LIMIT_AT_ASK
+            payload="$(jq -nc --arg a "$account" --arg id "$uid" --arg r "$rid" --argjson p "$ask" '{accountId:$a,instrumentId:$id,quantity:"1",price:$p,direction:"ORDER_DIRECTION_BUY",orderType:"ORDER_TYPE_LIMIT",orderId:$r,timeInForce:"TIME_IN_FORCE_DAY",priceType:"PRICE_TYPE_CURRENCY"}')"
+          else
+            echo 'TINVEST_SANDBOX_BLOCKED:no supported order type'; exit 9
+          fi
+
+          api SandboxService PostSandboxOrder "$payload"
+          oid="$(jq -r '.orderId // empty' "$body")"
+          executed="$(jq -r '.lotsExecuted // "0"' "$body")"
+          status="$(jq -r '.executionReportStatus // empty' "$body")"
+          if [ -n "$oid" ] && [ "$executed" = 0 ]; then
+            sleep 2
+            api SandboxService GetSandboxOrderState "$(jq -nc --arg a "$account" --arg o "$oid" '{accountId:$a,orderId:$o,orderIdType:"ORDER_ID_TYPE_EXCHANGE",priceType:"PRICE_TYPE_CURRENCY"}')"
+            executed="$(jq -r '.lotsExecuted // "0"' "$body")"
+            status="$(jq -r '.executionReportStatus // empty' "$body")"
+          fi
+          [ "$executed" != 0 ] || { echo "TINVEST_SANDBOX_NOT_FILLED order_id=${oid:-none} kind=$kind status=$status tracking=${tracking:-none}"; exit 10; }
+          echo "TINVEST_SANDBOX_TRADE_OK symbol=SBER side=BUY lots=1 kind=$kind order_id=$oid status=$status executed=$executed tracking=${tracking:-none} account_suffix=${account: -6}"
+          REMOTE
+      - name: Remove SSH key
+        if: always()
+        run: shred -u ~/.ssh/id_deploy 2>/dev/null || rm -f ~/.ssh/id_deploy
