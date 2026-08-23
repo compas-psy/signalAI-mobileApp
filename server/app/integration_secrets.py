@@ -355,5 +355,20 @@ def load_secret(db: Session, slot: str) -> dict[str, str] | None:
         raise IntegrationSecretStoreError(_SECRET_STORE_ERROR)
     if row is None:
         return None
-    decoded = json.loads(row[0])
-    return {str(key): str(value) for key, value in decoded.items()}
+
+    parsed: dict[str, str] | None = None
+    decode_failed = False
+    try:
+        decoded = json.loads(row[0])
+        if not isinstance(decoded, dict):
+            raise ValueError("credential payload must be an object")
+        parsed = {str(key): str(value) for key, value in decoded.items()}
+    except (json.JSONDecodeError, TypeError, ValueError, AttributeError):
+        # JSONDecodeError retains its input document on the exception object.
+        # Convert malformed decrypted content to the same secret-free boundary,
+        # again raising only after leaving the handler to sever __context__.
+        decode_failed = True
+    if decode_failed:
+        raise IntegrationSecretStoreError(_SECRET_STORE_ERROR)
+    assert parsed is not None
+    return parsed
