@@ -9,6 +9,43 @@ import '../state/navigation.dart';
 import 'app_lock_gate.dart';
 import 'widgets/execution_mode_banner.dart';
 
+/// Places the server-mode banner below the system status area and consumes the
+/// top inset exactly once before handing the remaining viewport to AppShell.
+///
+/// AppShell already owns its own SafeArea. Without removeTop, wrapping the
+/// banner in SafeArea would fix the overlap but add the same top inset again to
+/// the body; without the banner SafeArea, the banner itself sits under Samsung's
+/// status icons. Keeping this layout explicit makes both contracts testable.
+class ExecutionModeInsetLayout extends StatelessWidget {
+  const ExecutionModeInsetLayout({
+    super.key,
+    required this.banner,
+    required this.child,
+  });
+
+  final Widget banner;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => Column(
+        children: [
+          SafeArea(
+            left: false,
+            right: false,
+            bottom: false,
+            child: banner,
+          ),
+          Expanded(
+            child: MediaQuery.removePadding(
+              context: context,
+              removeTop: true,
+              child: child,
+            ),
+          ),
+        ],
+      );
+}
+
 /// Thin-client shell for the server-owned execution lifecycle mode.
 ///
 /// It deliberately waits until AppController finishes restoring the engine
@@ -69,17 +106,15 @@ class _ExecutionModeShellState extends State<ExecutionModeShell> {
       final mode = _modeController!;
       content = ExecutionModeScope(
         controller: mode,
-        child: Column(
-          children: [
-            ExecutionModeBanner(
-              controller: mode,
-              onManage: () {
-                app.goSection(AppSection.settings);
-                app.goPill(0);
-              },
-            ),
-            Expanded(child: widget.child),
-          ],
+        child: ExecutionModeInsetLayout(
+          banner: ExecutionModeBanner(
+            controller: mode,
+            onManage: () {
+              app.goSection(AppSection.settings);
+              app.goPill(0);
+            },
+          ),
+          child: widget.child,
         ),
       );
     }
