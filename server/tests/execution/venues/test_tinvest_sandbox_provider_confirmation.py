@@ -5,6 +5,7 @@ from collections import defaultdict
 from app.execution.venues.tinvest import TInvestProviderError
 from app.execution.venues.tinvest_sandbox_smoke import (
     _account_name,
+    _result,
     run_tinvest_sandbox_smoke,
     sandbox_smoke_request_id,
 )
@@ -86,3 +87,27 @@ def test_post_order_fill_without_get_order_state_confirmation_is_not_accepted(se
     assert result.sell_executed_lots == 0
     assert transport.counts[("SandboxService", "PostSandboxOrder")] == 1
     assert transport.counts[("SandboxService", "GetSandboxPositions")] == 0
+
+
+def test_non_fill_terminal_status_cannot_become_round_trip_even_with_lots_and_flat_position():
+    result = _result(
+        account_id="sandbox-account-123456",
+        symbol="LQDT",
+        buy_state={
+            "orderId": "buy-safe",
+            "ticker": "LQDT",
+            "executionReportStatus": "EXECUTION_REPORT_STATUS_CANCELLED",
+            "lotsExecuted": "1",
+        },
+        sell_state={
+            "orderId": "sell-safe",
+            "ticker": "LQDT",
+            "executionReportStatus": "EXECUTION_REPORT_STATUS_FILL",
+            "lotsExecuted": "1",
+        },
+        buy_request_id="buy-safe",
+        sell_request_id="sell-safe",
+        position_flat=True,
+    )
+
+    assert result.round_trip_complete is False
