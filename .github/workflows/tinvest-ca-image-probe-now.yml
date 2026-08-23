@@ -25,7 +25,7 @@ jobs:
         run: docker build --pull --tag signalai-tinvest-ca-probe ./server
       - name: Verify strict TLS from built image
         run: |
-          docker run --rm --entrypoint python signalai-tinvest-ca-probe - <<'PY'
+          docker run --rm -i --entrypoint python signalai-tinvest-ca-probe - <<'PY'
           import json
           import socket
           import ssl
