@@ -70,14 +70,16 @@ class HttpDeviceEnrollmentApi implements DeviceEnrollmentApi {
   }) async {
     final client = ApiClient(baseUrl: baseUrl, deviceToken: bootstrapToken);
     try {
+      final requestBody = <String, dynamic>{
+        'device_id': deviceId,
+        'metadata': metadata,
+      };
+      if (ownerPublicKeySpkiB64 != null) {
+        requestBody['owner_public_key_spki_b64'] = ownerPublicKeySpkiB64;
+      }
       final body = await client.postForPairing(
         '/api/v1/device-enrollment/pair',
-        body: {
-          'device_id': deviceId,
-          'metadata': metadata,
-          if (ownerPublicKeySpkiB64 != null)
-            'owner_public_key_spki_b64': ownerPublicKeySpkiB64,
-        },
+        body: requestBody,
         idempotencyKey: idempotencyKey,
         pairingSessionId: pairingSessionId,
       );
@@ -247,8 +249,6 @@ Future<DeviceEnrollmentReceipt> pairAndStoreEngineDevice(
     );
   }
 
-  // Do not remove the durable request record before the token reached the
-  // Keystore.  A crash before this point is fail-closed rather than a replay.
   await store.writeDurably('engine', {
     'base_url': baseUrl,
     'device_id': deviceId,
@@ -257,10 +257,6 @@ Future<DeviceEnrollmentReceipt> pairAndStoreEngineDevice(
   return receipt;
 }
 
-/// Rotate an active bearer without ever storing the replacement outside the
-/// Android Keystore.  A transport failure is fail-closed: the old local token
-/// remains, even though the server may already have revoked it, and the owner
-/// must recover through another active device rather than guess a bearer.
 Future<DeviceEnrollmentReceipt> rotateAndStoreEngineDevice(
   LocalStore store,
   NativeBridge bridge, {
