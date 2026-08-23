@@ -1,0 +1,42 @@
+name: One-shot release state probe
+
+on:
+  pull_request:
+    branches:
+      - 'claude/release-y40hk5'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Print recent workflow state for exact release SHA
+        uses: actions/github-script@v7
+        env:
+          TARGET_SHA: 0ef78e4a5542fcea10e0bbf38e550ce5758b7860
+        with:
+          script: |
+            const target = process.env.TARGET_SHA;
+            const {data} = await github.rest.actions.listWorkflowRunsForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              per_page: 100,
+            });
+            const rows = data.workflow_runs
+              .filter(r => r.head_sha === target || r.created_at >= '2026-08-23T17:25:00Z')
+              .slice(0, 30)
+              .map(r => ({
+                id: r.id,
+                name: r.name,
+                event: r.event,
+                status: r.status,
+                conclusion: r.conclusion,
+                head_sha: r.head_sha,
+                run_number: r.run_number,
+                created_at: r.created_at,
+                updated_at: r.updated_at,
+              }));
+            console.log(JSON.stringify(rows, null, 2));
