@@ -1,7 +1,7 @@
 """P0 production scheduler hardening installed by package import.
 
-Keeps the tested generic Scheduler intact while replacing/adding runtime jobs:
-- scan wake-up is keyed by FORTS/crypto closed-bar watermarks;
+Keeps the tested generic Scheduler intact while adding runtime jobs:
+- canonical runner scan owns FORTS/crypto closed-bar wake-up;
 - Shadow candidate measurement has its own closed-bar watermark and never calls
   the owner scan/lifecycle path;
 - Paper A/B consumes immutable Shadow facts and writes only its isolated
@@ -15,7 +15,6 @@ import os
 from datetime import timedelta
 
 from ..capital.runtime import refresh as refresh_capital
-from ..pipeline import scan as scan_module
 from . import runner
 from .lanes import apply_scheduler_lane, parse_scheduler_lane
 from .market_watermark import changed_lanes, snapshot
@@ -30,44 +29,6 @@ def _minutes_from_env(name: str, default: int) -> timedelta:
     except ValueError:
         value = default
     return timedelta(minutes=max(1, value))
-
-
-def _replace_scan_job(scheduler) -> None:
-    previous: dict = {}
-
-    def lane_safe_scan(session) -> str:
-        nonlocal previous
-        current = snapshot(session)
-        if not current:
-            return "закрытых H1 FORTS/crypto нет — сканировать нечего"
-        changed = changed_lanes(previous, current)
-        if previous and not changed:
-            detail = ", ".join(
-                f"{lane}={stamp.isoformat()}#{count}"
-                for lane, (stamp, count) in sorted(current.items())
-            )
-            return f"новых баров нет по контурам ({detail}) — скан пропущен"
-
-        # Resolve the scan function at execution time. Scheduler bootstrap
-        # installs the configured-owner-equity/risk runtime *after* this
-        # package is imported; capturing scan() here would silently bypass
-        # that safety wrapper and restore the old 100k fallback.
-        result = scan_module.scan(session)
-        # Advance only after a successful scan. If scan raises, Scheduler
-        # rolls the DB transaction back and the same market state is retried.
-        previous = dict(current)
-        lanes = changed or tuple(sorted(current))
-        return (
-            f"контуры {','.join(lanes)}; просмотрено {result.scanned}, "
-            f"идей {result.produced}, пропущено {len(result.skipped)}, "
-            f"отказов {len(result.rejections)}"
-        )
-
-    for job in scheduler.jobs:
-        if job.name == "scan":
-            job.run = lane_safe_scan
-            return
-    raise RuntimeError("default scheduler has no scan job")
 
 
 def _add_shadow_job(scheduler, *, every: timedelta, shadow_runner=None) -> None:
@@ -187,7 +148,9 @@ def build_default_scheduler(*args, **kwargs):
     paper_ab_runner = kwargs.pop("paper_ab_runner", None)
 
     scheduler = _ORIGINAL_BUILD(*args, **kwargs)
-    _replace_scan_job(scheduler)
+    # Scan wake-up stays in runner.py.  Do not replace that job here: a second
+    # implementation previously created two sources of truth and could bypass
+    # the canonical economic-event calendar and future scheduler safeguards.
     _add_shadow_job(
         scheduler,
         every=shadow_every,
