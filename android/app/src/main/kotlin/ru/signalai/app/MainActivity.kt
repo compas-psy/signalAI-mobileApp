@@ -15,6 +15,7 @@ class MainActivity : FlutterActivity() {
 
     private val shared by lazy { NativeChannel(applicationContext) }
     private val biometrics by lazy { Biometrics(this) }
+    private val ownerStepUpSigner by lazy { OwnerStepUpSigner(this) }
 
     private var pendingPayload: String? = null
     private var exactPromptLaunched = false
@@ -150,6 +151,22 @@ class MainActivity : FlutterActivity() {
                         pendingPayload = null
                         result.success(payload ?: "")
                     }
+
+                    "ownerStepUpPublicKey" ->
+                        result.success(ownerStepUpSigner.ensurePublicKeySpkiB64())
+
+                    "ownerStepUpSign" -> {
+                        val message = call.argument<String>("message")
+                        if (message.isNullOrEmpty()) {
+                            result.error("args", "owner step-up message is required", null)
+                        } else {
+                            ownerStepUpSigner.signMessage(message) { signature ->
+                                result.success(signature)
+                            }
+                        }
+                    }
+
+                    "ownerStepUpDelete" -> result.success(ownerStepUpSigner.deleteKey())
 
                     "biometricsAvailable" -> result.success(biometrics.isAvailable())
                     "confirmMethod" -> result.success(biometrics.method())
