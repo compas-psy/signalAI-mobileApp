@@ -1,0 +1,35 @@
+name: One-shot Russian CA fingerprint probe
+
+on:
+  pull_request:
+    branches:
+      - 'claude/release-y40hk5'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: signalai-russian-ca-fingerprint-probe
+  cancel-in-progress: true
+
+jobs:
+  fingerprint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch official CA files and print non-secret fingerprints
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --location \
+            https://gu-st.ru/content/lending/russian_trusted_root_ca_pem.crt \
+            --output /tmp/root.crt
+          curl --fail --silent --show-error --location \
+            https://gu-st.ru/content/lending/russian_trusted_sub_ca_pem.crt \
+            --output /tmp/sub.crt
+          echo 'ROOT_SHA256='
+          sha256sum /tmp/root.crt
+          echo 'ROOT_SUBJECT_ISSUER='
+          openssl x509 -in /tmp/root.crt -noout -subject -issuer -fingerprint -sha256
+          echo 'SUB_SHA256='
+          sha256sum /tmp/sub.crt
+          echo 'SUB_SUBJECT_ISSUER='
+          openssl x509 -in /tmp/sub.crt -noout -subject -issuer -fingerprint -sha256
