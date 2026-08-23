@@ -7,7 +7,7 @@ from app.config import get_config
 from app.execution.enums import ExecutionLifecycleMode
 from app.execution.mode import ModeChangeAuthorization, change_execution_mode, get_execution_mode
 from app.integration_secrets import BY_SLOT, save_secret
-from app.models import ExecutionModeActivationRequest
+from app.models import ExecutionModeActivationRequest, ExecutionModeState
 
 
 def _set_sandbox(session) -> None:
@@ -184,3 +184,28 @@ def test_readiness_rejects_malformed_or_unknown_snapshot_without_mutation(sessio
 
     assert session.query(ExecutionModeActivationRequest).count() == 0
     assert get_execution_mode(session).mode is ExecutionLifecycleMode.SANDBOX
+
+
+def test_readiness_does_not_materialize_execution_mode_singleton_on_read(session) -> None:
+    from app.execution.canary_activation import build_canary_activation_readiness
+    from app.execution.canary_preflight import CanaryRuntimeContext
+
+    assert session.get(ExecutionModeState, 1) is None
+    snapshot = _snapshot(session)
+    assert session.get(ExecutionModeState, 1) is None
+
+    result = build_canary_activation_readiness(
+        session,
+        snapshot_hash=snapshot.snapshot_hash,
+        context_provider=lambda: CanaryRuntimeContext(
+            source_sha=snapshot.source_sha,
+            config_hash=snapshot.engine_config_hash,
+            paper_only=False,
+        ),
+    )
+
+    assert result.from_mode is ExecutionLifecycleMode.PAPER
+    assert "EXECUTION_MODE_NOT_SANDBOX" in result.blockers
+    assert result.challenge_issuable is False
+    assert session.get(ExecutionModeState, 1) is None
+    assert session.query(ExecutionModeActivationRequest).count() == 0
