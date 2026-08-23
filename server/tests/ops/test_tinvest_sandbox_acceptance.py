@@ -5,49 +5,77 @@ import json
 from app.execution.venues.tinvest_sandbox_smoke import TInvestSandboxSmokeResult
 
 
-def _result(*, filled: bool, executed_lots: int) -> TInvestSandboxSmokeResult:
+def _result(
+    *,
+    buy_lots: int,
+    sell_lots: int,
+    flat: bool,
+    buy_status: str = "EXECUTION_REPORT_STATUS_FILL",
+    sell_status: str = "EXECUTION_REPORT_STATUS_FILL",
+) -> TInvestSandboxSmokeResult:
+    complete = (
+        buy_lots > 0
+        and sell_lots == buy_lots
+        and flat
+        and buy_status == "EXECUTION_REPORT_STATUS_FILL"
+        and sell_status == "EXECUTION_REPORT_STATUS_FILL"
+    )
     return TInvestSandboxSmokeResult(
-        filled=filled,
+        round_trip_complete=complete,
         symbol="SBER",
         account_suffix="123456",
-        provider_order_id="provider-order-1",
-        execution_status="EXECUTION_REPORT_STATUS_FILL" if filled else "NEW",
-        executed_lots=executed_lots,
+        buy_provider_order_id="provider-buy-1",
+        buy_execution_status=buy_status,
+        buy_executed_lots=buy_lots,
+        sell_provider_order_id="provider-sell-1",
+        sell_execution_status=sell_status,
+        sell_executed_lots=sell_lots,
+        position_flat=flat,
     )
 
 
-def test_acceptance_exit_zero_only_for_provider_confirmed_fill(capsys):
+def test_acceptance_exit_zero_only_for_provider_confirmed_round_trip(capsys):
     from app.ops.tinvest_sandbox_acceptance import run_acceptance
 
     exit_code = run_acceptance(
         diagnostic_key="signalai-acceptance-123456",
-        smoke_runner=lambda _key: _result(filled=True, executed_lots=1),
+        smoke_runner=lambda _key: _result(buy_lots=1, sell_lots=1, flat=True),
     )
 
     assert exit_code == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload == {
         "accepted": True,
+        "round_trip_complete": True,
         "symbol": "SBER",
         "account_suffix": "123456",
-        "provider_order_id": "provider-order-1",
-        "execution_status": "EXECUTION_REPORT_STATUS_FILL",
-        "executed_lots": 1,
+        "buy_order_id": "provider-buy-1",
+        "buy_status": "EXECUTION_REPORT_STATUS_FILL",
+        "buy_executed_lots": 1,
+        "sell_order_id": "provider-sell-1",
+        "sell_status": "EXECUTION_REPORT_STATUS_FILL",
+        "sell_executed_lots": 1,
+        "position_flat": True,
     }
 
 
-def test_acceptance_rejects_zero_fill_even_if_provider_returned_order(capsys):
+def test_acceptance_rejects_incomplete_sell_or_residual_position(capsys):
     from app.ops.tinvest_sandbox_acceptance import run_acceptance
 
     exit_code = run_acceptance(
         diagnostic_key="signalai-acceptance-123456",
-        smoke_runner=lambda _key: _result(filled=False, executed_lots=0),
+        smoke_runner=lambda _key: _result(buy_lots=1, sell_lots=0, flat=False),
     )
 
     assert exit_code != 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload["accepted"] is False
-    assert payload["executed_lots"] == 0
+    assert payload == {
+        "accepted": False,
+        "error_code": "ROUND_TRIP_INCOMPLETE",
+        "buy_executed_lots": 1,
+        "sell_executed_lots": 0,
+        "position_flat": False,
+    }
 
 
 def test_acceptance_sanitizes_provider_failure(capsys):
