@@ -1,0 +1,122 @@
+name: One-shot T-Invest network probe
+
+on:
+  pull_request:
+    branches:
+      - 'claude/release-y40hk5'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: signalai-tinvest-network-probe-pr
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    name: Probe T-Invest network from deployed API container
+    runs-on: ubuntu-latest
+    env:
+      SOURCE_SHA: f67e17469594a3fe83e11318aa290c524ff9d182
+    steps:
+      - name: Check out exact released source
+        uses: actions/checkout@v4
+        with:
+          ref: f67e17469594a3fe83e11318aa290c524ff9d182
+          fetch-depth: 1
+
+      - name: Prepare pinned SSH
+        env:
+          KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          HOST_KEY_SHA256: ${{ secrets.VPS_SSH_HOST_KEY_SHA256 || 'SHA256:cUfeWKyHoFIhKsV17Bpk076calxUaxd90XhuETb4vng' }}
+        run: |
+          set -euo pipefail
+          [ -n "$HOST" ] && [ -n "$KEY" ] && [ -n "$HOST_KEY_SHA256" ]
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          bash .github/scripts/prepare_known_host.sh "$HOST" "$HOST_KEY_SHA256"
+
+      - name: Probe from deployed API container
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          USER_NAME: ${{ secrets.VPS_USER || 'root' }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/id_deploy -o BatchMode=yes \
+            "$USER_NAME@$HOST" \
+            "SIGNALAI_SOURCE_SHA=$SOURCE_SHA bash -s" <<'REMOTE'
+          set -euo pipefail
+          SOURCE_SHA="${SIGNALAI_SOURCE_SHA:?source SHA required}"
+          DIR="$HOME/signalai"
+          ENV_FILE='/etc/signalai/.env'
+          SUDO=''
+          [ "$(id -u)" -eq 0 ] || SUDO='sudo'
+
+          [ -f "$DIR/.signalai-source-sha" ] || { echo 'DEPLOY_ATTESTATION=missing'; exit 2; }
+          DEPLOYED_SHA="$(tr -d '\r\n' < "$DIR/.signalai-source-sha")"
+          [ "$DEPLOYED_SHA" = "$SOURCE_SHA" ] || { echo 'DEPLOY_SHA_MATCH=false'; exit 2; }
+          echo 'DEPLOY_SHA_MATCH=true'
+
+          cd "$DIR/server"
+          $SUDO docker compose --env-file "$ENV_FILE" exec -T api python - <<'PY'
+          import json
+          import socket
+          import ssl
+          import urllib.error
+          import urllib.request
+
+          host = 'sandbox-invest-public-api.tbank.ru'
+          url = 'https://sandbox-invest-public-api.tbank.ru/rest/tinkoff.public.invest.api.contract.v1.SandboxService/GetSandboxAccounts'
+          result = {
+              'dns_ok': False,
+              'tcp_443_ok': False,
+              'tls_ok': False,
+              'http_status': None,
+              'urllib_error': None,
+          }
+
+          try:
+              infos = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
+              result['dns_ok'] = bool(infos)
+          except Exception as exc:
+              result['dns_error_type'] = type(exc).__name__
+              print(json.dumps(result, separators=(',', ':')))
+              raise SystemExit(0)
+
+          try:
+              raw = socket.create_connection((host, 443), timeout=7)
+              result['tcp_443_ok'] = True
+              raw.close()
+          except Exception as exc:
+              result['tcp_error_type'] = type(exc).__name__
+
+          try:
+              ctx = ssl.create_default_context()
+              with socket.create_connection((host, 443), timeout=7) as raw:
+                  with ctx.wrap_socket(raw, server_hostname=host) as tls:
+                      result['tls_ok'] = True
+                      result['tls_version'] = tls.version()
+          except Exception as exc:
+              result['tls_error_type'] = type(exc).__name__
+
+          request = urllib.request.Request(
+              url,
+              data=b'{}',
+              headers={'Content-Type': 'application/json', 'Accept': 'application/json'},
+              method='POST',
+          )
+          try:
+              with urllib.request.urlopen(request, timeout=10) as response:
+                  result['http_status'] = int(response.status)
+          except urllib.error.HTTPError as exc:
+              result['http_status'] = int(exc.code)
+          except urllib.error.URLError as exc:
+              result['urllib_error'] = type(exc.reason).__name__
+          except Exception as exc:
+              result['urllib_error'] = type(exc).__name__
+
+          print(json.dumps(result, separators=(',', ':')))
+          PY
+          REMOTE
