@@ -60,26 +60,27 @@ abstract final class TInvestSandboxAccess {
 
   /// Перенести legacy sandbox-token из Android Keystore в server vault.
   ///
-  /// Операция идемпотентна: если сервер уже подтверждает точный sandbox slot,
-  /// оставшаяся локальная копия удаляется без повторной отправки. Любая ошибка
-  /// PUT или неполный/malformed confirmation оставляет Keystore нетронутым.
+  /// Если локальный legacy token ещё существует, он является источником
+  /// миграции даже при уже настроенном server slot: сначала PUT + точное server
+  /// confirmation, и только затем удаление Keystore. Это не позволяет молча
+  /// потерять потенциально более свежий локальный credential. Если локального
+  /// token уже нет, точный настроенный server slot означает завершённую миграцию
+  /// и никакого лишнего локального delete не выполняется.
   static Future<bool> migrateToServer([IntegrationsClient? client]) async {
     final repo = _repository;
     final server = client ?? _client;
     if (repo == null || server == null) return false;
 
     final items = await server.list();
-    if (items.any(_isExactSandboxSlot)) {
-      await repo.vault.deleteKeys(exchange: 'tinvest', mode: 'sandbox');
-      return true;
-    }
+    final serverConfigured = items.any(_isExactSandboxSlot);
 
     final local = (await repo.vault.apiKey(
       exchange: 'tinvest',
       mode: 'sandbox',
     ))
         ?.trim();
-    if (local == null || local.isEmpty) return false;
+
+    if (local == null || local.isEmpty) return serverConfigured;
 
     final saved = await server.save(_slot, {'token': local});
     if (!_isExactSandboxSlot(saved)) return false;
