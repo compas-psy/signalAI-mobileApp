@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - ops/tinvest-sandbox-smoke-spike
+  pull_request:
+    branches:
+      - claude/release-y40hk5
 
 permissions:
   contents: read
@@ -97,8 +100,6 @@ jobs:
           egress_ip="$(curl -sS --connect-timeout 5 --max-time 10 https://api.ipify.org 2>/dev/null || echo unknown)"
           echo "TINVEST_SANDBOX_VPS_EGRESS_IP=$egress_ip"
 
-          # Reuse one dedicated virtual account so the trade is easy to find in
-          # T-Invest Sandbox and never touches any real brokerage account.
           call_api 'SandboxService' 'GetSandboxAccounts' '{}'
           account="$(jq -r --arg name "$ACCOUNT_NAME" '.accounts[]? | select(.name==$name and (.status|tostring|endswith("CLOSED")|not)) | .id' "$body" | head -1)"
           if [ -z "$account" ]; then
@@ -110,12 +111,9 @@ jobs:
             exit 5
           }
 
-          # Virtual-only cash top-up. This cannot affect real money.
           payin="$(jq -nc --arg account "$account" '{accountId:$account,amount:{currency:"rub",units:"100000",nano:0}}')"
           call_api 'SandboxService' 'SandboxPayIn' "$payin"
 
-          # Prefer an instrument that is actually tradable now. On weekends the
-          # broker may expose dealer liquidity where only limit orders work.
           candidates='SBER_TQBR YDEX_TQBR LKOH_TQBR GAZP_TQBR ROSN_TQBR NVTK_TQBR'
           instrument=''
           order_type=''
@@ -168,8 +166,6 @@ jobs:
           executed="$(jq -r '.lotsExecuted // "0"' "$body")"
           tracking="$(awk 'BEGIN{IGNORECASE=1} /^x-tracking-id:/ {gsub(/\r/, "", $2); print $2; exit}' "$headers")"
 
-          # Read authoritative state once more so success is based on provider
-          # evidence, not merely on HTTP 200 from the submit call.
           if [ -n "$exchange_order_id" ]; then
             sleep 1
             state_payload="$(jq -nc --arg account "$account" --arg order "$exchange_order_id" '{accountId:$account,orderId:$order,orderIdType:"ORDER_ID_TYPE_EXCHANGE",priceType:"PRICE_TYPE_CURRENCY"}')"
