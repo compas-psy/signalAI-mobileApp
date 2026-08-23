@@ -24,6 +24,7 @@ _SMOKE_CANDIDATES = ("LQDT", "TBRU", "SBER")
 _DIAGNOSTIC_KEY_RE = re.compile(r"^[A-Za-z0-9._:-]{16,128}$")
 _ACCOUNT_PREFIX = "SignalAI roundtrip"
 _PAY_IN_RUB = "100000"
+_FILL_STATUS = "EXECUTION_REPORT_STATUS_FILL"
 
 
 @dataclass(frozen=True, slots=True)
@@ -265,6 +266,22 @@ def _order_payload(
     }
 
 
+def _state_lots(state: Mapping[str, object] | None) -> int:
+    if state is None:
+        return 0
+    return _non_negative_int(state.get("lotsExecuted"), field="lotsExecuted")
+
+
+def _state_status(state: Mapping[str, object] | None) -> str:
+    if state is None:
+        return "NOT_CONFIRMED"
+    return str(state.get("executionReportStatus") or "NOT_CONFIRMED")
+
+
+def _state_is_fill(state: Mapping[str, object] | None) -> bool:
+    return _state_status(state) == _FILL_STATUS
+
+
 def _reconcile_after_submit(
     transport: TInvestTransport,
     *,
@@ -284,18 +301,12 @@ def _reconcile_after_submit(
         if state is None:
             continue
         last_state = state
-        if _state_lots(state) >= required_lots:
+        if _state_is_fill(state) and _state_lots(state) >= required_lots:
             return state
-        status = str(state.get("executionReportStatus") or "")
+        status = _state_status(state)
         if status.endswith("REJECTED") or status.endswith("CANCELLED"):
             return state
     return last_state
-
-
-def _state_lots(state: Mapping[str, object] | None) -> int:
-    if state is None:
-        return 0
-    return _non_negative_int(state.get("lotsExecuted"), field="lotsExecuted")
 
 
 def _state_symbol(state: Mapping[str, object] | None, fallback: str = "UNKNOWN") -> str:
@@ -360,23 +371,23 @@ def _result(
 ) -> TInvestSandboxSmokeResult:
     buy_lots = _state_lots(buy_state)
     sell_lots = _state_lots(sell_state)
+    buy_status = _state_status(buy_state)
+    sell_status = _state_status(sell_state)
     return TInvestSandboxSmokeResult(
         round_trip_complete=(
-            buy_lots > 0
+            buy_status == _FILL_STATUS
+            and sell_status == _FILL_STATUS
+            and buy_lots > 0
             and sell_lots == buy_lots
             and position_flat
         ),
         symbol=_state_symbol(buy_state, symbol),
         account_suffix=account_id[-6:] if len(account_id) >= 6 else account_id,
         buy_provider_order_id=str((buy_state or {}).get("orderId") or buy_request_id),
-        buy_execution_status=str(
-            (buy_state or {}).get("executionReportStatus") or "NOT_CONFIRMED"
-        ),
+        buy_execution_status=buy_status,
         buy_executed_lots=buy_lots,
         sell_provider_order_id=str((sell_state or {}).get("orderId") or sell_request_id),
-        sell_execution_status=str(
-            (sell_state or {}).get("executionReportStatus") or "NOT_CONFIRMED"
-        ),
+        sell_execution_status=sell_status,
         sell_executed_lots=sell_lots,
         position_flat=position_flat,
     )
@@ -435,7 +446,7 @@ def run_tinvest_sandbox_smoke(
         )
 
     buy_lots = _state_lots(buy_state)
-    if buy_lots <= 0:
+    if not _state_is_fill(buy_state) or buy_lots <= 0:
         return _result(
             account_id=account_id,
             symbol=symbol,
@@ -480,7 +491,7 @@ def run_tinvest_sandbox_smoke(
         )
 
     sell_lots = _state_lots(sell_state)
-    if sell_lots != buy_lots:
+    if not _state_is_fill(sell_state) or sell_lots != buy_lots:
         return _result(
             account_id=account_id,
             symbol=symbol,
