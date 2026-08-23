@@ -17,13 +17,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..models.canary_policy import CanaryPolicySnapshot
+from ..models.execution import ExecutionModeState
 from .canary_preflight import (
     CanaryPreflightError,
     CanaryRuntimeContext,
     evaluate_canary_preflight,
 )
 from .enums import ExecutionLifecycleMode
-from .mode import get_execution_mode
 
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _PENDING_OWNER_BLOCKERS = (
@@ -80,6 +80,17 @@ def _exact_snapshot(db: Session, snapshot_hash: str) -> CanaryPolicySnapshot:
     return row
 
 
+def _current_mode_read_only(db: Session) -> ExecutionLifecycleMode:
+    """Read lifecycle mode without materializing the singleton on a preview path."""
+
+    row = db.execute(
+        select(ExecutionModeState).where(ExecutionModeState.id == 1)
+    ).scalar_one_or_none()
+    if row is None:
+        return ExecutionLifecycleMode.PAPER
+    return ExecutionLifecycleMode(row.mode)
+
+
 def _tuple_ints(value: object) -> tuple[int, ...]:
     if not isinstance(value, list) or any(
         isinstance(item, bool) or not isinstance(item, int) for item in value
@@ -128,7 +139,7 @@ def build_canary_activation_readiness(
             raise TypeError("hard caps must be an object")
         result = CanaryActivationReadiness(
             snapshot_hash=snapshot.snapshot_hash,
-            from_mode=get_execution_mode(db).mode,
+            from_mode=_current_mode_read_only(db),
             target_mode=ExecutionLifecycleMode.CANARY,
             venue=str(payload["venue"]),
             strategy_family=str(payload["strategy_family"]),
