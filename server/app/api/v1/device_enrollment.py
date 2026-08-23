@@ -28,6 +28,11 @@ router = APIRouter(prefix="/device-enrollment", tags=["device-enrollment"])
 class PairDeviceRequest(ApiModel):
     device_id: str = Field(min_length=16, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
     metadata: dict[str, str] = Field(default_factory=dict)
+    owner_public_key_spki_b64: str | None = Field(
+        default=None,
+        min_length=80,
+        max_length=256,
+    )
 
 
 class IssuedDeviceToken(ApiModel):
@@ -97,6 +102,7 @@ def pair(
             metadata=payload.metadata,
             idempotency_key=_idempotency_key(request),
             pairing_session=pairing_session,
+            owner_public_key_spki_b64=payload.owner_public_key_spki_b64,
         )
     except DeviceEnrollmentReplay as exc:
         raise HTTPException(409, "pairing request already completed") from exc
