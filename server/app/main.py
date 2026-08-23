@@ -45,6 +45,7 @@ from .api.v1 import portfolio as portfolio_routes
 from .api.v1 import portfolio_headlines as portfolio_headline_routes
 from .api.v1 import research as research_routes
 from .api.v1 import risk as risk_routes
+from .api.v1 import tinvest_sandbox as tinvest_sandbox_routes
 from .config import get_config
 from .db import get_engine
 from .models.enums import ExecutionMode
@@ -99,6 +100,7 @@ v1.include_router(equity_ranking_routes.router)
 v1.include_router(investment_signal_routes.router)
 v1.include_router(paper_routes.router)
 v1.include_router(integrations_routes.router)
+v1.include_router(tinvest_sandbox_routes.router)
 v1.include_router(capital_routes.router)
 v1.include_router(journal_routes.router)
 v1.include_router(notification_routes.router)
