@@ -188,18 +188,29 @@ def pair_device(
     metadata: object,
     idempotency_key: object,
     pairing_session: BootstrapPairingSession,
+    owner_public_key_spki_b64: object | None = None,
 ) -> IssuedDeviceCredential:
-    """Issue exactly one raw bearer for a new pairing request.
+    """Issue exactly one raw bearer for an owner-authorized pairing request.
 
-    Replaying a completed request is deliberately not replayable as a token:
-    the raw secret exists only in the first response and is never persisted.
+    A currently active device id can never be re-paired.  A fully revoked id
+    may be paired again only through a fresh owner pairing capability and its
+    credential generation continues monotonically.  Optional owner-key
+    enrollment is validated before any database mutation and is committed in
+    the same transaction as the new bearer verifier.
     """
     device_id = _device_id(device_id)
     metadata = normalize_device_metadata(metadata)
     request_hash = _request_hash(idempotency_key)
-    # Pairing uses one transaction-scoped PostgreSQL advisory lock.  It makes
-    # the owner-device ceiling durable even when two bootstrap requests race
-    # in different API workers; row locks alone cannot protect an empty slot.
+    validated_owner_key: tuple[str, str] | None = None
+    if owner_public_key_spki_b64 is not None:
+        # Local import avoids making the enrollment module depend on Crypto at
+        # import time and breaks the intentional error-type dependency cycle.
+        from .owner_step_up import validate_owner_public_key_spki_b64
+
+        validated_owner_key = validate_owner_public_key_spki_b64(
+            owner_public_key_spki_b64
+        )
+
     session.execute(select(func.pg_advisory_xact_lock(_DEVICE_ENROLLMENT_LOCK)))
     now = _now()
     if pairing_session.expires_at <= now:
@@ -211,18 +222,17 @@ def pair_device(
     ) is not None:
         raise DeviceEnrollmentReplay("pairing request was already completed")
 
-    # Pairing an existing ID used to revoke its current owner bearer.  That
-    # turns a leaked bootstrap capability into a denial-of-service primitive;
-    # device rotation and owner-authenticated lost-device revoke are explicit
-    # lifecycle operations instead.
-    known_credential = session.scalar(
-        select(DeviceCredential)
-        .where(DeviceCredential.device_id == device_id)
-        .with_for_update()
-        .limit(1)
+    known_credentials = list(
+        session.scalars(
+            select(DeviceCredential)
+            .where(DeviceCredential.device_id == device_id)
+            .order_by(DeviceCredential.generation)
+            .with_for_update()
+        )
     )
-    if known_credential is not None:
+    if any(item.revoked_at is None for item in known_credentials):
         raise DeviceEnrollmentConflict("device is already enrolled")
+    generation = max((item.generation for item in known_credentials), default=0) + 1
 
     durable_session = session.scalar(
         select(DevicePairingSession)
@@ -242,8 +252,6 @@ def pair_device(
         durable_session.expires_at != pairing_session.expires_at
         or durable_session.max_uses != pairing_session.max_uses
     ):
-        # Operators must explicitly provision a new random session instead of
-        # extending/rebounding a value that may already have leaked.
         raise DeviceEnrollmentConflict("pairing session configuration changed")
     if durable_session.uses >= durable_session.max_uses:
         raise DeviceEnrollmentConflict("pairing session is exhausted")
@@ -257,10 +265,11 @@ def pair_device(
     )
     if len(active_credentials) >= _max_active_devices():
         raise DeviceEnrollmentError("active device limit is reached")
+
     token = issue_device_token()
     credential = DeviceCredential(
         device_id=device_id,
-        generation=1,
+        generation=generation,
         token_verifier=token_verifier(token),
         issued_request_hash=request_hash,
         metadata_json=metadata,
@@ -269,12 +278,25 @@ def pair_device(
     session.add(credential)
     durable_session.uses += 1
     try:
+        if validated_owner_key is not None:
+            from .owner_step_up import replace_owner_key_during_pairing
+
+            replace_owner_key_during_pairing(
+                session,
+                device_id=device_id,
+                pairing_session_verifier=pairing_session.verifier,
+                validated_key=validated_owner_key,
+                now=now,
+            )
         session.flush()
     except IntegrityError as exc:
         session.rollback()
         raise DeviceEnrollmentConflict("device enrollment changed concurrently") from exc
     return IssuedDeviceCredential(
-        device_id=device_id, generation=1, token=token, issued_at=now
+        device_id=device_id,
+        generation=generation,
+        token=token,
+        issued_at=now,
     )
 
 
