@@ -14,7 +14,9 @@ jobs:
     if: >-
       github.event.issue.pull_request != null &&
       github.actor == github.repository_owner &&
-      (github.event.comment.body == '/release-current' || github.event.comment.body == '/pair-device')
+      (github.event.comment.body == '/release-current' ||
+       github.event.comment.body == '/pair-device' ||
+       github.event.comment.body == '/tinvest-smoke')
     runs-on: ubuntu-latest
     steps:
       - name: Dispatch pinned owner operation
@@ -37,9 +39,16 @@ jobs:
               core.setFailed('default branch did not resolve to an immutable commit');
               return;
             }
-            const workflow_id = command === '/release-current'
-              ? 'release-cumulative.yml'
-              : 'provision-device-pairing.yml';
+            const workflows = {
+              '/release-current': 'release-cumulative.yml',
+              '/pair-device': 'provision-device-pairing.yml',
+              '/tinvest-smoke': 'tinvest-sandbox-smoke.yml',
+            };
+            const workflow_id = workflows[command];
+            if (!workflow_id) {
+              core.setFailed(`unsupported owner command: ${command}`);
+              return;
+            }
             await github.rest.actions.createWorkflowDispatch({
               owner: context.repo.owner,
               repo: context.repo.repo,
