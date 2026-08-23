@@ -49,11 +49,15 @@ jobs:
               core.setFailed(`unsupported owner command: ${command}`);
               return;
             }
+            const inputs = { source_ref: sha };
+            if (command === '/tinvest-smoke') {
+              inputs.report_issue = String(context.issue.number);
+            }
             await github.rest.actions.createWorkflowDispatch({
               owner: context.repo.owner,
               repo: context.repo.repo,
               workflow_id,
               ref: branch,
-              inputs: { source_ref: sha },
+              inputs,
             });
             core.notice(`${command} dispatched for ${sha}`);
