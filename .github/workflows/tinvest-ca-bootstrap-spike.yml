@@ -1,0 +1,54 @@
+name: Spike install T-Bank CA trust
+
+on:
+  pull_request:
+    branches: [claude/release-y40hk5]
+
+permissions:
+  contents: read
+
+jobs:
+  ca:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare pinned SSH
+        env:
+          KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          HOST_KEY_SHA256: ${{ secrets.VPS_SSH_HOST_KEY_SHA256 || 'SHA256:cUfeWKyHoFIhKsV17Bpk076calxUaxd90XhuETb4vng' }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          bash .github/scripts/prepare_known_host.sh "$HOST" "$HOST_KEY_SHA256"
+      - name: Install official Russian Trusted CA pair
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          USER_NAME: ${{ secrets.VPS_USER || 'root' }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$USER_NAME@$HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+          for name in root sub; do
+            file="russian_trusted_${name}_ca"
+            curl -ksS --max-time 20 -o "$tmp/$file.cer" "https://gu-st.ru/content/Other/doc/$file.cer"
+            if grep -aq 'BEGIN CERTIFICATE' "$tmp/$file.cer"; then
+              cp "$tmp/$file.cer" "$tmp/$file.crt"
+            else
+              openssl x509 -inform DER -in "$tmp/$file.cer" -out "$tmp/$file.crt"
+            fi
+          done
+          openssl x509 -in "$tmp/russian_trusted_root_ca.crt" -noout -subject | grep -q 'Russian Trusted Root CA'
+          openssl x509 -in "$tmp/russian_trusted_sub_ca.crt" -noout -subject | grep -q 'Russian Trusted Sub CA'
+          install -m 0644 "$tmp/russian_trusted_root_ca.crt" /usr/local/share/ca-certificates/russian_trusted_root_ca.crt
+          install -m 0644 "$tmp/russian_trusted_sub_ca.crt" /usr/local/share/ca-certificates/russian_trusted_sub_ca.crt
+          update-ca-certificates >/dev/null
+          curl -sS --connect-timeout 10 --max-time 20 -o /dev/null https://sandbox-invest-public-api.tbank.ru/rest/
+          echo TINVEST_CA_TRUST_OK
+          REMOTE
+      - name: Remove SSH key
+        if: always()
+        run: shred -u ~/.ssh/id_deploy 2>/dev/null || rm -f ~/.ssh/id_deploy
