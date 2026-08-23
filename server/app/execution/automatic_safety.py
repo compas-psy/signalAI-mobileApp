@@ -7,10 +7,15 @@ existing stronger kill-switch level.
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..config import get_config
+from ..models.execution import ExecutionFill, ExecutionIntent, ExecutionProtection
 from .enums import ExecutionKillSwitchLevel, ExecutionLifecycleMode
 from .kill_switch import (
     _set_execution_kill_switch_locked,
@@ -48,6 +53,14 @@ class AutomaticHaltResult:
 class AutomaticHaltDownshiftResult:
     halt: AutomaticHaltResult
     downshift: AutomaticDownshiftResult
+
+
+@dataclass(frozen=True)
+class CanaryProtectionSafetyResult:
+    trigger: str | None
+    naked_ms: int | None
+    protection_sla_ms: int
+    halt: AutomaticHaltResult | None
 
 
 _MODE_RISK_RANK = {
@@ -145,6 +158,98 @@ def automatic_halt_new_entries(
         return _automatic_halt_new_entries_locked(db, reason=reason)
 
 
+def automatic_halt_if_canary_missing_protection(
+    db: Session,
+    *,
+    intent_id: uuid.UUID,
+    as_of: datetime | None = None,
+) -> CanaryProtectionSafetyResult:
+    """Halt Canary entries when a filled Lighter intent is currently unprotected.
+
+    This guard reuses the versioned execution protection SLA. It deliberately
+    evaluates current durable protection state rather than a historical timing
+    violation: once a provider-side stop is ACTIVE, owner recovery must not be
+    trapped by an old late-arm event. Provider freshness/reconciliation policy
+    remains a separate owner-approved concern and is not invented here.
+    """
+
+    as_of = as_of or datetime.now(UTC)
+    protection_sla_ms = int(get_config().get("execution.protection_sla_seconds")) * 1000
+
+    with execution_control_lock(db):
+        intent = db.get(ExecutionIntent, intent_id, populate_existing=True)
+        if intent is None:
+            raise LookupError(f"execution intent {intent_id} does not exist")
+
+        runtime_mode = get_execution_mode(db).mode
+        if (
+            runtime_mode is not ExecutionLifecycleMode.CANARY
+            or intent.execution_mode_snapshot is not ExecutionLifecycleMode.CANARY
+            or intent.venue.upper() != "LIGHTER"
+        ):
+            return CanaryProtectionSafetyResult(
+                trigger=None,
+                naked_ms=None,
+                protection_sla_ms=protection_sla_ms,
+                halt=None,
+            )
+
+        first_fill = db.execute(
+            select(ExecutionFill)
+            .where(ExecutionFill.intent_id == intent.id)
+            .order_by(ExecutionFill.filled_at, ExecutionFill.id)
+            .limit(1)
+        ).scalar_one_or_none()
+        if first_fill is None:
+            return CanaryProtectionSafetyResult(
+                trigger=None,
+                naked_ms=None,
+                protection_sla_ms=protection_sla_ms,
+                halt=None,
+            )
+
+        active_protections = db.execute(
+            select(ExecutionProtection).where(
+                ExecutionProtection.intent_id == intent.id,
+                ExecutionProtection.status == "ACTIVE",
+                ExecutionProtection.armed_at.is_not(None),
+            )
+        ).scalars()
+        if any(
+            bool(str(protection.provider_order_id or "").strip())
+            for protection in active_protections
+        ):
+            return CanaryProtectionSafetyResult(
+                trigger=None,
+                naked_ms=None,
+                protection_sla_ms=protection_sla_ms,
+                halt=None,
+            )
+
+        naked_ms = int(round((as_of - first_fill.filled_at).total_seconds() * 1000))
+        if naked_ms <= protection_sla_ms:
+            return CanaryProtectionSafetyResult(
+                trigger=None,
+                naked_ms=naked_ms,
+                protection_sla_ms=protection_sla_ms,
+                halt=None,
+            )
+
+        halt = _automatic_halt_new_entries_locked(
+            db,
+            reason=(
+                f"Canary Lighter intent {intent.id} has no active provider-side "
+                f"protection after {naked_ms} ms (SLA {protection_sla_ms} ms)"
+            ),
+        )
+        return CanaryProtectionSafetyResult(
+            trigger="MISSING_PROTECTION",
+            naked_ms=naked_ms,
+            protection_sla_ms=protection_sla_ms,
+            halt=halt,
+        )
+
+
 def automatic_halt_and_downshift(
     db: Session,
     *,
@@ -219,7 +324,9 @@ __all__ = [
     "AutomaticHaltDownshiftResult",
     "AutomaticHaltResult",
     "AutomaticSafetyRejected",
+    "CanaryProtectionSafetyResult",
     "automatic_downshift",
     "automatic_halt_and_downshift",
+    "automatic_halt_if_canary_missing_protection",
     "automatic_halt_new_entries",
 ]
