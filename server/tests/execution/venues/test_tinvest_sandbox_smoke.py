@@ -34,11 +34,32 @@ def _account():
     return {"accounts": [{"id": "sandbox-account-123456", "status": "ACCOUNT_STATUS_OPEN"}]}
 
 
-def _filled_state(*, order_id: str = "exchange-order-1"):
+def _filled_state(*, order_id: str = "exchange-order-1", ticker: str = "SBER"):
     return {
         "orderId": order_id,
+        "ticker": ticker,
         "executionReportStatus": "EXECUTION_REPORT_STATUS_FILL",
         "lotsExecuted": "1",
+    }
+
+
+def _found(ticker: str, uid: str):
+    return {
+        "instruments": [
+            {
+                "ticker": ticker,
+                "uid": uid,
+                "apiTradeAvailableFlag": True,
+            }
+        ]
+    }
+
+
+def _status(*, api: bool, market: bool, limit: bool):
+    return {
+        "apiTradeAvailableFlag": api,
+        "marketOrderAvailableFlag": market,
+        "limitOrderAvailableFlag": limit,
     }
 
 
@@ -68,22 +89,19 @@ def test_same_diagnostic_key_reconciles_existing_fill_without_duplicate_submit(s
     assert reconcile["orderIdType"] == "ORDER_ID_TYPE_REQUEST"
 
 
-def test_new_smoke_submits_one_market_buy_then_confirms_provider_fill(session):
+def test_new_smoke_uses_first_currently_tradeable_candidate_and_confirms_fill(session):
     key = "owner-smoke-2026-08-23-0002"
     not_found = TInvestProviderError.not_found()
     transport = _ScriptedTransport(
         {
             ("SandboxService", "GetSandboxAccounts"): [_account()],
-            ("SandboxService", "GetSandboxOrderState"): [not_found, _filled_state()],
+            ("SandboxService", "GetSandboxOrderState"): [not_found, _filled_state(ticker="LQDT")],
+            ("InstrumentsService", "FindInstrument"): [_found("LQDT", "lqdt-uid")],
+            ("MarketDataService", "GetTradingStatus"): [_status(api=True, market=True, limit=True)],
             ("SandboxService", "SandboxPayIn"): [{"balance": {"currency": "rub", "units": "100000", "nano": 0}}],
-            ("InstrumentsService", "ShareBy"): [{"instrument": {"uid": "sber-uid", "ticker": "SBER"}}],
-            ("MarketDataService", "GetTradingStatus"): [{
-                "apiTradeAvailableFlag": True,
-                "marketOrderAvailableFlag": True,
-                "limitOrderAvailableFlag": True,
-            }],
             ("SandboxService", "PostSandboxOrder"): [{
                 "orderId": "exchange-order-1",
+                "ticker": "LQDT",
                 "executionReportStatus": "EXECUTION_REPORT_STATUS_NEW",
                 "lotsExecuted": "0",
             }],
@@ -93,15 +111,21 @@ def test_new_smoke_submits_one_market_buy_then_confirms_provider_fill(session):
     result = run_tinvest_sandbox_smoke(session, diagnostic_key=key, transport=transport)
 
     assert result.filled is True
+    assert result.symbol == "LQDT"
     assert result.executed_lots == 1
     assert transport.counts[("SandboxService", "PostSandboxOrder")] == 1
+    find = next(
+        body for service, method, body in transport.calls
+        if (service, method) == ("InstrumentsService", "FindInstrument")
+    )
+    assert find == {"query": "LQDT", "apiTradeAvailableFlag": True}
     post = next(
         body for service, method, body in transport.calls
         if (service, method) == ("SandboxService", "PostSandboxOrder")
     )
     assert post == {
         "accountId": "sandbox-account-123456",
-        "instrumentId": "sber-uid",
+        "instrumentId": "lqdt-uid",
         "quantity": "1",
         "direction": "ORDER_DIRECTION_BUY",
         "orderType": "ORDER_TYPE_MARKET",
@@ -109,6 +133,49 @@ def test_new_smoke_submits_one_market_buy_then_confirms_provider_fill(session):
         "priceType": "PRICE_TYPE_CURRENCY",
     }
     assert all(service != "OrdersService" for service, _, _ in transport.calls)
+
+
+def test_closed_first_candidate_falls_through_to_next_tradeable_candidate(session):
+    key = "owner-smoke-2026-08-23-0005"
+    transport = _ScriptedTransport(
+        {
+            ("SandboxService", "GetSandboxAccounts"): [_account()],
+            ("SandboxService", "GetSandboxOrderState"): [
+                TInvestProviderError.not_found(),
+                _filled_state(ticker="TBRU"),
+            ],
+            ("InstrumentsService", "FindInstrument"): [
+                _found("LQDT", "lqdt-uid"),
+                _found("TBRU", "tbru-uid"),
+            ],
+            ("MarketDataService", "GetTradingStatus"): [
+                _status(api=False, market=False, limit=False),
+                _status(api=True, market=True, limit=True),
+            ],
+            ("SandboxService", "SandboxPayIn"): [{}],
+            ("SandboxService", "PostSandboxOrder"): [{
+                "orderId": "exchange-order-2",
+                "ticker": "TBRU",
+                "executionReportStatus": "EXECUTION_REPORT_STATUS_NEW",
+                "lotsExecuted": "0",
+            }],
+        }
+    )
+
+    result = run_tinvest_sandbox_smoke(session, diagnostic_key=key, transport=transport)
+
+    assert result.filled is True
+    assert result.symbol == "TBRU"
+    queries = [
+        body["query"] for service, method, body in transport.calls
+        if (service, method) == ("InstrumentsService", "FindInstrument")
+    ]
+    assert queries == ["LQDT", "TBRU"]
+    post = next(
+        body for service, method, body in transport.calls
+        if (service, method) == ("SandboxService", "PostSandboxOrder")
+    )
+    assert post["instrumentId"] == "tbru-uid"
 
 
 def test_zero_executed_lots_is_not_reported_as_success(session):
@@ -119,18 +186,15 @@ def test_zero_executed_lots_is_not_reported_as_success(session):
                 TInvestProviderError.not_found(),
                 {
                     "orderId": "exchange-pending",
+                    "ticker": "LQDT",
                     "executionReportStatus": "EXECUTION_REPORT_STATUS_NEW",
                     "lotsExecuted": "0",
                 },
             ],
+            ("InstrumentsService", "FindInstrument"): [_found("LQDT", "lqdt-uid")],
+            ("MarketDataService", "GetTradingStatus"): [_status(api=True, market=True, limit=True)],
             ("SandboxService", "SandboxPayIn"): [{}],
-            ("InstrumentsService", "ShareBy"): [{"instrument": {"uid": "sber-uid"}}],
-            ("MarketDataService", "GetTradingStatus"): [{
-                "apiTradeAvailableFlag": True,
-                "marketOrderAvailableFlag": True,
-                "limitOrderAvailableFlag": True,
-            }],
-            ("SandboxService", "PostSandboxOrder"): [{"orderId": "exchange-pending"}],
+            ("SandboxService", "PostSandboxOrder"): [{"orderId": "exchange-pending", "ticker": "LQDT"}],
         }
     )
 
@@ -142,6 +206,7 @@ def test_zero_executed_lots_is_not_reported_as_success(session):
         sleeper=lambda _: None,
     )
     assert result.filled is False
+    assert result.symbol == "LQDT"
     assert result.executed_lots == 0
 
 
