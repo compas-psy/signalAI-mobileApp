@@ -9,7 +9,7 @@ ENV_FILE="${1:-}"
 KEY_NAME='SIGNALAI_LIGHTER_LIVE_SECRETS_KEY'
 SOURCE_KEY='SIGNALAI_SOURCE_SHA'
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-SOURCE_ATTESTATION="$SCRIPT_DIR/../../.signalai-source-sha"
+SOURCE_ATTESTATION="${2:-$SCRIPT_DIR/../../.signalai-source-sha}"
 
 fail() {
   printf 'runtime secret setup failed: %s\n' "$1" >&2
@@ -23,7 +23,9 @@ fail() {
 # this helper runs. Persist the same value in the compose env so long-lived API
 # and execution containers can prove which release generated acceptance evidence.
 # This value is public provenance, not a secret, but it belongs in the same
-# atomically managed runtime env because compose consumes it there.
+# atomically managed runtime env because compose consumes it there. The optional
+# second argument exists only to make this exact file-management contract
+# testable without mutating the checkout root.
 if [ -f "$SOURCE_ATTESTATION" ]; then
   source_sha="$(tr -d '\r\n' < "$SOURCE_ATTESTATION")"
   case "$source_sha" in
