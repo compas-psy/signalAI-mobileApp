@@ -17,7 +17,6 @@ import secrets
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
 
 from Crypto.Hash import SHA256
 from Crypto.PublicKey import ECC
@@ -120,6 +119,22 @@ def _challenge_message(row: OwnerStepUpChallenge) -> str:
     return f"{_MESSAGE_DOMAIN}\n{canonical}"
 
 
+def _issued_challenge(
+    row: OwnerStepUpChallenge,
+    *,
+    owner_key_fingerprint: str,
+) -> IssuedOwnerStepUpChallenge:
+    return IssuedOwnerStepUpChallenge(
+        challenge_id=row.id,
+        device_id=row.device_id,
+        owner_key_fingerprint=owner_key_fingerprint,
+        purpose=row.purpose,
+        payload_hash=row.payload_hash,
+        message=_challenge_message(row),
+        expires_at=row.expires_at,
+    )
+
+
 def validate_owner_public_key_spki_b64(value: object) -> tuple[str, str]:
     """Validate one canonical public P-256 SubjectPublicKeyInfo value.
 
@@ -199,7 +214,14 @@ def issue_owner_step_up_challenge(
     ttl: timedelta,
     now: datetime | None = None,
 ) -> IssuedOwnerStepUpChallenge:
-    """Persist a bounded single-use proof request for one active owner key."""
+    """Persist or reuse one bounded single-use request for an active owner key.
+
+    The active owner-key row is locked before looking for a pending challenge.
+    That serializes concurrent issuance for the same device.  Reusing the exact
+    live device/key/purpose/payload challenge bounds an authenticated bearer
+    that cannot produce the biometric signature to at most one pending row per
+    TTL instead of allowing unbounded write amplification.
+    """
     if not isinstance(purpose, str) or _PURPOSE_RE.fullmatch(purpose) is None:
         raise OwnerStepUpError("owner step-up proof is invalid")
     if not isinstance(ttl, timedelta) or ttl <= timedelta(0) or ttl > _MAX_TTL:
@@ -236,6 +258,25 @@ def issue_owner_step_up_challenge(
     if fingerprint != owner_key.public_key_sha256:
         raise OwnerStepUpError("owner step-up proof is invalid")
 
+    existing = session.scalar(
+        select(OwnerStepUpChallenge)
+        .where(
+            OwnerStepUpChallenge.device_id == credential.device_id,
+            OwnerStepUpChallenge.owner_key_id == owner_key.id,
+            OwnerStepUpChallenge.purpose == purpose,
+            OwnerStepUpChallenge.payload_hash == payload_hash,
+            OwnerStepUpChallenge.consumed_at.is_(None),
+            OwnerStepUpChallenge.expires_at > issued_at,
+        )
+        .order_by(OwnerStepUpChallenge.expires_at.desc())
+        .limit(1)
+    )
+    if existing is not None:
+        return _issued_challenge(
+            existing,
+            owner_key_fingerprint=owner_key.public_key_sha256,
+        )
+
     row = OwnerStepUpChallenge(
         device_id=credential.device_id,
         owner_key_id=owner_key.id,
@@ -247,15 +288,9 @@ def issue_owner_step_up_challenge(
     )
     session.add(row)
     session.flush()
-    message = _challenge_message(row)
-    return IssuedOwnerStepUpChallenge(
-        challenge_id=row.id,
-        device_id=row.device_id,
+    return _issued_challenge(
+        row,
         owner_key_fingerprint=owner_key.public_key_sha256,
-        purpose=row.purpose,
-        payload_hash=row.payload_hash,
-        message=message,
-        expires_at=row.expires_at,
     )
 
 
