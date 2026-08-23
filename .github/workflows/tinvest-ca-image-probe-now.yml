@@ -1,0 +1,58 @@
+name: One-shot T-Invest CA image probe
+
+on:
+  pull_request:
+    branches:
+      - 'claude/release-y40hk5'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: signalai-tinvest-ca-image-probe
+  cancel-in-progress: true
+
+jobs:
+  build-and-probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out exact CA-fix head
+        uses: actions/checkout@v4
+        with:
+          ref: e6cfca594d0db7ab3bccc4e4ddc09132bee9644f
+          fetch-depth: 1
+      - name: Build production server image
+        run: docker build --pull --tag signalai-tinvest-ca-probe ./server
+      - name: Verify strict TLS from built image
+        run: |
+          docker run --rm --entrypoint python signalai-tinvest-ca-probe - <<'PY'
+          import json
+          import socket
+          import ssl
+          import urllib.error
+          import urllib.request
+
+          host = 'sandbox-invest-public-api.tbank.ru'
+          result = {'tls_ok': False, 'http_status': None}
+          ctx = ssl.create_default_context()
+          with socket.create_connection((host, 443), timeout=10) as raw:
+              with ctx.wrap_socket(raw, server_hostname=host) as tls:
+                  result['tls_ok'] = True
+                  result['tls_version'] = tls.version()
+
+          request = urllib.request.Request(
+              'https://sandbox-invest-public-api.tbank.ru/rest/tinkoff.public.invest.api.contract.v1.SandboxService/GetSandboxAccounts',
+              data=b'{}',
+              headers={'Content-Type': 'application/json', 'Accept': 'application/json'},
+              method='POST',
+          )
+          try:
+              with urllib.request.urlopen(request, timeout=10) as response:
+                  result['http_status'] = int(response.status)
+          except urllib.error.HTTPError as exc:
+              result['http_status'] = int(exc.code)
+
+          print(json.dumps(result, separators=(',', ':')))
+          assert result['tls_ok'] is True
+          assert result['http_status'] in {401, 403}
+          PY
