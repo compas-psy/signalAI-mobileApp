@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:signalai/data/api/api_client.dart';
 import 'package:signalai/data/api/engine_client.dart';
+import 'package:signalai/data/api/integrations_client.dart';
 import 'package:signalai/data/api/sandbox_mirroring_engine_client.dart';
 import 'package:signalai/data/local_analysis_repository.dart';
 import 'package:signalai/data/local_store.dart';
@@ -39,8 +40,14 @@ class _ApproveApi extends ApiClient {
       };
 }
 
+class _UnavailableServerVault extends IntegrationsClient {
+  @override
+  Future<List<ServerIntegration>> list() async =>
+      throw StateError('server sandbox vault unavailable');
+}
+
 void main() {
-  test('durability refusal emits one sandbox reconciliation diagnostic', () async {
+  test('server migration refusal emits one sandbox reconciliation diagnostic', () async {
     const ideaId = '11111111-1111-4111-8111-111111111111';
     final failures = <EngineHandledFailure>[];
     final results = <SandboxMirrorResult>[];
@@ -49,6 +56,7 @@ void main() {
     final client = SandboxMirroringEngineClient(
       repository: repository,
       instrumentStore: LocalStore.inMemory(),
+      integrations: _UnavailableServerVault(),
       client: _ApproveApi(ideaId),
       onHandledFailure: failures.add,
       onResult: results.add,
@@ -64,7 +72,7 @@ void main() {
     expect(failures.single.stage, EngineFailureStage.sandboxReconciliation);
     expect(
       failures.single.error.toString(),
-      contains('не удалось надёжно записать состояние доставки'),
+      contains('server sandbox vault unavailable'),
     );
   });
 }
