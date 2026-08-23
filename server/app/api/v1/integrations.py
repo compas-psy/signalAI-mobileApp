@@ -25,7 +25,11 @@ from ...integration_secrets import (
 
 router = APIRouter(prefix="/integrations", tags=["integrations"])
 _LIGHTER_LIVE_TRADE_SLOT = "lighter_trade"
+_OWNER_STEP_UP_LIVE_TRADE_SLOTS = frozenset(
+    {"tinvest_trade", "bybit_trade", _LIGHTER_LIVE_TRADE_SLOT}
+)
 _LIGHTER_LIVE_STEP_UP_REQUIRED = "LIGHTER_LIVE_STEP_UP_REQUIRED"
+_LIVE_TRADE_STEP_UP_REQUIRED = "LIVE_TRADE_CREDENTIAL_STEP_UP_REQUIRED"
 
 
 class IntegrationUpdate(BaseModel):
@@ -58,6 +62,12 @@ def _view(spec: IntegrationSpec, present: dict[str, datetime]) -> IntegrationSta
     )
 
 
+def _live_trade_step_up_blocker(slot: str) -> str:
+    if slot == _LIGHTER_LIVE_TRADE_SLOT:
+        return _LIGHTER_LIVE_STEP_UP_REQUIRED
+    return _LIVE_TRADE_STEP_UP_REQUIRED
+
+
 @router.get("", response_model=list[IntegrationStatus])
 def list_integrations(db: Session = Depends(get_db)) -> list[IntegrationStatus]:
     present = configured_slots(db)
@@ -74,11 +84,11 @@ def put_integration(
     if spec is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="неизвестный слот интеграции")
 
-    if slot == _LIGHTER_LIVE_TRADE_SLOT:
-        # Keep input-validation semantics deterministic, but never let the
-        # ordinary device bearer provision a live signing credential.  A
-        # future owner-sensitive step-up flow will call the vault only after
-        # accepted ADR decisions and exact challenge binding exist.
+    if slot in _OWNER_STEP_UP_LIVE_TRADE_SLOTS:
+        # Preserve deterministic input-validation semantics, but never let an
+        # ordinary enrolled-device bearer provision or rotate live trading
+        # authority. A future accepted owner-sensitive step-up flow may call
+        # the server-side vault only after its exact challenge is verified.
         try:
             validate_values(spec, payload.values)
         except ValueError as exc:
@@ -88,7 +98,7 @@ def put_integration(
             ) from exc
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=_LIGHTER_LIVE_STEP_UP_REQUIRED,
+            detail=_live_trade_step_up_blocker(slot),
         )
 
     try:
@@ -112,10 +122,10 @@ def put_integration(
 def remove_integration(slot: str, db: Session = Depends(get_db)) -> dict[str, bool]:
     if slot not in BY_SLOT:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="неизвестный слот интеграции")
-    if slot == _LIGHTER_LIVE_TRADE_SLOT:
+    if slot in _OWNER_STEP_UP_LIVE_TRADE_SLOTS:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=_LIGHTER_LIVE_STEP_UP_REQUIRED,
+            detail=_live_trade_step_up_blocker(slot),
         )
     delete_secret(db, slot)
     return {"ok": True}
