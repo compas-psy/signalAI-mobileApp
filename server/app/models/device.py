@@ -4,8 +4,19 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, DateTime, Index, Integer, String, UniqueConstraint, func, text
-from sqlalchemy.dialects.postgresql import JSONB, UUID as PgUUID
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    UniqueConstraint,
+    func,
+    text,
+)
+from sqlalchemy.dialects.postgresql import UUID as PgUUID
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base
@@ -99,3 +110,116 @@ class DevicePairingSession(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class DeviceOwnerKey(Base):
+    """Public half of a biometric-per-use owner key held by Android Keystore."""
+
+    __tablename__ = "device_owner_keys"
+    __table_args__ = (
+        CheckConstraint(
+            "char_length(device_id) BETWEEN 16 AND 64",
+            name="device_id_width",
+        ),
+        CheckConstraint(
+            "algorithm = 'ECDSA_P256_SHA256'",
+            name="algorithm_supported",
+        ),
+        CheckConstraint(
+            "char_length(public_key_spki_b64) BETWEEN 80 AND 256",
+            name="public_key_spki_bounded",
+        ),
+        CheckConstraint(
+            "public_key_sha256 ~ '^[0-9a-f]{64}$'",
+            name="public_key_sha256_hex",
+        ),
+        CheckConstraint(
+            "enrolled_pairing_session_verifier ~ '^[0-9a-f]{64}$'",
+            name="pairing_verifier_hex",
+        ),
+        UniqueConstraint(
+            "public_key_sha256",
+            name="uq_device_owner_keys_public_key_sha256",
+        ),
+        Index("ix_device_owner_keys_active", "device_id", "revoked_at"),
+        Index(
+            "uq_device_owner_keys_one_active",
+            "device_id",
+            unique=True,
+            postgresql_where=text("revoked_at IS NULL"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+    device_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    algorithm: Mapped[str] = mapped_column(String(32), nullable=False)
+    public_key_spki_b64: Mapped[str] = mapped_column(String(256), nullable=False)
+    public_key_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    enrolled_pairing_session_verifier: Mapped[str] = mapped_column(
+        String(64), nullable=False
+    )
+    enrolled_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class OwnerStepUpChallenge(Base):
+    """Single-use server challenge bound to one owner key and exact payload hash."""
+
+    __tablename__ = "owner_step_up_challenges"
+    __table_args__ = (
+        CheckConstraint(
+            "char_length(device_id) BETWEEN 16 AND 64",
+            name="device_id_width",
+        ),
+        CheckConstraint(
+            "purpose ~ '^[A-Z0-9_]{1,64}$'",
+            name="purpose_bounded",
+        ),
+        CheckConstraint(
+            "payload_hash ~ '^[0-9a-f]{64}$'",
+            name="payload_hash_hex",
+        ),
+        CheckConstraint(
+            "nonce_hex ~ '^[0-9a-f]{64}$'",
+            name="nonce_hex_valid",
+        ),
+        CheckConstraint(
+            "expires_at > issued_at",
+            name="expiry_after_issue",
+        ),
+        CheckConstraint(
+            "consumed_at IS NULL OR consumed_at >= issued_at",
+            name="consumption_after_issue",
+        ),
+        UniqueConstraint("nonce_hex", name="uq_owner_step_up_challenges_nonce"),
+        Index(
+            "ix_owner_step_up_challenges_pending",
+            "device_id",
+            "expires_at",
+            postgresql_where=text("consumed_at IS NULL"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+    device_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    owner_key_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("device_owner_keys.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    purpose: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    nonce_hex: Mapped[str] = mapped_column(String(64), nullable=False)
+    issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

@@ -9,7 +9,12 @@ from .base import Base
 from .canary_evidence import CanaryEvidenceReference
 from .canary_policy import CanaryPolicySnapshot, LighterCredentialGeneration
 from .datasets import DatasetSnapshot
-from .device import DeviceCredential, DevicePairingSession
+from .device import (
+    DeviceCredential,
+    DeviceOwnerKey,
+    DevicePairingSession,
+    OwnerStepUpChallenge,
+)
 from .enums import (
     AssetClass,
     BarrierOutcome,
@@ -150,6 +155,8 @@ __all__ = [
     # device lifecycle
     "DeviceCredential",
     "DevicePairingSession",
+    "DeviceOwnerKey",
+    "OwnerStepUpChallenge",
     # delivery
     "NotificationOutbox",
     # portfolio
