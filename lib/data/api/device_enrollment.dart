@@ -40,6 +40,7 @@ abstract interface class DeviceEnrollmentApi {
     required String deviceId,
     required Map<String, String> metadata,
     required String idempotencyKey,
+    String? ownerPublicKeySpkiB64,
   });
 
   Future<DeviceEnrollmentReceipt> rotate({
@@ -65,12 +66,18 @@ class HttpDeviceEnrollmentApi implements DeviceEnrollmentApi {
     required String deviceId,
     required Map<String, String> metadata,
     required String idempotencyKey,
+    String? ownerPublicKeySpkiB64,
   }) async {
     final client = ApiClient(baseUrl: baseUrl, deviceToken: bootstrapToken);
     try {
       final body = await client.postForPairing(
         '/api/v1/device-enrollment/pair',
-        body: {'device_id': deviceId, 'metadata': metadata},
+        body: {
+          'device_id': deviceId,
+          'metadata': metadata,
+          if (ownerPublicKeySpkiB64 != null)
+            'owner_public_key_spki_b64': ownerPublicKeySpkiB64,
+        },
         idempotencyKey: idempotencyKey,
         pairingSessionId: pairingSessionId,
       );
@@ -164,9 +171,10 @@ String _randomUrlSafe(Random random) => base64UrlEncode(
 /// Pair once with a bootstrap secret and atomically replace it with the issued
 /// active-device token in the existing Android Keystore.
 ///
-/// The local document deliberately contains no bearer.  It persists a stable
-/// idempotency key before the request, so an interrupted POST cannot silently
-/// create a second enrolled device during a retry after process restart.
+/// The local document deliberately contains no bearer or owner public key.
+/// The hardware owner key is generated/reused natively and only its SPKI public
+/// key is sent inside the owner-provisioned pairing capability.  If strong
+/// biometrics are unavailable pairing still works, but owner step-up cannot.
 Future<DeviceEnrollmentReceipt> pairAndStoreEngineDevice(
   LocalStore store,
   NativeBridge bridge, {
@@ -188,6 +196,7 @@ Future<DeviceEnrollmentReceipt> pairAndStoreEngineDevice(
     );
   }
 
+  final ownerPublicKey = await bridge.ownerStepUpPublicKey();
   final source = random ?? Random.secure();
   final saved = await store.read('engine') ?? <String, dynamic>{};
   final storedId = saved['device_id'];
@@ -227,6 +236,7 @@ Future<DeviceEnrollmentReceipt> pairAndStoreEngineDevice(
     deviceId: deviceId,
     metadata: metadata,
     idempotencyKey: idempotencyKey,
+    ownerPublicKeySpkiB64: ownerPublicKey,
   );
   if (receipt.deviceId != deviceId || !_isDeviceToken(receipt.deviceToken)) {
     throw const DeviceEnrollmentException('Сервер вернул некорректную привязку.');
@@ -311,10 +321,9 @@ Future<DeviceEnrollmentReceipt> rotateAndStoreEngineDevice(
   return receipt;
 }
 
-/// Revoke remotely first.  The local token and metadata stay intact after an
-/// unconfirmed request, so the UI never reports a forgotten device while the
-/// server may still accept it.  ``alreadyRevoked`` is the explicit recovery
-/// response after an interrupted earlier attempt.
+/// Revoke remotely first.  The local bearer and owner signing key stay intact
+/// after an unconfirmed request.  Once the server confirms revocation both
+/// local credentials are deleted; deletion is retryable and fail-closed.
 Future<void> forgetEngineDevice(
   LocalStore store,
   NativeBridge bridge, {
@@ -326,6 +335,11 @@ Future<void> forgetEngineDevice(
   }
   final activeToken = await bridge.engineDeviceToken() ?? '';
   if (activeToken.isEmpty) {
+    if (!await bridge.deleteOwnerStepUpKey()) {
+      throw const DeviceEnrollmentException(
+        'Не удалось удалить ключ подтверждения владельца из Android Keystore.',
+      );
+    }
     await store.writeDurably('engine', {'base_url': baseUrl});
     return;
   }
@@ -335,6 +349,11 @@ Future<void> forgetEngineDevice(
   await api.revoke(baseUrl: baseUrl, activeDeviceToken: activeToken);
   if (!await bridge.deleteEngineDeviceToken()) {
     throw const DeviceEnrollmentException('Не удалось удалить токен из Android Keystore.');
+  }
+  if (!await bridge.deleteOwnerStepUpKey()) {
+    throw const DeviceEnrollmentException(
+      'Не удалось удалить ключ подтверждения владельца из Android Keystore.',
+    );
   }
   await store.writeDurably('engine', {'base_url': baseUrl});
 }
