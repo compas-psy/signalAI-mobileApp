@@ -135,17 +135,34 @@ void main() {
     expect(vault.deletes, 0);
   });
 
-  test('configured server slot makes replay idempotent and removes leftover local copy without another upload', () async {
+  test('configured server slot is overwritten from leftover Keystore token before local deletion', () async {
     final vault = _FakeVault('LEFTOVER-TOKEN');
     final repo = _repository(vault);
-    final server = _FakeIntegrationsClient(listed: [_serverSandbox()]);
+    final server = _FakeIntegrationsClient(
+      listed: [_serverSandbox()],
+      saved: _serverSandbox(),
+    );
     TInvestSandboxAccess.attach(repo);
 
     expect(await TInvestSandboxAccess.configured(server), isTrue);
     expect(await TInvestSandboxAccess.migrateToServer(server), isTrue);
 
-    expect(server.saveCalls, isEmpty);
+    expect(server.saveCalls, [
+      {'token': 'LEFTOVER-TOKEN'}
+    ]);
     expect(vault.token, isNull);
     expect(vault.deletes, 1);
+  });
+
+  test('configured server slot without a local legacy token is already migrated', () async {
+    final vault = _FakeVault(null);
+    final repo = _repository(vault);
+    final server = _FakeIntegrationsClient(listed: [_serverSandbox()]);
+    TInvestSandboxAccess.attach(repo);
+
+    expect(await TInvestSandboxAccess.migrateToServer(server), isTrue);
+
+    expect(server.saveCalls, isEmpty);
+    expect(vault.deletes, 0);
   });
 }
