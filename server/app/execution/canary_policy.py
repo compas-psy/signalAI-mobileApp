@@ -1,20 +1,20 @@
 """Fail-closed, non-secret foundation for a future Lighter Canary policy.
 
 Nothing in this module can construct a provider transport, submit an order,
-allocate capital or change execution mode.  It only records opaque credential
-generations and canonicalizes/persists an immutable policy input.
+allocate capital or change execution mode. It only records opaque credential
+generations and canonicalizes/persists/verifies immutable policy input.
 """
 from __future__ import annotations
 
 import hashlib
 import json
-import math
 import re
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
-from typing import Any, Mapping
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -56,7 +56,7 @@ _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 
 
 class CanaryPolicyError(ValueError):
-    """Raised when a proposed Canary fact cannot be trusted exactly."""
+    """Raised when a proposed or persisted Canary fact cannot be trusted exactly."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,6 +112,16 @@ def _utc(value: datetime, field: str) -> datetime:
 
 def _utc_text(value: datetime, field: str) -> str:
     return _utc(value, field).isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+
+def _parse_utc_text(value: object, field: str) -> datetime:
+    if not isinstance(value, str):
+        raise CanaryPolicyError(f"{field} must be an ISO-8601 UTC timestamp")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise CanaryPolicyError(f"{field} must be an ISO-8601 UTC timestamp") from exc
+    return _utc(parsed, field)
 
 
 def _positive_decimal(value: Any, field: str) -> Decimal:
@@ -206,8 +216,13 @@ def current_lighter_trade_generation(
 
 def _canonical_allowlists(policy: CanaryPolicy) -> tuple[list[int], list[str]]:
     markets = list(policy.market_allowlist)
-    if not markets or any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in markets):
-        raise CanaryPolicyError("market_allowlist must contain non-negative integer market ids")
+    if not markets or any(
+        isinstance(value, bool) or not isinstance(value, int) or value < 0
+        for value in markets
+    ):
+        raise CanaryPolicyError(
+            "market_allowlist must contain non-negative integer market ids"
+        )
     if len(set(markets)) != len(markets):
         raise CanaryPolicyError("market_allowlist must not contain duplicates")
 
@@ -268,19 +283,27 @@ def canonical_canary_policy(policy: CanaryPolicy) -> CanonicalCanaryPolicy:
     if valid_until <= valuation_at:
         raise CanaryPolicyError("valid_until must be after valuation_observed_at")
 
-    currency = _bounded_text(policy.capital_currency, "capital_currency", maximum=8).upper()
+    currency = _bounded_text(
+        policy.capital_currency, "capital_currency", maximum=8
+    ).upper()
     if not currency.isascii() or not currency.isalpha() or len(currency) < 3:
         raise CanaryPolicyError("capital_currency must be an uppercase currency code")
 
     payload: dict[str, Any] = {
         "schema_version": CANARY_SCHEMA_VERSION,
-        "policy_version": _bounded_text(policy.policy_version, "policy_version", maximum=64),
+        "policy_version": _bounded_text(
+            policy.policy_version, "policy_version", maximum=64
+        ),
         "venue": "LIGHTER",
         "environment": "mainnet",
         "source_sha": source_sha,
         "engine_config_hash": config_hash,
-        "strategy_family": _bounded_text(policy.strategy_family, "strategy_family", maximum=64),
-        "strategy_version": _bounded_text(policy.strategy_version, "strategy_version", maximum=64),
+        "strategy_family": _bounded_text(
+            policy.strategy_family, "strategy_family", maximum=64
+        ),
+        "strategy_version": _bounded_text(
+            policy.strategy_version, "strategy_version", maximum=64
+        ),
         "credential_generation_id": generation_id,
         "account_index": policy.account_index,
         "api_key_index": policy.api_key_index,
@@ -288,9 +311,15 @@ def canonical_canary_policy(policy: CanaryPolicy) -> CanonicalCanaryPolicy:
         "instrument_allowlist": instruments,
         "capital_amount": _decimal_text(policy.capital_amount, "capital_amount"),
         "capital_currency": currency,
-        "valuation_source": _bounded_text(policy.valuation_source, "valuation_source", maximum=64),
-        "valuation_observed_at": _utc_text(valuation_at, "valuation_observed_at"),
-        "valuation_rule": _bounded_text(policy.valuation_rule, "valuation_rule", maximum=128),
+        "valuation_source": _bounded_text(
+            policy.valuation_source, "valuation_source", maximum=64
+        ),
+        "valuation_observed_at": _utc_text(
+            valuation_at, "valuation_observed_at"
+        ),
+        "valuation_rule": _bounded_text(
+            policy.valuation_rule, "valuation_rule", maximum=128
+        ),
         "hard_caps": _canonical_hard_caps(policy.hard_caps),
         "evidence_refs": _canonical_evidence(policy.evidence_refs),
         "valid_until": _utc_text(valid_until, "valid_until"),
@@ -305,6 +334,85 @@ def canonical_canary_policy(policy: CanaryPolicy) -> CanonicalCanaryPolicy:
         snapshot_hash=hashlib.sha256(canonical).hexdigest(),
         payload=payload,
     )
+
+
+def _policy_from_persisted_payload(payload: Mapping[str, Any]) -> CanaryPolicy:
+    """Reconstruct a policy only so the same canonical validator can re-check it."""
+    try:
+        hard_caps = payload["hard_caps"]
+        evidence_refs = payload["evidence_refs"]
+        market_allowlist = payload["market_allowlist"]
+        instrument_allowlist = payload["instrument_allowlist"]
+        if not isinstance(hard_caps, Mapping) or not isinstance(evidence_refs, Mapping):
+            raise TypeError
+        if not isinstance(market_allowlist, list) or not isinstance(
+            instrument_allowlist, list
+        ):
+            raise TypeError
+        return CanaryPolicy(
+            policy_version=str(payload["policy_version"]),
+            source_sha=str(payload["source_sha"]),
+            engine_config_hash=str(payload["engine_config_hash"]),
+            strategy_family=str(payload["strategy_family"]),
+            strategy_version=str(payload["strategy_version"]),
+            credential_generation_id=str(payload["credential_generation_id"]),
+            account_index=payload["account_index"],
+            api_key_index=payload["api_key_index"],
+            market_allowlist=tuple(market_allowlist),
+            instrument_allowlist=tuple(instrument_allowlist),
+            capital_amount=Decimal(str(payload["capital_amount"])),
+            capital_currency=str(payload["capital_currency"]),
+            valuation_source=str(payload["valuation_source"]),
+            valuation_observed_at=_parse_utc_text(
+                payload["valuation_observed_at"], "valuation_observed_at"
+            ),
+            valuation_rule=str(payload["valuation_rule"]),
+            hard_caps=dict(hard_caps),
+            evidence_refs={str(k): str(v) for k, v in evidence_refs.items()},
+            valid_until=_parse_utc_text(payload["valid_until"], "valid_until"),
+        )
+    except (KeyError, TypeError, ValueError, InvalidOperation) as exc:
+        raise CanaryPolicyError("persisted Canary snapshot integrity check failed") from exc
+
+
+def verify_persisted_canary_snapshot(
+    snapshot: CanaryPolicySnapshot,
+) -> dict[str, Any]:
+    """Re-canonicalize and bind every persisted non-secret policy field.
+
+    The DB table is append-only, but this verifier also protects imports,
+    restores, privileged/manual inserts, and future schema mistakes. A stored
+    64-hex lookup key is never treated as proof by itself.
+    """
+
+    payload = snapshot.payload_json
+    if not isinstance(payload, Mapping):
+        raise CanaryPolicyError("persisted Canary snapshot integrity check failed")
+    try:
+        canonical = canonical_canary_policy(_policy_from_persisted_payload(payload))
+    except CanaryPolicyError as exc:
+        raise CanaryPolicyError("persisted Canary snapshot integrity check failed") from exc
+
+    if dict(payload) != canonical.payload or snapshot.snapshot_hash != canonical.snapshot_hash:
+        raise CanaryPolicyError("persisted Canary snapshot integrity check failed")
+    if snapshot.schema_version != CANARY_SCHEMA_VERSION:
+        raise CanaryPolicyError("persisted Canary snapshot integrity check failed")
+
+    valid_until = _parse_utc_text(canonical.payload["valid_until"], "valid_until")
+    row_valid_until = _utc(snapshot.valid_until, "snapshot.valid_until")
+    if not (
+        snapshot.source_sha == canonical.payload["source_sha"]
+        and snapshot.engine_config_hash == canonical.payload["engine_config_hash"]
+        and str(snapshot.credential_generation_id)
+        == canonical.payload["credential_generation_id"]
+        and snapshot.account_index == canonical.payload["account_index"]
+        and snapshot.api_key_index == canonical.payload["api_key_index"]
+        and snapshot.strategy_family == canonical.payload["strategy_family"]
+        and snapshot.strategy_version == canonical.payload["strategy_version"]
+        and row_valid_until == valid_until
+    ):
+        raise CanaryPolicyError("persisted Canary snapshot integrity check failed")
+    return canonical.payload
 
 
 def persist_canary_policy_snapshot(
@@ -323,7 +431,9 @@ def persist_canary_policy_snapshot(
         or current.account_index != canonical.payload["account_index"]
         or current.api_key_index != canonical.payload["api_key_index"]
     ):
-        raise CanaryPolicyError("Canary policy credential generation does not match current scope")
+        raise CanaryPolicyError(
+            "Canary policy credential generation does not match current scope"
+        )
 
     normalized_actor = _bounded_text(actor, "actor", maximum=64)
     normalized_correlation = _bounded_text(
@@ -363,4 +473,5 @@ __all__ = [
     "current_lighter_trade_generation",
     "persist_canary_policy_snapshot",
     "record_lighter_trade_generation",
+    "verify_persisted_canary_snapshot",
 ]
