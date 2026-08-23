@@ -54,7 +54,8 @@ jobs:
             tests/test_tinvest_sandbox_integration_slot.py \
             tests/execution/venues/test_tinvest_sandbox_transport.py \
             tests/execution/venues/test_tinvest_sandbox_smoke.py \
-            tests/test_tinvest_sandbox_api.py; do
+            tests/test_tinvest_sandbox_api.py \
+            tests/ops/test_tinvest_sandbox_acceptance.py; do
             [ -f "$f" ] && files+=("$f")
           done
           .venv/bin/python -m pytest -q "${files[@]}"
