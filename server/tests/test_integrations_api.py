@@ -24,20 +24,22 @@ def test_integrations_list_has_server_owned_tinvest_and_bybit_without_secret_val
     slots = {item["slot"] for item in body}
     assert {
         "tinvest_invest_read",
+        "tinvest_sandbox_trade",
         "tinvest_trade",
         "bybit_read",
         "bybit_testnet_trade",
         "bybit_trade",
     } <= slots
-    # Sandbox execution is intentionally device-owned: exposing a second
-    # server credential slot would create two competing credentials/owners for
-    # the same confirmed FORTS plan.
+    # The legacy ambiguous slot name is deliberately not an alias: sandbox
+    # execution has one exact server-owned credential identity.
     assert "tinvest_sandbox" not in slots
     assert all(item["configured"] is False for item in body)
     assert "token" not in response.text.lower() or "fields" in response.text
 
     by_slot = {item["slot"]: item for item in body}
     assert by_slot["tinvest_invest_read"]["required"] is True
+    assert by_slot["tinvest_sandbox_trade"]["required"] is False
+    assert by_slot["tinvest_sandbox_trade"]["environment"] == "sandbox"
     assert by_slot["tinvest_trade"]["required"] is True
     assert by_slot["bybit_testnet_trade"]["required"] is False
     assert by_slot["bybit_trade"]["required"] is True
@@ -63,10 +65,10 @@ def test_tinvest_server_token_is_write_only_and_encrypted_at_rest(client, sessio
     assert load_secret(session, "tinvest_invest_read") == {"token": secret}
 
 
-def test_tinvest_sandbox_token_cannot_be_stored_on_server(client):
+def test_legacy_tinvest_sandbox_slot_name_is_not_accepted(client):
     response = client.put(
         "/api/v1/integrations/tinvest_sandbox",
-        json={"values": {"token": "must-stay-on-phone"}},
+        json={"values": {"token": "legacy-alias-must-not-be-created"}},
     )
     assert response.status_code == 404
 
