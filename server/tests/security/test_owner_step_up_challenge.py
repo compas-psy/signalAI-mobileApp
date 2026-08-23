@@ -87,28 +87,27 @@ def test_challenge_binds_exact_canonical_payload_and_owner_key(session):
 
 
 def test_challenge_rejects_inactive_device_or_missing_owner_key(session):
-    _private, credential, owner_key = _enroll(session, "0002")
+    _private, key_revoked_credential, owner_key = _enroll(session, "0002")
     owner_key.revoked_at = datetime.now(UTC)
     session.flush()
 
     with pytest.raises(owner_step_up.OwnerStepUpError):
         owner_step_up.issue_owner_step_up_challenge(
             session,
-            credential_id=credential.id,
+            credential_id=key_revoked_credential.id,
             purpose="OWNER_STEP_UP_SELF_TEST",
-            payload={"device_id": credential.device_id},
+            payload={"device_id": key_revoked_credential.device_id},
             ttl=timedelta(seconds=30),
         )
 
-    owner_key.revoked_at = None
-    session.flush()
-    revoke_device(session, credential_id=credential.id)
+    _private2, credential_revoked, _owner_key2 = _enroll(session, "0007")
+    revoke_device(session, credential_id=credential_revoked.id)
     with pytest.raises(owner_step_up.OwnerStepUpError):
         owner_step_up.issue_owner_step_up_challenge(
             session,
-            credential_id=credential.id,
+            credential_id=credential_revoked.id,
             purpose="OWNER_STEP_UP_SELF_TEST",
-            payload={"device_id": credential.device_id},
+            payload={"device_id": credential_revoked.device_id},
             ttl=timedelta(seconds=30),
         )
 
