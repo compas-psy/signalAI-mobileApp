@@ -44,7 +44,7 @@ CATEGORIES = (
 )
 
 
-def _snapshot(session):
+def _snapshot(session, *, instrument_id: str = "CRYPTO:PERP:BTCUSDT"):
     generation = record_lighter_trade_generation(
         session,
         action="CREATED",
@@ -63,7 +63,7 @@ def _snapshot(session):
         account_index=42,
         api_key_index=7,
         market_allowlist=(1,),
-        instrument_allowlist=("CRYPTO:PERP:BTCUSDT",),
+        instrument_allowlist=(instrument_id,),
         capital_amount=Decimal("10000"),
         capital_currency="RUB",
         valuation_source="owner_preapproved",
@@ -145,6 +145,7 @@ def _set_canary(session) -> None:
 
 def _execution_chain(session, instrument, snapshot) -> None:
     _set_canary(session)
+    event_time = datetime.now(UTC)
     session.add(
         ExecutionModeActivationRequest(
             preview_hash=snapshot.snapshot_hash,
@@ -159,7 +160,7 @@ def _execution_chain(session, instrument, snapshot) -> None:
             status="APPLIED",
             idempotency_key="audit-confirm-1",
             outcome_mode=ExecutionLifecycleMode.CANARY,
-            owner_confirmed_at=NOW,
+            owner_confirmed_at=event_time,
         )
     )
     bound_event = ExecutionModeEvent(
@@ -173,7 +174,7 @@ def _execution_chain(session, instrument, snapshot) -> None:
             "source_sha": snapshot.source_sha,
             "engine_config_hash": snapshot.engine_config_hash,
         },
-        occurred_at=NOW,
+        occurred_at=event_time,
     )
     session.add(bound_event)
     session.flush()
@@ -181,7 +182,7 @@ def _execution_chain(session, instrument, snapshot) -> None:
     idea = TradeIdea(
         **idea_kwargs(
             instrument.instrument_id,
-            NOW + timedelta(seconds=1),
+            event_time + timedelta(seconds=1),
             status="TRIGGERED",
             quality_status="PASS",
             score=Decimal("82"),
@@ -224,8 +225,8 @@ def _execution_chain(session, instrument, snapshot) -> None:
         quantity=Decimal("1"),
         limit_price=Decimal("100"),
         stop_price=None,
-        submitted_at=NOW + timedelta(seconds=2),
-        acknowledged_at=NOW + timedelta(seconds=2, milliseconds=100),
+        submitted_at=event_time + timedelta(seconds=2),
+        acknowledged_at=event_time + timedelta(seconds=2, milliseconds=100),
     )
     session.add(order)
     session.flush()
@@ -239,7 +240,7 @@ def _execution_chain(session, instrument, snapshot) -> None:
                 price=Decimal("101"),
                 fee_amount=Decimal("0.1"),
                 fee_currency="USDC",
-                filled_at=NOW + timedelta(seconds=3),
+                filled_at=event_time + timedelta(seconds=3),
             ),
             ExecutionProtection(
                 intent_id=intent.id,
@@ -249,15 +250,15 @@ def _execution_chain(session, instrument, snapshot) -> None:
                 provider_order_id="provider-stop-audit",
                 quantity=Decimal("1"),
                 stop_price=Decimal("95"),
-                armed_at=NOW + timedelta(seconds=3, milliseconds=200),
-                last_reconciled_at=NOW + timedelta(seconds=4),
+                armed_at=event_time + timedelta(seconds=3, milliseconds=200),
+                last_reconciled_at=event_time + timedelta(seconds=4),
             ),
             ExecutionReconciliationEvent(
                 intent_id=intent.id,
                 event_type="POST_PROTECTION",
                 outcome="MATCHED",
                 detail_json={"audit": "matched"},
-                occurred_at=NOW + timedelta(seconds=4),
+                occurred_at=event_time + timedelta(seconds=4),
             ),
         ]
     )
@@ -320,7 +321,7 @@ def test_correlation_detects_missing_or_mismatched_evidence_reference(session) -
 def test_correlation_complete_chain_is_exact_hash_scope_and_secret_free(session, instrument) -> None:
     from app.execution.canary_correlation import build_canary_correlation_report
 
-    snapshot, refs = _snapshot(session)
+    snapshot, refs = _snapshot(session, instrument_id=instrument.instrument_id)
     _evidence(session, snapshot, refs)
     _execution_chain(session, instrument, snapshot)
 
