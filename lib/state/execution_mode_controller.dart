@@ -155,6 +155,16 @@ class ExecutionModeController extends ChangeNotifier {
     _liveResult = null;
     notifyListeners();
     try {
+      // PAPER -> SANDBOX gains promotion authority only from a real provider
+      // round trip. The endpoint is idempotent for the current release and
+      // credential generation; lower-risk transitions never call a broker.
+      if (_mode == ServerExecutionMode.paper &&
+          target == ServerExecutionMode.sandbox) {
+        await _api.post(
+          '/api/v1/tinvest-sandbox/smoke',
+          idempotencyKey: 'mobile-sandbox-roundtrip-v1',
+        );
+      }
       final data = await _api.post(
         '/api/v1/execution/mode/preview',
         body: {'target': target.label},

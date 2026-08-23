@@ -1,90 +1,152 @@
-"""Owner-only CLI for provider-confirmed T-Invest Sandbox acceptance.
-
-The command is intentionally narrow and secret-safe. It delegates all broker
-I/O to the fixed-host sandbox smoke service and exits successfully only when
-the provider confirms at least one executed lot. No token value or provider
-error text is printed.
-"""
+"""VPS-local operator command for provider-confirmed T-Invest Sandbox round trip."""
 
 from __future__ import annotations
 
-import argparse
 import json
+import sys
 from collections.abc import Callable
 
 from ..db import session_scope
+from ..execution.enums import ExecutionLifecycleMode
+from ..execution.promotion_guard import (
+    current_server_promotion_evidence,
+    evaluate_promotion,
+)
 from ..execution.venues.tinvest import TInvestProviderError
+from ..execution.venues.tinvest_sandbox_readiness import (
+    current_tinvest_sandbox_context,
+    record_tinvest_sandbox_roundtrip_proof,
+    scoped_sandbox_diagnostic_key,
+)
 from ..execution.venues.tinvest_sandbox_smoke import (
     TInvestSandboxSmokeResult,
     run_tinvest_sandbox_smoke,
 )
 
-SmokeRunner = Callable[[str], TInvestSandboxSmokeResult]
+_VPS_ACCEPTANCE_KEY = "vps-sandbox-roundtrip-v1"
 
 
-def _production_runner(diagnostic_key: str) -> TInvestSandboxSmokeResult:
-    with session_scope() as session:
-        return run_tinvest_sandbox_smoke(
-            session,
-            diagnostic_key=diagnostic_key,
-        )
+class _AcceptanceBlocked(RuntimeError):
+    def __init__(self, code: str):
+        super().__init__(code)
+        self.code = code
 
 
-def _safe_payload(result: TInvestSandboxSmokeResult) -> dict[str, object]:
-    accepted = bool(result.filled and result.executed_lots > 0)
+def _emit(payload: dict[str, object]) -> None:
+    print(json.dumps(payload, ensure_ascii=False))
+
+
+def _safe_failure(code: str) -> int:
+    # Exception text is deliberately not emitted: even though the transport
+    # bounds its own errors, an unexpected upstream/library message must never
+    # become a path for broker credentials or response bodies into CI.
+    _emit({"accepted": False, "error_code": code})
+    return 2
+
+
+def _accepted_payload(result: TInvestSandboxSmokeResult) -> dict[str, object]:
     return {
-        "accepted": accepted,
+        "accepted": True,
+        "round_trip_complete": True,
         "symbol": result.symbol,
         "account_suffix": result.account_suffix,
-        "provider_order_id": result.provider_order_id,
-        "execution_status": result.execution_status,
-        "executed_lots": result.executed_lots,
+        "buy_order_id": result.buy_provider_order_id,
+        "buy_status": result.buy_execution_status,
+        "buy_executed_lots": result.buy_executed_lots,
+        "sell_order_id": result.sell_provider_order_id,
+        "sell_status": result.sell_execution_status,
+        "sell_executed_lots": result.sell_executed_lots,
+        "position_flat": result.position_flat,
     }
 
 
 def run_acceptance(
     *,
     diagnostic_key: str,
-    smoke_runner: SmokeRunner = _production_runner,
+    smoke_runner: Callable[[str], TInvestSandboxSmokeResult],
 ) -> int:
-    """Run one idempotent sandbox smoke and print only sanitized evidence."""
+    """Classify one injected provider run without exposing exception text.
+
+    This small seam keeps the VPS acceptance contract unit-testable. Production
+    ``main`` performs the same classification and additionally persists the
+    release+credential-bound readiness proof in the production database.
+    """
 
     try:
         result = smoke_runner(diagnostic_key)
     except TInvestProviderError as exc:
-        print(
-            json.dumps(
-                {"accepted": False, "error_code": exc.code},
-                sort_keys=True,
-                separators=(",", ":"),
-            )
+        return _safe_failure(exc.code)
+    except Exception:
+        return _safe_failure("UNEXPECTED")
+
+    if not result.round_trip_complete:
+        _emit(
+            {
+                "accepted": False,
+                "error_code": "ROUND_TRIP_INCOMPLETE",
+                "buy_executed_lots": result.buy_executed_lots,
+                "sell_executed_lots": result.sell_executed_lots,
+                "position_flat": result.position_flat,
+            }
         )
         return 2
-    except Exception:
-        # Do not serialize arbitrary exception text: it may contain transport
-        # headers or other sensitive values from a future dependency.
-        print(
-            json.dumps(
-                {"accepted": False, "error_code": "INTERNAL_ERROR"},
-                sort_keys=True,
-                separators=(",", ":"),
-            )
-        )
-        return 3
 
-    payload = _safe_payload(result)
-    print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
-    return 0 if payload["accepted"] is True else 1
+    _emit(_accepted_payload(result))
+    return 0
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Run provider-confirmed T-Invest Sandbox acceptance smoke."
-    )
-    parser.add_argument("--diagnostic-key", required=True)
-    args = parser.parse_args()
-    return run_acceptance(diagnostic_key=args.diagnostic_key)
+    try:
+        with session_scope() as db:
+            context = current_tinvest_sandbox_context(db)
+            diagnostic_key = scoped_sandbox_diagnostic_key(_VPS_ACCEPTANCE_KEY, context)
+            result = run_tinvest_sandbox_smoke(db, diagnostic_key=diagnostic_key)
+            if not result.round_trip_complete:
+                raise _AcceptanceBlocked("ROUND_TRIP_INCOMPLETE")
+
+            proof_id = record_tinvest_sandbox_roundtrip_proof(
+                db,
+                context=context,
+                symbol=result.symbol,
+                account_suffix=result.account_suffix,
+                buy_order_id=result.buy_provider_order_id,
+                buy_status=result.buy_execution_status,
+                buy_executed_lots=result.buy_executed_lots,
+                sell_order_id=result.sell_provider_order_id,
+                sell_status=result.sell_execution_status,
+                sell_executed_lots=result.sell_executed_lots,
+                position_flat=result.position_flat,
+            )
+
+            # Verify the actual production promotion evidence path, without
+            # changing execution mode. This proves that the exact persisted
+            # release+credential proof is sufficient for PAPER -> SANDBOX and
+            # that no mobile-supplied readiness boolean is involved.
+            evidence = current_server_promotion_evidence(
+                db,
+                current=ExecutionLifecycleMode.PAPER,
+                target=ExecutionLifecycleMode.SANDBOX,
+            )
+            decision = evaluate_promotion(
+                current=ExecutionLifecycleMode.PAPER,
+                target=ExecutionLifecycleMode.SANDBOX,
+                evidence=evidence,
+            )
+            if not decision.allowed:
+                raise _AcceptanceBlocked("PROMOTION_GUARD_BLOCKED")
+    except _AcceptanceBlocked as exc:
+        return _safe_failure(exc.code)
+    except TInvestProviderError as exc:
+        return _safe_failure(exc.code)
+    except Exception:
+        return _safe_failure("UNEXPECTED")
+
+    payload = _accepted_payload(result)
+    payload["readiness_proof_id"] = proof_id
+    payload["promotion_ready"] = True
+    _emit(payload)
+    return 0
 
 
-if __name__ == "__main__":  # pragma: no cover - exercised by VPS workflow
-    raise SystemExit(main())
+if __name__ == "__main__":
+    sys.exit(main())

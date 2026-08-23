@@ -197,12 +197,25 @@ def current_server_promotion_evidence(
 ) -> PromotionEvidence:
     """Build only evidence the server can prove today.
 
-    The B5 provider reads only append-only server snapshots.  Generic callers
-    without an authoritative strategy/policy scope remain blocked instead of
-    turning a client-selected value into promotion authority.
+    PAPER -> SANDBOX has one global provider-owned acceptance proof: a real
+    T-Invest Sandbox LIMIT BUY/SELL round trip bound to the exact deployed SHA
+    and current sandbox credential generation. Later risk-increasing stages
+    remain strategy-scoped and fail closed without their authoritative scope.
     """
 
-    del current
+    if (
+        scope is None
+        and current == ExecutionLifecycleMode.PAPER
+        and target == ExecutionLifecycleMode.SANDBOX
+    ):
+        from .venues.tinvest_sandbox_readiness import current_tinvest_sandbox_readiness
+
+        readiness = current_tinvest_sandbox_readiness(db)
+        return PromotionEvidence(
+            technical_sandbox_ready=readiness.ready,
+            notes=readiness.notes,
+        )
+
     if scope is not None:
         return current_persisted_promotion_evidence(
             db, scope=scope, target=target, now=now

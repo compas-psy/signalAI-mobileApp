@@ -52,6 +52,20 @@ class _ModeApi extends ApiClient {
     String? idempotencyKey,
   }) async {
     posts.add((path: path, body: body, key: idempotencyKey));
+    if (path == '/api/v1/tinvest-sandbox/smoke') {
+      return {
+        'round_trip_complete': true,
+        'position_flat': true,
+        'symbol': 'LQDT',
+        'account_suffix': '123456',
+        'buy_provider_order_id': 'buy-safe',
+        'buy_execution_status': 'EXECUTION_REPORT_STATUS_FILL',
+        'buy_executed_lots': 1,
+        'sell_provider_order_id': 'sell-safe',
+        'sell_execution_status': 'EXECUTION_REPORT_STATUS_FILL',
+        'sell_executed_lots': 1,
+      };
+    }
     if (path == '/api/v1/execution/mode/preview') {
       return Map<String, dynamic>.from(modePreview);
     }
@@ -108,6 +122,41 @@ void main() {
       isEmpty,
     );
     expect(controller.mode, ServerExecutionMode.canary);
+  });
+
+  test('PAPER to SANDBOX runs server round-trip before promotion preview',
+      () async {
+    final api = _ModeApi()
+      ..mode = 'PAPER'
+      ..modePreview = {
+        'current': 'PAPER',
+        'target': 'SANDBOX',
+        'allowed': true,
+        'blockers': <dynamic>[],
+      };
+    final controller = ExecutionModeController(api: api);
+    await controller.load();
+
+    final preview = await controller.previewMode(ServerExecutionMode.sandbox);
+
+    expect(preview.allowed, isTrue);
+    expect(api.posts, hasLength(2));
+    expect(api.posts[0].path, '/api/v1/tinvest-sandbox/smoke');
+    expect(api.posts[0].key, 'mobile-sandbox-roundtrip-v1');
+    expect(api.posts[1].path, '/api/v1/execution/mode/preview');
+  });
+
+  test('downshift to SANDBOX never runs a broker round-trip', () async {
+    final api = _ModeApi();
+    final controller = ExecutionModeController(api: api);
+    await controller.load();
+
+    await controller.previewMode(ServerExecutionMode.sandbox);
+
+    expect(
+      api.posts.where((item) => item.path == '/api/v1/tinvest-sandbox/smoke'),
+      isEmpty,
+    );
   });
 
   test('allowed generic transition still needs explicit confirm', () async {

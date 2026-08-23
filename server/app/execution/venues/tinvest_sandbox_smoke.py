@@ -1,15 +1,14 @@
-"""Narrow provider-confirmed T-Invest Sandbox smoke transaction.
+"""Provider-confirmed T-Invest Sandbox LIMIT BUY -> SELL round trip.
 
-This module is intentionally not a generic order API. It buys exactly one lot
-from a small compile-time allowlist of diagnostic instruments, choosing the
-first one that T-Invest currently reports as API-tradeable. It uses a stable
-provider request id for replay safety and reconciles before every possible
-submit. It has no live host, account, credential slot or execution-mode side
-effect.
+This is deliberately not a generic order API. The server chooses from a small
+compile-time allowlist, uses a dedicated sandbox account per scoped diagnostic
+identity, submits one crossing LIMIT BUY and one crossing LIMIT SELL, and only
+reports success after the provider confirms both fills and the position is flat.
 """
 
 from __future__ import annotations
 
+import hashlib
 import re
 import time
 from collections.abc import Callable, Mapping
@@ -21,32 +20,44 @@ from sqlalchemy.orm import Session
 from .tinvest import TInvestProviderError, TInvestTransport
 from .tinvest_transport import build_tinvest_sandbox_transport
 
-# Prefer instruments that can be available in extended/weekend sessions, while
-# retaining SBER as a conventional weekday fallback. This is intentionally a
-# fixed server-side allowlist rather than a user-supplied ticker/order surface.
 _SMOKE_CANDIDATES = ("LQDT", "TBRU", "SBER")
 _DIAGNOSTIC_KEY_RE = re.compile(r"^[A-Za-z0-9._:-]{16,128}$")
-_ACCOUNT_NAME = "SignalAI thin-client smoke"
+_ACCOUNT_PREFIX = "SignalAI roundtrip"
 _PAY_IN_RUB = "100000"
+_FILL_STATUS = "EXECUTION_REPORT_STATUS_FILL"
 
 
 @dataclass(frozen=True, slots=True)
 class TInvestSandboxSmokeResult:
-    filled: bool
+    round_trip_complete: bool
     symbol: str
     account_suffix: str
-    provider_order_id: str
-    execution_status: str
-    executed_lots: int
+    buy_provider_order_id: str
+    buy_execution_status: str
+    buy_executed_lots: int
+    sell_provider_order_id: str
+    sell_execution_status: str
+    sell_executed_lots: int
+    position_flat: bool
 
 
-def sandbox_smoke_request_id(diagnostic_key: str) -> str:
+def sandbox_smoke_request_id(diagnostic_key: str, *, leg: str = "buy") -> str:
     if not isinstance(diagnostic_key, str) or _DIAGNOSTIC_KEY_RE.fullmatch(diagnostic_key) is None:
         raise TInvestProviderError(
             code="INVALID_REQUEST",
             message="sandbox diagnostic key is invalid",
         )
-    return str(uuid5(NAMESPACE_URL, f"signalai:tinvest-sandbox-smoke:{diagnostic_key}"))
+    if leg not in {"buy", "sell"}:
+        raise TInvestProviderError(
+            code="INVALID_REQUEST",
+            message="sandbox diagnostic leg is invalid",
+        )
+    return str(uuid5(NAMESPACE_URL, f"signalai:tinvest-sandbox-roundtrip:{diagnostic_key}:{leg}"))
+
+
+def _account_name(diagnostic_key: str) -> str:
+    suffix = hashlib.sha256(diagnostic_key.encode()).hexdigest()[:16]
+    return f"{_ACCOUNT_PREFIX} {suffix}"
 
 
 def _mapping(value: object, *, context: str) -> Mapping[str, object]:
@@ -58,49 +69,26 @@ def _mapping(value: object, *, context: str) -> Mapping[str, object]:
     return value
 
 
-def _positive_lots(value: object) -> int:
+def _non_negative_int(value: object, *, field: str) -> int:
     try:
         parsed = int(str(value or "0"))
     except (TypeError, ValueError) as exc:
         raise TInvestProviderError(
             code="INVALID_RESPONSE",
-            message="sandbox provider lotsExecuted is invalid",
+            message=f"sandbox provider {field} is invalid",
         ) from exc
     if parsed < 0:
         raise TInvestProviderError(
             code="INVALID_RESPONSE",
-            message="sandbox provider lotsExecuted is invalid",
+            message=f"sandbox provider {field} is invalid",
         )
     return parsed
 
 
-def _result(
-    account_id: str,
-    state: Mapping[str, object],
-    request_id: str,
-    *,
-    symbol: str | None = None,
-) -> TInvestSandboxSmokeResult:
-    executed = _positive_lots(state.get("lotsExecuted"))
-    provider_symbol = state.get("ticker")
-    resolved_symbol = (
-        provider_symbol.strip().upper()
-        if isinstance(provider_symbol, str) and provider_symbol.strip()
-        else symbol or "UNKNOWN"
-    )
-    return TInvestSandboxSmokeResult(
-        filled=executed > 0,
-        symbol=resolved_symbol,
-        account_suffix=account_id[-6:] if len(account_id) >= 6 else account_id,
-        provider_order_id=str(state.get("orderId") or request_id),
-        execution_status=str(state.get("executionReportStatus") or "UNKNOWN"),
-        executed_lots=executed,
-    )
-
-
-def _open_account_id(transport: TInvestTransport) -> str:
+def _open_account_id(transport: TInvestTransport, *, diagnostic_key: str) -> str:
+    account_name = _account_name(diagnostic_key)
     response = _mapping(
-        transport.call("SandboxService", "GetSandboxAccounts", {}),
+        transport.call("SandboxService", "GetSandboxAccounts", {"status": "ACCOUNT_STATUS_OPEN"}),
         context="accounts",
     )
     raw_accounts = response.get("accounts")
@@ -111,17 +99,19 @@ def _open_account_id(transport: TInvestTransport) -> str:
                 continue
             account_id = raw.get("id")
             status = str(raw.get("status") or "")
-            if isinstance(account_id, str) and account_id and not status.endswith("CLOSED"):
+            name = raw.get("name")
+            if (
+                isinstance(account_id, str)
+                and account_id
+                and not status.endswith("CLOSED")
+                and name == account_name
+            ):
                 candidates.append(account_id)
     if candidates:
         return sorted(candidates)[0]
 
     opened = _mapping(
-        transport.call(
-            "SandboxService",
-            "OpenSandboxAccount",
-            {"name": _ACCOUNT_NAME},
-        ),
+        transport.call("SandboxService", "OpenSandboxAccount", {"name": account_name}),
         context="open-account",
     )
     account_id = opened.get("accountId")
@@ -174,96 +164,232 @@ def _instrument_uid(transport: TInvestTransport, *, symbol: str) -> str | None:
             code="INVALID_RESPONSE",
             message="sandbox provider instrument search response is invalid",
         )
-
     for raw in instruments:
         if not isinstance(raw, Mapping):
             continue
         ticker = raw.get("ticker")
-        if not isinstance(ticker, str) or ticker.strip().upper() != symbol:
-            continue
         uid = raw.get("uid")
-        if isinstance(uid, str) and uid:
+        if (
+            isinstance(ticker, str)
+            and ticker.strip().upper() == symbol
+            and isinstance(uid, str)
+            and uid
+        ):
             return uid
     return None
 
 
-def _base_order_payload(
-    *,
-    account_id: str,
-    instrument_uid: str,
-    request_id: str,
-) -> dict[str, object]:
-    return {
-        "accountId": account_id,
-        "instrumentId": instrument_uid,
-        "quantity": "1",
-        "direction": "ORDER_DIRECTION_BUY",
-        "orderId": request_id,
-        "priceType": "PRICE_TYPE_CURRENCY",
-    }
+def _quotation(value: object, *, context: str) -> dict[str, object] | None:
+    if not isinstance(value, list) or not value or not isinstance(value[0], Mapping):
+        return None
+    price = value[0].get("price")
+    if not isinstance(price, Mapping):
+        raise TInvestProviderError(
+            code="INVALID_RESPONSE",
+            message=f"sandbox provider {context} price is invalid",
+        )
+    return dict(price)
 
 
-def _tradeable_order_payload(
+def _order_book_price(
     transport: TInvestTransport,
     *,
-    account_id: str,
-    request_id: str,
-) -> tuple[str, dict[str, object]]:
-    """Choose the first allowlisted instrument that is actually tradeable now."""
+    instrument_uid: str,
+    side: str,
+) -> dict[str, object]:
+    book = _mapping(
+        transport.call(
+            "MarketDataService",
+            "GetOrderBook",
+            {"instrumentId": instrument_uid, "depth": 1},
+        ),
+        context="order-book",
+    )
+    price = _quotation(book.get("asks" if side == "buy" else "bids"), context=side)
+    if price is None:
+        raise TInvestProviderError(
+            code="MARKET_UNAVAILABLE",
+            message=f"sandbox {side} order book side is empty",
+        )
+    return price
 
+
+def _select_limit_tradeable_instrument(
+    transport: TInvestTransport,
+) -> tuple[str, str, dict[str, object]]:
     for symbol in _SMOKE_CANDIDATES:
-        instrument_uid = _instrument_uid(transport, symbol=symbol)
-        if instrument_uid is None:
+        uid = _instrument_uid(transport, symbol=symbol)
+        if uid is None:
             continue
-
         status = _mapping(
             transport.call(
                 "MarketDataService",
                 "GetTradingStatus",
-                {"instrumentId": instrument_uid},
+                {"instrumentId": uid},
             ),
             context="trading-status",
         )
-        if status.get("apiTradeAvailableFlag") is not True:
-            continue
-
-        base = _base_order_payload(
-            account_id=account_id,
-            instrument_uid=instrument_uid,
-            request_id=request_id,
-        )
-        if status.get("marketOrderAvailableFlag") is True:
-            return symbol, {**base, "orderType": "ORDER_TYPE_MARKET"}
-
-        if status.get("limitOrderAvailableFlag") is not True:
-            continue
-        book = _mapping(
-            transport.call(
-                "MarketDataService",
-                "GetOrderBook",
-                {"instrumentId": instrument_uid, "depth": 1},
-            ),
-            context="order-book",
-        )
-        asks = book.get("asks")
-        if not isinstance(asks, list) or not asks or not isinstance(asks[0], Mapping):
-            continue
-        price = asks[0].get("price")
-        if not isinstance(price, Mapping):
-            raise TInvestProviderError(
-                code="INVALID_RESPONSE",
-                message="sandbox provider ask price is invalid",
+        if (
+            status.get("apiTradeAvailableFlag") is True
+            and status.get("limitOrderAvailableFlag") is True
+        ):
+            return symbol, uid, _order_book_price(
+                transport,
+                instrument_uid=uid,
+                side="buy",
             )
-        return symbol, {
-            **base,
-            "orderType": "ORDER_TYPE_LIMIT",
-            "price": dict(price),
-            "timeInForce": "TIME_IN_FORCE_FILL_AND_KILL",
-        }
-
     raise TInvestProviderError(
         code="MARKET_UNAVAILABLE",
-        message="no sandbox smoke candidate is available for API trading now",
+        message="no sandbox round-trip candidate is available for API limit trading now",
+    )
+
+
+def _order_payload(
+    *,
+    account_id: str,
+    instrument_uid: str,
+    quantity: int,
+    direction: str,
+    request_id: str,
+    price: dict[str, object],
+) -> dict[str, object]:
+    return {
+        "accountId": account_id,
+        "instrumentId": instrument_uid,
+        "quantity": str(quantity),
+        "direction": direction,
+        "orderType": "ORDER_TYPE_LIMIT",
+        "orderId": request_id,
+        "priceType": "PRICE_TYPE_CURRENCY",
+        "price": price,
+        "timeInForce": "TIME_IN_FORCE_FILL_AND_KILL",
+    }
+
+
+def _state_lots(state: Mapping[str, object] | None) -> int:
+    if state is None:
+        return 0
+    return _non_negative_int(state.get("lotsExecuted"), field="lotsExecuted")
+
+
+def _state_status(state: Mapping[str, object] | None) -> str:
+    if state is None:
+        return "NOT_CONFIRMED"
+    return str(state.get("executionReportStatus") or "NOT_CONFIRMED")
+
+
+def _state_is_fill(state: Mapping[str, object] | None) -> bool:
+    return _state_status(state) == _FILL_STATUS
+
+
+def _reconcile_after_submit(
+    transport: TInvestTransport,
+    *,
+    account_id: str,
+    request_id: str,
+    required_lots: int,
+    attempts: int,
+    sleeper: Callable[[float], None],
+) -> Mapping[str, object] | None:
+    """Require an independent state read; the write response is never proof."""
+
+    last_state: Mapping[str, object] | None = None
+    for attempt in range(attempts):
+        if attempt:
+            sleeper(0.5)
+        state = _reconcile(transport, account_id=account_id, request_id=request_id)
+        if state is None:
+            continue
+        last_state = state
+        if _state_is_fill(state) and _state_lots(state) >= required_lots:
+            return state
+        status = _state_status(state)
+        if status.endswith("REJECTED") or status.endswith("CANCELLED"):
+            return state
+    return last_state
+
+
+def _state_symbol(state: Mapping[str, object] | None, fallback: str = "UNKNOWN") -> str:
+    if state is None:
+        return fallback
+    ticker = state.get("ticker")
+    return ticker.strip().upper() if isinstance(ticker, str) and ticker.strip() else fallback
+
+
+def _state_uid(state: Mapping[str, object]) -> str:
+    uid = state.get("instrumentUid")
+    if not isinstance(uid, str) or not uid:
+        raise TInvestProviderError(
+            code="INVALID_RESPONSE",
+            message="sandbox provider filled order has no instrument uid",
+        )
+    return uid
+
+
+def _position_is_flat(
+    transport: TInvestTransport,
+    *,
+    account_id: str,
+    instrument_uid: str,
+) -> bool:
+    positions = _mapping(
+        transport.call(
+            "SandboxService",
+            "GetSandboxPositions",
+            {"accountId": account_id},
+        ),
+        context="positions",
+    )
+    for collection in ("securities", "futures", "options"):
+        raw_items = positions.get(collection)
+        if raw_items is None:
+            continue
+        if not isinstance(raw_items, list):
+            raise TInvestProviderError(
+                code="INVALID_RESPONSE",
+                message="sandbox provider positions response is invalid",
+            )
+        for raw in raw_items:
+            if not isinstance(raw, Mapping) or raw.get("instrumentUid") != instrument_uid:
+                continue
+            balance = _non_negative_int(raw.get("balance"), field="position balance")
+            blocked = _non_negative_int(raw.get("blocked"), field="position blocked")
+            if balance != 0 or blocked != 0:
+                return False
+    return True
+
+
+def _result(
+    *,
+    account_id: str,
+    symbol: str,
+    buy_state: Mapping[str, object] | None,
+    sell_state: Mapping[str, object] | None,
+    buy_request_id: str,
+    sell_request_id: str,
+    position_flat: bool,
+) -> TInvestSandboxSmokeResult:
+    buy_lots = _state_lots(buy_state)
+    sell_lots = _state_lots(sell_state)
+    buy_status = _state_status(buy_state)
+    sell_status = _state_status(sell_state)
+    return TInvestSandboxSmokeResult(
+        round_trip_complete=(
+            buy_status == _FILL_STATUS
+            and sell_status == _FILL_STATUS
+            and buy_lots > 0
+            and sell_lots == buy_lots
+            and position_flat
+        ),
+        symbol=_state_symbol(buy_state, symbol),
+        account_suffix=account_id[-6:] if len(account_id) >= 6 else account_id,
+        buy_provider_order_id=str((buy_state or {}).get("orderId") or buy_request_id),
+        buy_execution_status=buy_status,
+        buy_executed_lots=buy_lots,
+        sell_provider_order_id=str((sell_state or {}).get("orderId") or sell_request_id),
+        sell_execution_status=sell_status,
+        sell_executed_lots=sell_lots,
+        position_flat=position_flat,
     )
 
 
@@ -275,50 +401,121 @@ def run_tinvest_sandbox_smoke(
     reconciliation_attempts: int = 4,
     sleeper: Callable[[float], None] = time.sleep,
 ) -> TInvestSandboxSmokeResult:
-    """Submit at most one sandbox BUY and return provider-reconciled evidence."""
+    """Run or reconcile one idempotent provider-confirmed LIMIT round trip."""
 
-    request_id = sandbox_smoke_request_id(diagnostic_key)
+    buy_id = sandbox_smoke_request_id(diagnostic_key, leg="buy")
+    sell_id = sandbox_smoke_request_id(diagnostic_key, leg="sell")
     provider = transport or build_tinvest_sandbox_transport(session)
-    account_id = _open_account_id(provider)
+    account_id = _open_account_id(provider, diagnostic_key=diagnostic_key)
+    attempts = max(1, min(int(reconciliation_attempts), 8))
 
-    existing = _reconcile(provider, account_id=account_id, request_id=request_id)
-    if existing is not None:
-        return _result(account_id, existing, request_id)
+    buy_state = _reconcile(provider, account_id=account_id, request_id=buy_id)
+    symbol = _state_symbol(buy_state)
+    if buy_state is None:
+        symbol, instrument_uid, buy_price = _select_limit_tradeable_instrument(provider)
+        provider.call(
+            "SandboxService",
+            "SandboxPayIn",
+            {
+                "accountId": account_id,
+                "amount": {"currency": "rub", "units": _PAY_IN_RUB, "nano": 0},
+            },
+        )
+        _mapping(
+            provider.call(
+                "SandboxService",
+                "PostSandboxOrder",
+                _order_payload(
+                    account_id=account_id,
+                    instrument_uid=instrument_uid,
+                    quantity=1,
+                    direction="ORDER_DIRECTION_BUY",
+                    request_id=buy_id,
+                    price=buy_price,
+                ),
+            ),
+            context="buy-order",
+        )
+        buy_state = _reconcile_after_submit(
+            provider,
+            account_id=account_id,
+            request_id=buy_id,
+            required_lots=1,
+            attempts=attempts,
+            sleeper=sleeper,
+        )
 
-    symbol, payload = _tradeable_order_payload(
+    buy_lots = _state_lots(buy_state)
+    if not _state_is_fill(buy_state) or buy_lots <= 0:
+        return _result(
+            account_id=account_id,
+            symbol=symbol,
+            buy_state=buy_state,
+            sell_state=None,
+            buy_request_id=buy_id,
+            sell_request_id=sell_id,
+            position_flat=False,
+        )
+
+    instrument_uid = _state_uid(buy_state)
+    symbol = _state_symbol(buy_state, symbol)
+    sell_state = _reconcile(provider, account_id=account_id, request_id=sell_id)
+    if sell_state is None:
+        sell_price = _order_book_price(
+            provider,
+            instrument_uid=instrument_uid,
+            side="sell",
+        )
+        _mapping(
+            provider.call(
+                "SandboxService",
+                "PostSandboxOrder",
+                _order_payload(
+                    account_id=account_id,
+                    instrument_uid=instrument_uid,
+                    quantity=buy_lots,
+                    direction="ORDER_DIRECTION_SELL",
+                    request_id=sell_id,
+                    price=sell_price,
+                ),
+            ),
+            context="sell-order",
+        )
+        sell_state = _reconcile_after_submit(
+            provider,
+            account_id=account_id,
+            request_id=sell_id,
+            required_lots=buy_lots,
+            attempts=attempts,
+            sleeper=sleeper,
+        )
+
+    sell_lots = _state_lots(sell_state)
+    if not _state_is_fill(sell_state) or sell_lots != buy_lots:
+        return _result(
+            account_id=account_id,
+            symbol=symbol,
+            buy_state=buy_state,
+            sell_state=sell_state,
+            buy_request_id=buy_id,
+            sell_request_id=sell_id,
+            position_flat=False,
+        )
+
+    position_flat = _position_is_flat(
         provider,
         account_id=account_id,
-        request_id=request_id,
+        instrument_uid=instrument_uid,
     )
-
-    # Virtual funds only. This call exists solely in SandboxService and is
-    # deliberately made only after proving no order already exists and after a
-    # currently tradeable allowlisted instrument has been selected.
-    provider.call(
-        "SandboxService",
-        "SandboxPayIn",
-        {
-            "accountId": account_id,
-            "amount": {"currency": "rub", "units": _PAY_IN_RUB, "nano": 0},
-        },
+    return _result(
+        account_id=account_id,
+        symbol=symbol,
+        buy_state=buy_state,
+        sell_state=sell_state,
+        buy_request_id=buy_id,
+        sell_request_id=sell_id,
+        position_flat=position_flat,
     )
-    submitted = _mapping(
-        provider.call("SandboxService", "PostSandboxOrder", payload),
-        context="post-order",
-    )
-
-    attempts = max(1, min(int(reconciliation_attempts), 8))
-    for attempt in range(attempts):
-        if attempt:
-            sleeper(0.5)
-        state = _reconcile(provider, account_id=account_id, request_id=request_id)
-        if state is not None:
-            return _result(account_id, state, request_id, symbol=symbol)
-
-    # Provider accepted the submit but the reconciliation read has not become
-    # visible yet. Never re-submit here. The same diagnostic key can be retried
-    # later and will reconcile before any new submit is possible.
-    return _result(account_id, submitted, request_id, symbol=symbol)
 
 
 __all__ = [

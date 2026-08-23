@@ -195,7 +195,14 @@ def _save_secret_unlocked(
     *,
     actor: str,
 ) -> datetime:
-    """Persist one already-validated secret; caller owns any required lock."""
+    """Persist one already-validated secret; caller owns any required lock.
+
+    ``clock_timestamp()`` is intentional here. PostgreSQL ``now()`` is frozen
+    at transaction start, so two credential rotations inside one long-lived
+    transaction can otherwise receive the same generation marker. Sandbox
+    readiness and live credential governance must invalidate immediately on
+    every actual write, not merely on every transaction.
+    """
 
     existed = False
     if spec.slot == _LIGHTER_LIVE_TRADE_SLOT:
@@ -210,10 +217,10 @@ def _save_secret_unlocked(
     payload = json.dumps(cleaned, ensure_ascii=False, sort_keys=True)
     row = db.execute(text("""
         INSERT INTO signalai_integration_secrets(slot, encrypted_payload, updated_at)
-        VALUES (:slot, pgp_sym_encrypt(:payload, :secret_key, 'cipher-algo=aes256'), now())
+        VALUES (:slot, pgp_sym_encrypt(:payload, :secret_key, 'cipher-algo=aes256'), clock_timestamp())
         ON CONFLICT (slot) DO UPDATE SET
             encrypted_payload = EXCLUDED.encrypted_payload,
-            updated_at = now()
+            updated_at = clock_timestamp()
         RETURNING updated_at
     """), {"slot": spec.slot, "payload": payload, "secret_key": _encryption_key(spec.slot)}).one()
 

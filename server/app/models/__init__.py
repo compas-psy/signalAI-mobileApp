@@ -104,6 +104,7 @@ from .retention import RetentionAttemptIntent, RetentionAttemptOutcome
 from .risk import AuditEvent, BacktestRun, ModelRegistry, RiskSnapshot, RiskState
 from .shadow import ShadowObservation
 from .strategies import StrategyPromotionEvent, StrategyVersion
+from .tinvest_sandbox import TInvestSandboxRoundTripProof
 
 __all__ = [
     "Base",
@@ -147,6 +148,7 @@ __all__ = [
     "LighterCredentialGeneration",
     "CanaryPolicySnapshot",
     "CanaryEvidenceReference",
+    "TInvestSandboxRoundTripProof",
     # device lifecycle
     "DeviceCredential",
     "DevicePairingSession",

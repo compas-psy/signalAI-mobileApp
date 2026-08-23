@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+from types import SimpleNamespace
 
 import pytest
 
@@ -169,7 +170,38 @@ def test_default_server_evidence_stays_fail_closed_for_paper_to_sandbox(session)
 
     assert decision.allowed is False
     assert "technical sandbox readiness not verified" in decision.blockers
-    assert "venue sandbox capability not verified" in decision.evidence_notes
+    assert decision.evidence_notes
+
+
+def test_provider_confirmed_roundtrip_is_the_only_generic_paper_sandbox_authority(
+    session, monkeypatch
+):
+    guard = _guard()
+    readiness = importlib.import_module(
+        "app.execution.venues.tinvest_sandbox_readiness"
+    )
+    monkeypatch.setattr(
+        readiness,
+        "current_tinvest_sandbox_readiness",
+        lambda db: SimpleNamespace(
+            ready=True,
+            proof_id="proof-safe",
+            notes=("provider-confirmed sandbox BUY/SELL round trip is current",),
+        ),
+    )
+
+    decision = guard.preview_promotion(
+        session,
+        target=ExecutionLifecycleMode.SANDBOX,
+    )
+
+    assert decision.allowed is True
+    assert decision.blockers == ()
+    assert decision.authorization is not None
+    assert decision.authorization.detail_json["direction"] == "promotion"
+    assert decision.evidence_notes == (
+        "provider-confirmed sandbox BUY/SELL round trip is current",
+    )
 
 
 def test_mode_api_uses_guard_and_allows_only_safe_downshift_without_future_proofs(session):
