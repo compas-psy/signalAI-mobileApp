@@ -7,6 +7,7 @@ import pytest
 from app.execution.venues.tinvest import TInvestProviderError
 from app.execution.venues.tinvest_sandbox_smoke import (
     TInvestSandboxSmokeResult,
+    _account_name,
     run_tinvest_sandbox_smoke,
     sandbox_smoke_request_id,
 )
@@ -30,8 +31,16 @@ class _ScriptedTransport:
         return value
 
 
-def _account():
-    return {"accounts": [{"id": "sandbox-account-123456", "status": "ACCOUNT_STATUS_OPEN"}]}
+def _account(key: str):
+    return {
+        "accounts": [
+            {
+                "id": "sandbox-account-123456",
+                "status": "ACCOUNT_STATUS_OPEN",
+                "name": _account_name(key),
+            }
+        ]
+    }
 
 
 def _filled_state(
@@ -97,7 +106,7 @@ def test_round_trip_uses_crossing_limit_buy_then_sell_and_confirms_flat(session)
     sell_id = sandbox_smoke_request_id(key, leg="sell")
     transport = _ScriptedTransport(
         {
-            ("SandboxService", "GetSandboxAccounts"): [_account()],
+            ("SandboxService", "GetSandboxAccounts"): [_account(key)],
             ("SandboxService", "GetSandboxOrderState"): [
                 TInvestProviderError.not_found(),
                 _filled_state(order_id=buy_id),
@@ -164,7 +173,7 @@ def test_replay_of_completed_round_trip_reconciles_both_legs_without_duplicate_s
     sell_id = sandbox_smoke_request_id(key, leg="sell")
     transport = _ScriptedTransport(
         {
-            ("SandboxService", "GetSandboxAccounts"): [_account()],
+            ("SandboxService", "GetSandboxAccounts"): [_account(key)],
             ("SandboxService", "GetSandboxOrderState"): [
                 _filled_state(order_id=buy_id),
                 _filled_state(order_id=sell_id),
@@ -186,7 +195,7 @@ def test_unavailable_first_candidate_falls_through_to_next_limit_tradeable_candi
     sell_id = sandbox_smoke_request_id(key, leg="sell")
     transport = _ScriptedTransport(
         {
-            ("SandboxService", "GetSandboxAccounts"): [_account()],
+            ("SandboxService", "GetSandboxAccounts"): [_account(key)],
             ("SandboxService", "GetSandboxOrderState"): [
                 TInvestProviderError.not_found(),
                 _filled_state(order_id=buy_id, ticker="TBRU", uid="tbru-uid"),
@@ -227,7 +236,7 @@ def test_unfilled_buy_never_submits_sell_and_is_not_round_trip_success(session):
     buy_id = sandbox_smoke_request_id(key, leg="buy")
     transport = _ScriptedTransport(
         {
-            ("SandboxService", "GetSandboxAccounts"): [_account()],
+            ("SandboxService", "GetSandboxAccounts"): [_account(key)],
             ("SandboxService", "GetSandboxOrderState"): [
                 TInvestProviderError.not_found(),
                 _pending_state(order_id=buy_id),
@@ -261,7 +270,7 @@ def test_filled_buy_but_unfilled_sell_is_not_round_trip_success(session):
     sell_id = sandbox_smoke_request_id(key, leg="sell")
     transport = _ScriptedTransport(
         {
-            ("SandboxService", "GetSandboxAccounts"): [_account()],
+            ("SandboxService", "GetSandboxAccounts"): [_account(key)],
             ("SandboxService", "GetSandboxOrderState"): [
                 _filled_state(order_id=buy_id),
                 TInvestProviderError.not_found(),
@@ -293,7 +302,7 @@ def test_non_flat_position_fails_round_trip_even_after_both_fills(session):
     sell_id = sandbox_smoke_request_id(key, leg="sell")
     transport = _ScriptedTransport(
         {
-            ("SandboxService", "GetSandboxAccounts"): [_account()],
+            ("SandboxService", "GetSandboxAccounts"): [_account(key)],
             ("SandboxService", "GetSandboxOrderState"): [
                 _filled_state(order_id=buy_id),
                 _filled_state(order_id=sell_id),
