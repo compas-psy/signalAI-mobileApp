@@ -186,6 +186,7 @@ def _execution_chain(session, instrument, snapshot) -> None:
             status="TRIGGERED",
             quality_status="PASS",
             score=Decimal("82"),
+            strategy_version=snapshot.strategy_version,
         )
     )
     risk = RiskSnapshot(risk_equity=Decimal("100000"))
