@@ -129,7 +129,8 @@ def test_readiness_binds_exact_owner_visible_policy_without_issuing_challenge(se
     assert result.hard_caps["max_order_notional"] == "2500"
     assert result.challenge_issuable is False
     assert "ADR_0002_NOT_ACCEPTED" in result.blockers
-    assert "CANARY_OWNER_STEP_UP_NOT_IMPLEMENTED" in result.blockers
+    assert "CANARY_OWNER_STEP_UP_ACTIVATION_BINDING_NOT_APPROVED" in result.blockers
+    assert "CANARY_OWNER_STEP_UP_NOT_IMPLEMENTED" not in result.blockers
     assert "CANARY_CHALLENGE_TTL_NOT_APPROVED" in result.blockers
     assert get_execution_mode(session) == mode_before
     assert session.query(ExecutionModeActivationRequest).count() == 0

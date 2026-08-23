@@ -1,10 +1,10 @@
 """Non-authorizing owner readiness for future SANDBOX→CANARY activation.
 
 This module intentionally stops before challenge issuance. ADR-0002 is still
-Proposed and the owner has not selected a challenge TTL or cryptographic step-up
-mechanism. Readiness may bind/show the exact immutable non-secret policy and
-fresh preflight result, but it cannot create an activation request, mutate mode,
-or authorize provider I/O.
+Proposed and the owner has not approved the Canary activation binding or challenge
+TTL. The biometric owner step-up primitive exists, but readiness may only bind/show
+the exact immutable non-secret policy and fresh preflight result; it cannot create
+an activation request, mutate mode, or authorize provider I/O.
 """
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ from .enums import ExecutionLifecycleMode
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _PENDING_OWNER_BLOCKERS = (
     "ADR_0002_NOT_ACCEPTED",
-    "CANARY_OWNER_STEP_UP_NOT_IMPLEMENTED",
+    "CANARY_OWNER_STEP_UP_ACTIVATION_BINDING_NOT_APPROVED",
     "CANARY_CHALLENGE_TTL_NOT_APPROVED",
 )
 
