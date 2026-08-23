@@ -30,6 +30,7 @@ from ..models import Bar, DataQualityEvent
 from ..models.enums import Timeframe
 from ..market.blindness import annotate as annotate_blind
 from ..ops.retention import RetentionAutopilotConfig
+from .market_watermark import Watermarks, changed_lanes, snapshot as market_watermark_snapshot
 
 log = logging.getLogger("signalai.scheduler")
 
@@ -118,7 +119,11 @@ class Scheduler:
 def latest_bar_time(
     session: Session, timeframe: Timeframe = Timeframe.H1
 ) -> datetime | None:
-    """Время самого свежего закрытого бара во всей базе."""
+    """Время самого свежего закрытого бара во всей базе.
+
+    Оставлено как общий диагностический helper. Production wake-up scan не
+    использует этот максимум: FORTS и crypto имеют независимые watermarks.
+    """
     return session.execute(
         select(func.max(Bar.open_time)).where(
             Bar.timeframe == timeframe, Bar.is_closed.is_(True)
@@ -147,10 +152,10 @@ def build_default_scheduler(
     первым (иначе загружать нечего), допуск идёт после загрузки (иначе
     ликвидность нечем мерить), а скан — последним и только по новым барам.
 
-    Скан объявлен отдельной задачей, но фактически привязан к данным: он
-    сравнивает время последнего бара с тем, что было при прошлом прогоне, и
-    не делает ничего, если рынок не двигался. Календарь торгов при этом не
-    нужен — его роль играет сам поток котировок.
+    Скан объявлен отдельной задачей, но фактически привязан к данным. FORTS
+    и crypto имеют отдельные closed-bar watermarks: закрытая/упавшая площадка
+    не может подавить новые бары другой площадки. Календарь торгов при этом
+    не нужен — его роль играет сам поток котировок каждой площадки.
 
     Вселенная пересобирается редко: состав срочного рынка меняется не чаще
     раза в квартал, а каждый проход — это полная выгрузка доски.
@@ -180,7 +185,7 @@ def build_default_scheduler(
     )
 
     scheduler = Scheduler()
-    state: dict[str, datetime | None] = {"last_bar": None}
+    state: dict[str, Watermarks | None] = {"watermarks": None}
     retention = retention_config or RetentionAutopilotConfig()
     resource_snapshot = resource_snapshot_provider or collect_resource_snapshot
     pressure_classifier = PressureClassifier()
@@ -194,7 +199,12 @@ def build_default_scheduler(
             ("инвестиции", sync_investments),
         ):
             try:
-                kept = sync(session, fetch=fetch)
+                # Each source gets its own SAVEPOINT.  A failed SQL statement
+                # inside FORTS must not leave the outer transaction unusable
+                # for Bybit (and vice versa).  Successful source mutations stay
+                # in the outer transaction and are committed by Scheduler.tick.
+                with session.begin_nested():
+                    kept = sync(session, fetch=fetch)
                 parts.append(f"{name}: {len(kept)}")
             except Exception as exc:
                 errors.append(f"{name} — {type(exc).__name__}: {exc}")
@@ -265,17 +275,30 @@ def build_default_scheduler(
         return detail
 
     def scan(session: Session) -> str:
-        newest = latest_bar_time(session)
-        if newest is None:
+        current = market_watermark_snapshot(session)
+        if not current:
             return "баров нет — сканировать нечего"
-        if state["last_bar"] is not None and newest <= state["last_bar"]:
-            return f"новых баров нет с {newest.isoformat()} — скан пропущен"
-        state["last_bar"] = newest
+
+        previous = state["watermarks"]
+        if previous is None:
+            changed = tuple(sorted(current))
+        else:
+            changed = changed_lanes(previous, current)
+            if not changed:
+                newest = max(mark[0] for mark in current.values())
+                return f"новых баров нет с {newest.isoformat()} — скан пропущен"
+
         from ..market.economic_events import load_owned_calendar
         result = run_scan(session, event_calendar=load_owned_calendar(now=datetime.now(UTC)))
+        # Advance the in-memory watermark only after a successful scan.  If
+        # scan raises, Scheduler.tick rolls the DB transaction back and the
+        # same venue update is retried on the next due tick instead of being
+        # silently consumed.
+        state["watermarks"] = current
         return (
             f"просмотрено {result.scanned}, идей {result.produced}, "
-            f"пропущено {len(result.skipped)}, отказов {len(result.rejections)}"
+            f"пропущено {len(result.skipped)}, отказов {len(result.rejections)}; "
+            f"обновились площадки {', '.join(changed)}"
         )
 
     def portfolio(session: Session) -> str:
