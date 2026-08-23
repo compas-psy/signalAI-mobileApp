@@ -4,10 +4,10 @@ The mobile client may *set* credentials but can never read them back. Values
 are encrypted in PostgreSQL with pgcrypto and only status metadata leaves the
 server. This keeps server-owned trading credentials out of the APK.
 
-T-Invest Sandbox is intentionally absent from this registry: confirmed FORTS
-plans are mirrored into sandbox **from the phone**, where that sandbox token
-stays in Android Keystore. Keeping a second server-side sandbox slot would
-create two competing credentials for one execution path.
+T-Invest Sandbox execution is server-owned too: the phone may migrate its
+legacy sandbox bearer into the write-only ``tinvest_sandbox_trade`` slot, then
+all provider I/O originates from the VPS.  The sandbox slot is deliberately
+separate from ``tinvest_trade`` and can never be used for live execution.
 """
 
 from __future__ import annotations
@@ -52,6 +52,11 @@ SPECS: tuple[IntegrationSpec, ...] = (
     IntegrationSpec(
         "tinvest_invest_read", "TINVEST", "Инвестиции · чтение",
         "портфель, позиции и метаданные; заявки запрещены", "live", ("token",),
+    ),
+    IntegrationSpec(
+        "tinvest_sandbox_trade", "TINVEST", "Инвестиции · Sandbox",
+        "server-side T-Invest Sandbox; только виртуальные средства",
+        "sandbox", ("token",), required=False,
     ),
     IntegrationSpec(
         "tinvest_trade", "TINVEST", "Идеи · торговля",
