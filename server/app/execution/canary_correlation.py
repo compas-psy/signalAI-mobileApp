@@ -1,18 +1,16 @@
 """Read-only forensic correlation for one immutable Lighter Canary snapshot.
 
-This module is intentionally non-authorizing.  It answers a narrower forensic
-question: can durable non-secret facts be traced from one exact Canary policy
-snapshot through its credential/evidence/owner activation into the execution
-records created inside that exact Canary window?
-
-Missing links are reported as ``INCOMPLETE``.  No provider calls, secret access,
-mode changes, recovery actions or promotion decisions are performed here.
+The report is deliberately non-authorizing: it traces durable, non-secret
+facts and fails closed as ``INCOMPLETE`` when a link is absent or mismatched.
+It never performs provider I/O, reads secrets, changes execution state, or
+creates promotion authority.
 """
 from __future__ import annotations
 
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -157,6 +155,33 @@ def _verified_evidence_ref_count(
     return verified, verified == len(_REQUIRED_EVIDENCE_CATEGORIES)
 
 
+def _expected_owner_scope(
+    snapshot: CanaryPolicySnapshot,
+) -> tuple[str, Decimal, dict[str, object]] | None:
+    """Return the exact owner-visible activation scope represented by snapshot.
+
+    ``ExecutionModeActivationRequest`` stores capital explicitly in RUB.  A
+    snapshot denominated in another currency therefore cannot be proven equal
+    here without an owner-approved valuation conversion and must fail closed.
+    """
+
+    payload = snapshot.payload_json
+    if not isinstance(payload, Mapping):
+        return None
+    if payload.get("capital_currency") != "RUB":
+        return None
+    hard_caps = payload.get("hard_caps")
+    if not isinstance(hard_caps, Mapping):
+        return None
+    try:
+        capital = Decimal(str(payload.get("capital_amount")))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    if not capital.is_finite() or capital <= 0:
+        return None
+    return str(snapshot.account_index), capital, dict(hard_caps)
+
+
 def _bound_activation_request(
     db: Session,
     snapshot: CanaryPolicySnapshot,
@@ -166,8 +191,10 @@ def _bound_activation_request(
             ExecutionModeActivationRequest.preview_hash == snapshot.snapshot_hash
         )
     ).scalar_one_or_none()
-    if request is None:
+    expected_scope = _expected_owner_scope(snapshot)
+    if request is None or expected_scope is None:
         return None
+    expected_account, expected_capital_rub, expected_hard_caps = expected_scope
     blockers = request.blockers_json if isinstance(request.blockers_json, list) else None
     if not (
         request.from_mode is ExecutionLifecycleMode.SANDBOX
@@ -177,6 +204,9 @@ def _bound_activation_request(
         and request.status == "APPLIED"
         and request.config_hash == snapshot.engine_config_hash
         and request.owner_confirmed_at is not None
+        and request.account == expected_account
+        and request.capital_rub == expected_capital_rub
+        and request.hard_caps_json == expected_hard_caps
         and blockers == []
     ):
         return None
@@ -212,11 +242,7 @@ def _bound_mode_event(
     return None
 
 
-def _canary_window_end(
-    db: Session,
-    *,
-    event: ExecutionModeEvent,
-):
+def _canary_window_end(db: Session, *, event: ExecutionModeEvent):
     return db.execute(
         select(ExecutionModeEvent.occurred_at)
         .where(
@@ -268,11 +294,11 @@ def _execution_counts(
     if not intents:
         return 0, 0, 0, 0
     ids = tuple(intent.id for intent in intents)
-    orders = tuple(
-        db.execute(select(ExecutionOrder).where(ExecutionOrder.intent_id.in_(ids))).scalars()
+    order_count = len(
+        tuple(db.execute(select(ExecutionOrder).where(ExecutionOrder.intent_id.in_(ids))).scalars())
     )
-    fills = tuple(
-        db.execute(select(ExecutionFill).where(ExecutionFill.intent_id.in_(ids))).scalars()
+    fill_count = len(
+        tuple(db.execute(select(ExecutionFill).where(ExecutionFill.intent_id.in_(ids))).scalars())
     )
     protections = tuple(
         db.execute(
@@ -283,17 +309,19 @@ def _execution_counts(
             )
         ).scalars()
     )
-    active_protections = sum(
+    active_protection_count = sum(
         1 for row in protections if str(row.provider_order_id or "").strip()
     )
-    reconciliation = tuple(
-        db.execute(
-            select(ExecutionReconciliationEvent).where(
-                ExecutionReconciliationEvent.intent_id.in_(ids)
-            )
-        ).scalars()
+    reconciliation_event_count = len(
+        tuple(
+            db.execute(
+                select(ExecutionReconciliationEvent).where(
+                    ExecutionReconciliationEvent.intent_id.in_(ids)
+                )
+            ).scalars()
+        )
     )
-    return len(orders), len(fills), active_protections, len(reconciliation)
+    return order_count, fill_count, active_protection_count, reconciliation_event_count
 
 
 def build_canary_correlation_report(
@@ -310,9 +338,7 @@ def build_canary_correlation_report(
     if not credential_generation_found:
         blockers.append("CREDENTIAL_GENERATION_BINDING_MISSING")
 
-    verified_evidence_ref_count, evidence_complete = _verified_evidence_ref_count(
-        db, snapshot
-    )
+    verified_evidence_ref_count, evidence_complete = _verified_evidence_ref_count(db, snapshot)
     if not evidence_complete:
         blockers.append("CANARY_EVIDENCE_BINDING_INCOMPLETE")
 
