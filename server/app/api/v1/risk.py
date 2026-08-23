@@ -16,7 +16,6 @@ from ...db import get_db
 from ...execution.enums import ExecutionKillSwitchLevel, ExecutionLifecycleMode
 from ...execution.kill_switch import (
     ExecutionKillSwitchError,
-    clear_execution_kill_switch,
     effective_execution_kill_switch_level,
     set_execution_kill_switch,
 )
@@ -36,6 +35,7 @@ from ...risk.manual_preview import ManualRiskPreviewRejected, preview_manual_ris
 from ...schemas.common import ApiModel, Money
 
 router = APIRouter(tags=["risk"])
+_KILL_SWITCH_CLEAR_STEP_UP_BLOCKER = "EXECUTION_KILL_SWITCH_CLEAR_STEP_UP_REQUIRED"
 
 
 class LimitOut(ApiModel):
@@ -415,10 +415,15 @@ def resume(
     reason: str = Body("", embed=True),
     db: Session = Depends(get_db),
 ) -> RiskDashboard:
-    clear_execution_kill_switch(
-        db,
-        actor="owner",
-        reason=reason,
-        audit_action="kill_switch_off",
+    """Fail closed until owner-sensitive step-up is implemented.
+
+    A stored device bearer proves possession, not fresh owner intent. Clearing
+    durable execution safety can re-enable future money actions, so the current
+    bearer-only HTTP boundary must never call the internal clear primitive.
+    """
+
+    del reason, db
+    raise HTTPException(
+        status_code=409,
+        detail=_KILL_SWITCH_CLEAR_STEP_UP_BLOCKER,
     )
-    return dashboard(db)
