@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from decimal import Decimal
+
+import pytest
 from sqlalchemy import select
 
 from app.models import ExecutionModeActivationRequest
@@ -10,7 +13,20 @@ from tests.execution.test_canary_correlation_audit import (
 )
 
 
-def test_correlation_rejects_tampered_activation_account_scope(session, instrument) -> None:
+@pytest.mark.parametrize(
+    ("field", "tampered_value"),
+    (
+        ("account", "999"),
+        ("capital_rub", Decimal("9999")),
+        ("hard_caps_json", {"max_order_notional": "1"}),
+    ),
+)
+def test_correlation_rejects_tampered_activation_owner_scope(
+    session,
+    instrument,
+    field,
+    tampered_value,
+) -> None:
     from app.execution.canary_correlation import build_canary_correlation_report
 
     snapshot, refs = _snapshot(session, instrument_id=instrument.instrument_id)
@@ -22,7 +38,7 @@ def test_correlation_rejects_tampered_activation_account_scope(session, instrume
             ExecutionModeActivationRequest.preview_hash == snapshot.snapshot_hash
         )
     ).scalar_one()
-    request.account = "999"
+    setattr(request, field, tampered_value)
     session.flush()
 
     report = build_canary_correlation_report(
