@@ -143,24 +143,30 @@ def _set_canary(session) -> None:
     session.flush()
 
 
-def _execution_chain(session, instrument, snapshot) -> None:
+def _execution_chain(session, instrument, snapshot, *, full_owner_scope: bool = True) -> None:
     _set_canary(session)
 
     # Production mode events use the database clock. The outer PostgreSQL test
     # transaction deliberately gives every server-default now() the same
     # transaction timestamp, so use that exact clock here instead of a later
     # process wall clock.
+    if full_owner_scope:
+        from app.execution.canary_activation import build_canary_mode_event_detail
+
+        event_detail = build_canary_mode_event_detail(snapshot)
+    else:
+        event_detail = {
+            "canary_policy_snapshot_hash": snapshot.snapshot_hash,
+            "correlation_id": snapshot.correlation_id,
+            "source_sha": snapshot.source_sha,
+            "engine_config_hash": snapshot.engine_config_hash,
+        }
     bound_event = ExecutionModeEvent(
         from_mode=ExecutionLifecycleMode.SANDBOX,
         to_mode=ExecutionLifecycleMode.CANARY,
         actor="owner",
         reason="owner approved exact Canary snapshot",
-        detail_json={
-            "canary_policy_snapshot_hash": snapshot.snapshot_hash,
-            "correlation_id": snapshot.correlation_id,
-            "source_sha": snapshot.source_sha,
-            "engine_config_hash": snapshot.engine_config_hash,
-        },
+        detail_json=event_detail,
     )
     session.add(bound_event)
     session.flush()

@@ -26,6 +26,8 @@ from ..models.execution import (
     ExecutionProtection,
     ExecutionReconciliationEvent,
 )
+from .canary_activation import build_canary_mode_event_detail
+from .canary_policy import CanaryPolicyError, verify_persisted_canary_snapshot
 from .enums import ExecutionLifecycleMode
 
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
@@ -65,8 +67,6 @@ class CanaryCorrelationReport:
     blockers: tuple[str, ...]
 
     def to_public_dict(self) -> dict[str, object]:
-        """Expose only non-secret immutable identifiers and aggregate counts."""
-
         return {
             "status": self.status,
             "snapshot_hash": self.snapshot_hash,
@@ -97,13 +97,14 @@ def _exact_snapshot(db: Session, snapshot_hash: str) -> CanaryPolicySnapshot:
     ).scalar_one_or_none()
     if snapshot is None:
         raise CanaryCorrelationError("Canary policy snapshot does not exist")
+    try:
+        verify_persisted_canary_snapshot(snapshot)
+    except CanaryPolicyError as exc:
+        raise CanaryCorrelationError("Canary policy snapshot integrity failed") from exc
     return snapshot
 
 
-def _credential_generation_bound(
-    db: Session,
-    snapshot: CanaryPolicySnapshot,
-) -> bool:
+def _credential_generation_bound(db: Session, snapshot: CanaryPolicySnapshot) -> bool:
     generation = db.execute(
         select(LighterCredentialGeneration).where(
             LighterCredentialGeneration.generation_id
@@ -158,17 +159,8 @@ def _verified_evidence_ref_count(
 def _expected_owner_scope(
     snapshot: CanaryPolicySnapshot,
 ) -> tuple[str, Decimal, dict[str, object]] | None:
-    """Return the exact owner-visible activation scope represented by snapshot.
-
-    ``ExecutionModeActivationRequest`` stores capital explicitly in RUB.  A
-    snapshot denominated in another currency therefore cannot be proven equal
-    here without an owner-approved valuation conversion and must fail closed.
-    """
-
     payload = snapshot.payload_json
-    if not isinstance(payload, Mapping):
-        return None
-    if payload.get("capital_currency") != "RUB":
+    if not isinstance(payload, Mapping) or payload.get("capital_currency") != "RUB":
         return None
     hard_caps = payload.get("hard_caps")
     if not isinstance(hard_caps, Mapping):
@@ -218,9 +210,13 @@ def _bound_mode_event(
     *,
     snapshot: CanaryPolicySnapshot,
     activation: ExecutionModeActivationRequest | None,
-) -> ExecutionModeEvent | None:
+) -> tuple[ExecutionModeEvent | None, bool]:
+    """Return exact event plus whether a legacy/partial owner-scope event existed."""
+
     if activation is None or activation.owner_confirmed_at is None:
-        return None
+        return None, False
+    expected_detail = build_canary_mode_event_detail(snapshot)
+    partial_binding_seen = False
     events = db.execute(
         select(ExecutionModeEvent)
         .where(
@@ -232,14 +228,18 @@ def _bound_mode_event(
     ).scalars()
     for event in events:
         detail = event.detail_json if isinstance(event.detail_json, Mapping) else {}
-        if (
+        base_bound = (
             detail.get("canary_policy_snapshot_hash") == snapshot.snapshot_hash
             and detail.get("correlation_id") == snapshot.correlation_id
             and detail.get("source_sha") == snapshot.source_sha
             and detail.get("engine_config_hash") == snapshot.engine_config_hash
-        ):
-            return event
-    return None
+        )
+        if not base_bound:
+            continue
+        partial_binding_seen = True
+        if all(detail.get(key) == value for key, value in expected_detail.items()):
+            return event, False
+    return None, partial_binding_seen
 
 
 def _canary_window_end(db: Session, *, event: ExecutionModeEvent):
@@ -295,10 +295,18 @@ def _execution_counts(
         return 0, 0, 0, 0
     ids = tuple(intent.id for intent in intents)
     order_count = len(
-        tuple(db.execute(select(ExecutionOrder).where(ExecutionOrder.intent_id.in_(ids))).scalars())
+        tuple(
+            db.execute(
+                select(ExecutionOrder).where(ExecutionOrder.intent_id.in_(ids))
+            ).scalars()
+        )
     )
     fill_count = len(
-        tuple(db.execute(select(ExecutionFill).where(ExecutionFill.intent_id.in_(ids))).scalars())
+        tuple(
+            db.execute(
+                select(ExecutionFill).where(ExecutionFill.intent_id.in_(ids))
+            ).scalars()
+        )
     )
     protections = tuple(
         db.execute(
@@ -329,8 +337,6 @@ def build_canary_correlation_report(
     *,
     snapshot_hash: str,
 ) -> CanaryCorrelationReport:
-    """Trace one exact immutable Canary snapshot through durable execution facts."""
-
     snapshot = _exact_snapshot(db, snapshot_hash)
     blockers: list[str] = []
 
@@ -338,7 +344,9 @@ def build_canary_correlation_report(
     if not credential_generation_found:
         blockers.append("CREDENTIAL_GENERATION_BINDING_MISSING")
 
-    verified_evidence_ref_count, evidence_complete = _verified_evidence_ref_count(db, snapshot)
+    verified_evidence_ref_count, evidence_complete = _verified_evidence_ref_count(
+        db, snapshot
+    )
     if not evidence_complete:
         blockers.append("CANARY_EVIDENCE_BINDING_INCOMPLETE")
 
@@ -346,9 +354,15 @@ def build_canary_correlation_report(
     if activation is None:
         blockers.append("ACTIVATION_REQUEST_BINDING_MISSING")
 
-    mode_event = _bound_mode_event(db, snapshot=snapshot, activation=activation)
+    mode_event, owner_scope_incomplete = _bound_mode_event(
+        db, snapshot=snapshot, activation=activation
+    )
     if mode_event is None:
-        blockers.append("CANARY_MODE_EVENT_BINDING_MISSING")
+        blockers.append(
+            "CANARY_MODE_EVENT_OWNER_SCOPE_INCOMPLETE"
+            if owner_scope_incomplete
+            else "CANARY_MODE_EVENT_BINDING_MISSING"
+        )
 
     intents = _scoped_intents(db, snapshot=snapshot, event=mode_event)
     if not intents:
