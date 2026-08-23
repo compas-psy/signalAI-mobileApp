@@ -1,26 +1,25 @@
-import 'dart:convert';
-
-import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
 
 import '../data/api/api_client.dart';
 
-/// Server-owned execution lifecycle. The phone never stores authoritative mode.
+/// Server-owned execution lifecycle exposed to the thin client.
 enum ServerExecutionMode {
   paper('PAPER'),
   sandbox('SANDBOX'),
   canary('CANARY'),
-  live('LIVE');
+  live('LIVE'),
+  unknown('НЕИЗВЕСТЕН');
 
-  const ServerExecutionMode(this.wire);
-  final String wire;
+  const ServerExecutionMode(this.label);
+  final String label;
 
-  static ServerExecutionMode parse(Object? value) {
-    final raw = '$value'.toUpperCase();
-    return values.firstWhere(
-      (item) => item.wire == raw,
-      orElse: () => throw FormatException('Неизвестный режим исполнения: $value'),
-    );
-  }
+  static ServerExecutionMode parse(Object? raw) => switch ('$raw'.toUpperCase()) {
+        'PAPER' => paper,
+        'SANDBOX' => sandbox,
+        'CANARY' => canary,
+        'LIVE' => live,
+        _ => unknown,
+      };
 }
 
 @immutable
@@ -30,30 +29,12 @@ class ExecutionModePreview {
     required this.target,
     required this.allowed,
     required this.blockers,
-    required this.evidenceNotes,
-    this.correlationId,
   });
 
   final ServerExecutionMode current;
   final ServerExecutionMode target;
   final bool allowed;
   final List<String> blockers;
-  final List<String> evidenceNotes;
-  final String? correlationId;
-
-  factory ExecutionModePreview.fromJson(Map<String, dynamic> json) =>
-      ExecutionModePreview(
-        current: ServerExecutionMode.parse(json['current']),
-        target: ServerExecutionMode.parse(json['target']),
-        allowed: json['allowed'] == true,
-        blockers: (json['blockers'] as List? ?? const [])
-            .map((value) => '$value')
-            .toList(growable: false),
-        evidenceNotes: (json['evidence_notes'] as List? ?? const [])
-            .map((value) => '$value')
-            .toList(growable: false),
-        correlationId: json['correlation_id']?.toString(),
-      );
 }
 
 @immutable
@@ -82,77 +63,101 @@ class LiveActivationPreview {
   final bool allowed;
   final List<String> blockers;
 
-  bool get confirmable =>
-      fromMode == ServerExecutionMode.canary &&
-      targetMode == ServerExecutionMode.live &&
-      blockers.every((item) => item == 'explicit owner confirmation missing');
-
-  factory LiveActivationPreview.fromJson(Map<String, dynamic> json) {
-    final caps = <String, String>{};
-    final rawCaps = json['hard_caps'];
-    if (rawCaps is Map) {
-      for (final entry in rawCaps.entries) {
-        caps['${entry.key}'] = '${entry.value}';
-      }
-    }
-    return LiveActivationPreview(
-      previewHash: '${json['preview_hash'] ?? ''}',
-      fromMode: ServerExecutionMode.parse(json['from_mode']),
-      targetMode: ServerExecutionMode.parse(json['target_mode']),
-      venue: '${json['venue'] ?? ''}',
-      account: '${json['account'] ?? ''}',
-      capitalRub: '${json['capital_rub'] ?? ''}',
-      hardCaps: Map.unmodifiable(caps),
-      configHash: '${json['config_hash'] ?? ''}',
-      allowed: json['allowed'] == true,
-      blockers: (json['blockers'] as List? ?? const [])
-          .map((value) => '$value')
-          .toList(growable: false),
-    );
-  }
+  /// The preview endpoint deliberately reports the missing *second* owner
+  /// confirmation as a blocker. It is confirmable only when that is the sole
+  /// remaining blocker (or the server already reports the preview as allowed).
+  bool get confirmable => allowed ||
+      (blockers.isNotEmpty &&
+          blockers.every((item) => item == 'explicit owner confirmation missing'));
 }
 
-class ExecutionModeController extends ChangeNotifier {
-  ExecutionModeController({ApiClient? api}) : _api = api ?? ApiClient();
+@immutable
+class LiveActivationResult {
+  const LiveActivationResult({
+    required this.previewHash,
+    required this.idempotencyKey,
+    required this.status,
+    required this.mode,
+    required this.blockers,
+  });
 
-  final ApiClient _api;
-  ServerExecutionMode? _mode;
+  final String previewHash;
+  final String idempotencyKey;
+  final String status;
+  final ServerExecutionMode mode;
+  final List<String> blockers;
+}
+
+/// One shared thin-client controller. It never owns an independent local mode:
+/// every state transition is read from, previewed by and written to the server.
+class ExecutionModeController extends ChangeNotifier {
+  ExecutionModeController({ApiClient? api})
+      : _api = api ?? ApiClient(),
+        _ownsApi = api == null;
+
+  ApiClient _api;
+  final bool _ownsApi;
+
+  ServerExecutionMode _mode = ServerExecutionMode.unknown;
+  bool _loading = false;
+  String? _error;
   ExecutionModePreview? _preview;
   LiveActivationPreview? _livePreview;
-  bool _busy = false;
-  String? _error;
+  LiveActivationResult? _liveResult;
 
-  ServerExecutionMode get mode => _mode ?? ServerExecutionMode.paper;
-  bool get modeKnown => _mode != null;
+  ServerExecutionMode get mode => _mode;
+  bool get modeKnown => _mode != ServerExecutionMode.unknown;
+  bool get loading => _loading;
+  String? get error => _error;
   ExecutionModePreview? get preview => _preview;
   LiveActivationPreview? get livePreview => _livePreview;
-  bool get busy => _busy;
-  String? get error => _error;
+  LiveActivationResult? get liveResult => _liveResult;
 
   Future<void> load() async {
-    await _guard(() async {
+    _loading = true;
+    _error = null;
+    notifyListeners();
+    try {
       final data = await _api.get('/api/v1/execution/mode');
       _mode = ServerExecutionMode.parse(data['mode']);
-      _preview = null;
-      _livePreview = null;
-    });
+      if (_mode == ServerExecutionMode.unknown) {
+        _error = 'сервер вернул неизвестный execution mode';
+      }
+    } catch (error) {
+      _mode = ServerExecutionMode.unknown;
+      _error = '$error';
+    } finally {
+      _loading = false;
+      notifyListeners();
+    }
   }
 
+  /// Recreate the default API client after owner changes engine address/token.
+  /// Injected test clients are intentionally never replaced.
   Future<void> reconnect() async {
+    if (_ownsApi) {
+      _api.close();
+      _api = ApiClient();
+    }
+    _mode = ServerExecutionMode.unknown;
     _preview = null;
     _livePreview = null;
-    _error = null;
+    _liveResult = null;
     await load();
   }
 
   Future<ExecutionModePreview> previewMode(ServerExecutionMode target) async {
-    late ExecutionModePreview parsed;
-    await _guard(() async {
-      // PAPER -> SANDBOX is the only generic risk-increasing transition whose
-      // technical proof can be established without a strategy scope. Run (or
-      // idempotently reconcile) the provider-confirmed LIMIT BUY/SELL round
-      // trip first; the subsequent promotion preview reads the proof persisted
-      // by that server endpoint. Downshifts never contact a broker.
+    if (target == ServerExecutionMode.unknown) {
+      throw StateError('unknown mode cannot be requested');
+    }
+    _error = null;
+    _livePreview = null;
+    _liveResult = null;
+    notifyListeners();
+    try {
+      // PAPER -> SANDBOX gains promotion authority only from a real provider
+      // round trip. The endpoint is idempotent for the current release and
+      // credential generation; lower-risk transitions never call a broker.
       if (_mode == ServerExecutionMode.paper &&
           target == ServerExecutionMode.sandbox) {
         await _api.post(
@@ -162,103 +167,167 @@ class ExecutionModeController extends ChangeNotifier {
       }
       final data = await _api.post(
         '/api/v1/execution/mode/preview',
-        body: {'target': target.wire},
+        body: {'target': target.label},
       );
-      parsed = ExecutionModePreview.fromJson(data);
-      _preview = parsed;
-      _livePreview = null;
-    });
-    return parsed;
+      final result = ExecutionModePreview(
+        current: ServerExecutionMode.parse(data['current']),
+        target: ServerExecutionMode.parse(data['target']),
+        allowed: data['allowed'] == true,
+        blockers: _strings(data['blockers']),
+      );
+      _preview = result;
+      notifyListeners();
+      return result;
+    } catch (error) {
+      _error = '$error';
+      notifyListeners();
+      rethrow;
+    }
   }
 
   Future<void> confirmModeChange({required String reason}) async {
-    final candidate = _preview;
-    if (candidate == null || !candidate.allowed) {
-      throw StateError('Сначала нужен разрешённый server preview перехода');
+    final pending = _preview;
+    if (pending == null || !pending.allowed) {
+      throw StateError('no allowed execution mode preview to confirm');
     }
-    await _guard(() async {
+    if (pending.target == ServerExecutionMode.live) {
+      throw StateError('LIVE requires the dedicated two-step activation flow');
+    }
+    try {
       final data = await _api.post(
         '/api/v1/execution/mode/change',
         body: {
-          'target': candidate.target.wire,
+          'target': pending.target.label,
           'reason': reason,
         },
       );
       _mode = ServerExecutionMode.parse(data['mode']);
       _preview = null;
-      _livePreview = null;
-    });
+      _error = null;
+      notifyListeners();
+    } catch (error) {
+      _error = '$error';
+      notifyListeners();
+      rethrow;
+    }
   }
 
   Future<LiveActivationPreview> previewLive() async {
-    late LiveActivationPreview parsed;
-    await _guard(() async {
+    _error = null;
+    _preview = null;
+    _liveResult = null;
+    notifyListeners();
+    try {
       final data = await _api.post('/api/v1/execution/live/preview');
-      parsed = LiveActivationPreview.fromJson(data);
-      _livePreview = parsed;
-      _preview = null;
-    });
-    return parsed;
+      final hardCaps = <String, String>{};
+      final rawCaps = data['hard_caps'];
+      if (rawCaps is Map) {
+        for (final entry in rawCaps.entries) {
+          hardCaps['${entry.key}'] = '${entry.value}';
+        }
+      }
+      final result = LiveActivationPreview(
+        previewHash: '${data['preview_hash'] ?? ''}',
+        fromMode: ServerExecutionMode.parse(data['from_mode']),
+        targetMode: ServerExecutionMode.parse(data['target_mode']),
+        venue: '${data['venue'] ?? 'NOT_CONFIGURED'}',
+        account: '${data['account'] ?? 'NOT_CONFIGURED'}',
+        capitalRub: '${data['capital_rub'] ?? ''}',
+        hardCaps: hardCaps,
+        configHash: '${data['config_hash'] ?? ''}',
+        allowed: data['allowed'] == true,
+        blockers: _strings(data['blockers']),
+      );
+      _livePreview = result;
+      notifyListeners();
+      return result;
+    } catch (error) {
+      _error = '$error';
+      notifyListeners();
+      rethrow;
+    }
   }
 
-  Future<void> confirmLive({required String idempotencyKey}) async {
-    final candidate = _livePreview;
-    if (candidate == null || !candidate.confirmable) {
-      throw StateError('LIVE preview не допускает подтверждение');
+  Future<LiveActivationResult> confirmLive({String? idempotencyKey}) async {
+    final pending = _livePreview;
+    if (pending == null || !pending.confirmable) {
+      throw StateError('LIVE preview still has server blockers');
     }
-    await _guard(() async {
+    final key = (idempotencyKey?.trim().isNotEmpty ?? false)
+        ? idempotencyKey!.trim()
+        : _stableLiveIdempotencyKey(pending.previewHash);
+    try {
       final data = await _api.post(
         '/api/v1/execution/live/confirm',
+        idempotencyKey: key,
         body: {
-          'preview_hash': candidate.previewHash,
+          'preview_hash': pending.previewHash,
           'owner_confirmed': true,
         },
-        idempotencyKey: idempotencyKey,
       );
-      _mode = ServerExecutionMode.parse(data['mode']);
-      _preview = null;
-      _livePreview = null;
-    });
+      final result = LiveActivationResult(
+        previewHash: '${data['preview_hash'] ?? pending.previewHash}',
+        idempotencyKey: '${data['idempotency_key'] ?? key}',
+        status: '${data['status'] ?? 'UNKNOWN'}',
+        mode: ServerExecutionMode.parse(data['mode']),
+        blockers: _strings(data['blockers']),
+      );
+      _liveResult = result;
+      _mode = result.mode;
+      _error = null;
+      if (result.status == 'APPLIED') _livePreview = null;
+      notifyListeners();
+      return result;
+    } catch (error) {
+      // Keep the same preview. The next tap derives the same idempotency key,
+      // so a lost response can be retried without creating a second activation.
+      _error = '$error';
+      notifyListeners();
+      rethrow;
+    }
   }
 
-  void clearPreview() {
-    if (_preview == null && _livePreview == null && _error == null) return;
+  void clearPendingPreview() {
     _preview = null;
     _livePreview = null;
+    _liveResult = null;
     _error = null;
     notifyListeners();
   }
 
-  Future<void> _guard(Future<void> Function() action) async {
-    if (_busy) throw StateError('Операция режима уже выполняется');
-    _busy = true;
-    _error = null;
-    notifyListeners();
-    try {
-      await action();
-    } on ApiException catch (error) {
-      _error = _apiErrorMessage(error);
-      rethrow;
-    } on Object catch (error) {
-      _error = '$error';
-      rethrow;
-    } finally {
-      _busy = false;
-      notifyListeners();
-    }
+  @override
+  void dispose() {
+    if (_ownsApi) _api.close();
+    super.dispose();
+  }
+}
+
+class ExecutionModeScope extends InheritedNotifier<ExecutionModeController> {
+  const ExecutionModeScope({
+    super.key,
+    required ExecutionModeController controller,
+    required super.child,
+  }) : super(notifier: controller);
+
+  static ExecutionModeController of(BuildContext context) {
+    final scope = context.dependOnInheritedWidgetOfExactType<ExecutionModeScope>();
+    assert(scope != null, 'ExecutionModeScope is missing');
+    return scope!.notifier!;
   }
 
-  String _apiErrorMessage(ApiException error) {
-    try {
-      final decoded = jsonDecode(error.body);
-      if (decoded is Map && decoded['detail'] != null) {
-        final detail = decoded['detail'];
-        if (detail is String) return detail;
-        return jsonEncode(detail);
-      }
-    } on FormatException {
-      // Keep bounded ApiException fallback below.
-    }
-    return 'HTTP ${error.statusCode}';
-  }
+  static ExecutionModeController? maybeOf(BuildContext context) => context
+      .dependOnInheritedWidgetOfExactType<ExecutionModeScope>()
+      ?.notifier;
+}
+
+List<String> _strings(Object? raw) {
+  if (raw is! List) return const [];
+  return raw.map((item) => '$item').toList(growable: false);
+}
+
+String _stableLiveIdempotencyKey(String previewHash) {
+  final normalized = previewHash.trim();
+  if (normalized.isEmpty) throw StateError('LIVE preview hash is empty');
+  final prefix = normalized.length > 48 ? normalized.substring(0, 48) : normalized;
+  return 'mobile-live-$prefix';
 }
