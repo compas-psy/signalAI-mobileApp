@@ -140,6 +140,7 @@ jobs:
           rm -rf "$NEXT"
           printf '%s\n' "$SOURCE_SHA" > "$ROOT/.source_sha"
 
+          $SUDO bash "$ROOT/server/deploy/ensure_runtime_secrets.sh" "$ENV_FILE"
           cd "$ROOT/server"
           echo '── build new images ──'
           $SUDO docker compose --env-file "$ENV_FILE" build api scheduler </dev/null

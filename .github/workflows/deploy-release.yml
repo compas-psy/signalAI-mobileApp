@@ -229,6 +229,7 @@ jobs:
           rm -f "$tmp_env"
           unset token
           $SUDO chmod 600 "$ENV_FILE"
+          $SUDO bash "$DIR/server/deploy/ensure_runtime_secrets.sh" "$ENV_FILE"
 
           cd "$DIR/server"
 

@@ -45,6 +45,7 @@ _LIGHTER_SLOTS = {
     "lighter_trade",
 }
 _LIGHTER_LIVE_TRADE_SLOT = "lighter_trade"
+_LIGHTER_LIVE_VAULT_ENV = "SIGNALAI_LIGHTER_LIVE_SECRETS_KEY"
 
 
 SPECS: tuple[IntegrationSpec, ...] = (
@@ -91,7 +92,7 @@ SPECS: tuple[IntegrationSpec, ...] = (
 BY_SLOT = {spec.slot: spec for spec in SPECS}
 
 
-def _encryption_key() -> str:
+def _generic_encryption_key() -> str:
     explicit = os.environ.get("SIGNALAI_SECRETS_KEY", "").strip()
     if explicit:
         if len(explicit) < 32:
@@ -103,6 +104,28 @@ def _encryption_key() -> str:
             raise RuntimeError("database password is required for secret-store encryption")
         material = password
     return hashlib.sha256(f"signalai-broker-v1:{material}".encode()).hexdigest()
+
+
+def _lighter_live_encryption_key() -> str:
+    """Return the isolated key for live Lighter signing material only.
+
+    A database password or the generic integration-vault key is intentionally
+    never accepted here. Compromise/reuse of either must not decrypt the private
+    key capable of signing mainnet Lighter actions.
+    """
+
+    material = os.environ.get(_LIGHTER_LIVE_VAULT_ENV, "").strip()
+    if not material:
+        raise RuntimeError(f"{_LIGHTER_LIVE_VAULT_ENV} is required for Lighter live signing secrets")
+    if len(material) < 32:
+        raise RuntimeError(f"{_LIGHTER_LIVE_VAULT_ENV} must contain >=32 characters")
+    return hashlib.sha256(f"signalai-lighter-live-v1:{material}".encode()).hexdigest()
+
+
+def _encryption_key(slot: str) -> str:
+    if slot == _LIGHTER_LIVE_TRADE_SLOT:
+        return _lighter_live_encryption_key()
+    return _generic_encryption_key()
 
 
 def ensure_store(db: Session) -> None:
@@ -187,7 +210,7 @@ def _save_secret_unlocked(
             encrypted_payload = EXCLUDED.encrypted_payload,
             updated_at = now()
         RETURNING updated_at
-    """), {"slot": spec.slot, "payload": payload, "secret_key": _encryption_key()}).one()
+    """), {"slot": spec.slot, "payload": payload, "secret_key": _encryption_key(spec.slot)}).one()
 
     if spec.slot == _LIGHTER_LIVE_TRADE_SLOT:
         # Lazy import keeps the generic vault independent from execution model
@@ -288,7 +311,7 @@ def load_secret(db: Session, slot: str) -> dict[str, str] | None:
         SELECT pgp_sym_decrypt(encrypted_payload, :secret_key)
         FROM signalai_integration_secrets
         WHERE slot = :slot
-    """), {"slot": slot, "secret_key": _encryption_key()}).first()
+    """), {"slot": slot, "secret_key": _encryption_key(slot)}).first()
     if row is None:
         return None
     decoded = json.loads(row[0])

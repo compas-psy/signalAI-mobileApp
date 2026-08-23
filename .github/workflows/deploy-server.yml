@@ -217,7 +217,6 @@ jobs:
           umask 077
           cleanup_token() { rm -f "$TOKEN_FILE" "$TOKEN_RAW_FILE"; }
           trap cleanup_token EXIT
-
           test -s "$TOKEN_FILE"
           base64 -d < "$TOKEN_FILE" > "$TOKEN_RAW_FILE"
           rm -f "$TOKEN_FILE"
@@ -316,6 +315,7 @@ jobs:
           printf 'SIGNALAI_DEVICE_TOKEN=%s\n' "$token" | $SUDO tee -a "$ENV_FILE" >/dev/null
           unset token
           $SUDO chmod 600 "$ENV_FILE"
+          $SUDO bash "$HOME/signalai/server/deploy/ensure_runtime_secrets.sh" "$ENV_FILE"
 
           # `-T` и `</dev/null` здесь не украшение. Скрипт приезжает к bash
           # через stdin, а `docker compose run` без `-T` этот же stdin
