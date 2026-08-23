@@ -98,6 +98,10 @@ jobs:
                   with ctx.wrap_socket(raw, server_hostname=host) as tls:
                       result['tls_ok'] = True
                       result['tls_version'] = tls.version()
+          except ssl.SSLCertVerificationError as exc:
+              result['tls_error_type'] = type(exc).__name__
+              result['tls_verify_code'] = exc.verify_code
+              result['tls_verify_message'] = exc.verify_message
           except Exception as exc:
               result['tls_error_type'] = type(exc).__name__
 
@@ -114,6 +118,9 @@ jobs:
               result['http_status'] = int(exc.code)
           except urllib.error.URLError as exc:
               result['urllib_error'] = type(exc.reason).__name__
+              if isinstance(exc.reason, ssl.SSLCertVerificationError):
+                  result['urllib_verify_code'] = exc.reason.verify_code
+                  result['urllib_verify_message'] = exc.reason.verify_message
           except Exception as exc:
               result['urllib_error'] = type(exc).__name__
 
