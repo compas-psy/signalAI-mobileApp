@@ -1,0 +1,120 @@
+name: T-Invest Sandbox provider smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: 'Exact deployed 40-char commit SHA to verify and smoke'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: signalai-tinvest-sandbox-provider-smoke
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    name: Provider-confirmed sandbox fill
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate immutable source
+        env:
+          SOURCE_SHA: ${{ inputs.source_ref }}
+        run: |
+          set -euo pipefail
+          case "$SOURCE_SHA" in
+            *[!0-9a-f]*|'') echo '::error::source_ref must be a lowercase commit SHA'; exit 1 ;;
+          esac
+          [ "${#SOURCE_SHA}" -eq 40 ] || {
+            echo '::error::source_ref must contain exactly 40 hex characters'
+            exit 1
+          }
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+          fetch-depth: 1
+
+      - name: Verify checked-out acceptance code
+        env:
+          SOURCE_SHA: ${{ inputs.source_ref }}
+        run: |
+          set -euo pipefail
+          [ "$(git rev-parse --verify HEAD^{commit})" = "$SOURCE_SHA" ] || {
+            echo '::error::checkout does not match requested immutable source'
+            exit 1
+          }
+          test -f server/app/ops/tinvest_sandbox_acceptance.py
+
+      - name: Validate VPS connection inputs
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
+          HOST_KEY_SHA256: ${{ secrets.VPS_SSH_HOST_KEY_SHA256 || 'SHA256:cUfeWKyHoFIhKsV17Bpk076calxUaxd90XhuETb4vng' }}
+        run: |
+          set -euo pipefail
+          [ -n "$HOST" ] || { echo '::error::VPS host is missing'; exit 1; }
+          [ -n "$KEY" ] || { echo '::error::VPS SSH key is missing'; exit 1; }
+          [ -n "$HOST_KEY_SHA256" ] || { echo '::error::VPS host-key pin is missing'; exit 1; }
+
+      - name: Prepare pinned SSH
+        env:
+          KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          HOST_KEY_SHA256: ${{ secrets.VPS_SSH_HOST_KEY_SHA256 || 'SHA256:cUfeWKyHoFIhKsV17Bpk076calxUaxd90XhuETb4vng' }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          bash .github/scripts/prepare_known_host.sh "$HOST" "$HOST_KEY_SHA256"
+
+      - name: Execute real T-Invest Sandbox fill on exact deployed VPS source
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          USER_NAME: ${{ secrets.VPS_USER || 'root' }}
+          SOURCE_SHA: ${{ inputs.source_ref }}
+        run: |
+          set -euo pipefail
+          # SOURCE_SHA is already constrained to lowercase hex, so it is safe
+          # to pass as an inline environment assignment to the remote shell.
+          ssh -i ~/.ssh/id_deploy -o BatchMode=yes \
+            "$USER_NAME@$HOST" \
+            "SIGNALAI_SOURCE_SHA=$SOURCE_SHA bash -s" <<'REMOTE'
+          set -euo pipefail
+          SOURCE_SHA="${SIGNALAI_SOURCE_SHA:?source SHA is required}"
+          DIR="$HOME/signalai"
+          ENV_FILE='/etc/signalai/.env'
+          SUDO=''
+          [ "$(id -u)" -eq 0 ] || SUDO='sudo'
+
+          test -f "$DIR/.signalai-source-sha" || {
+            echo 'deployed source attestation is missing' >&2
+            exit 1
+          }
+          DEPLOYED_SHA="$(tr -d '\r\n' < "$DIR/.signalai-source-sha")"
+          [ "$DEPLOYED_SHA" = "$SOURCE_SHA" ] || {
+            echo "deployed SHA mismatch: expected $SOURCE_SHA, found $DEPLOYED_SHA" >&2
+            exit 1
+          }
+          test -f "$ENV_FILE" || { echo 'server env file is missing' >&2; exit 1; }
+
+          cd "$DIR/server"
+          $SUDO docker compose --env-file "$ENV_FILE" ps --status running api | grep -q api || {
+            echo 'deployed API container is not running' >&2
+            exit 1
+          }
+
+          DIAGNOSTIC_KEY="signalai-smoke-$SOURCE_SHA"
+          echo "Running provider-confirmed T-Invest Sandbox acceptance on $SOURCE_SHA"
+          # No token is passed by Actions. The command reads the encrypted
+          # tinvest_sandbox_trade slot from the production database internally.
+          # The CLI prints only sanitized evidence and exits 0 exclusively for
+          # a provider-confirmed fill with lotsExecuted > 0.
+          $SUDO docker compose --env-file "$ENV_FILE" exec -T api \
+            python -m app.ops.tinvest_sandbox_acceptance \
+            --diagnostic-key "$DIAGNOSTIC_KEY"
+          REMOTE
