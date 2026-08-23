@@ -65,7 +65,7 @@
 
 - [ ] Add RED tests proving missing credentials fail before provider I/O, duplicate diagnostic keys reconcile rather than duplicate, only SandboxService is used for account/pay-in/order state, and `filled` is true only when `lotsExecuted > 0`.
 - [ ] Add API RED tests proving device authentication remains required and no credential/provider raw body is returned.
-- [ ] Implement minimal account reuse/open, virtual RUB pay-in, current tradeable SBER discovery/status, market-or-crossing-limit BUY of one lot, and final order reconciliation.
+- [ ] Implement minimal account reuse/open, virtual RUB pay-in, `FindInstrument` + current trading-status selection from a fixed diagnostic allowlist (`LQDT`, `TBRU`, `SBER` fallback), market-or-crossing-limit BUY of one lot, and final order reconciliation.
 - [ ] Run focused tests GREEN and commit.
 
 ### Task 4: One-time phone → server credential migration
@@ -75,10 +75,11 @@
 - Test: `test/tinvest_sandbox_thin_client_migration_test.dart`
 
 **Interfaces:**
-- `TInvestSandboxAccess.migrateToServer(IntegrationsClient client)` uploads existing Keystore bearer to `tinvest_sandbox_trade` and deletes local token only after server confirmation.
+- `TInvestSandboxAccess.migrateToServer(IntegrationsClient client)` uploads an existing Keystore bearer to `tinvest_sandbox_trade` and deletes the local token only after exact server confirmation.
+- If the exact server slot already exists but a local legacy token remains, the local value is uploaded first and only then deleted; if no local token remains, the configured server slot is already migrated and no local delete is performed.
 - `TInvestSandboxAccess.configured()` reflects server-owned state after migration where a client is available.
 
-- [ ] Add RED tests for successful upload/delete, failed upload retaining local token, malformed server confirmation retaining token, and idempotent replay when server is already configured.
+- [ ] Add RED tests for successful upload/delete, failed upload retaining local token, malformed server confirmation retaining token, configured-server overwrite from a leftover local token, and configured-server replay with no local token/no delete.
 - [ ] Run Flutter tests RED.
 - [ ] Implement migration with no local-file secret persistence and no broker call.
 - [ ] Remove direct phone broker execution from `SandboxMirroringEngineClient`; the thin client delegates sandbox mirroring/smoke to SignalAI server or reports server migration required.
