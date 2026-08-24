@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from app.market import crypto, universe
+from app.market import crypto, review_resilience, universe
 from app.models import Instrument
 from app.models.enums import AssetClass, Venue
 
@@ -92,7 +92,9 @@ def test_futures_metadata_sync_preserves_last_admitted_verdict(session):
     session.add(row)
     session.flush()
 
-    universe.sync_futures(session, now=NOW, fetch=_board_fetch)
+    review_resilience.sync_futures_core_seeded(
+        session, now=NOW, fetch=_board_fetch
+    )
     session.refresh(row)
 
     assert row.in_universe is True
@@ -100,7 +102,9 @@ def test_futures_metadata_sync_preserves_last_admitted_verdict(session):
 
 
 def test_new_futures_candidate_stays_blocked_until_first_review(session):
-    (row,) = universe.sync_futures(session, now=NOW, fetch=_board_fetch)
+    (row,) = review_resilience.sync_futures_core_seeded(
+        session, now=NOW, fetch=_board_fetch
+    )
 
     assert row.in_universe is True
     assert row.is_tradable is False
@@ -121,7 +125,9 @@ def test_futures_contract_missing_from_new_snapshot_is_blocked_immediately(sessi
     session.add(old)
     session.flush()
 
-    universe.sync_futures(session, now=NOW, fetch=_board_fetch)
+    review_resilience.sync_futures_core_seeded(
+        session, now=NOW, fetch=_board_fetch
+    )
     session.refresh(old)
 
     assert old.in_universe is False
@@ -149,7 +155,7 @@ def test_crypto_metadata_sync_preserves_last_admitted_verdict(session, monkeypat
         lambda **_kwargs: ([_spec()], None),
     )
 
-    universe.sync_crypto(session, now=NOW)
+    review_resilience.sync_crypto_admission_continuous(session, now=NOW)
     session.refresh(row)
 
     assert row.in_universe is True
@@ -164,7 +170,7 @@ def test_new_crypto_candidate_stays_blocked_until_first_review(session, monkeypa
         lambda **_kwargs: ([_spec()], None),
     )
 
-    (row,) = universe.sync_crypto(session, now=NOW)
+    (row,) = review_resilience.sync_crypto_admission_continuous(session, now=NOW)
 
     assert row.in_universe is True
     assert row.is_tradable is False
