@@ -309,6 +309,17 @@ def _components(
     return result
 
 
+def _admission_thresholds(cfg: EngineConfig) -> AdmissionThresholds:
+    """Build every idea admission threshold from the versioned engine config."""
+    return AdmissionThresholds(
+        active_probability_min=Decimal(str(cfg.get("ideas.active_probability_min"))),
+        active_expected_r_min=Decimal(str(cfg.get("ideas.active_expected_r_min"))),
+        min_rr_tp2=Decimal(str(cfg.get("ideas.min_rr_tp2"))),
+        min_confidence=Decimal(str(cfg.get("ideas.min_confidence"))),
+        watch_probability_min=Decimal(str(cfg.get("ideas.watch_probability_min"))),
+    )
+
+
 def scan_instrument(
     session: Session,
     instrument: Instrument,
@@ -450,12 +461,7 @@ def scan_instrument(
         has_trigger=trigger_confirmed(pa_reading),
         risk_blocked=False,
         event_assessment=calendar_assessment,
-        thresholds=AdmissionThresholds(
-            active_probability_min=Decimal(str(cfg.get("ideas.active_probability_min"))),
-            active_expected_r_min=Decimal(str(cfg.get("ideas.active_expected_r_min"))),
-            min_rr_tp2=Decimal(str(cfg.get("ideas.min_rr_tp2"))),
-            min_confidence=Decimal(str(cfg.get("ideas.min_confidence"))),
-        ),
+        thresholds=_admission_thresholds(cfg),
     )
 
     # ── Риск §17 и размер §17.1 ──────────────────────────────────────────
