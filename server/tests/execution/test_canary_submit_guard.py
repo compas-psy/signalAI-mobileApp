@@ -178,7 +178,7 @@ def _guard(session, snapshot, **overrides):
     return canary_submit_guard(session, **values)
 
 
-def test_clean_submit_facts_remain_non_authorizing_until_adr_and_owner_step_up(session) -> None:
+def test_clean_submit_facts_remain_non_authorizing_until_adr_and_owner_binding(session) -> None:
     snapshot = _snapshot(session)
     _set_mode(session, ExecutionLifecycleMode.CANARY)
 
@@ -187,7 +187,7 @@ def test_clean_submit_facts_remain_non_authorizing_until_adr_and_owner_step_up(s
         assert result.provider_io_eligible is False
         assert result.blockers == (
             "ADR_0002_NOT_ACCEPTED",
-            "CANARY_OWNER_STEP_UP_NOT_IMPLEMENTED",
+            "CANARY_OWNER_STEP_UP_ACTIVATION_BINDING_NOT_APPROVED",
         )
         assert result.effective_order_notional_cap == Decimal("1600")
 

@@ -6,8 +6,9 @@ body. It additionally row-locks the mutable execution-mode singleton and live
 credential slot so their existing writers cannot race a later provider write.
 
 This module itself cannot authorize provider I/O. Even a structurally clean
-result remains blocked by unresolved ADR-0002 and cryptographic owner step-up.
-It imports no Lighter SDK, secret decryption, signer, transport or order sink.
+result remains blocked by unresolved ADR-0002 and the unapproved owner step-up
+activation binding. It imports no Lighter SDK, secret decryption, signer,
+transport or order sink.
 """
 from __future__ import annotations
 
@@ -42,7 +43,7 @@ _HEX40 = re.compile(r"^[0-9a-f]{40}$")
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _GOVERNANCE_BLOCKERS = (
     "ADR_0002_NOT_ACCEPTED",
-    "CANARY_OWNER_STEP_UP_NOT_IMPLEMENTED",
+    "CANARY_OWNER_STEP_UP_ACTIVATION_BINDING_NOT_APPROVED",
 )
 _SOURCE_CONFIG_POLICY_DRIFT_BLOCKERS = frozenset(
     {
@@ -333,8 +334,8 @@ def _evaluate_locked(
 
     # This is intentionally the terminal state for the current repository.
     # Passing structural checks does not grant authority or imply that Canary
-    # activation is accepted. A future owner-step-up slice must replace these
-    # blockers explicitly and keep provider I/O inside this same lock scope.
+    # activation is accepted. A future owner-step-up binding slice must replace
+    # these blockers explicitly and keep provider I/O inside this same lock scope.
     return _result(
         _GOVERNANCE_BLOCKERS,
         structural_checks_passed=True,

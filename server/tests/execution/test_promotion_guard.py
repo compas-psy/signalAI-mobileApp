@@ -152,11 +152,15 @@ def test_lower_risk_transition_is_automatically_authorized_with_event_trail(sess
     assert decision.authorization is not None
     assert decision.authorization.detail_json["direction"] == "lower-risk"
     assert result.mode == ExecutionLifecycleMode.SANDBOX
-    event = session.query(ExecutionModeEvent).order_by(ExecutionModeEvent.occurred_at.desc()).first()
-    assert event is not None
+    event = (
+        session.query(ExecutionModeEvent)
+        .filter(
+            ExecutionModeEvent.from_mode == ExecutionLifecycleMode.CANARY,
+            ExecutionModeEvent.to_mode == ExecutionLifecycleMode.SANDBOX,
+        )
+        .one()
+    )
     assert session.query(ExecutionModeEvent).count() == before + 1
-    assert event.from_mode == ExecutionLifecycleMode.CANARY
-    assert event.to_mode == ExecutionLifecycleMode.SANDBOX
     assert event.detail_json["policy_version"] == "ADR-0001"
 
 
