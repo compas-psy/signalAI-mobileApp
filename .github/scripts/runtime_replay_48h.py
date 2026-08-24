@@ -15,7 +15,7 @@ from sqlalchemy import select
 from app.config import get_config
 from app.db import get_session_factory
 from app.market.candles import Candle
-from app.market.economic_events import load_owned_calendar
+from app.market.economic_events import EventAssessment, load_owned_calendar
 from app.models import Bar, Instrument, TradeIdea
 from app.models.enums import AssetClass, Timeframe
 from app.pipeline import scan as scan_module
@@ -24,6 +24,17 @@ from app.risk.sizing import RiskState
 WINDOW_HOURS = 48
 LOOKBACK_DAYS = 65
 USER_QUALITY = {"ACTIVE", "WATCH"}
+
+
+class _DiagnosticClearCalendar:
+    """Counterfactual only: isolate the effect of the broken calendar gate."""
+
+    def assess(self, instrument_id: str, *, as_of: datetime) -> EventAssessment:
+        return EventAssessment(
+            "CLEAR",
+            "DIAGNOSTIC_COUNTERFACTUAL_CLEAR",
+            "diagnostic counterfactual: economic-event gate assumed clear",
+        )
 
 
 def _lane(instrument: Instrument) -> str:
@@ -48,6 +59,45 @@ def _candle(row: Bar) -> Candle:
         source=row.source,
         quality_flags=tuple(row.quality_flags or ()),
     )
+
+
+def _extend_episode(
+    episodes: list[dict],
+    live_episode: dict | None,
+    *,
+    instrument: Instrument,
+    lane: str,
+    idea: TradeIdea,
+    as_of: datetime,
+    current_admitted: set[str],
+) -> dict:
+    key = (
+        instrument.instrument_id,
+        _value(idea.strategy),
+        _value(idea.direction),
+    )
+    status = _value(idea.quality_status)
+    probability = Decimal(str(idea.p_tp1_before_sl))
+    expected_r = Decimal(str(idea.expected_r))
+    if live_episode is None or live_episode["key"] != key:
+        live_episode = {
+            "key": key,
+            "lane": lane,
+            "start": as_of,
+            "end": as_of,
+            "best_status": status,
+            "max_probability": probability,
+            "max_expected_r": expected_r,
+            "current_admitted": instrument.instrument_id in current_admitted,
+        }
+        episodes.append(live_episode)
+    else:
+        live_episode["end"] = as_of
+        if status == "ACTIVE":
+            live_episode["best_status"] = "ACTIVE"
+        live_episode["max_probability"] = max(live_episode["max_probability"], probability)
+        live_episode["max_expected_r"] = max(live_episode["max_expected_r"], expected_r)
+    return live_episode
 
 
 def main() -> None:
@@ -128,15 +178,19 @@ def main() -> None:
         # Match scan()'s canonical default risk state exactly. The replay is
         # diagnostic-only and must not depend on a non-existent config key.
         risk_state = RiskState(risk_equity=Decimal(100_000))
+        clear_calendar = _DiagnosticClearCalendar()
 
         episodes: list[dict] = []
+        calendar_clear_episodes: list[dict] = []
         scan_calls = 0
+        calendar_counterfactual_calls = 0
         strategy_rejected_calls = Counter()
         strategy_reasons = Counter()
         failed_checks = Counter()
         skipped_counts = Counter()
         admission_reasons = Counter()
         admission_instruments = Counter()
+        counterfactual_non_user = Counter()
         exception_counts = Counter()
 
         for index, instrument in enumerate(instruments, start=1):
@@ -147,6 +201,7 @@ def main() -> None:
                 if window_start - timedelta(hours=1) <= item.open_time <= window_end
             ]
             live_episode = None
+            clear_live_episode = None
             for open_time in h1_opens:
                 as_of = open_time + timedelta(hours=1, seconds=1)
                 if not (window_start <= as_of <= window_end):
@@ -165,6 +220,7 @@ def main() -> None:
                 except Exception as exc:
                     exception_counts[(lane, type(exc).__name__, str(exc))] += 1
                     live_episode = None
+                    clear_live_episode = None
                     continue
 
                 # Count every strategy's failed checks, including the two losing
@@ -176,14 +232,57 @@ def main() -> None:
                         failed_checks[(lane, strategy, check.name, check.detail)] += 1
 
                 if skipped:
+                    admission_blocked = False
                     for item in skipped:
                         skipped_counts[(lane, item.stage, item.reason)] += 1
                         if item.stage == "допуск":
+                            admission_blocked = True
                             admission_reasons[(lane, item.reason)] += 1
                             admission_instruments[(lane, item.instrument_id, item.reason)] += 1
                     live_episode = None
+
+                    # This second call never represents a production decision.
+                    # It isolates exactly what the broken/unavailable event
+                    # calendar prevented the remaining admission gates from
+                    # deciding. Treat it as an upper bound until a real event
+                    # source is operational and historically replayable.
+                    if admission_blocked:
+                        calendar_counterfactual_calls += 1
+                        try:
+                            cf_idea, cf_skipped, _ = scan_module.scan_instrument(
+                                session,
+                                instrument,
+                                cfg=cfg,
+                                risk_state=risk_state,
+                                now=as_of,
+                                event_calendar=clear_calendar,
+                            )
+                        except Exception as exc:
+                            exception_counts[(lane, f"counterfactual_{type(exc).__name__}", str(exc))] += 1
+                            clear_live_episode = None
+                        else:
+                            if cf_idea is not None and _value(cf_idea.quality_status) in USER_QUALITY:
+                                clear_live_episode = _extend_episode(
+                                    calendar_clear_episodes,
+                                    clear_live_episode,
+                                    instrument=instrument,
+                                    lane=lane,
+                                    idea=cf_idea,
+                                    as_of=as_of,
+                                    current_admitted=current_admitted,
+                                )
+                            else:
+                                clear_live_episode = None
+                                if cf_skipped:
+                                    for cf_skip in cf_skipped:
+                                        counterfactual_non_user[(lane, cf_skip.stage, cf_skip.reason)] += 1
+                                else:
+                                    counterfactual_non_user[(lane, "no_user_quality", "no ACTIVE/WATCH idea")] += 1
+                    else:
+                        clear_live_episode = None
                     continue
 
+                clear_live_episode = None
                 if idea is None:
                     if rejections:
                         strategy_rejected_calls[lane] += 1
@@ -198,36 +297,21 @@ def main() -> None:
                     live_episode = None
                     continue
 
-                key = (
-                    instrument.instrument_id,
-                    _value(idea.strategy),
-                    _value(idea.direction),
+                live_episode = _extend_episode(
+                    episodes,
+                    live_episode,
+                    instrument=instrument,
+                    lane=lane,
+                    idea=idea,
+                    as_of=as_of,
+                    current_admitted=current_admitted,
                 )
-                probability = Decimal(str(idea.p_tp1_before_sl))
-                expected_r = Decimal(str(idea.expected_r))
-                if live_episode is None or live_episode["key"] != key:
-                    live_episode = {
-                        "key": key,
-                        "lane": lane,
-                        "start": as_of,
-                        "end": as_of,
-                        "best_status": status,
-                        "max_probability": probability,
-                        "max_expected_r": expected_r,
-                        "current_admitted": instrument.instrument_id in current_admitted,
-                    }
-                    episodes.append(live_episode)
-                else:
-                    live_episode["end"] = as_of
-                    if status == "ACTIVE":
-                        live_episode["best_status"] = "ACTIVE"
-                    live_episode["max_probability"] = max(live_episode["max_probability"], probability)
-                    live_episode["max_expected_r"] = max(live_episode["max_expected_r"], expected_r)
 
             print(
                 f"REPLAY_PROGRESS {index}/{len(instruments)} lane={lane} "
                 f"instrument={instrument.instrument_id} scan_calls={scan_calls} "
-                f"episodes={len(episodes)} admission_skips={sum(admission_reasons.values())}",
+                f"episodes={len(episodes)} admission_skips={sum(admission_reasons.values())} "
+                f"calendar_clear_episodes={len(calendar_clear_episodes)}",
                 flush=True,
             )
 
@@ -258,6 +342,7 @@ def main() -> None:
         missed_all = [item for item in episodes if not matches_actual(item)]
         current_scope = [item for item in episodes if item["current_admitted"]]
         missed_current = [item for item in current_scope if not matches_actual(item)]
+        calendar_clear_current = [item for item in calendar_clear_episodes if item["current_admitted"]]
 
         def episode_counts(items):
             return dict(sorted(Counter((item["lane"], item["best_status"]) for item in items).items()))
@@ -276,8 +361,27 @@ def main() -> None:
         print(f"REPLAY_MISSED_ALL_BY_LANE_STATUS {episode_counts(missed_all)}", flush=True)
         print(f"REPLAY_CURRENT_BY_LANE_STATUS {episode_counts(current_scope)}", flush=True)
         print(f"REPLAY_MISSED_CURRENT_BY_LANE_STATUS {episode_counts(missed_current)}", flush=True)
+        print(
+            "REPLAY_CALENDAR_CLEAR_COUNTERFACTUAL "
+            f"calls={calendar_counterfactual_calls} "
+            f"user_quality_episodes={len(calendar_clear_episodes)} "
+            f"current_admitted_episodes={len(calendar_clear_current)} "
+            f"by_lane_status={episode_counts(calendar_clear_episodes)}",
+            flush=True,
+        )
         print(f"REPLAY_STRATEGY_REJECTED_CALLS {dict(sorted(strategy_rejected_calls.items()))}", flush=True)
         print(f"REPLAY_ADMISSION_BY_REASON {dict(sorted(admission_reasons.items()))}", flush=True)
+
+        print("REPLAY_CALENDAR_CLEAR_EPISODES", flush=True)
+        for item in calendar_clear_episodes:
+            iid, strategy, direction = item["key"]
+            print(
+                f"  {item['lane']} {iid} {strategy} {direction} "
+                f"{item['best_status']} {item['start'].isoformat()}..{item['end'].isoformat()} "
+                f"p_max={item['max_probability']} ev_max={item['max_expected_r']} "
+                f"current_admitted={item['current_admitted']}",
+                flush=True,
+            )
 
         print("REPLAY_ADMISSION_INSTRUMENTS", flush=True)
         for (lane, iid, reason), count in admission_instruments.most_common(100):
@@ -290,6 +394,10 @@ def main() -> None:
         print("REPLAY_STRATEGY_REASONS", flush=True)
         for (lane, strategy, reason), count in strategy_reasons.most_common(50):
             print(f"  {count}x {lane} {strategy}: {reason}", flush=True)
+
+        print("REPLAY_COUNTERFACTUAL_NON_USER", flush=True)
+        for (lane, stage, reason), count in counterfactual_non_user.most_common(30):
+            print(f"  {count}x {lane} / {stage}: {reason}", flush=True)
 
         print("REPLAY_TOP_SKIPS", flush=True)
         for (lane, stage, reason), count in skipped_counts.most_common(30):
