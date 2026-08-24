@@ -148,10 +148,8 @@ class EconomicEventCalendar:
         if tags is None:
             return EventAssessment("AMBIGUOUS", "EVENT_INSTRUMENT_MAPPING_AMBIGUOUS", "инструмент не покрыт явной картой календаря")
         rows = self.visible(as_of=as_of)
-        if not rows:
-            return EventAssessment("UNAVAILABLE", "EVENT_SOURCE_UNAVAILABLE", "календарь не содержит point-in-time покрытия")
         candidates = [row for row in rows if set(row.instrument_tags) & tags]
-        global_rows = [row for row in self.visible(as_of=as_of) if "GLOBAL" in row.instrument_tags]
+        global_rows = [row for row in rows if "GLOBAL" in row.instrument_tags]
         if global_rows and not candidates:
             return EventAssessment("AMBIGUOUS", "EVENT_INSTRUMENT_MAPPING_AMBIGUOUS", "событие нельзя однозначно сопоставить инструменту", global_rows[0])
         active = [row for row in candidates if row.impact == "HIGH" and abs(row.scheduled_at - moment) <= self._high_impact_window]
