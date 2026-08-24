@@ -315,6 +315,7 @@ def _scan_instrument_v2(
     cfg: EngineConfig,
     risk_state: RiskState,
     now,
+    event_calendar=None,
 ):
     ctx = RuntimeContext(
         session=session,
@@ -330,6 +331,7 @@ def _scan_instrument_v2(
             cfg=cfg,
             risk_state=risk_state,
             now=now,
+            event_calendar=event_calendar,
         )
         if idea is not None:
             profile = ctx.profile or _profile(
