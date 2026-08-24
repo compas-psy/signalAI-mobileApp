@@ -2,6 +2,8 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import yaml
+
 from app.market.economic_events import EconomicEventCalendar, load_owned_calendar
 
 
@@ -115,3 +117,22 @@ def test_refresh_failure_preserves_last_good_snapshot(tmp_path):
 
     assert refreshed is False
     assert target.read_text(encoding="utf-8") == original
+
+
+def test_compose_shares_owned_calendar_snapshot_with_api_and_market_scheduler():
+    compose_path = Path(__file__).parents[1] / "docker-compose.yml"
+    compose = yaml.safe_load(compose_path.read_text(encoding="utf-8"))
+    services = compose["services"]
+    source = services["event-calendar"]
+    expected_path = "/var/lib/signalai-calendar/events.json"
+
+    assert source["environment"]["SIGNALAI_EVENT_CALENDAR_PATH"] == expected_path
+    assert "calendar-data:/var/lib/signalai-calendar" in source["volumes"]
+    assert source["command"] == ["python", "-m", "app.market.economic_event_source"]
+
+    for service_name in ("api", "scheduler"):
+        service = services[service_name]
+        assert service["environment"]["SIGNALAI_EVENT_CALENDAR_PATH"] == expected_path
+        assert "calendar-data:/var/lib/signalai-calendar:ro" in service["volumes"]
+
+    assert "calendar-data" in compose["volumes"]
