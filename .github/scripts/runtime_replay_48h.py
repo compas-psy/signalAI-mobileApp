@@ -125,7 +125,9 @@ def main() -> None:
 
         scan_module._load_bars = load_bars_asof
         cfg = get_config()
-        risk_state = RiskState(risk_equity=cfg.decimal("risk.equity_rub"))
+        # Match scan()'s canonical default risk state exactly. The replay is
+        # diagnostic-only and must not depend on a non-existent config key.
+        risk_state = RiskState(risk_equity=Decimal(100_000))
 
         episodes: list[dict] = []
         scan_calls = 0
