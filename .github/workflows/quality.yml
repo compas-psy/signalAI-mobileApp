@@ -148,7 +148,7 @@ jobs:
         run: .venv/bin/python -m pytest
 
   mobile:
-    name: Flutter analyze, tests and Android native compile
+    name: Flutter analyze, tests and Android release build
     needs: attest
     if: ${{ needs.attest.outputs.reuse != 'true' }}
     runs-on: ubuntu-latest
@@ -171,8 +171,5 @@ jobs:
         run: flutter pub get --enforce-lockfile
       - run: flutter analyze
       - run: flutter test
-      - name: Compile Android release Kotlin
-        run: |
-          set -euo pipefail
-          cd android
-          ./gradlew :app:compileReleaseKotlin --no-daemon
+      - name: Compile Android release through Flutter
+        run: flutter build apk --release --no-pub
