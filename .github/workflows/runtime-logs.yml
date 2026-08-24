@@ -221,7 +221,7 @@ jobs:
               return list(reversed(candles))
 
           try:
-              target_classes = (AssetClass.FUTURES, AssetClass.CRYPTO)
+              target_classes = (AssetClass.FUTURES, AssetClass.CRYPTO_PERPETUAL)
               recent_ids = set(
                   session.execute(
                       select(Bar.instrument_id)
@@ -245,7 +245,7 @@ jobs:
               current_flags = Counter()
               latest_h1 = {}
               for instrument in instruments:
-                  lane = "crypto" if instrument.asset_class == AssetClass.CRYPTO else "forts"
+                  lane = "crypto" if instrument.asset_class == AssetClass.CRYPTO_PERPETUAL else "forts"
                   by_lane[lane] += 1
                   current_flags[(lane, bool(instrument.in_universe), bool(instrument.is_tradable))] += 1
                   latest_h1[instrument.instrument_id] = session.execute(
@@ -266,7 +266,7 @@ jobs:
                   print(f"  {lane}: in_universe={in_universe} tradable={tradable} count={count}")
               lane_latest = {}
               for instrument in instruments:
-                  lane = "crypto" if instrument.asset_class == AssetClass.CRYPTO else "forts"
+                  lane = "crypto" if instrument.asset_class == AssetClass.CRYPTO_PERPETUAL else "forts"
                   stamp = latest_h1.get(instrument.instrument_id)
                   if stamp is not None and (lane not in lane_latest or stamp > lane_latest[lane]):
                       lane_latest[lane] = stamp
@@ -282,7 +282,7 @@ jobs:
               exception_counts = Counter()
 
               for instrument in instruments:
-                  lane = "crypto" if instrument.asset_class == AssetClass.CRYPTO else "forts"
+                  lane = "crypto" if instrument.asset_class == AssetClass.CRYPTO_PERPETUAL else "forts"
                   h1_opens = list(
                       session.execute(
                           select(Bar.open_time)
