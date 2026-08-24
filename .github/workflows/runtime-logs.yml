@@ -105,7 +105,7 @@ jobs:
               cfg = get_config()
               now = datetime.now(UTC)
               calendar = EconomicEventCalendar((), source_available=False)
-              risk_state = RiskState(risk_equity=Decimal("100000"))
+              risk_state = RiskState(risk_equity=cfg.decimal("risk.equity_rub"))
 
               stage_counts = Counter()
               reason_counts = Counter()
@@ -162,6 +162,252 @@ jobs:
               session.rollback()
               session.close()
           PYSCAN
+
+          echo
+          echo "──────── Crypto/FORTS inventory + 48h missed-idea replay (read-only) ────────"
+          $COMPOSE exec -T api python - <<'PYREPLAY'
+          from collections import Counter
+          from datetime import UTC, datetime, timedelta
+          from decimal import Decimal
+
+          from sqlalchemy import func, select
+
+          from app.config import get_config
+          from app.db import get_session_factory
+          from app.market.candles import Candle
+          from app.market.economic_events import load_owned_calendar
+          from app.models import Bar, Instrument, TradeIdea
+          from app.models.enums import AssetClass, Timeframe
+          from app.pipeline import scan as scan_module
+          from app.risk.sizing import RiskState
+
+          window_end = datetime.now(UTC)
+          window_start = window_end - timedelta(hours=48)
+          session = get_session_factory()()
+          original_load_bars = scan_module._load_bars
+          as_of_holder = {"value": window_end}
+
+          def load_bars_asof(session, instrument_id, timeframe, limit):
+              as_of = as_of_holder["value"]
+              close_delta = timedelta(days=1) if timeframe == Timeframe.D1 else timedelta(hours=1)
+              cutoff = as_of - close_delta
+              rows = session.execute(
+                  select(Bar)
+                  .where(
+                      Bar.instrument_id == instrument_id,
+                      Bar.timeframe == timeframe,
+                      Bar.is_closed.is_(True),
+                      Bar.open_time <= cutoff,
+                  )
+                  .order_by(Bar.open_time.desc())
+                  .limit(limit)
+              ).scalars()
+              candles = [
+                  Candle(
+                      open_time=b.open_time,
+                      open=b.open,
+                      high=b.high,
+                      low=b.low,
+                      close=b.close,
+                      volume_units=b.volume_units,
+                      volume_notional=b.volume_notional,
+                      open_interest=b.open_interest,
+                      is_closed=True,
+                      source=b.source,
+                      quality_flags=tuple(b.quality_flags or ()),
+                  )
+                  for b in rows
+              ]
+              return list(reversed(candles))
+
+          try:
+              target_classes = (AssetClass.FUTURES, AssetClass.CRYPTO)
+              recent_ids = set(
+                  session.execute(
+                      select(Bar.instrument_id)
+                      .where(
+                          Bar.timeframe == Timeframe.H1,
+                          Bar.is_closed.is_(True),
+                          Bar.open_time >= window_start - timedelta(hours=1),
+                      )
+                      .distinct()
+                  ).scalars()
+              )
+              instruments = list(
+                  session.execute(
+                      select(Instrument).where(
+                          Instrument.asset_class.in_(target_classes),
+                          Instrument.instrument_id.in_(recent_ids),
+                      )
+                  ).scalars()
+              ) if recent_ids else []
+              by_lane = Counter()
+              current_flags = Counter()
+              latest_h1 = {}
+              for instrument in instruments:
+                  lane = "crypto" if instrument.asset_class == AssetClass.CRYPTO else "forts"
+                  by_lane[lane] += 1
+                  current_flags[(lane, bool(instrument.in_universe), bool(instrument.is_tradable))] += 1
+                  latest_h1[instrument.instrument_id] = session.execute(
+                      select(func.max(Bar.open_time)).where(
+                          Bar.instrument_id == instrument.instrument_id,
+                          Bar.timeframe == Timeframe.H1,
+                          Bar.is_closed.is_(True),
+                      )
+                  ).scalar_one_or_none()
+
+              print(
+                  "window_utc="
+                  f"{window_start.isoformat()}..{window_end.isoformat()} "
+                  f"target_instruments_with_h1={len(instruments)} by_lane={dict(sorted(by_lane.items()))}"
+              )
+              print("current_flags:")
+              for (lane, in_universe, tradable), count in sorted(current_flags.items()):
+                  print(f"  {lane}: in_universe={in_universe} tradable={tradable} count={count}")
+              lane_latest = {}
+              for instrument in instruments:
+                  lane = "crypto" if instrument.asset_class == AssetClass.CRYPTO else "forts"
+                  stamp = latest_h1.get(instrument.instrument_id)
+                  if stamp is not None and (lane not in lane_latest or stamp > lane_latest[lane]):
+                      lane_latest[lane] = stamp
+              print("latest_h1_by_lane=" + repr({k: v.isoformat() for k, v in sorted(lane_latest.items())}))
+
+              scan_module._load_bars = load_bars_asof
+              cfg = get_config()
+              risk_state = RiskState(risk_equity=cfg.decimal("risk.equity_rub"))
+              episodes = []
+              scan_calls = 0
+              skipped_counts = Counter()
+              rejection_calls = Counter()
+              exception_counts = Counter()
+
+              for instrument in instruments:
+                  lane = "crypto" if instrument.asset_class == AssetClass.CRYPTO else "forts"
+                  h1_opens = list(
+                      session.execute(
+                          select(Bar.open_time)
+                          .where(
+                              Bar.instrument_id == instrument.instrument_id,
+                              Bar.timeframe == Timeframe.H1,
+                              Bar.is_closed.is_(True),
+                              Bar.open_time >= window_start - timedelta(hours=1),
+                              Bar.open_time <= window_end,
+                          )
+                          .order_by(Bar.open_time)
+                      ).scalars()
+                  )
+                  live_episode = None
+                  for open_time in h1_opens:
+                      as_of = open_time + timedelta(hours=1, seconds=1)
+                      if as_of < window_start or as_of > window_end:
+                          continue
+                      as_of_holder["value"] = as_of
+                      scan_calls += 1
+                      try:
+                          idea, skipped, rejections = scan_module.scan_instrument(
+                              session,
+                              instrument,
+                              cfg=cfg,
+                              risk_state=risk_state,
+                              now=as_of,
+                              event_calendar=load_owned_calendar(now=as_of),
+                          )
+                      except Exception as exc:
+                          exception_counts[(lane, type(exc).__name__, str(exc))] += 1
+                          live_episode = None
+                          continue
+
+                      if skipped:
+                          for item in skipped:
+                              skipped_counts[(lane, item.stage, item.reason)] += 1
+                          live_episode = None
+                          continue
+                      if idea is None:
+                          if rejections:
+                              rejection_calls[lane] += 1
+                          live_episode = None
+                          continue
+
+                      key = (
+                          instrument.instrument_id,
+                          str(idea.strategy.value),
+                          str(idea.direction.value),
+                      )
+                      status = str(idea.quality_status.value)
+                      probability = Decimal(str(idea.p_tp1_before_sl))
+                      if live_episode is None or live_episode["key"] != key:
+                          live_episode = {
+                              "key": key,
+                              "lane": lane,
+                              "start": as_of,
+                              "end": as_of,
+                              "best_status": status,
+                              "max_probability": probability,
+                          }
+                          episodes.append(live_episode)
+                      else:
+                          live_episode["end"] = as_of
+                          if status == "ACTIVE":
+                              live_episode["best_status"] = "ACTIVE"
+                          if probability > live_episode["max_probability"]:
+                              live_episode["max_probability"] = probability
+
+              target_ids = {instrument.instrument_id for instrument in instruments}
+              actual_rows = list(
+                  session.execute(
+                      select(TradeIdea).where(
+                          TradeIdea.instrument_id.in_(target_ids),
+                          TradeIdea.signal_time >= window_start - timedelta(hours=2),
+                          TradeIdea.signal_time <= window_end + timedelta(hours=1),
+                      )
+                  ).scalars()
+              ) if target_ids else []
+
+              def matches_actual(episode):
+                  iid, strategy, direction = episode["key"]
+                  low = episode["start"] - timedelta(hours=1)
+                  high = episode["end"] + timedelta(hours=1)
+                  for row in actual_rows:
+                      if row.instrument_id != iid:
+                          continue
+                      if str(row.strategy.value) != strategy or str(row.direction.value) != direction:
+                          continue
+                      if low <= row.signal_time <= high:
+                          return True
+                  return False
+
+              missed = [episode for episode in episodes if not matches_actual(episode)]
+              print(
+                  f"replay_scan_calls={scan_calls} signal_episodes={len(episodes)} "
+                  f"actual_target_ideas={len(actual_rows)} missed_signal_episodes={len(missed)}"
+              )
+              print("episodes_by_lane_status=" + repr(dict(sorted(Counter(
+                  (episode["lane"], episode["best_status"]) for episode in episodes
+              ).items()))))
+              print("missed_by_lane_status=" + repr(dict(sorted(Counter(
+                  (episode["lane"], episode["best_status"]) for episode in missed
+              ).items()))))
+              print("missed_signal_episodes:")
+              for episode in missed[:100]:
+                  iid, strategy, direction = episode["key"]
+                  print(
+                      f"  {episode['lane']} {iid} {strategy} {direction} "
+                      f"{episode['best_status']} p_max={episode['max_probability']} "
+                      f"{episode['start'].isoformat()}..{episode['end'].isoformat()}"
+                  )
+              print("top_replay_skips:")
+              for (lane, stage, reason), count in skipped_counts.most_common(20):
+                  print(f"  {count}x {lane} / {stage}: {reason}")
+              print("strategy_rejection_calls=" + repr(dict(sorted(rejection_calls.items()))))
+              if exception_counts:
+                  print("replay_exceptions:")
+                  for (lane, kind, detail), count in exception_counts.most_common(20):
+                      print(f"  {count}x {lane} {kind}: {detail}")
+          finally:
+              scan_module._load_bars = original_load_bars
+              session.rollback()
+              session.close()
+          PYREPLAY
 
           echo
           echo "──────── public health ────────"
