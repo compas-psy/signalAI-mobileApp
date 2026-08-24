@@ -92,8 +92,8 @@ class OwnerStepUpSigner(private val activity: Activity) {
 
     private fun generateKeyPair(strongBox: Boolean) = try {
         keyGenerator(strongBox).generateKeyPair()
-    } catch (_: Throwable) {
-        if (!strongBox) throw
+    } catch (error: Throwable) {
+        if (!strongBox) throw error
         keyGenerator(false).generateKeyPair()
     }
 
