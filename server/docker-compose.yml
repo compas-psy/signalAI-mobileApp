@@ -51,6 +51,7 @@ services:
     environment:
       SIGNALAI_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-signalai}
       SIGNALAI_REDIS_URL: redis://redis:6379/0
+      SIGNALAI_EVENT_CALENDAR_PATH: /var/lib/signalai-calendar/events.json
       # Immutable release provenance used by read-only Canary preflight.
       SIGNALAI_SOURCE_SHA: ${SIGNALAI_SOURCE_SHA:-}
       # Bootstrap secret для initial pairing. Он никогда не authorizes
@@ -72,6 +73,8 @@ services:
       SIGNALAI_LLM_MODEL: ${SIGNALAI_LLM_MODEL:-qwen3.5:4b}
       SIGNALAI_LLM_TIMEOUT_SECONDS: ${SIGNALAI_LLM_TIMEOUT_SECONDS:-180}
       SIGNALAI_LLM_NUM_CTX: ${SIGNALAI_LLM_NUM_CTX:-4096}
+    volumes:
+      - calendar-data:/var/lib/signalai-calendar:ro
     ports:
       - "127.0.0.1:8000:8000"
     command: >
@@ -90,6 +93,25 @@ services:
       timeout: 5s
       retries: 12
       start_period: 20s
+
+  # Isolated network transport for the owned event-calendar snapshot.  It has
+  # no database credentials and never decides whether a trade is admissible:
+  # it only refreshes the provider-neutral file consumed by API/scheduler.
+  # A failed refresh preserves the last good file; normal max-age/coverage
+  # checks then fail closed if the outage lasts too long.
+  event-calendar:
+    build: .
+    image: signalai-scheduler
+    restart: unless-stopped
+    logging: *signalai-bounded-logging
+    environment:
+      SIGNALAI_EVENT_CALENDAR_PATH: /var/lib/signalai-calendar/events.json
+      SIGNALAI_EVENT_CALENDAR_REFRESH_SECONDS: ${SIGNALAI_EVENT_CALENDAR_REFRESH_SECONDS:-1800}
+    volumes:
+      - calendar-data:/var/lib/signalai-calendar
+    command: ["python", "-m", "app.market.economic_event_source"]
+    healthcheck:
+      disable: true
 
   # Локальная модель для критика (ТЗ §15, §26.2). Контейнером, а не службой
   # на хосте, по одной причине: служба, слушающая 127.0.0.1, из контейнера
@@ -159,6 +181,7 @@ services:
     environment:
       SIGNALAI_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-signalai}
       SIGNALAI_REDIS_URL: redis://redis:6379/0
+      SIGNALAI_EVENT_CALENDAR_PATH: /var/lib/signalai-calendar/events.json
       SIGNALAI_SCHEDULER_LANE: market
       TELEGRAM_TOKEN: ${TELEGRAM_TOKEN:-}
       TELEGRAM_CHATID: ${TELEGRAM_CHATID:-}
@@ -170,6 +193,8 @@ services:
       SIGNALAI_LLM_MODEL: ${SIGNALAI_LLM_MODEL:-qwen3.5:4b}
       SIGNALAI_LLM_TIMEOUT_SECONDS: ${SIGNALAI_LLM_TIMEOUT_SECONDS:-180}
       SIGNALAI_LLM_NUM_CTX: ${SIGNALAI_LLM_NUM_CTX:-4096}
+    volumes:
+      - calendar-data:/var/lib/signalai-calendar:ro
     command: ["python", "-m", "app.scheduler"]
     # Проверка здоровья из образа здесь неприменима: она стучится в
     # http://127.0.0.1:8000/health, а у планировщика нет входящих портов по
@@ -226,6 +251,7 @@ services:
 volumes:
   pgdata:
   redisdata:
+  calendar-data:
   # Веса модели переживают пересборку. Иначе каждая выкладка тянула бы
   # несколько гигабайт заново — и первый прогон разведки после деплоя
   # выглядел бы как «модель не отвечает».
