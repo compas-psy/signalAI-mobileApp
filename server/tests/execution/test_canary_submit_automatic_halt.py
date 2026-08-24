@@ -221,7 +221,7 @@ def test_governance_blockers_do_not_trip_automatic_halt(session) -> None:
     with _guard(session, snapshot) as result:
         assert result.blockers == (
             "ADR_0002_NOT_ACCEPTED",
-            "CANARY_OWNER_STEP_UP_NOT_IMPLEMENTED",
+            "CANARY_OWNER_STEP_UP_ACTIVATION_BINDING_NOT_APPROVED",
         )
         assert getattr(result, "automatic_halt_applied", False) is False
         assert getattr(result, "automatic_safety_triggers", ()) == ()
