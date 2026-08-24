@@ -1,0 +1,37 @@
+from pathlib import Path
+import re
+
+
+ROOT = Path(__file__).resolve().parents[2]
+SCRIPT = ROOT / ".github" / "scripts" / "runtime_replay_48h.py"
+WORKFLOW = ROOT / ".github" / "workflows" / "runtime-replay.yml"
+
+
+def _integer_constant(source: str, name: str) -> int:
+    match = re.search(rf"^{name}\s*=\s*(\d+)\s*$", source, re.MULTILINE)
+    assert match is not None, f"{name} must be an explicit replay contract constant"
+    return int(match.group(1))
+
+
+def test_replay_loads_enough_daily_and_hourly_history_independently():
+    source = SCRIPT.read_text(encoding="utf-8")
+
+    assert _integer_constant(source, "D1_LOOKBACK_DAYS") >= 100
+    assert _integer_constant(source, "H1_LOOKBACK_DAYS") >= 35
+    assert "d1_history_floor" in source
+    assert "h1_history_floor" in source
+
+
+def test_replay_labels_unreconstructible_event_gate_as_calendar_neutral():
+    source = SCRIPT.read_text(encoding="utf-8")
+
+    assert "REPLAY_EVENT_GATE_NEUTRAL" in source
+    assert "CALENDAR_NEUTRAL" in source
+    assert "EventAssessment(\"CLEAR\"" in source
+
+
+def test_replay_workflow_allows_full_canonical_forts_runtime():
+    source = WORKFLOW.read_text(encoding="utf-8")
+    match = re.search(r"timeout-minutes:\s*(\d+)", source)
+    assert match is not None
+    assert int(match.group(1)) >= 40
