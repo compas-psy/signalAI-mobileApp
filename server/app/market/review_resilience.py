@@ -1,22 +1,19 @@
 """Runtime resilience for market-universe refresh.
 
-Two source-plumbing failures are handled here without weakening trading gates.
+Source refresh and admission review are separate scheduler stages. A metadata
+refresh must not erase a previously reviewed admission verdict before review
+has a chance to run: if review later fails, the last-known-good lane would
+otherwise disappear from scanning for hours.
 
-Crypto review: a temporary global Bybit snapshot outage must not turn every
-previously admitted crypto instrument off for six hours. Last-known-good
-admission is preserved only for that global measurement failure.
+This layer preserves only an already-true ``is_tradable`` value for instruments
+that are still present in the fresh exchange snapshot. New instruments remain
+blocked until their first review, and missing/expired instruments stay blocked.
+The ordinary review still runs afterwards and may revoke admission normally;
+no turnover, OI, spread, history or expiry threshold is weakened.
 
-FORTS discovery: the first-pass bounding heuristic uses *current* VALTODAY to
-limit expensive history ingestion. That is a useful budget guard for the long
-tail, but it can permanently starve a core contract that happens to be quiet at
-the six-hour universe refresh: no seed -> no history -> no historical-liquidity
-memory -> no seed on the next pass. We therefore seed a small owner-facing core
-set into the discovery pass (USD/RUB, CNY/RUB, gold, silver, Brent, gas).
-Seeding does NOT mark a contract admitted and does NOT lower turnover, OI,
-spread, history or expiry thresholds. ``sync_futures`` immediately resets the
-seed to non-tradable and the ordinary ``review_universe`` must still admit it.
-The practical change is that a core root is measured and gets an explicit
-rejection reason instead of remaining silently unobserved.
+It also keeps the existing protections for global Bybit review blindness and
+for seeding a small owner-facing FORTS core into discovery so those contracts
+can accumulate enough history to receive an explicit admission verdict.
 """
 
 from __future__ import annotations
@@ -33,14 +30,12 @@ from ..models import DataQualityEvent, Instrument
 from ..models.enums import AssetClass, QualityFlag, Venue
 from . import moex, universe
 
-# Quarterlies/cash-settled roots from the current MOEX FORTS code table.
-# Identifiers are discovery routing, not trading thresholds. Both USD and RUB
-# quoted precious-metal contracts are retained where MOEX has parallel roots.
 CORE_FUTURES_ROOTS = frozenset({"SI", "CR", "GD", "GL", "SV", "S2", "BR", "NG"})
 
 # Saved before install(), so wrappers never recurse.
 _ORIGINAL_REVIEW = universe.review_universe
 _ORIGINAL_SYNC_FUTURES = universe.sync_futures
+_ORIGINAL_SYNC_CRYPTO = universe.sync_crypto
 _MISSING_MARKER = "инструмента нет в снимке рынка"
 
 
@@ -51,14 +46,7 @@ def review_universe_resilient(
     fetch=None,
     cfg=None,
 ) -> universe.AdmissionReport:
-    """Review с last-known-good семантикой при глобальной слепоте Bybit.
-
-    Если снимок Bybit действительно доступен, поведение полностью совпадает
-    с исходным review: все исторические, оборотные и OI-пороги применяются как
-    раньше. Восстановление срабатывает только когда **все** crypto-инструменты
-    одновременно получили один и тот же признак отсутствующего snapshot.
-    Это отличает отказ источника от обычного выпадения отдельного тикера.
-    """
+    """Preserve last-known-good crypto admission on global Bybit blindness."""
     crypto_instruments = list(
         session.execute(
             select(Instrument).where(
@@ -120,6 +108,15 @@ def review_universe_resilient(
     return report
 
 
+def _last_tradable_by_id(session: Session, asset_class: AssetClass) -> dict[str, bool]:
+    return {
+        item.instrument_id: bool(item.is_tradable)
+        for item in session.execute(
+            select(Instrument).where(Instrument.asset_class == asset_class)
+        ).scalars()
+    }
+
+
 def sync_futures_core_seeded(
     session: Session,
     *,
@@ -127,18 +124,13 @@ def sync_futures_core_seeded(
     fetch=None,
     cfg=None,
 ) -> list[Instrument]:
-    """Guarantee measurement of core FORTS roots without bypassing admission.
-
-    The original synchronizer bounds discovery using current-session turnover,
-    historical admission, or an already-tradable row. A transient seed supplies
-    only the third *discovery* condition. It carries the complete contract
-    specification from the same MOEX board snapshot so it is a valid Instrument
-    even before the original synchronizer refreshes it. The original function
-    then overwrites every kept candidate to ``is_tradable=False`` before review.
-    """
+    """Seed core FORTS discovery and preserve retained reviewed admission."""
     config = cfg or get_config()
     moment = now or datetime.now(UTC)
     kwargs = {"fetch": fetch} if fetch is not None else {}
+
+    # Capture reviewed state before temporary discovery seeds mutate anything.
+    previous_tradable = _last_tradable_by_id(session, AssetClass.FUTURES)
 
     rows, _ = moex.forts_board(**kwargs)
     candidates = universe.futures_candidates(
@@ -147,7 +139,11 @@ def sync_futures_core_seeded(
         min_days_to_expiry=int(config.get("universe.futures.min_days_to_expiry")),
         filter_by_snapshot=False,
     )
-    core = [candidate for candidate in candidates if candidate.root.upper() in CORE_FUTURES_ROOTS]
+    core = [
+        candidate
+        for candidate in candidates
+        if candidate.root.upper() in CORE_FUTURES_ROOTS
+    ]
 
     if core:
         existing = {
@@ -191,8 +187,8 @@ def sync_futures_core_seeded(
                 meta["root"] = candidate.root
                 meta["core_discovery_seed"] = True
                 seed.metadata_json = meta
-                # Temporary in the current transaction. _ORIGINAL_SYNC_FUTURES
-                # resets every kept candidate to False before review.
+                # Temporary discovery signal only. A new/unreviewed contract
+                # is reset by the original synchronizer and stays blocked.
                 seed.is_tradable = True
         session.flush()
 
@@ -201,6 +197,25 @@ def sync_futures_core_seeded(
         meta = dict(instrument.metadata_json or {})
         if meta.pop("core_discovery_seed", None) is not None:
             instrument.metadata_json = meta
+        if previous_tradable.get(instrument.instrument_id, False):
+            instrument.is_tradable = True
+    session.flush()
+    return kept
+
+
+def sync_crypto_admission_continuous(
+    session: Session,
+    *,
+    now: datetime | None = None,
+    fetch=None,
+    cfg=None,
+) -> list[Instrument]:
+    """Preserve reviewed admission only for crypto retained by fresh metadata."""
+    previous_tradable = _last_tradable_by_id(session, AssetClass.CRYPTO_PERPETUAL)
+    kept = _ORIGINAL_SYNC_CRYPTO(session, now=now, fetch=fetch, cfg=cfg)
+    for instrument in kept:
+        if previous_tradable.get(instrument.instrument_id, False):
+            instrument.is_tradable = True
     session.flush()
     return kept
 
@@ -211,11 +226,14 @@ def install() -> None:
         universe.review_universe = review_universe_resilient
     if universe.sync_futures is not sync_futures_core_seeded:
         universe.sync_futures = sync_futures_core_seeded
+    if universe.sync_crypto is not sync_crypto_admission_continuous:
+        universe.sync_crypto = sync_crypto_admission_continuous
 
 
 __all__ = [
     "CORE_FUTURES_ROOTS",
     "install",
     "review_universe_resilient",
+    "sync_crypto_admission_continuous",
     "sync_futures_core_seeded",
 ]
