@@ -98,18 +98,38 @@ jobs:
                 ref: defaultBranch,
                 inputs: { source_ref: sourceSha },
               });
-            } else if (command === '/runtime-logs' || command === '/runtime-replay') {
-              diagnosticWorkflow = command === '/runtime-logs'
-                ? 'runtime-logs.yml'
-                : 'runtime-replay.yml';
+            } else if (command === '/runtime-logs') {
+              diagnosticWorkflow = 'runtime-logs.yml';
               await github.rest.actions.createWorkflowDispatch({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                workflow_id: diagnosticWorkflow,
+                workflow_id: 'runtime-logs.yml',
                 ref: defaultBranch,
                 inputs: { source_ref: sourceSha },
               });
+            } else if (command === '/runtime-replay') {
+              diagnosticWorkflow = 'runtime-replay.yml';
+              await github.rest.actions.createWorkflowDispatch({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                workflow_id: 'runtime-replay.yml',
+                ref: defaultBranch,
+                inputs: { source_ref: sourceSha },
+              });
+            } else if (command === '/lighter-testnet-smoke') {
+              await github.rest.actions.createWorkflowDispatch({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                workflow_id: 'lighter-testnet-smoke.yml',
+                ref: defaultBranch,
+                inputs: { source_ref: sourceSha },
+              });
+            } else {
+              core.setFailed(`Unsupported command: ${command}`);
+              return;
+            }
 
+            if (diagnosticWorkflow) {
               for (let attempt = 0; attempt < 6 && !diagnosticRun; attempt += 1) {
                 await new Promise((resolve) => setTimeout(resolve, 2000));
                 const response = await github.rest.actions.listWorkflowRuns({
@@ -124,17 +144,6 @@ jobs:
                   (run) => run.head_sha === sourceSha,
                 ) ?? null;
               }
-            } else if (command === '/lighter-testnet-smoke') {
-              await github.rest.actions.createWorkflowDispatch({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                workflow_id: 'lighter-testnet-smoke.yml',
-                ref: defaultBranch,
-                inputs: { source_ref: sourceSha },
-              });
-            } else {
-              core.setFailed(`Unsupported command: ${command}`);
-              return;
             }
 
             const diagnosticLine = diagnosticWorkflow
