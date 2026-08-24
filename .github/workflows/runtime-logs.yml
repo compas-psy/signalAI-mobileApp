@@ -77,6 +77,93 @@ jobs:
           $COMPOSE logs --since 30h --tail 600 scheduler scheduler-heavy
 
           echo
+          echo "──────── canonical scan funnel (read-only) ────────"
+          $COMPOSE exec -T api python - <<'PYSCAN'
+          from collections import Counter
+          from datetime import UTC, datetime
+          from decimal import Decimal
+
+          from sqlalchemy import select
+
+          from app.config import get_config
+          from app.db import get_session_factory
+          from app.market.economic_events import EconomicEventCalendar
+          from app.models import Instrument
+          from app.pipeline.scan import scan_instrument
+          from app.risk.sizing import RiskState
+
+          session = get_session_factory()()
+          try:
+              instruments = list(
+                  session.execute(
+                      select(Instrument).where(
+                          Instrument.in_universe.is_(True),
+                          Instrument.is_tradable.is_(True),
+                      )
+                  ).scalars()
+              )
+              cfg = get_config()
+              now = datetime.now(UTC)
+              calendar = EconomicEventCalendar((), source_available=False)
+              risk_state = RiskState(risk_equity=Decimal("100000"))
+
+              stage_counts = Counter()
+              reason_counts = Counter()
+              venue_counts = Counter()
+              outcome_counts = Counter()
+              samples: dict[tuple[str, str], list[str]] = {}
+
+              for instrument in instruments:
+                  venue = instrument.venue.value
+                  venue_counts[venue] += 1
+                  try:
+                      idea, skipped, rejections = scan_instrument(
+                          session,
+                          instrument,
+                          cfg=cfg,
+                          risk_state=risk_state,
+                          now=now,
+                          event_calendar=calendar,
+                      )
+                  except Exception as exc:
+                      stage = "exception"
+                      reason = f"{type(exc).__name__}: {exc}"
+                      stage_counts[(venue, stage)] += 1
+                      reason_counts[(venue, stage, reason)] += 1
+                      samples.setdefault((venue, stage), []).append(instrument.instrument_id)
+                      continue
+
+                  if skipped:
+                      for item in skipped:
+                          stage_counts[(venue, item.stage)] += 1
+                          reason_counts[(venue, item.stage, item.reason)] += 1
+                          samples.setdefault((venue, item.stage), []).append(item.instrument_id)
+                      continue
+
+                  if idea is not None:
+                      outcome_counts[(venue, f"idea:{idea.quality_status.value}")] += 1
+                  elif rejections:
+                      outcome_counts[(venue, "strategy_rejected")] += 1
+                  else:
+                      outcome_counts[(venue, "no_outcome")] += 1
+
+              print(f"instruments={len(instruments)} by_venue={dict(sorted(venue_counts.items()))}")
+              print("early_stages:")
+              for (venue, stage), count in sorted(stage_counts.items()):
+                  sample = samples.get((venue, stage), [])[:5]
+                  print(f"  {venue} / {stage}: {count}; sample={sample}")
+              print("exact_reasons:")
+              for (venue, stage, reason), count in reason_counts.most_common(30):
+                  print(f"  {count}x {venue} / {stage}: {reason}")
+              print("post_early_gate_outcomes:")
+              for (venue, outcome), count in sorted(outcome_counts.items()):
+                  print(f"  {venue} / {outcome}: {count}")
+          finally:
+              session.rollback()
+              session.close()
+          PYSCAN
+
+          echo
           echo "──────── public health ────────"
           curl -fsS --max-time 20 http://127.0.0.1:8000/health
           echo
