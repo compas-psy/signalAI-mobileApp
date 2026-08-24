@@ -29,12 +29,19 @@ def scan_with_configured_equity(
     cfg: EngineConfig | None = None,
     risk_state: RiskState | None = None,
     now: datetime | None = None,
+    event_calendar=None,
 ):
     config = cfg or get_config()
     state = risk_state or RiskState(
         risk_equity=config.decimal("risk.equity_rub")
     )
-    return _ORIGINAL_SCAN(session, cfg=config, risk_state=state, now=now)
+    return _ORIGINAL_SCAN(
+        session,
+        cfg=config,
+        risk_state=state,
+        now=now,
+        event_calendar=event_calendar,
+    )
 
 
 def install() -> None:
