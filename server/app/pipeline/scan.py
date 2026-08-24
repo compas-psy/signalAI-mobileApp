@@ -320,6 +320,11 @@ def _admission_thresholds(cfg: EngineConfig) -> AdmissionThresholds:
     )
 
 
+def _is_persistable_live_quality(status: QualityStatus) -> bool:
+    """Only user-visible ACTIVE/WATCH admissions may occupy the live-idea slot."""
+    return status in (QualityStatus.ACTIVE, QualityStatus.WATCH)
+
+
 def scan_instrument(
     session: Session,
     instrument: Instrument,
@@ -463,6 +468,9 @@ def scan_instrument(
         event_assessment=calendar_assessment,
         thresholds=_admission_thresholds(cfg),
     )
+    if not _is_persistable_live_quality(verdict.status):
+        skipped.append(Skipped(iid, "допуск", verdict.reason))
+        return None, skipped, rejections
 
     # ── Риск §17 и размер §17.1 ──────────────────────────────────────────
     budget = compute_budget(
@@ -606,15 +614,17 @@ def scan_instrument(
 
 
 def _live_idea_ids(session: Session) -> dict[str, str]:
-    """Инструмент → идентификатор живой идеи по нему."""
+    """Инструмент → идентификатор живой user-facing идеи по нему."""
     terminal = [s for s in IdeaStatus if s.is_terminal]
     rows = session.execute(
-        select(TradeIdea.instrument_id, TradeIdea.id)
+        select(TradeIdea.instrument_id, TradeIdea.id, TradeIdea.quality_status)
         .where(TradeIdea.status.notin_(terminal))
         .order_by(TradeIdea.created_at)
     ).all()
     out: dict[str, str] = {}
-    for instrument_id, idea_id in rows:
+    for instrument_id, idea_id, quality_status in rows:
+        if not _is_persistable_live_quality(QualityStatus(quality_status)):
+            continue
         out.setdefault(instrument_id, str(idea_id))
     return out
 
@@ -697,7 +707,6 @@ def scan(
     ]
     daily = select_daily(ranked, max_cards=int(config.get("ideas.max_daily_cards")))
     result.daily = daily
-
     presented = {r.idea.idea_id for r in (*daily.trade_now, *daily.wait_for_trigger)}
     for i, idea in enumerate(result.ideas):
         if str(idea.id) in presented:
