@@ -115,7 +115,7 @@ def main() -> None:
             count = len(
                 list(
                     session.execute(
-                        select(Bar.id).where(
+                        select(Bar.open_time).where(
                             Bar.instrument_id == instrument.instrument_id,
                             Bar.timeframe == Timeframe.D1,
                             Bar.is_closed.is_(True),
