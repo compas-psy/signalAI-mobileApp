@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 
 from ..config import EngineConfig, get_config
 from ..features.indicators import atr
+from ..market.economic_events import load_owned_calendar
 from ..models import Bar, Instrument, PaperAbDecision, PaperAbOutcome, ShadowObservation
 from ..models.enums import Direction, IdeaStatus, Timeframe
 from ..pipeline.scan import scan_instrument
@@ -588,12 +589,14 @@ def _default_control_provider(cfg: EngineConfig) -> ControlProvider:
                 unavailable_reason="CONTROL_REPLAY_NOT_POINT_IN_TIME",
             )
 
+        event_calendar = load_owned_calendar(now=evaluated_at)
         idea, skipped, _rejections = scan_instrument(
             session,
             instrument,
             cfg=cfg,
             risk_state=RiskState(risk_equity=Decimal("100000")),
             now=evaluated_at,
+            event_calendar=event_calendar,
         )
         if idea is None:
             if any(item.stage == "данные" for item in skipped):
