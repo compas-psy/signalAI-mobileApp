@@ -19,6 +19,7 @@ def main() -> None:
     now = datetime.now(UTC)
     start_30 = now - timedelta(days=30)
     start_7 = now - timedelta(days=7)
+    start_48 = now - timedelta(hours=48)
     session = get_session_factory()()
     try:
         ideas = list(
@@ -87,6 +88,12 @@ def main() -> None:
         decision_stats = Counter(
             (row.arm_role, row.strategy_version, row.signal_emitted) for row in decisions
         )
+        decision_signal_by_day: dict[str, Counter] = defaultdict(Counter)
+        for row in decisions:
+            if row.signal_emitted:
+                decision_signal_by_day[day(row.decision_at)][
+                    f"{row.arm_role}:{row.strategy_version}"
+                ] += 1
         print(
             "AB_AUDIT_PAPER_AB "
             f"window={start_7.isoformat()}..{now.isoformat()} rows={len(decisions)}"
@@ -95,6 +102,26 @@ def main() -> None:
             role, version, emitted = key
             print(
                 "AB_AUDIT_PAPER_AB_STAT "
+                f"role={role} version={version} emitted={emitted} count={count}"
+            )
+        for key in sorted(decision_signal_by_day):
+            print(
+                f"AB_AUDIT_PAPER_AB_SIGNAL_DAY {key} "
+                f"{dict(decision_signal_by_day[key])}"
+            )
+
+        decisions_48 = [row for row in decisions if row.decision_at >= start_48]
+        decision_48_stats = Counter(
+            (row.arm_role, row.strategy_version, row.signal_emitted) for row in decisions_48
+        )
+        print(
+            "AB_AUDIT_PAPER_AB_48H "
+            f"window={start_48.isoformat()}..{now.isoformat()} rows={len(decisions_48)}"
+        )
+        for key, count in sorted(decision_48_stats.items()):
+            role, version, emitted = key
+            print(
+                "AB_AUDIT_PAPER_AB_48H_STAT "
                 f"role={role} version={version} emitted={emitted} count={count}"
             )
 
