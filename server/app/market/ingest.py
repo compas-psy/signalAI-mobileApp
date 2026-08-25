@@ -194,6 +194,11 @@ def store_candles(
 # сразу за много лет. Один раз: дальше догружается только хвост.
 _FIRST_LOAD_DAYS = 2200
 
+# Scanner требует минимум 60 закрытых D1-баров контекста. Это не торговый
+# порог и не ослабление отбора: ingest обязан сам достроить неполную историю,
+# иначе после первой частичной загрузки он навсегда переключается на хвост -5d.
+_MIN_FUTURES_D1_CONTEXT_BARS = 60
+
 
 def _board_path(instrument: Instrument) -> str:
     """Адрес свечей ISS для инструмента.
@@ -223,9 +228,10 @@ def _since(
 ) -> date:
     """С какой даты просить свечи.
 
-    Есть история — берётся её хвост с перекрытием: биржа уточняет последние
-    бары, и без перекрытия эти уточнения не приедут никогда. Истории нет —
-    берётся вся глубина, разная для инвестиций и для срочного рынка.
+    Есть достаточная история — берётся её хвост с перекрытием: биржа уточняет
+    последние бары, и без перекрытия эти уточнения не приедут никогда.
+    Неполная D1-история FORTS достраивается до рабочего контекста сканера;
+    истории нет — берётся вся глубина, разная для инвестиций и срочного рынка.
     """
     newest = session.execute(
         select(func.max(Bar.open_time)).where(
@@ -234,6 +240,17 @@ def _since(
         )
     ).scalar_one_or_none()
     if newest is not None:
+        if timeframe is Timeframe.D1 and instrument.asset_class is AssetClass.FUTURES:
+            stored = session.execute(
+                select(func.count())
+                .select_from(Bar)
+                .where(
+                    Bar.instrument_id == instrument.instrument_id,
+                    Bar.timeframe == timeframe,
+                )
+            ).scalar_one()
+            if stored < _MIN_FUTURES_D1_CONTEXT_BARS:
+                return (moment - timedelta(days=days)).date()
         return (newest - timedelta(days=5)).date()
     depth = days
     if timeframe is Timeframe.D1 and instrument.asset_class in _DAILY_ONLY:
