@@ -42,3 +42,10 @@ def test_event_calendar_waits_for_initializer_and_stays_non_root() -> None:
     assert dependency["condition"] == "service_completed_successfully"
     assert str(calendar.get("user", "")) not in ROOT_USERS
     assert CALENDAR_MOUNT in calendar["volumes"]
+
+
+def test_market_scheduler_starts_owned_calendar_on_fresh_bootstrap() -> None:
+    services = _compose()["services"]
+
+    dependency = services["scheduler"]["depends_on"]["event-calendar"]
+    assert dependency["condition"] == "service_started"
