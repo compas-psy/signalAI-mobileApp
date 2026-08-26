@@ -96,7 +96,7 @@ def _snapshot(session, *, source_sha: str = "a" * 40):
     return snapshot
 
 
-def test_readiness_binds_approved_owner_profile_but_requires_final_activation(session) -> None:
+def test_readiness_binds_approved_profile_but_preserves_missing_evidence(session) -> None:
     from app.execution.canary_activation import build_canary_activation_readiness
     from app.execution.canary_preflight import CanaryRuntimeContext
 
@@ -127,9 +127,46 @@ def test_readiness_binds_approved_owner_profile_but_requires_final_activation(se
     assert result.challenge_issuable is False
     assert "ADR_0002_NOT_ACCEPTED" not in result.blockers
     assert "CANARY_OWNER_STEP_UP_NOT_IMPLEMENTED" not in result.blockers
-    assert result.blockers == ("FINAL_OWNER_ACTIVATION_REQUIRED",)
+    assert "CANARY_EVIDENCE_MISSING:strategy_performance" in result.blockers
+    assert "FINAL_OWNER_ACTIVATION_REQUIRED" not in result.blockers
     assert get_execution_mode(session) == mode_before
     assert session.query(ExecutionModeActivationRequest).count() == 0
+
+
+def test_structurally_complete_approved_profile_stops_only_at_final_owner_activation(
+    session, monkeypatch
+) -> None:
+    import app.execution.canary_activation as activation
+    from app.execution.canary_preflight import CanaryPreflightResult, CanaryRuntimeContext
+
+    _set_sandbox(session)
+    snapshot = _snapshot(session)
+    monkeypatch.setattr(
+        activation,
+        "evaluate_canary_preflight",
+        lambda *args, **kwargs: CanaryPreflightResult(
+            eligible_for_canary=False,
+            structural_checks_passed=True,
+            blockers=("ADR_0002_NOT_ACCEPTED", "CANARY_OWNER_STEP_UP_NOT_IMPLEMENTED"),
+        ),
+    )
+
+    result = activation.build_canary_activation_readiness(
+        session,
+        snapshot_hash=snapshot.snapshot_hash,
+        context_provider=lambda: CanaryRuntimeContext(
+            source_sha=snapshot.source_sha,
+            config_hash=snapshot.engine_config_hash,
+            paper_only=False,
+        ),
+    )
+
+    assert result.structural_checks_passed is True
+    assert result.challenge_ttl_seconds == 300
+    assert result.challenge_issuable is False
+    assert result.blockers == ("FINAL_OWNER_ACTIVATION_REQUIRED",)
+    assert session.query(ExecutionModeActivationRequest).count() == 0
+    assert get_execution_mode(session).mode is ExecutionLifecycleMode.SANDBOX
 
 
 def test_readiness_preserves_structural_preflight_blockers_and_never_authorizes(session) -> None:
