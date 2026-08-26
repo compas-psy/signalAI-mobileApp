@@ -10,6 +10,7 @@ KEY_NAME='SIGNALAI_LIGHTER_LIVE_SECRETS_KEY'
 SOURCE_KEY='SIGNALAI_SOURCE_SHA'
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE_ATTESTATION="${2:-$SCRIPT_DIR/../../.signalai-source-sha}"
+RUNTIME_SOURCE_SHA="${SIGNALAI_SOURCE_SHA:-}"
 
 fail() {
   printf 'runtime secret setup failed: %s\n' "$1" >&2
@@ -19,19 +20,23 @@ fail() {
 [ -n "$ENV_FILE" ] || fail 'env file path is required'
 [ -f "$ENV_FILE" ] || fail 'env file does not exist'
 
-# Canonical deploy writes the exact QA-verified commit to the release root before
-# this helper runs. Persist the same value in the compose env so long-lived API
-# and execution containers can prove which release generated acceptance evidence.
-# This value is public provenance, not a secret, but it belongs in the same
-# atomically managed runtime env because compose consumes it there. The optional
-# second argument exists only to make this exact file-management contract
-# testable without mutating the checkout root.
+# Prefer an immutable on-disk release attestation when present. Canonical remote
+# deploys also pass the exact QA-verified source SHA as a process environment
+# value; persist that value when there is no attestation file so compose can
+# restore provenance after an ordinary service/host restart. The phone never
+# supplies this value. Missing provenance remains fail-closed in canary_runtime.
+source_sha=''
 if [ -f "$SOURCE_ATTESTATION" ]; then
   source_sha="$(tr -d '\r\n' < "$SOURCE_ATTESTATION")"
+elif [ -n "$RUNTIME_SOURCE_SHA" ]; then
+  source_sha="$RUNTIME_SOURCE_SHA"
+fi
+
+if [ -n "$source_sha" ]; then
   case "$source_sha" in
-    *[!0-9a-f]*|'') fail "${SOURCE_KEY} attestation must be lowercase hex" ;;
+    *[!0-9a-f]*|'') fail "${SOURCE_KEY} provenance must be lowercase hex" ;;
   esac
-  [ "${#source_sha}" -eq 40 ] || fail "${SOURCE_KEY} attestation must contain 40 characters"
+  [ "${#source_sha}" -eq 40 ] || fail "${SOURCE_KEY} provenance must contain 40 characters"
 
   source_count="$(grep -c "^${SOURCE_KEY}=" "$ENV_FILE" || true)"
   [ "$source_count" -le 1 ] || fail "duplicate ${SOURCE_KEY} entries"
@@ -47,8 +52,8 @@ if [ -f "$SOURCE_ATTESTATION" ]; then
   fi
   mv -f "$source_tmp" "$ENV_FILE"
   trap - EXIT
-  unset source_sha
 fi
+unset source_sha RUNTIME_SOURCE_SHA
 
 count="$(grep -c "^${KEY_NAME}=" "$ENV_FILE" || true)"
 [ "$count" -le 1 ] || fail "duplicate ${KEY_NAME} entries"
