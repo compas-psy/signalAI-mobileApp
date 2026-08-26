@@ -94,9 +94,9 @@ services:
       retries: 12
       start_period: 20s
 
-  # The application image deliberately runs as UID/GID 10001. Docker creates
-  # named-volume roots as root, so existing calendar-data volumes need one
-  # bounded ownership repair before the non-root writer starts.
+  # The application image deliberately runs as the non-root signalai user.
+  # Docker creates named-volume roots as root, so existing calendar-data
+  # volumes need one bounded ownership repair before that writer starts.
   event-calendar-volume-init:
     image: signalai-scheduler
     user: "0:0"
@@ -106,7 +106,7 @@ services:
       - sh
       - -c
       - >-
-        chown 10001:10001 /var/lib/signalai-calendar &&
+        chown signalai:signalai /var/lib/signalai-calendar &&
         chmod 0750 /var/lib/signalai-calendar
 
   # Isolated network transport for the owned event-calendar snapshot.  It has
