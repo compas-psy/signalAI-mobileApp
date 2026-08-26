@@ -4,6 +4,7 @@ import yaml
 
 
 COMPOSE_PATH = Path(__file__).resolve().parents[2] / "docker-compose.yml"
+DOCKERFILE_PATH = Path(__file__).resolve().parents[2] / "Dockerfile"
 CALENDAR_MOUNT = "calendar-data:/var/lib/signalai-calendar"
 ROOT_USERS = {"0", "0:0", "root"}
 
@@ -22,9 +23,13 @@ def test_calendar_volume_has_one_shot_root_initializer() -> None:
 
     command = " ".join(init["command"]) if isinstance(init["command"], list) else str(init["command"])
     assert "chown" in command
-    assert "10001:10001" in command
+    assert "signalai:signalai" in command
     assert "chmod" in command
     assert "0750" in command
+
+    dockerfile = DOCKERFILE_PATH.read_text(encoding="utf-8")
+    assert "adduser --system --group --home /srv signalai" in dockerfile
+    assert "USER signalai" in dockerfile
 
     explicit_root_services = {
         name
