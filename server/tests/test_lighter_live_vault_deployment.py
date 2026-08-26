@@ -56,6 +56,27 @@ def test_runtime_secret_helper_creates_private_stable_lighter_live_key_without_l
     assert key not in second.stderr
 
 
+def test_runtime_secret_helper_persists_exact_deployment_source_from_server_env(
+    tmp_path,
+) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text("POSTGRES_USER=signalai\n", encoding="utf-8")
+    os.chmod(env_file, 0o600)
+    source_sha = "a" * 40
+    env = dict(os.environ, SIGNALAI_SOURCE_SHA=source_sha)
+
+    subprocess.run(
+        ["bash", str(HELPER), str(env_file)],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert _env_value(env_file, "SIGNALAI_SOURCE_SHA") == source_sha
+    assert stat.S_IMODE(env_file.stat().st_mode) == 0o600
+
+
 def test_only_api_and_execution_receive_lighter_live_vault_key() -> None:
     compose = COMPOSE.read_text(encoding="utf-8")
     binding = "SIGNALAI_LIGHTER_LIVE_SECRETS_KEY: ${SIGNALAI_LIGHTER_LIVE_SECRETS_KEY:-}"
