@@ -2,8 +2,8 @@
 
 This module is deliberately incapable of authorizing a mode change or touching a
 provider. It re-checks immutable non-secret policy, runtime, credential and
-evidence facts. The owner-approved Canary v1 boundary removes the old unresolved
-governance placeholders, but a separate final owner activation is still required.
+evidence facts. Governance/owner step-up remains unresolved, so a structurally
+clean result still never authorizes Canary by itself.
 """
 from __future__ import annotations
 
@@ -21,12 +21,14 @@ from ..models.canary_policy import CanaryPolicySnapshot
 from ..models.execution import ExecutionModeState
 from .canary_evidence import CanaryEvidenceScope, verify_canary_evidence_refs
 from .canary_policy import current_lighter_trade_generation
-from .canary_profile_v1 import validate_canary_v1_payload
 from .enums import ExecutionLifecycleMode
 
 _HEX40 = re.compile(r"^[0-9a-f]{40}$")
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
-_FINAL_OWNER_BLOCKER = "FINAL_OWNER_ACTIVATION_REQUIRED"
+_GOVERNANCE_BLOCKERS = (
+    "ADR_0002_NOT_ACCEPTED",
+    "CANARY_OWNER_STEP_UP_NOT_IMPLEMENTED",
+)
 
 
 class CanaryPreflightError(ValueError):
@@ -47,6 +49,7 @@ class CanaryPreflightResult:
     blockers: tuple[str, ...]
 
     def to_public_dict(self) -> dict[str, object]:
+        """Return only non-secret readiness facts suitable for API/operator output."""
         return {
             "eligible_for_canary": self.eligible_for_canary,
             "structural_checks_passed": self.structural_checks_passed,
@@ -65,6 +68,7 @@ def _canonical_payload_hash(payload: Mapping[str, Any]) -> str:
 
 
 def _current_mode_read_only(db: Session) -> ExecutionLifecycleMode:
+    """Read the singleton without materializing it as ``get_execution_mode`` does."""
     state = db.execute(
         select(ExecutionModeState).where(ExecutionModeState.id == 1)
     ).scalar_one_or_none()
@@ -74,6 +78,7 @@ def _current_mode_read_only(db: Session) -> ExecutionLifecycleMode:
 
 
 def _live_secret_configured_read_only(db: Session) -> bool:
+    """Check only slot existence; never decrypt or fingerprint the private key."""
     row = db.execute(
         text(
             "SELECT 1 FROM signalai_integration_secrets "
@@ -87,6 +92,7 @@ def _row_binding_is_consistent(
     snapshot: CanaryPolicySnapshot,
     payload: Mapping[str, Any],
 ) -> bool:
+    """Defend against impossible-but-dangerous row/payload divergence."""
     return (
         payload.get("source_sha") == snapshot.source_sha
         and payload.get("engine_config_hash") == snapshot.engine_config_hash
@@ -138,10 +144,6 @@ def evaluate_canary_preflight(
         return _failed("CANARY_POLICY_HASH_INTEGRITY_FAILED")
     if not _row_binding_is_consistent(snapshot, payload):
         return _failed("CANARY_POLICY_ROW_BINDING_MISMATCH")
-
-    profile_blockers = validate_canary_v1_payload(payload)
-    if profile_blockers:
-        return _failed(*profile_blockers)
 
     try:
         context = context_provider()
@@ -211,12 +213,10 @@ def evaluate_canary_preflight(
     if not evidence.complete:
         return _failed(*evidence.blockers)
 
-    # The exact v1 envelope and evidence can be structurally ready, but the
-    # owner deliberately separated profile approval from real-money activation.
     return CanaryPreflightResult(
         eligible_for_canary=False,
         structural_checks_passed=True,
-        blockers=(_FINAL_OWNER_BLOCKER,),
+        blockers=_GOVERNANCE_BLOCKERS,
     )
 
 
