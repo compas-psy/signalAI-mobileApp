@@ -1,0 +1,183 @@
+name: Runtime calendar diagnostics
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  calendar:
+    if: >-
+      github.event.issue.number == 1 &&
+      github.event.issue.pull_request == null &&
+      github.event.comment.body == '/runtime-calendar' &&
+      github.event.comment.user.login == github.repository_owner
+    name: Diagnose owned economic calendar
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: Verify diagnostic provenance
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          actual_sha="$(git rev-parse --verify HEAD^{commit})"
+          [ "$actual_sha" = "$EXPECTED_SHA" ] || {
+            echo "::error::requested $EXPECTED_SHA, checked out $actual_sha"
+            exit 1
+          }
+
+      - name: Verify SSH inputs
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
+          HOST_KEY_SHA256: ${{ secrets.VPS_SSH_HOST_KEY_SHA256 || 'SHA256:cUfeWKyHoFIhKsV17Bpk076calxUaxd90XhuETb4vng' }}
+        run: |
+          set -eu
+          test -n "$HOST"
+          test -n "$KEY"
+          test -n "$HOST_KEY_SHA256"
+
+      - name: Prepare pinned SSH
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
+          HOST_KEY_SHA256: ${{ secrets.VPS_SSH_HOST_KEY_SHA256 || 'SHA256:cUfeWKyHoFIhKsV17Bpk076calxUaxd90XhuETb4vng' }}
+        run: |
+          set -eu
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          bash .github/scripts/prepare_known_host.sh "$HOST" "$HOST_KEY_SHA256"
+
+      - name: Run read-only calendar diagnostics on VPS
+        if: always()
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          USER_NAME: ${{ secrets.VPS_USER || 'root' }}
+        run: |
+          set -euo pipefail
+          timeout --signal=TERM --kill-after=15s 240s ssh \
+            -i ~/.ssh/id_deploy \
+            -o BatchMode=yes \
+            -o ConnectTimeout=10 \
+            -o ServerAliveInterval=30 \
+            -o ServerAliveCountMax=8 \
+            "$USER_NAME@$HOST" 'bash -s' <<'REMOTE'
+          set -u
+          SUDO=()
+          [ "$(id -u)" -eq 0 ] || SUDO=(sudo -n)
+          COMPOSE=("${SUDO[@]}" docker compose --env-file /etc/signalai/.env -f "$HOME/signalai/server/docker-compose.yml")
+          if [ "$(id -u)" -ne 0 ]; then
+            command -v sudo >/dev/null
+          fi
+          diagnostic_failures=0
+
+          echo '=== CALENDAR_SERVICE_PS ==='
+          timeout 20s "${COMPOSE[@]}" ps event-calendar api scheduler || diagnostic_failures=$((diagnostic_failures + 1))
+
+          echo '=== CALENDAR_SERVICE_LOGS_SINCE_30H_TAIL_600 ==='
+          timeout 30s "${COMPOSE[@]}" logs --since 30h --tail 600 event-calendar || diagnostic_failures=$((diagnostic_failures + 1))
+
+          echo '=== CALENDAR_SNAPSHOT_METADATA ==='
+          timeout 30s "${COMPOSE[@]}" exec -T event-calendar python - <<'PY' || diagnostic_failures=$((diagnostic_failures + 1))
+          import json
+          import os
+          import stat
+          from pathlib import Path
+
+          path = Path(os.environ.get("SIGNALAI_EVENT_CALENDAR_PATH", ""))
+          print(f"CALENDAR_SNAPSHOT_PATH={path}")
+          print(f"CALENDAR_SNAPSHOT_PATH_EXISTS={path.exists()}")
+          regular_file = False
+          try:
+              file_stat = path.lstat()
+              regular_file = stat.S_ISREG(file_stat.st_mode)
+              print(f"CALENDAR_SNAPSHOT_REGULAR_FILE={regular_file}")
+              print(f"CALENDAR_SNAPSHOT_SIZE={file_stat.st_size}")
+              print(f"CALENDAR_SNAPSHOT_MODE={oct(stat.S_IMODE(file_stat.st_mode))}")
+          except OSError:
+              print("CALENDAR_SNAPSHOT_REGULAR_FILE=False")
+              print("CALENDAR_SNAPSHOT_SIZE=unavailable")
+              print("CALENDAR_SNAPSHOT_MODE=unavailable")
+
+          source = "unavailable"
+          fetched_at = "unavailable"
+          coverage_until = "unavailable"
+          events_count = "unavailable"
+          try:
+              if regular_file:
+                  payload = json.loads(path.read_text(encoding="utf-8"))
+                  if isinstance(payload, dict):
+                      source = payload.get("source", "unavailable")
+                      fetched_at = payload.get("fetched_at", "unavailable")
+                      coverage_until = payload.get("coverage_until", "unavailable")
+                      events = payload.get("events")
+                      events_count = len(events) if isinstance(events, list) else "invalid"
+          except (OSError, TypeError, ValueError, json.JSONDecodeError):
+              pass
+          print(f"CALENDAR_SNAPSHOT_SOURCE={source}")
+          print(f"CALENDAR_SNAPSHOT_FETCHED_AT={fetched_at}")
+          print(f"CALENDAR_SNAPSHOT_COVERAGE_UNTIL={coverage_until}")
+          print(f"CALENDAR_SNAPSHOT_EVENTS_COUNT={events_count}")
+          PY
+
+          echo '=== CALENDAR_PROVIDER_PROBE ==='
+          timeout 30s "${COMPOSE[@]}" exec -T event-calendar python - <<'PY' || diagnostic_failures=$((diagnostic_failures + 1))
+          from datetime import UTC, datetime, timedelta
+
+          from app.market.economic_event_source import fetch_xoomar_calendar
+
+          now = datetime.now(UTC)
+          try:
+              envelope = fetch_xoomar_calendar(now - timedelta(days=1), now + timedelta(days=7))
+              rows = envelope.get("data") if isinstance(envelope, dict) else None
+              count = len(rows) if isinstance(rows, list) else "invalid"
+              print(f"CALENDAR_PROVIDER_PROBE=success envelope_type={type(envelope).__name__} data_count={count}")
+          except Exception as exc:
+              print(f"CALENDAR_PROVIDER_PROBE=exception exception_type={type(exc).__name__} exception_message={str(exc)!r}")
+          PY
+
+          echo '=== CALENDAR_API_ASSESSMENT ==='
+          timeout 30s "${COMPOSE[@]}" exec -T api python - <<'PY' || diagnostic_failures=$((diagnostic_failures + 1))
+          from datetime import UTC, datetime
+
+          from app.market.economic_events import load_owned_calendar
+
+          now = datetime.now(UTC)
+          assessment = load_owned_calendar(now=now).assess(
+              "CRYPTO:PERP:BTCUSDT", as_of=now
+          )
+          print(
+              "CALENDAR_API_ASSESSMENT "
+              f"status={assessment.status} reason_code={assessment.reason_code}"
+          )
+          PY
+          echo "CALENDAR_DIAGNOSTIC_FAILURES=$diagnostic_failures"
+          exit "$diagnostic_failures"
+          REMOTE
+
+      - name: Publish run pointer
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          body=$(printf '🗓️ **Runtime calendar diagnostics: %s**\n\nSource: `%s`\nRun: https://github.com/%s/actions/runs/%s' "${{ job.status }}" "$SHA" "$REPO" "$RUN_ID")
+          gh api "repos/$REPO/issues/1/comments" -f body="$body" >/dev/null
+
+      - name: Remove SSH key
+        if: always()
+        run: |
+          shred -u ~/.ssh/id_deploy 2>/dev/null || rm -f ~/.ssh/id_deploy
