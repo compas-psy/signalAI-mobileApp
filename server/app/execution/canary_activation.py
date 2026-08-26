@@ -1,10 +1,8 @@
 """Non-authorizing owner readiness for future SANDBOX→CANARY activation.
 
-This module intentionally stops before challenge issuance. ADR-0002 is still
-Proposed and the owner has not approved the Canary activation binding or challenge
-TTL. The biometric owner step-up primitive exists, but readiness may only bind/show
-the exact immutable non-secret policy and fresh preflight result; it cannot create
-an activation request, mutate mode, or authorize provider I/O.
+The owner has approved the static Canary v1 risk envelope and five-minute step-up
+TTL. This module still stops before challenge issuance and real-money activation:
+profile approval is deliberately separate from final LIVE authorization.
 """
 from __future__ import annotations
 
@@ -24,14 +22,17 @@ from .canary_preflight import (
     CanaryRuntimeContext,
     evaluate_canary_preflight,
 )
+from .canary_profile_v1 import (
+    CANARY_V1_CHALLENGE_TTL_SECONDS,
+    validate_canary_v1_payload,
+)
 from .enums import ExecutionLifecycleMode
 
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
-_PENDING_OWNER_BLOCKERS = (
-    "ADR_0002_NOT_ACCEPTED",
-    "CANARY_OWNER_STEP_UP_ACTIVATION_BINDING_NOT_APPROVED",
-    "CANARY_CHALLENGE_TTL_NOT_APPROVED",
+_LEGACY_APPROVAL_PLACEHOLDERS = frozenset(
+    {"ADR_0002_NOT_ACCEPTED", "CANARY_OWNER_STEP_UP_NOT_IMPLEMENTED"}
 )
+_FINAL_OWNER_BLOCKER = "FINAL_OWNER_ACTIVATION_REQUIRED"
 
 
 class CanaryActivationReadinessError(ValueError):
@@ -58,6 +59,7 @@ class CanaryActivationReadiness:
     hard_caps: dict[str, object]
     valid_until: str
     structural_checks_passed: bool
+    challenge_ttl_seconds: int
     challenge_issuable: bool
     blockers: tuple[str, ...]
 
@@ -82,8 +84,6 @@ def _exact_snapshot(db: Session, snapshot_hash: str) -> CanaryPolicySnapshot:
 
 
 def _current_mode_read_only(db: Session) -> ExecutionLifecycleMode:
-    """Read lifecycle mode without materializing the singleton on a preview path."""
-
     row = db.execute(
         select(ExecutionModeState).where(ExecutionModeState.id == 1)
     ).scalar_one_or_none()
@@ -107,13 +107,6 @@ def _tuple_text(value: object) -> tuple[str, ...]:
 
 
 def build_canary_mode_event_detail(snapshot: CanaryPolicySnapshot) -> dict[str, object]:
-    """Build the complete non-secret scope future activation must append immutably.
-
-    This only prepares audit detail; it does not create an event or authorization.
-    Integrity is rechecked first so a future step-up path cannot copy a malformed
-    privileged/manual row into an append-only mode event.
-    """
-
     payload = verify_persisted_canary_snapshot(snapshot)
     return {
         "canary_policy_snapshot_hash": snapshot.snapshot_hash,
@@ -135,6 +128,7 @@ def build_canary_mode_event_detail(snapshot: CanaryPolicySnapshot) -> dict[str, 
         "valuation_rule": payload["valuation_rule"],
         "hard_caps": dict(payload["hard_caps"]),
         "valid_until": payload["valid_until"],
+        "challenge_ttl_seconds": CANARY_V1_CHALLENGE_TTL_SECONDS,
     }
 
 
@@ -144,8 +138,7 @@ def build_canary_activation_readiness(
     snapshot_hash: str,
     context_provider: RuntimeContextProvider,
 ) -> CanaryActivationReadiness:
-    """Bind one exact immutable Canary policy to a fresh, non-authorizing preflight."""
-
+    """Bind one exact immutable Canary v1 policy to a fresh non-authorizing preflight."""
     snapshot = _exact_snapshot(db, snapshot_hash)
     payload = snapshot.payload_json
     if not isinstance(payload, dict):
@@ -160,10 +153,17 @@ def build_canary_activation_readiness(
     except CanaryPreflightError as exc:
         raise CanaryActivationReadinessError(str(exc)) from exc
 
-    blockers = list(preflight.blockers)
-    for blocker in _PENDING_OWNER_BLOCKERS:
+    blockers = [
+        blocker
+        for blocker in preflight.blockers
+        if blocker not in _LEGACY_APPROVAL_PLACEHOLDERS
+    ]
+    profile_blockers = validate_canary_v1_payload(payload)
+    for blocker in profile_blockers:
         if blocker not in blockers:
             blockers.append(blocker)
+    if preflight.structural_checks_passed and not profile_blockers:
+        blockers.append(_FINAL_OWNER_BLOCKER)
 
     try:
         capital_amount = Decimal(str(payload["capital_amount"]))
@@ -189,6 +189,7 @@ def build_canary_activation_readiness(
             hard_caps=dict(hard_caps),
             valid_until=str(payload["valid_until"]),
             structural_checks_passed=preflight.structural_checks_passed,
+            challenge_ttl_seconds=CANARY_V1_CHALLENGE_TTL_SECONDS,
             challenge_issuable=False,
             blockers=tuple(blockers),
         )

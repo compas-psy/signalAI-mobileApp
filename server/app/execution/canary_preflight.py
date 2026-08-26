@@ -213,9 +213,6 @@ def evaluate_canary_preflight(
     if not evidence.complete:
         return _failed(*evidence.blockers)
 
-    # Evidence binding proves only that the exact immutable refs exist, are
-    # fresh/verified and match this source/config/strategy scope. It does not
-    # accept ADR-0002 and does not constitute owner step-up authority.
     return CanaryPreflightResult(
         eligible_for_canary=False,
         structural_checks_passed=True,
