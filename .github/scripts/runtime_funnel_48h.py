@@ -29,7 +29,12 @@ from app.pipeline import scan as scan_module
 from app.risk.sizing import RiskState
 
 WINDOW_HOURS = 48
-LOOKBACK_DAYS = 65
+# Canonical scan needs 60 *trading* D1 bars. 120 calendar days leaves room for
+# MOEX weekends and holidays while keeping the production read bounded.
+D1_LOOKBACK_DAYS = 120
+# H1 is read independently because its market-session density differs from D1.
+# Ninety calendar days safely covers the scanner's bounded H1 history request.
+H1_LOOKBACK_DAYS = 90
 TARGET_CLASSES = (AssetClass.FUTURES, AssetClass.CRYPTO_PERPETUAL)
 
 
@@ -67,7 +72,8 @@ def _metric_summary(records: list[dict], field: str) -> str:
 def main() -> None:
     window_end = datetime.now(UTC)
     window_start = window_end - timedelta(hours=WINDOW_HOURS)
-    history_floor = window_start - timedelta(days=LOOKBACK_DAYS)
+    d1_history_floor = window_start - timedelta(days=D1_LOOKBACK_DAYS)
+    h1_history_floor = window_start - timedelta(days=H1_LOOKBACK_DAYS)
     session = get_session_factory()()
 
     original_load_bars = scan_module._load_bars
@@ -100,26 +106,40 @@ def main() -> None:
         print(
             "FUNNEL_WINDOW "
             f"utc={window_start.isoformat()}..{window_end.isoformat()} "
-            f"current_admitted={len(instruments)} by_lane={dict(sorted(by_lane.items()))}",
+            f"current_admitted={len(instruments)} by_lane={dict(sorted(by_lane.items()))} "
+            f"d1_lookback_days={D1_LOOKBACK_DAYS} h1_lookback_days={H1_LOOKBACK_DAYS}",
             flush=True,
         )
 
-        rows = list(
+        d1_rows = list(
             session.execute(
                 select(Bar)
                 .where(
                     Bar.instrument_id.in_(target_ids),
-                    Bar.timeframe.in_((Timeframe.D1, Timeframe.H1)),
+                    Bar.timeframe == Timeframe.D1,
                     Bar.is_closed.is_(True),
-                    Bar.open_time >= history_floor,
+                    Bar.open_time >= d1_history_floor,
                     Bar.open_time <= window_end,
                 )
-                .order_by(Bar.instrument_id, Bar.timeframe, Bar.open_time)
+                .order_by(Bar.instrument_id, Bar.open_time)
+            ).scalars()
+        ) if target_ids else []
+        h1_rows = list(
+            session.execute(
+                select(Bar)
+                .where(
+                    Bar.instrument_id.in_(target_ids),
+                    Bar.timeframe == Timeframe.H1,
+                    Bar.is_closed.is_(True),
+                    Bar.open_time >= h1_history_floor,
+                    Bar.open_time <= window_end,
+                )
+                .order_by(Bar.instrument_id, Bar.open_time)
             ).scalars()
         ) if target_ids else []
 
         cache: dict[tuple[str, Timeframe], list[Candle]] = defaultdict(list)
-        for row in rows:
+        for row in (*d1_rows, *h1_rows):
             cache[(row.instrument_id, row.timeframe)].append(_candle(row))
 
         as_of_holder = {"value": window_end}
