@@ -1,249 +1,150 @@
 # ADR-0002: Lighter Canary live-money boundary
 
-- Status: proposed
+- Status: **accepted for Canary v1 policy; final real-money activation pending**
 - Date: 2026-08-21
+- Owner approval: 2026-08-26
 - Owners: Product owner + Integrator/CTO + Security/Execution reviewer
-- Supersedes: —
 - Extends: [ADR-0001](0001-live-promotion-gates.md)
 
-## Контекст
+## Decision
 
-SAI-066–075 создали transport-free Lighter contract, разделённые credential
-slots, market/account facts, durable order identity/nonce/actions, private-event
-normalization, protection/reconciliation evidence, shadow scorecard и безопасный
-testnet create→cancel smoke. Общий execution core уже содержит server-owned mode,
-promotion guard, kill switch, автоматическое понижение риска, two-step
-CANARY→LIVE challenge и append-only audit.
+SignalAI keeps one execution core and adds an immutable, fail-closed Canary policy
+on top of the existing mode, kill-switch, replay, reconciliation and audit
+primitives. Approval of this ADR **does not** itself authorize funding, mainnet
+provider calls, `paper_only=false` or real orders. Final activation is a separate
+owner action bound to the exact source/config/policy/evidence payload.
 
-Эти primitives не образуют разрешение на реальные деньги. Production остаётся
-`paper_only`, Lighter action layer не имеет live factory/worker, а authoritative
-promotion evidence намеренно false. Перед SAI-081–084 нужно определить один
-необходной SANDBOX→CANARY contract без дублирования существующего core.
+## Owner-approved Canary v1 envelope
 
-Связанные требования безопасности: [`SECURITY.md`](../../SECURITY.md) и
-[Lighter threat model](../security/lighter-live-money-threat-model.md).
+The owner approved a USD 100 economic risk budget. Lighter perpetual collateral is
+implemented as **100 USDC**; the final activation view must show `100 USDC`
+explicitly before any real-money transition.
 
-## Decision drivers
-
-- Live credential, account, policy и transport должны иметь одну доказуемую
-  identity; testnet evidence не является live authorization.
-- Малый капитал, hard caps и allowlist — immutable ограничения, а не UI/config
-  hints или оптимизируемые параметры.
-- Owner confirmation должна быть свежей, конкретной и replay-safe.
-- Ошибка, ambiguity или drift сначала уменьшают риск и никогда автоматически не
-  восстанавливают Canary.
-- Существующие mode, lock, kill-switch, replay, reconciliation и audit primitives
-  переиспользуются; второй execution engine недопустим.
-- Документы/скан не используют реальные credentials, capital или mainnet calls.
-
-## Рассмотренные варианты
-
-### A. Feature flag + существующий `lighter_trade`
-
-Отклонён. Наличие ключа или flag не связывает owner decision с капиталом,
-account, allowlist, evidence и source/config; rotation создаёт stale authority.
-
-### B. Отдельный Lighter mode/nonce/audit stack
-
-Отклонён. Два источника истины расходятся при restart, kill switch и recovery и
-увеличивают attack surface.
-
-### C. Immutable Canary snapshot поверх существующего execution core
-
-Выбран. Новый слой добавляет только отсутствующие policy/evidence/activation
-bindings, а order lifecycle и safety mutation остаются общими.
-
-## Решение
-
-ADR становится `accepted` только после заполнения owner decisions в конце
-документа и отдельного security/execution review. До этого любая реализация
-обязана оставаться fail-closed и не может provision live key или capital.
-
-### 1. Credential boundary и generation binding
-
-Используются существующие slots без новых alias:
-
-- `lighter_read`: live/read only;
-- `lighter_testnet_trade`: testnet/trade only;
-- `lighter_trade`: live/trade only.
-
-`lighter_trade` хранится только server-side, имеет минимальные read/trade права,
-не имеет withdrawal permission и ограничивается server IP, если это официально
-поддерживается. Его создание, замена и удаление создают новый opaque random
-`credential_generation_id` и append-only факт с actor/time/slot/account index/
-API-key index. Raw key, key hash/fingerprint, signed payload и provider response
-не входят в metadata/audit.
-
-Provider verification связывает одну generation с `environment=mainnet`,
-официальными endpoint/chain, account index, API-key index и exact transport
-instance/scope. Preflight, owner challenge, confirmation и каждый submit должны
-видеть ту же generation. Missing/delete/rotation/mismatch немедленно делает
-evidence stale и блокирует новые entries.
-
-### 2. Immutable Canary config
-
-Перед preview сервер сохраняет append-only snapshot со следующими обязательными
-полями:
-
-| Group | Поля / правило |
+| Control | Canary v1 |
 | --- | --- |
-| Identity | `policy_version`, 40-char `source_sha`, 64-char `engine_config_hash`, strategy family/version, `venue=LIGHTER`, `environment=mainnet` |
-| Credential | `credential_generation_id`, account index, API-key index; никакого secret-derived значения |
-| Scope | Непустой sorted unique allowlist provider market indices и SignalAI instruments; всё остальное запрещено |
-| Capital | Положительный preapproved amount + currency; если risk/caps сравниваются в другой валюте, snapshot содержит valuation source/time/rule, а missing/stale valuation блокирует order |
-| Hard caps | Max per-order, per-instrument и gross notional; max open positions и entry orders; max leverage; daily и total loss; max order/trade count; validity interval |
-| Evidence | Exact refs/freshness для strategy/performance, shadow, testnet, protection/reconciliation, kill-switch drill, security scan и operational health |
-| Audit | Created-at UTC, actor, reason/correlation и schema version |
+| Venue/environment | Lighter mainnet |
+| Scope | exactly one Lighter BTC perpetual instrument; market index resolved from authoritative provider mapping |
+| Strategy | one frozen deterministic PAPER champion/version/digest only |
+| Capital | 100 USDC |
+| Max order notional | 10 USDC |
+| Max instrument notional | 25 USDC |
+| Max gross notional | 25 USDC |
+| Max open positions | 1 |
+| Max concurrent entry orders | 1 |
+| Max leverage | 1x |
+| Daily realized + unrealized loss stop | 3 USDC |
+| Total Canary loss stop | 7 USDC |
+| Max order submissions/day | 20 |
+| Max completed trades/day | 6 |
+| Owner step-up TTL | 300 seconds |
+| Automatic resume after HALT | forbidden |
+| Slippage hard ceiling | 30 bps/execution; initial median target <=15 bps |
+| Protection arm | target <=2 s; hard fail/HALT at 5 s |
+| Evidence window | >=20 completed trades across >=3 trading days with no unresolved safety/execution/reconciliation invariant violation |
 
-Все decimal values кодируются canonical decimal strings без exponent; timestamps
-— UTC ISO-8601; map keys сортируются; allowlists сортируются и дедуплицируются.
-`canary_config_hash = SHA-256(canonical UTF-8 JSON)` покрывает весь non-secret
-snapshot, включая evidence refs, но не raw credential и mutable telemetry.
+Runtime/strategy/risk/provider constraints may always reduce effective risk below
+this envelope; no runtime component may increase it. Any increase of capital,
+allowlist, leverage, caps or recovery authority requires a new owner decision.
 
-Snapshot нельзя UPDATE/DELETE на уровне БД. Новое решение создаёт новую запись и
-новый hash. Runtime config, mobile, optimizer или operator могут только выбрать
-меньший effective risk; повысить snapshot limit невозможно. Итоговый разрешённый
-объём/риск — минимум Canary caps, Risk Engine caps, account/provider constraints
-и текущего kill-switch/mode decision.
+## Credential and withdrawal boundary
 
-### 3. Authoritative preflight
+Lighter's normal write API key must not be represented as provider-side
+`no-withdrawal`: current provider semantics include secure-withdrawal capability
+back to the owner's L1 address. SignalAI therefore uses compensating controls:
 
-SAI-081/082 создаёт server-only evidence provider. Он не принимает proof flags
-или authoritative evidence body от mobile. READY возможен только когда:
+1. a dedicated Canary sub-account containing only Canary capital;
+2. the Ethereum private key is **never stored on the SignalAI VPS**;
+3. the server-side signer/transport allowlists required trading transaction types
+   and rejects withdrawal/transfer operations before provider signing;
+4. credential creation/rotation/revocation creates a new opaque
+   `credential_generation_id`; any generation mismatch invalidates readiness;
+5. raw keys, signatures, signed payloads and secret-derived fingerprints never
+   enter audit metadata.
 
-- current mode ровно SANDBOX и kill switch CLEAR;
-- snapshot complete, не expired и его canonical hash пересчитан;
-- exact deployed/source/config/strategy/credential scope совпадает со snapshot;
-- allowlist mapping однозначен и provider facts свежие;
-- required shadow/testnet/protection/reconciliation/security/ops evidence durable,
-  fresh и без unresolved ambiguity;
-- нет pending recovery, unreconciled action, cap breach или более сильного blocker.
+This residual provider capability is accepted for the bounded 100-USDC Canary,
+subject to the controls above. It is not permission for SignalAI to perform
+withdrawal or transfer operations.
 
-Любое missing/invalid/stale/exception возвращает typed blocker без provider submit.
-SAI-075 READY доказывает только testnet path и всегда остаётся отдельным evidence
-ref, а не live token.
+## Immutable policy and authoritative preflight
 
-### 4. Owner-controlled SANDBOX→CANARY
+Each Canary candidate is an append-only canonical snapshot binding:
 
-Активация двухшаговая и переиспользует текущие activation/mode/idempotency/audit
-primitives, не меняя скрыто семантику существующего `/execution/live/*`
-CANARY→LIVE API.
+- source SHA and engine config hash;
+- exact strategy family/version;
+- live credential generation + account/API-key indexes;
+- provider market mapping + SignalAI instrument allowlist;
+- capital/currency and valuation source/time/rule;
+- all numerical hard caps;
+- exact durable evidence refs;
+- validity interval, actor and correlation id.
 
-1. **Preview:** после step-up initiation сервер создаёт nonce, `issued_at`,
-   `expires_at`, exact `canary_config_hash` и owner-visible summary: venue,
-   account, non-secret credential generation, strategy/version, capital/currency,
-   caps, allowlist, source/config, evidence status и blockers.
-2. **Confirm:** требует отдельный idempotency key, fresh owner step-up и explicit
-   confirmation exact preview. Под lock сервер повторно читает mode, kill switch,
-   time, source/config/policy hash, credential generation, provider scope и весь
-   authoritative preflight до mode mutation.
+The canonical SHA-256 covers the complete non-secret snapshot. Any mutation,
+expiry, credential rotation, source/config drift or evidence mismatch makes the
+candidate stale and fails closed.
 
-Challenge имеет короткий owner-approved TTL и single-use semantics для APPLIED,
-BLOCKED, STALE и EXPIRED outcomes. Повтор с тем же idempotency key возвращает тот
-же результат; другой preview/key конфликтует. Owner bearer или boolean без
-принятого step-up proof недостаточен. Частичная активация запрещена.
+Readiness is server-authoritative. Mobile/operator input cannot supply trusted
+proof flags. Missing, stale, ambiguous or unavailable evidence blocks progress
+without provider submission.
 
-### 5. Submit-time enforcement
+## Owner activation contract
 
-Каждый claim/provider submit использует существующий execution-control lock и
-непосредственно перед network I/O проверяет:
+Canary v1 policy approval and real-money activation are deliberately separate.
+The approved static profile uses a five-minute (300 s) owner step-up window.
+Before future SANDBOX→CANARY mutation the owner must see and confirm one exact
+payload containing at least:
 
-- mode CANARY, kill switch CLEAR и active unexpired snapshot;
-- exact source/config/policy hash и credential generation/transport scope;
-- instrument/market в allowlist;
-- proposed action внутри всех capital/caps с учётом current positions, orders и
-  conservative fresh prices/valuation;
-- stable order identity, durable request hash/nonce reservation и отсутствие
-  unresolved prior action.
+- `capital=100 USDC`;
+- venue/account and non-secret credential generation;
+- exact BTC perpetual mapping;
+- frozen strategy/version and source/config hashes;
+- full hard-cap set;
+- evidence/readiness state;
+- challenge nonce, issued-at and expiry.
 
-После network ambiguity система reconciles, а не повторяет CREATE с новой
-identity/nonce. Protection и private facts связываются с тем же account/order
-scope. Ошибка наружу и в audit secret-safe без raw payload/cause/context.
+Confirmation must be cryptographic, single-use and replay-safe. The server must
+re-run authoritative preflight under the execution lock immediately before mode
+mutation. A bearer token, boolean flag or prior approval of this ADR is not a
+substitute for that final confirmation.
 
-### 6. Automatic halt, demotion и recovery
+Until that flow is explicitly completed, the authoritative state remains
+fail-closed and no real order is permitted.
 
-SAI-083 добавляет только trigger/evidence policy и вызывает существующие
-`automatic_halt_new_entries` / `automatic_downshift`. Автоматика не очищает kill
-switch, не повышает mode и не инициирует новое/повторное entry.
+## Submit-time and safety invariants
 
-Немедленный HALT_NEW_ENTRIES обязателен при credential/source/config/policy drift,
-cap/allowlist breach, missing protection, nonce/reconciliation ambiguity,
-security incident или owner halt. Freshness/provider error thresholds действуют
-по owner-approved значениям.
+Every future Canary submit must re-check mode, kill switch, policy hash,
+source/config, credential generation, allowlist, hard caps, fresh valuation,
+positions/orders and durable order identity immediately before provider I/O.
+Network ambiguity reconciles the existing identity; it never creates a replacement
+CREATE with a new identity/nonce.
 
-Порядок: захват общей submit serialization → HALT → прекращение новых claims →
-authoritative reconcile → безопасная отмена pending entries, если доказуема →
-downshift SANDBOX/PAPER → append-only outcome. Open risk/protection продолжает
-reconciliation; blind flatten запрещён. Recovery требует устранённую причину,
-новый preflight и отдельный owner-approved flow; автоматического resume нет.
+Credential/source/config/policy drift, cap/allowlist breach, missing protection,
+reconciliation ambiguity, security incident or owner halt triggers
+HALT_NEW_ENTRIES and risk downshift. Automatic resume is forbidden. Recovery
+requires a new authoritative preflight and fresh owner step-up. Blind flatten is
+not permitted where state is ambiguous; open risk remains reconciled/protected.
 
-Runbook отдельно фиксирует provider revoke/rotation, проверку surviving positions
-и protection, exact-source code rollback, forensic evidence и recovery authority.
+## Non-goals
 
-### 7. Audit и correlation
-
-Переиспользуются `AuditEvent`, `ExecutionModeEvent`, Lighter identity/action/
-reconciliation facts и существующие DB append-only triggers. Новый immutable
-Canary snapshot и credential-generation history добавляются только потому, что
-существующие mutable vault/activation rows не выражают эти facts.
-
-Одна correlation chain связывает generation → snapshot/hash → preflight →
-preview/confirm → mode event → orders/protection/reconciliation → halt/demotion/
-recovery. Каждый факт содержит UTC, actor/source, correlation/trace, source SHA,
-strategy/policy IDs, config hashes и non-secret account scope. BLOCKED/STALE/
-EXPIRED/automatic outcomes сохраняются наравне с APPLIED. Исправление — новая
-запись; secret/auth header/signed payload/raw exception никогда не сохраняются.
-
-### 8. Explicit non-goals
-
-Этот ADR не разрешает Scaled LIVE, не выбирает numerical limits за владельца, не
-создаёт mainnet smoke, не меняет strategy admission/risk alpha, не дублирует
-execution engine и не считает успешный security scan owner approval. CANARY→LIVE
-остаётся отдельным будущим решением после реального Canary evidence window.
-
-## Последствия
-
-- Активация становится длиннее, зато credential rotation, config drift и replay
-  не наследуют старое owner authority.
-- Потребуются immutable snapshot/generation facts и submit-time checks, но mode,
-  lock, order/replay/reconciliation и audit остаются общими.
-- Мобильный клиент показывает exact server snapshot и step-up outcome, не содержит
-  business fallback.
-- Любой неполный evidence снижает доступность, но сохраняет капитал; это принятый
-  fail-closed trade-off.
+This ADR does not authorize Scaled LIVE, ML challenger promotion, multi-strategy
+expansion, additional markets or larger capital. SAI-089 microstructure thresholds
+and SAI-090 ML promotion remain evidence-driven later decisions rather than guessed
+values added to the first Canary.
 
 ## Acceptance criteria
 
-- [ ] ADR переведён в `accepted` только с заполненными owner decisions ниже.
-- [ ] Exact-head SAI-080 scan не имеет unresolved Critical/High finding.
-- [ ] Live credential generation versioned/audited и bindится к account/key/
-      mainnet transport без secret-derived audit fields.
-- [ ] Canary snapshot DB-append-only, canonical hash deterministic, allowlist
-      default-deny, а изменение любого поля делает preview stale.
-- [ ] Preflight принимает только authoritative durable evidence и fail closed на
-      missing/stale/error без provider action.
-- [ ] SANDBOX→CANARY preview/confirm доказывает TTL, step-up, single use,
-      idempotency, concurrent confirmation и full authoritative recheck.
-- [ ] Submit-time tests доказывают cap/allowlist/generation/mode/kill-switch checks
-      под общей serialization и отсутствие CREATE replay после ambiguity.
-- [ ] Demotion drill доказывает monotonic HALT/downshift, restart recovery,
-      preservation сильного owner switch и запрет automatic resume/blind flatten.
-- [ ] Audit correlation полон, append-only и secret-safe.
-- [ ] Cumulative release и Samsung acceptance ссылаются на один accepted source
-      SHA/config/policy hash; owner activation остаётся отдельным действием.
+- [x] Owner approved capital/currency and numerical Canary v1 hard caps.
+- [x] Owner approved Lighter BTC-perpetual-only scope and one frozen deterministic strategy.
+- [x] Owner approved 300-second step-up TTL and no automatic resume.
+- [x] Lighter credential residual withdrawal semantics are documented honestly with compensating controls.
+- [ ] Exact final source/config/strategy/credential/policy snapshot has fresh authoritative evidence.
+- [ ] Signer/transport proof demonstrates withdrawal/transfer rejection and absence of Ethereum private key on the VPS.
+- [ ] Cryptographic single-use owner challenge/confirm flow passes replay/expiry/concurrency tests.
+- [ ] Final owner activation confirms the exact `100 USDC` payload.
+- [ ] Canary evidence window completes before any Scaled LIVE decision.
 
-## Unresolved owner decisions before `accepted`
+## Revisit conditions
 
-1. Capital amount/currency, valuation rule и все numerical hard caps.
-2. Exact strategy/version и market/instrument allowlist.
-3. Challenge TTL и конкретный step-up mechanism/credential lifecycle.
-4. Evidence freshness, provider-error и reconciliation/demotion thresholds.
-5. Downshift target по классам failure, cancel/flatten authority и recovery flow.
-6. Accepted residual risks после exact-head security scan.
-
-## Условия пересмотра
-
-ADR пересматривается при изменении Lighter auth/chain/order/protection semantics,
-credential permission model, execution core или после Canary evidence, которое
-показывает недостаточность caps/demotion. Любое расширение капитала/allowlist либо
-переход к Scaled LIVE требует нового owner decision и не выполняется автоматически.
+Revisit this ADR if Lighter changes auth/withdrawal/order semantics, if execution
+core safety properties change, or if Canary evidence demonstrates that the caps or
+recovery policy are insufficient. Any risk expansion requires a new owner decision
+and never occurs automatically.
