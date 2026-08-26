@@ -163,13 +163,17 @@ def _revision_key(row: EconomicEvent) -> tuple[datetime, datetime, str, str]:
 
 
 def _instrument_tags(instrument_id: str) -> set[str] | None:
-    symbol = instrument_id.rsplit(":", 1)[-1].upper()
-    # This is intentionally tiny and explicit.  Unknown instruments are not
-    # guessed into safety; they will be ambiguous if a GLOBAL row is present.
+    normalized = instrument_id.upper()
+    symbol = normalized.rsplit(":", 1)[-1]
+    # FORTS contracts are conservatively sensitive to the USD/RUB macro lane.
+    # Si and Brent keep their more specific mappings; unknown venues are never
+    # guessed and remain fail-closed.
     if symbol.startswith("SI"):
         return {"USD", "RUB"}
     if symbol.startswith("BR"):
         return {"OIL", "USD"}
+    if normalized.startswith("MOEX:FUT:"):
+        return {"USD", "RUB"}
     if symbol.endswith("USDT"):
         return {"CRYPTO"}
     return None
