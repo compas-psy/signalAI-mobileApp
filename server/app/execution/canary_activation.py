@@ -22,10 +22,17 @@ from .canary_preflight import (
     CanaryRuntimeContext,
     evaluate_canary_preflight,
 )
-from .canary_profile_v1 import CANARY_V1_CHALLENGE_TTL_SECONDS
+from .canary_profile_v1 import (
+    CANARY_V1_CHALLENGE_TTL_SECONDS,
+    validate_canary_v1_payload,
+)
 from .enums import ExecutionLifecycleMode
 
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
+_LEGACY_APPROVAL_PLACEHOLDERS = frozenset(
+    {"ADR_0002_NOT_ACCEPTED", "CANARY_OWNER_STEP_UP_NOT_IMPLEMENTED"}
+)
+_FINAL_OWNER_BLOCKER = "FINAL_OWNER_ACTIVATION_REQUIRED"
 
 
 class CanaryActivationReadinessError(ValueError):
@@ -146,6 +153,18 @@ def build_canary_activation_readiness(
     except CanaryPreflightError as exc:
         raise CanaryActivationReadinessError(str(exc)) from exc
 
+    blockers = [
+        blocker
+        for blocker in preflight.blockers
+        if blocker not in _LEGACY_APPROVAL_PLACEHOLDERS
+    ]
+    profile_blockers = validate_canary_v1_payload(payload)
+    for blocker in profile_blockers:
+        if blocker not in blockers:
+            blockers.append(blocker)
+    if preflight.structural_checks_passed and not profile_blockers:
+        blockers.append(_FINAL_OWNER_BLOCKER)
+
     try:
         capital_amount = Decimal(str(payload["capital_amount"]))
         hard_caps = payload["hard_caps"]
@@ -172,7 +191,7 @@ def build_canary_activation_readiness(
             structural_checks_passed=preflight.structural_checks_passed,
             challenge_ttl_seconds=CANARY_V1_CHALLENGE_TTL_SECONDS,
             challenge_issuable=False,
-            blockers=tuple(preflight.blockers),
+            blockers=tuple(blockers),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise CanaryActivationReadinessError(
