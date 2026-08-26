@@ -53,5 +53,6 @@ def test_runtime_env_rejects_invalid_release_attestation_without_replacing_sha(t
     completed = _run(env_file, attestation)
 
     assert completed.returncode != 0
-    assert "attestation" in completed.stderr
+    assert "SIGNALAI_SOURCE_SHA" in completed.stderr
+    assert "lowercase hex" in completed.stderr
     assert f"SIGNALAI_SOURCE_SHA={'c' * 40}" in env_file.read_text(encoding="utf-8")
