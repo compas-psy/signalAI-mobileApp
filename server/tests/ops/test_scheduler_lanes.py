@@ -24,18 +24,18 @@ def _root() -> Path:
     return Path(__file__).resolve().parents[3]
 
 
-def test_market_lane_cannot_be_starved_by_portfolio_or_research() -> None:
+def test_market_lane_prioritizes_owner_scan_before_experimental_measurement() -> None:
     from app.scheduler.lanes import SchedulerLane, select_job_names
 
     selected = select_job_names(PRODUCTION_JOB_ORDER, SchedulerLane.MARKET)
 
     assert "portfolio" not in selected
     assert "research" not in selected
-    for critical in ("paper-live", "ingest", "shadow", "paper_ab", "scan"):
+    for critical in ("paper-live", "ingest", "scan", "shadow", "paper_ab"):
         assert critical in selected
-    assert selected.index("ingest") < selected.index("shadow")
+    assert selected.index("ingest") < selected.index("scan")
+    assert selected.index("scan") < selected.index("shadow")
     assert selected.index("shadow") < selected.index("paper_ab")
-    assert selected.index("paper_ab") < selected.index("scan")
 
 
 def test_heavy_lane_contains_only_long_running_non_trading_jobs() -> None:
