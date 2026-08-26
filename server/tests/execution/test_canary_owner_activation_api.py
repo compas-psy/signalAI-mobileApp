@@ -23,7 +23,7 @@ def client(session):
 def test_canary_challenge_uses_authenticated_device_and_returns_exact_signing_message(
     client, monkeypatch
 ):
-    import app.api.v1.execution as api
+    import app.api.v1.owner_step_up as api
     from app.execution.canary_owner_activation import CanaryOwnerActivationChallenge
 
     challenge_id = uuid.uuid4()
@@ -65,7 +65,7 @@ def test_canary_challenge_uses_authenticated_device_and_returns_exact_signing_me
 def test_canary_confirm_uses_authenticated_device_and_never_accepts_runtime_proof_from_client(
     client, monkeypatch
 ):
-    import app.api.v1.execution as api
+    import app.api.v1.owner_step_up as api
     from app.execution.canary_owner_activation import CanaryOwnerActivationResult
 
     challenge_id = uuid.uuid4()
@@ -129,7 +129,7 @@ def test_canary_confirm_uses_authenticated_device_and_never_accepts_runtime_proo
 
 
 def test_canary_activation_rejections_are_sanitized_as_conflict(client, monkeypatch):
-    import app.api.v1.execution as api
+    import app.api.v1.owner_step_up as api
     from app.execution.canary_owner_activation import CanaryOwnerActivationRejected
 
     def fail(*args, **kwargs):
