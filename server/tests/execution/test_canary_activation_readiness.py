@@ -58,22 +58,22 @@ def _snapshot(session, *, source_sha: str = "a" * 40):
         api_key_index=7,
         market_allowlist=(1,),
         instrument_allowlist=("CRYPTO:PERP:BTCUSDT",),
-        capital_amount=Decimal("10000"),
-        capital_currency="RUB",
-        valuation_source="owner_preapproved",
+        capital_amount=Decimal("100"),
+        capital_currency="USDC",
+        valuation_source="lighter_account_equity_usdc",
         valuation_observed_at=now - timedelta(minutes=1),
-        valuation_rule="fixed_preapproved_rub",
+        valuation_rule="direct_usdc_collateral",
         hard_caps={
-            "max_order_notional": "2500",
-            "max_instrument_notional": "5000",
-            "max_gross_notional": "10000",
-            "max_open_positions": 2,
-            "max_entry_orders": 2,
-            "max_leverage": "2",
-            "daily_loss_limit": "500",
-            "total_loss_limit": "1000",
-            "max_order_count": 10,
-            "max_trade_count": 5,
+            "max_order_notional": "10",
+            "max_instrument_notional": "25",
+            "max_gross_notional": "25",
+            "max_open_positions": 1,
+            "max_entry_orders": 1,
+            "max_leverage": "1",
+            "daily_loss_limit": "3",
+            "total_loss_limit": "7",
+            "max_order_count": 20,
+            "max_trade_count": 6,
         },
         evidence_refs={
             "strategy_performance": "strategy-evidence-1",
@@ -96,7 +96,7 @@ def _snapshot(session, *, source_sha: str = "a" * 40):
     return snapshot
 
 
-def test_readiness_binds_exact_owner_visible_policy_without_issuing_challenge(session) -> None:
+def test_readiness_binds_approved_owner_profile_but_requires_final_activation(session) -> None:
     from app.execution.canary_activation import build_canary_activation_readiness
     from app.execution.canary_preflight import CanaryRuntimeContext
 
@@ -118,20 +118,16 @@ def test_readiness_binds_exact_owner_visible_policy_without_issuing_challenge(se
     assert result.from_mode is ExecutionLifecycleMode.SANDBOX
     assert result.target_mode is ExecutionLifecycleMode.CANARY
     assert result.venue == "LIGHTER"
-    assert result.strategy_family == "TREND_PULLBACK"
-    assert result.strategy_version == "trend-pullback-v2"
-    assert result.account_index == 42
-    assert result.api_key_index == 7
-    assert result.market_allowlist == (1,)
     assert result.instrument_allowlist == ("CRYPTO:PERP:BTCUSDT",)
-    assert result.capital_amount == Decimal("10000")
-    assert result.capital_currency == "RUB"
-    assert result.hard_caps["max_order_notional"] == "2500"
+    assert result.capital_amount == Decimal("100")
+    assert result.capital_currency == "USDC"
+    assert result.hard_caps["max_order_notional"] == "10"
+    assert result.hard_caps["max_gross_notional"] == "25"
+    assert result.challenge_ttl_seconds == 300
     assert result.challenge_issuable is False
-    assert "ADR_0002_NOT_ACCEPTED" in result.blockers
-    assert "CANARY_OWNER_STEP_UP_ACTIVATION_BINDING_NOT_APPROVED" in result.blockers
+    assert "ADR_0002_NOT_ACCEPTED" not in result.blockers
     assert "CANARY_OWNER_STEP_UP_NOT_IMPLEMENTED" not in result.blockers
-    assert "CANARY_CHALLENGE_TTL_NOT_APPROVED" in result.blockers
+    assert result.blockers == ("FINAL_OWNER_ACTIVATION_REQUIRED",)
     assert get_execution_mode(session) == mode_before
     assert session.query(ExecutionModeActivationRequest).count() == 0
 
@@ -156,6 +152,7 @@ def test_readiness_preserves_structural_preflight_blockers_and_never_authorizes(
     assert result.structural_checks_passed is False
     assert result.challenge_issuable is False
     assert "DEPLOYED_SOURCE_SHA_MISMATCH" in result.blockers
+    assert "FINAL_OWNER_ACTIVATION_REQUIRED" not in result.blockers
     assert session.query(ExecutionModeActivationRequest).count() == 0
     assert get_execution_mode(session).mode is ExecutionLifecycleMode.SANDBOX
 
