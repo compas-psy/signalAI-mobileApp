@@ -5,7 +5,7 @@ from datetime import timedelta
 from app.scheduler.runner import build_default_scheduler
 
 
-def test_default_scheduler_contains_separate_shadow_job() -> None:
+def test_default_scheduler_contains_separate_shadow_job_after_owner_scan() -> None:
     scheduler = build_default_scheduler(
         shadow_every=timedelta(minutes=15),
         shadow_runner=lambda _session: "shadow fixture",
@@ -13,7 +13,7 @@ def test_default_scheduler_contains_separate_shadow_job() -> None:
 
     names = [job.name for job in scheduler.jobs]
     assert "shadow" in names
-    assert names.index("ingest") < names.index("shadow") < names.index("scan")
+    assert names.index("ingest") < names.index("scan") < names.index("shadow")
 
 
 def test_shadow_scheduler_job_is_independent_from_owner_scan_callable() -> None:
