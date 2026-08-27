@@ -32,7 +32,7 @@ def _minutes_from_env(name: str, default: int) -> timedelta:
 
 
 def _add_shadow_job(scheduler, *, every: timedelta, shadow_runner=None) -> None:
-    """Insert isolated candidate measurement after ingest and before owner scan.
+    """Insert isolated candidate measurement immediately after owner scan.
 
     The production path is data-driven, not clock-driven: it advances only when
     a FORTS/crypto closed-bar lane changes.  ``evaluated_at`` is pinned to the
@@ -78,13 +78,13 @@ def _add_shadow_job(scheduler, *, every: timedelta, shadow_runner=None) -> None:
     job = scheduler.jobs.pop()
     for index, existing in enumerate(scheduler.jobs):
         if existing.name == "scan":
-            scheduler.jobs.insert(index, job)
+            scheduler.jobs.insert(index + 1, job)
             return
     raise RuntimeError("default scheduler has no scan job")
 
 
 def _add_paper_ab_job(scheduler, *, every: timedelta, paper_ab_runner=None) -> None:
-    """Run counterfactual Paper measurement after Shadow and before owner scan.
+    """Run counterfactual Paper measurement immediately after Shadow.
 
     Unlike Shadow, this job must run on cadence even if a market watermark did
     not change: a previously emitted decision can mature and become resolvable.
@@ -117,7 +117,7 @@ def _add_paper_ab_job(scheduler, *, every: timedelta, paper_ab_runner=None) -> N
     job = scheduler.jobs.pop()
     # The canonical placement is immediately after Shadow.  If a custom
     # scheduler somehow omits Shadow, fail closed rather than silently placing
-    # Paper after the owner scan/lifecycle.
+    # Paper elsewhere in the owner lifecycle.
     for index, existing in enumerate(scheduler.jobs):
         if existing.name == "shadow":
             scheduler.jobs.insert(index + 1, job)
