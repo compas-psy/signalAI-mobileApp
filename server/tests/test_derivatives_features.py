@@ -11,21 +11,21 @@ def _bars(*, count: int, spike: bool = False, with_oi: bool = True) -> list[Cand
     price = Decimal("100")
     oi = Decimal("1000")
     for index in range(count):
-        # Small stable changes create a historical baseline; the final bar is
-        # deliberately much stronger so both current z-scores are measurable.
-        price_change = Decimal("0.10")
-        oi_change = Decimal("1")
+        # Stable relative changes form a zero-variance baseline; the final bar
+        # can then create an unambiguous positive price/OI impulse.
+        price_factor = Decimal("1.001")
+        oi_factor = Decimal("1.001")
         if spike and index == count - 1:
-            price_change = Decimal("3.00")
-            oi_change = Decimal("40")
-        next_price = price + price_change
-        next_oi = oi + oi_change
+            price_factor = Decimal("1.03")
+            oi_factor = Decimal("1.04")
+        next_price = price * price_factor
+        next_oi = oi * oi_factor
         bars.append(
             Candle(
                 open_time=start + timedelta(hours=index),
                 open=price,
-                high=max(price, next_price) + Decimal("0.1"),
-                low=min(price, next_price) - Decimal("0.1"),
+                high=max(price, next_price) * Decimal("1.001"),
+                low=min(price, next_price) * Decimal("0.999"),
                 close=next_price,
                 open_interest=next_oi if with_oi else None,
                 source="bybit",
