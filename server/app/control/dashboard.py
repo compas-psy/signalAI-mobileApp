@@ -1,8 +1,12 @@
 """Read-only owner control-plane snapshot.
 
-The dashboard deliberately aggregates existing append-only measurement evidence.
-It does not run scans, execute strategies, promote candidates or mutate risk
-state. Missing evidence stays missing instead of being converted to zero PnL.
+Control separates three different truths that must never be conflated:
+1. the legacy production scanner that can publish owner-facing TradeIdea rows;
+2. Shadow/Paper champion-challenger measurement;
+3. immutable historical dataset/backtest readiness.
+
+The endpoint only aggregates persisted evidence. It does not scan, replay,
+promote strategies or mutate risk state.
 """
 
 from __future__ import annotations
@@ -18,6 +22,7 @@ from sqlalchemy.orm import Session, aliased
 from ..config import EngineConfig, get_config
 from ..models import (
     BacktestRun,
+    DatasetSnapshot,
     Instrument,
     ModelRegistry,
     PaperAbDecision,
@@ -26,6 +31,8 @@ from ..models import (
     TradeIdea,
 )
 from ..models.enums import AssetClass, Venue
+from .bybit_funnel import dashboard_funnel
+from .runtime_roles import compose_runtime_roles, registry_role_map
 
 ExternalVenue = Literal["FORTS", "BYBIT"]
 _CONTROL_VERSION = "legacy_control_v1"
@@ -70,7 +77,6 @@ def _control_funnel(
         .join(Instrument, Instrument.instrument_id == TradeIdea.instrument_id)
         .where(*filters)
     ).one()
-
     statuses = {
         _enum(name): int(count)
         for name, count in session.execute(
@@ -135,7 +141,6 @@ def _shadow_rows(
             ShadowObservation.signal_emitted,
         )
     ).all()
-
     by_version: dict[str, dict[str, Any]] = {}
     for version, evidence, reason, emitted, count in grouped:
         row = by_version.setdefault(
@@ -164,9 +169,6 @@ def _shadow_rows(
     for version in sorted(by_version):
         row = by_version[version]
         reasons: dict[str, int] = row.pop("_reasons")
-        # All R4 candidates are manifested on every opportunity. A strategy
-        # that is intentionally out of scope for this venue is not a broken
-        # candidate and should not pollute the owner's competition list.
         if (
             row["observations"] > 0
             and row["unavailable"] == row["observations"]
@@ -196,9 +198,7 @@ def _paper_stats(
             func.count(PaperAbDecision.id),
             func.count(PaperAbDecision.id).filter(PaperAbDecision.signal_emitted.is_(True)),
             func.count(PaperAbOutcome.id),
-            func.count(PaperAbOutcome.id).filter(
-                PaperAbOutcome.evidence_status == "EVALUATED"
-            ),
+            func.count(PaperAbOutcome.id).filter(PaperAbOutcome.evidence_status == "EVALUATED"),
             func.avg(PaperAbOutcome.net_r).filter(
                 PaperAbOutcome.evidence_status == "EVALUATED",
                 PaperAbOutcome.net_r.is_not(None),
@@ -272,7 +272,6 @@ def _paper_stats(
         }
         for version, count, control_mean, candidate_mean in paired_rows
     }
-
     control_versions = session.execute(
         select(PaperAbDecision.strategy_version, func.count(PaperAbDecision.id))
         .where(
@@ -336,7 +335,6 @@ def _competition(
                 },
             )
         )
-
         observations = int(shadow_row["observations"])
         unavailable = int(shadow_row["unavailable"])
         evaluated = int(shadow_row["evaluated"])
@@ -358,9 +356,7 @@ def _competition(
         if broken_input:
             verdict = "BROKEN_INPUT"
         elif comparable == 0:
-            verdict = (
-                "INSUFFICIENT_OUTCOMES" if paper_decisions > 0 else "WAITING_FOR_SAMPLE"
-            )
+            verdict = "INSUFFICIENT_OUTCOMES" if paper_decisions > 0 else "WAITING_FOR_SAMPLE"
         elif not sample_adequate:
             verdict = "WAITING_FOR_SAMPLE"
         else:
@@ -372,17 +368,12 @@ def _competition(
                 verdict = "CANDIDATE_WINNING"
             else:
                 verdict = "CONTROL_WINNING"
-
         rows.append(
             {
                 "version": version,
                 "verdict": verdict,
                 "shadow": shadow_row,
-                "paper": {
-                    "control": control_arm,
-                    "candidate": candidate_arm,
-                    **paired_row,
-                },
+                "paper": {"control": control_arm, "candidate": candidate_arm, **paired_row},
             }
         )
     return {
@@ -438,8 +429,7 @@ def _backtest_snapshot(
         (
             run
             for run in recent
-            if market_marker
-            in {str(item).upper() for item in (run.universe_json or [])}
+            if market_marker in {str(item).upper() for item in (run.universe_json or [])}
         ),
         None,
     )
@@ -451,21 +441,46 @@ def _backtest_snapshot(
     }
 
 
-def _risk_optimizer_snapshot(
-    session: Session,
-    *,
-    cfg: EngineConfig,
-) -> dict[str, Any]:
+def _bybit_data_readiness(session: Session) -> dict[str, Any]:
+    rows = session.execute(
+        select(DatasetSnapshot)
+        .where(DatasetSnapshot.dataset_name.like("bybit:%:multistream"))
+        .order_by(DatasetSnapshot.created_at.desc(), DatasetSnapshot.id.desc())
+        .limit(300)
+    ).scalars().all()
+    latest: dict[str, DatasetSnapshot] = {}
+    for row in rows:
+        latest.setdefault(row.dataset_name, row)
+    symbols: list[dict[str, Any]] = []
+    for name in sorted(latest):
+        row = latest[name]
+        watermark = row.source_watermark or {}
+        symbol = str(watermark.get("symbol") or name.split(":")[1])
+        symbols.append(
+            {
+                "symbol": symbol,
+                "status": str(watermark.get("readiness") or "UNKNOWN"),
+                "snapshot_id": row.snapshot_id,
+                "content_sha256": row.content_sha256,
+                "tradable_at": row.tradable_at.isoformat(),
+                "row_count": int(row.row_count),
+                "coverage": list(watermark.get("coverage") or []),
+            }
+        )
+    if not symbols:
+        status = "NO_DATASET"
+    elif all(item["status"] == "DATA_READY" for item in symbols):
+        status = "DATA_READY"
+    else:
+        status = "DATA_BLOCKED"
+    return {"status": status, "symbols": symbols}
+
+
+def _risk_optimizer_snapshot(session: Session, *, cfg: EngineConfig) -> dict[str, Any]:
     champion = session.execute(
         select(ModelRegistry)
-        .where(
-            ModelRegistry.name == _RISK_MODEL_NAME,
-            ModelRegistry.role == "champion",
-        )
-        .order_by(
-            ModelRegistry.promoted_at.desc().nullslast(),
-            ModelRegistry.created_at.desc(),
-        )
+        .where(ModelRegistry.name == _RISK_MODEL_NAME, ModelRegistry.role == "champion")
+        .order_by(ModelRegistry.promoted_at.desc().nullslast(), ModelRegistry.created_at.desc())
         .limit(1)
     ).scalar_one_or_none()
     latest_run = session.execute(
@@ -474,7 +489,6 @@ def _risk_optimizer_snapshot(
         .order_by(BacktestRun.created_at.desc(), BacktestRun.id.desc())
         .limit(1)
     ).scalar_one_or_none()
-
     optimizer_cfg = cfg.get("risk.management.optimizer")
     candidate_ids = [
         str(item.get("id"))
@@ -491,16 +505,11 @@ def _risk_optimizer_snapshot(
             "sample_size": int(champion.sample_size),
             "trained_from": champion.trained_from.isoformat(),
             "trained_to": champion.trained_to.isoformat(),
-            "promoted_at": (
-                champion.promoted_at.isoformat() if champion.promoted_at else None
-            ),
+            "promoted_at": champion.promoted_at.isoformat() if champion.promoted_at else None,
             "metrics": calibration.get("metrics") or {},
             "llm_review": calibration.get("llm_review") or {},
-            "absolute_risk_caps_changed": calibration.get(
-                "absolute_risk_caps_changed", False
-            ),
+            "absolute_risk_caps_changed": calibration.get("absolute_risk_caps_changed", False),
         }
-
     cadence_days = int(optimizer_cfg["cadence_days"])
     next_due = None
     if latest_run is not None and latest_run.created_at is not None:
@@ -509,12 +518,11 @@ def _risk_optimizer_snapshot(
         "champion": champion_json,
         "latest_run": _serialize_backtest(latest_run),
         "next_due_at": next_due,
+        "scheduled": True,
         "config": {
             "cadence_days": cadence_days,
             "min_samples": int(optimizer_cfg["min_samples"]),
-            "min_oos_expectancy_improvement_r": float(
-                optimizer_cfg["min_oos_expectancy_improvement_r"]
-            ),
+            "min_oos_expectancy_improvement_r": float(optimizer_cfg["min_oos_expectancy_improvement_r"]),
             "candidate_ids": candidate_ids,
             "absolute_risk_caps_mutable": False,
         },
@@ -542,18 +550,9 @@ def build_control_dashboard(
     config = cfg or get_config()
     start = moment - timedelta(hours=window_hours)
 
-    control = _control_funnel(
-        session,
-        start=start,
-        venue_enum=venue_enum,
-        asset_class=asset_class,
-    )
+    control = _control_funnel(session, start=start, venue_enum=venue_enum, asset_class=asset_class)
     shadow = _shadow_rows(session, start=start, venue_aliases=aliases)
-    paper, paired, control_version = _paper_stats(
-        session,
-        start=start,
-        venue_aliases=aliases,
-    )
+    paper, paired, control_version = _paper_stats(session, start=start, venue_aliases=aliases)
     min_sample = int(config.get("backtest.paper_gate.min_trades_per_setup"))
     competition = _competition(
         shadow=shadow,
@@ -562,18 +561,25 @@ def build_control_dashboard(
         control_version=control_version,
         min_sample=min_sample,
     )
+    runtime_roles = compose_runtime_roles(
+        competition,
+        registry_roles=registry_role_map(session),
+    )
+    scan_funnel = dashboard_funnel(session, start=start) if venue == "BYBIT" else None
+    data_readiness = _bybit_data_readiness(session) if venue == "BYBIT" else {
+        "status": "NOT_APPLICABLE",
+        "symbols": [],
+    }
 
     runtime_evidence = (
         int(control["ideas_created"])
         + sum(int(row["observations"]) for row in shadow)
-        + sum(
-            int(arm["decisions"])
-            for arms in paper.values()
-            for arm in arms.values()
-        )
+        + sum(int(arm["decisions"]) for arms in paper.values() for arm in arms.values())
     )
     candidate_rows = competition["candidates"]
     if any(row["verdict"] == "BROKEN_INPUT" for row in candidate_rows):
+        health = "BROKEN_INPUT"
+    elif venue == "BYBIT" and data_readiness["status"] == "DATA_BLOCKED":
         health = "BROKEN_INPUT"
     elif runtime_evidence == 0:
         health = "NO_SAMPLE"
@@ -591,16 +597,15 @@ def build_control_dashboard(
         "venue": venue,
         "window_hours": int(window_hours),
         "health": health,
+        "runtime_roles": runtime_roles,
         "funnel": {
             "control": control,
+            "scan": scan_funnel,
             "candidates": shadow,
         },
         "competition": competition,
-        "backtest": _backtest_snapshot(
-            session,
-            market_marker=market_marker,
-            cfg=config,
-        ),
+        "data_readiness": data_readiness,
+        "backtest": _backtest_snapshot(session, market_marker=market_marker, cfg=config),
         "risk_optimizer": _risk_optimizer_snapshot(session, cfg=config),
     }
 
