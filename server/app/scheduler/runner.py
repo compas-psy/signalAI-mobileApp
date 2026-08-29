@@ -161,7 +161,17 @@ def _terminal_from_skip(stage: str, reason: str) -> tuple[str, str]:
 
 
 def _record_bybit_scan_funnel(session: Session, result, *, occurred_at: datetime) -> None:
-    """Persist one terminal machine-readable fact for every active Bybit symbol."""
+    """Persist one terminal machine-readable fact for every active Bybit symbol.
+
+    The generic Scheduler has unit-test seams that intentionally pass a minimal
+    non-database object while replacing the scan function. Observability must
+    never make those seams stricter than the trading job itself, so only a
+    DB-capable session attempts persistence. Production SQLAlchemy sessions
+    always expose ``execute``.
+    """
+
+    if not callable(getattr(session, "execute", None)):
+        return
 
     from ..control.bybit_funnel import FunnelFact, record_funnel_fact
 
