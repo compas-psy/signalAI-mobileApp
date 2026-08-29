@@ -10,6 +10,7 @@ from app.models.enums import AssetClass, Timeframe, Venue
 from app.pipeline.scan import _load_bars
 
 
+# Historical decision time used to prove the replay never sees future bars.
 BASE = datetime(2026, 8, 1, 12, tzinfo=UTC)
 
 
