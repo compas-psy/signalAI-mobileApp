@@ -38,6 +38,8 @@ class PaperPosition {
     this.breakevenAt,
     this.resultR,
     this.resultRealized = false,
+    this.realizedPnl,
+    this.pnlCurrency,
     this.lastReconciledAt,
     this.staleHours,
     this.fromServer = false,
@@ -102,6 +104,14 @@ class PaperPosition {
   /// Результат в R. Серверный — зафиксированный, локальный — плавающий.
   final double? resultR;
   final bool resultRealized;
+
+  /// Денежный paper-result в родной валюте котировки инструмента.
+  ///
+  /// Это отдельная величина от R: FORTS приходит в RUB, линейная ByBit-крипта
+  /// — в USDT. Отсутствие означает «сервер не смог доказать денежную базу», а
+  /// не ноль. Клиент никогда не пересчитывает её через текущие настройки риска.
+  final double? realizedPnl;
+  final String? pnlCurrency;
 
   final DateTime? lastReconciledAt;
   final int? staleHours;
