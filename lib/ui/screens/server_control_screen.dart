@@ -109,8 +109,16 @@ class _ServerControlScreenState extends State<ServerControlScreen> {
           _ErrorCard(message: _error!, onRetry: _load)
         else if (snapshot != null) ...[
           _runtime(snapshot),
+          if (snapshot.venue == 'BYBIT' && snapshot.funnel.scan != null) ...[
+            const SizedBox(height: 12),
+            _scanFunnel(snapshot.funnel.scan!),
+          ],
           const SizedBox(height: 12),
           _competition(snapshot),
+          if (snapshot.venue == 'BYBIT' && snapshot.dataReadiness != null) ...[
+            const SizedBox(height: 12),
+            _dataReadiness(snapshot.dataReadiness!),
+          ],
           const SizedBox(height: 12),
           _backtest(snapshot.backtest),
           const SizedBox(height: 12),
@@ -137,7 +145,7 @@ class _ServerControlScreenState extends State<ServerControlScreen> {
             ),
             const SizedBox(height: 6),
             Text(
-              'read-only · показывает факты конкуренции, бэктеста и risk optimizer; ничего не промоутит и не меняет риск.',
+              'read-only · показывает факты live scan, конкуренции, исторических данных, бэктеста и risk optimizer; ничего не промоутит и не меняет риск.',
               style: T.body(11.5, color: C.muted, height: 1.5),
             ),
             const SizedBox(height: 14),
@@ -176,23 +184,61 @@ class _ServerControlScreenState extends State<ServerControlScreen> {
 
   Widget _runtime(ControlDashboardSnapshot snapshot) {
     final control = snapshot.funnel.control;
+    final roles = snapshot.runtimeRoles;
+    final liveVersion = roles?.liveGenerator.version ??
+        snapshot.competition.controlVersion;
     return SectionCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const SectionLabel('Сейчас'),
           const SizedBox(height: 8),
-          Text(
-            snapshot.competition.controlVersion,
-            style: T.mono(12.5, weight: 700, color: C.text),
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  liveVersion,
+                  style: T.mono(12.5, weight: 700, color: C.text),
+                ),
+              ),
+              if (roles != null)
+                const OutlineBadge(
+                  label: 'LIVE GENERATOR',
+                  color: C.green,
+                  borderColor: C.greenBorder,
+                ),
+            ],
           ),
           const SizedBox(height: 4),
           Text(
-            'Старая стратегия · создано ${control.ideasCreated} · Показано ${control.presented}',
+            roles == null
+                ? 'Production scanner · создано ${control.ideasCreated} · показано ${control.presented}'
+                : '${roles.liveGenerator.publishesTradeIdeas ? 'Создаёт TradeIdea' : 'Не создаёт TradeIdea'} · создано ${control.ideasCreated} · показано ${control.presented}',
             style: T.body(11.5, color: C.textSecondary, height: 1.45),
           ),
-          if (control.statuses.isNotEmpty) ...[
+          if (roles != null && roles.liveGenerator.strategyFamilies.isNotEmpty) ...[
             const SizedBox(height: 5),
+            Text(
+              'Live families: ${roles.liveGenerator.strategyFamilies.join(' · ')}',
+              style: T.mono(9.8, color: C.dim, height: 1.4),
+            ),
+          ],
+          if (roles != null && roles.shadowOnly.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Text(
+              'SHADOW ONLY · ${roles.shadowOnly.join(' · ')}',
+              style: T.mono(10.5, weight: 700, color: C.warning),
+            ),
+            const SizedBox(height: 3),
+            Text(
+              roles.governanceControlsRuntime
+                  ? 'Governance registry управляет runtime.'
+                  : 'Champion/challenger — измерение, а не переключатель live generation.',
+              style: T.body(10.4, color: C.muted, height: 1.4),
+            ),
+          ],
+          if (control.statuses.isNotEmpty) ...[
+            const SizedBox(height: 7),
             Text(
               'Статусы: ${_counts(control.statuses)}',
               style: T.body(10.3, color: C.dim, height: 1.4),
@@ -221,6 +267,39 @@ class _ServerControlScreenState extends State<ServerControlScreen> {
     );
   }
 
+  Widget _scanFunnel(BybitScanFunnel funnel) => SectionCard(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const SectionLabel('Bybit funnel'),
+            const SizedBox(height: 7),
+            Text(
+              '${funnel.universe} → ${funnel.dataHealthy} → ${funnel.liquid} → ${funnel.strategyEvaluated} · published ${funnel.published}',
+              style: T.mono(12, weight: 700, color: C.text),
+            ),
+            const SizedBox(height: 3),
+            Text(
+              'universe → data healthy → liquid → strategy evaluated',
+              style: T.body(9.8, color: C.dim),
+            ),
+            const SizedBox(height: 7),
+            Text(
+              'Regime eligible ${funnel.regimeEligible} · setup reject ${funnel.setupReject} · cost/RR reject ${funnel.costRrReject}',
+              style: T.body(10.6, color: C.textSecondary, height: 1.4),
+            ),
+            if (funnel.topReasons.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Text(
+                funnel.topReasons
+                    .map((item) => '${item.reason} · ${item.count}')
+                    .join('\n'),
+                style: T.mono(9.8, color: C.warning, height: 1.5),
+              ),
+            ],
+          ],
+        ),
+      );
+
   Widget _competition(ControlDashboardSnapshot snapshot) => SectionCard(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -231,6 +310,13 @@ class _ServerControlScreenState extends State<ServerControlScreen> {
               'CONTROL ${snapshot.competition.controlVersion} · минимум сравнимой выборки ${snapshot.competition.minComparableSample}',
               style: T.body(10.8, color: C.muted, height: 1.45),
             ),
+            if (snapshot.runtimeRoles?.champion != null) ...[
+              const SizedBox(height: 5),
+              Text(
+                'Measurement champion: ${snapshot.runtimeRoles!.champion} · не означает live publication',
+                style: T.body(10.5, color: C.info, height: 1.4),
+              ),
+            ],
             if (snapshot.competition.candidates.isEmpty) ...[
               const SizedBox(height: 10),
               Text(
@@ -243,6 +329,79 @@ class _ServerControlScreenState extends State<ServerControlScreen> {
               _CompetitionCard(
                 candidate: candidate,
                 requiredPairs: snapshot.competition.minComparableSample,
+              ),
+            ],
+          ],
+        ),
+      );
+
+  Widget _dataReadiness(BybitDataReadiness readiness) => SectionCard(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Expanded(child: SectionLabel('Historical data')),
+                OutlineBadge(
+                  label: readiness.status.replaceAll('_', ' '),
+                  color: readiness.status == 'DATA_READY' ? C.green : C.warning,
+                  borderColor: readiness.status == 'DATA_READY'
+                      ? C.greenBorder
+                      : C.warningBorder,
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Text(
+              'Immutable multi-stream snapshots · 36m gate проверяется по каждому обязательному потоку.',
+              style: T.body(10.6, color: C.muted, height: 1.45),
+            ),
+            if (readiness.symbols.isEmpty) ...[
+              const SizedBox(height: 8),
+              Text(
+                'Пока нет опубликованных Bybit research datasets.',
+                style: T.body(11.2, color: C.muted),
+              ),
+            ],
+            for (final symbol in readiness.symbols) ...[
+              const SizedBox(height: 9),
+              InsetBox(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            symbol.symbol,
+                            style: T.mono(11.2, weight: 700, color: C.text),
+                          ),
+                        ),
+                        OutlineBadge(
+                          label: symbol.status.replaceAll('_', ' '),
+                          color: symbol.status == 'DATA_READY'
+                              ? C.green
+                              : C.warning,
+                          borderColor: symbol.status == 'DATA_READY'
+                              ? C.greenBorder
+                              : C.warningBorder,
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 5),
+                    Text(
+                      'rows ${symbol.rowCount} · snapshot ${_shortHash(symbol.snapshotId)}',
+                      style: T.mono(9.7, color: C.dim),
+                    ),
+                    for (final item in symbol.coverage.where((item) => !item.ready)) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        '${item.stream} · ${item.reason}',
+                        style: T.mono(9.8, color: C.warning),
+                      ),
+                    ],
+                  ],
+                ),
               ),
             ],
           ],
