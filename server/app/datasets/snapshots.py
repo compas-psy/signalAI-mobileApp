@@ -2,7 +2,8 @@
 
 The same resolver is used by live and backtest callers. Snapshot selection is
 based only on persisted ``tradable_at`` boundaries; artifacts are verified by
-SHA-256 before any rows are returned.
+SHA-256 before any rows are returned. Historical research may additionally pin
+an exact ``snapshot_id`` so a persisted backtest is byte-for-byte reproducible.
 """
 
 from __future__ import annotations
@@ -342,7 +343,7 @@ def _manifest_hash(row: DatasetSnapshot) -> str:
 
 
 class DatasetSnapshotResolver:
-    """Single point-in-time resolver shared by live and historical consumers."""
+    """Single integrity-checking resolver shared by live and research paths."""
 
     def __init__(self, session: Session, *, store: FilesystemSnapshotStore):
         self.session = session
@@ -370,8 +371,28 @@ class DatasetSnapshotResolver:
             )
         return row
 
-    def resolve(self, dataset_name: str, *, decision_time: datetime) -> ResolvedDataset:
-        row = self._manifest_row(dataset_name, decision_time)
+    def _exact_manifest_row(self, snapshot_id: str) -> DatasetSnapshot:
+        identity = snapshot_id.strip()
+        if len(identity) != 64:
+            raise ValueError("snapshot_id must be a 64-character digest")
+        row = self.session.execute(
+            select(DatasetSnapshot).where(DatasetSnapshot.snapshot_id == identity)
+        ).scalar_one_or_none()
+        if row is None:
+            raise KeyError(f"no dataset snapshot with id {identity!r}")
+        return row
+
+    def _resolve_row(
+        self,
+        row: DatasetSnapshot,
+        *,
+        decision_time: datetime,
+    ) -> ResolvedDataset:
+        if decision_time.tzinfo is None:
+            raise ValueError("decision_time must be timezone-aware")
+        if row.tradable_at > decision_time:
+            raise SnapshotIntegrityError("snapshot is not tradable at decision time")
+
         data = self.store.read_bytes(row.artifact_key)
         if _sha256(data) != row.content_sha256:
             raise SnapshotIntegrityError("snapshot content checksum mismatch")
@@ -400,6 +421,16 @@ class DatasetSnapshotResolver:
             manifest_sha256=row.manifest_sha256,
             rows=rows,
         )
+
+    def resolve(self, dataset_name: str, *, decision_time: datetime) -> ResolvedDataset:
+        row = self._manifest_row(dataset_name, decision_time)
+        return self._resolve_row(row, decision_time=decision_time)
+
+    def resolve_snapshot_id(self, snapshot_id: str) -> ResolvedDataset:
+        """Resolve exactly one immutable identity, never 'latest as of' data."""
+
+        row = self._exact_manifest_row(snapshot_id)
+        return self._resolve_row(row, decision_time=row.tradable_at)
 
     def resolve_live(self, dataset_name: str, *, decision_time: datetime) -> ResolvedDataset:
         return self.resolve(dataset_name, decision_time=decision_time)
