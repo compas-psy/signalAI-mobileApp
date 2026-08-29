@@ -145,7 +145,7 @@ Map<String, dynamic> _payload({
               'gate_passed': true,
               'gate_detail': {'reason': 'passed'},
               'report': {'stage': 'OOS'},
-              'config_hash': 'c'.padLeft(64, 'c'),
+              'config_hash': 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
               'engine_version': '2.0.0',
               'universe': ['CRYPTO'],
               'created_at': '2026-08-29T09:00:00+00:00',
@@ -203,7 +203,7 @@ Map<String, dynamic> _payload({
               'gate_passed': true,
               'gate_detail': {'promotion': 'passed'},
               'report': {'candidate_id': 'runner_wide'},
-              'config_hash': 'd'.padLeft(64, 'd'),
+              'config_hash': 'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
               'engine_version': '2.0.0',
               'universe': ['FORTS', 'CRYPTO'],
               'created_at': '2026-08-27T10:00:00+00:00',
@@ -308,7 +308,7 @@ void main() {
       expect(find.text('crypto-oos-main'), findsOneWidget);
       expect(find.textContaining('PF 1,42'), findsOneWidget);
       expect(find.textContaining('0,18R'), findsOneWidget);
-      expect(find.text('RISK OPTIMIZER'), findsOneWidget);
+      expect(find.text('Risk optimizer'), findsOneWidget);
       expect(find.text('runner_wide'), findsWidgets);
       expect(find.textContaining('96 / 80'), findsOneWidget);
       expect(find.textContaining('hard caps неизменны'), findsOneWidget);
