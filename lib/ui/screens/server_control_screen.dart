@@ -146,6 +146,30 @@ class _ServerControlScreenState extends State<ServerControlScreen> {
               index: _venue,
               onSelect: _selectVenue,
             ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    snapshot == null
+                        ? 'Окно 7 дней'
+                        : 'Окно ${snapshot.windowHours ~/ 24} дней · snapshot ${_shortTime(snapshot.generatedAt)}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: T.body(10.5, color: C.dim),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                SizedBox(
+                  width: 104,
+                  child: ActionButton(
+                    label: 'Обновить',
+                    onTap: _loading ? null : () => unawaited(_load()),
+                    dense: true,
+                  ),
+                ),
+              ],
+            ),
           ],
         ),
       );
@@ -167,6 +191,20 @@ class _ServerControlScreenState extends State<ServerControlScreen> {
             'Старая стратегия · создано ${control.ideasCreated} · Показано ${control.presented}',
             style: T.body(11.5, color: C.textSecondary, height: 1.45),
           ),
+          if (control.statuses.isNotEmpty) ...[
+            const SizedBox(height: 5),
+            Text(
+              'Статусы: ${_counts(control.statuses)}',
+              style: T.body(10.3, color: C.dim, height: 1.4),
+            ),
+          ],
+          if (control.qualities.isNotEmpty) ...[
+            const SizedBox(height: 3),
+            Text(
+              'Quality: ${_counts(control.qualities)}',
+              style: T.body(10.3, color: C.dim, height: 1.4),
+            ),
+          ],
           if (snapshot.competition.candidates.isEmpty) ...[
             const SizedBox(height: 10),
             Text(
@@ -264,6 +302,16 @@ class _ServerControlScreenState extends State<ServerControlScreen> {
             'Walk-forward: ${snapshot.walkForward['train_months'] ?? '—'}m train · ${snapshot.walkForward['validation_months'] ?? '—'}m validation · ${snapshot.walkForward['test_months'] ?? '—'}m OOS',
             style: T.body(10.8, color: C.muted, height: 1.45),
           ),
+          const SizedBox(height: 5),
+          Text(
+            'Paper gate: N ≥ ${snapshot.paperGate['min_aggregate_trades'] ?? '—'} · setup ≥ ${snapshot.paperGate['min_trades_per_setup'] ?? '—'} · PF ≥ ${_configN(snapshot.paperGate['min_oos_profit_factor'])} · expectancy ≥ ${_configR(snapshot.paperGate['min_oos_expectancy_r'])}',
+            style: T.body(10.5, color: C.muted, height: 1.45),
+          ),
+          const SizedBox(height: 3),
+          Text(
+            'Live gate: N ≥ ${snapshot.liveGate['min_paper_trades'] ?? '—'} · days ≥ ${snapshot.liveGate['min_paper_days'] ?? '—'}',
+            style: T.body(10.5, color: C.muted, height: 1.45),
+          ),
         ],
       ),
     );
@@ -306,11 +354,23 @@ class _ServerControlScreenState extends State<ServerControlScreen> {
               style: T.body(10.8, color: C.textSecondary, height: 1.45),
             ),
           ],
+          const SizedBox(height: 7),
+          Text(
+            'Кандидаты: ${cfg.candidateIds.isEmpty ? '—' : cfg.candidateIds.join(' · ')}',
+            style: T.body(10.8, color: C.muted, height: 1.45),
+          ),
           if (run != null) ...[
             const SizedBox(height: 8),
             Text(
-              'Последний прогон: ${run.label} · expectancy ${_r(run.expectancyR)} · MaxDD ${_n(run.maxDrawdown)} · top5 ${_n(run.top5Contribution)}',
+              'Последний прогон: ${run.label} · ${run.gatePassed ? 'gate pass' : 'gate block'} · expectancy ${_r(run.expectancyR)} · MaxDD ${_n(run.maxDrawdown)} · top5 ${_n(run.top5Contribution)}',
               style: T.body(10.8, color: C.muted, height: 1.45),
+            ),
+          ],
+          if (snapshot.nextDueAt != null) ...[
+            const SizedBox(height: 5),
+            Text(
+              'Следующая проверка не раньше ${_shortTime(snapshot.nextDueAt!)}',
+              style: T.body(10.3, color: C.dim),
             ),
           ],
           const SizedBox(height: 8),
@@ -490,4 +550,25 @@ String _n(double? value, {int digits = 2}) =>
 
 String _r(double? value) => value == null ? '—' : '${_n(value)}R';
 
-String _shortHash(String value) => value.length <= 12 ? value : value.substring(0, 12);
+String _configN(Object? value) =>
+    value is num ? _n(value.toDouble()) : '—';
+
+String _configR(Object? value) =>
+    value is num ? _r(value.toDouble()) : '—';
+
+String _shortHash(String value) =>
+    value.length <= 12 ? value : value.substring(0, 12);
+
+String _shortTime(String value) {
+  final parsed = DateTime.tryParse(value)?.toLocal();
+  if (parsed == null) return value;
+  final day = parsed.day.toString().padLeft(2, '0');
+  final month = parsed.month.toString().padLeft(2, '0');
+  final hour = parsed.hour.toString().padLeft(2, '0');
+  final minute = parsed.minute.toString().padLeft(2, '0');
+  return '$day.$month $hour:$minute';
+}
+
+String _counts(Map<String, int> values) => values.entries
+    .map((entry) => '${entry.key} ${entry.value}')
+    .join(' · ');
