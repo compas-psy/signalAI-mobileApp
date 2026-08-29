@@ -20,8 +20,18 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from ..backtest.bybit_dataset import DATA_READY
 from ..config import EngineConfig, get_config
-from ..models import BacktestRun, Bar, IdeaOutcome, ModelRegistry, PaperTrade, TradeIdea
+from ..models import (
+    BacktestRun,
+    Bar,
+    DatasetSnapshot,
+    IdeaOutcome,
+    Instrument,
+    ModelRegistry,
+    PaperTrade,
+    TradeIdea,
+)
 from ..models.enums import PaperStatus, Timeframe
 from ..research import gateway
 from ..version import ENGINE_VERSION
@@ -121,8 +131,9 @@ def _enrich_closed_outcomes(session: Session) -> int:
 
 def _policy_rows(session: Session, limit: int = 400) -> list[dict[str, Any]]:
     rows = session.execute(
-        select(IdeaOutcome, TradeIdea)
+        select(IdeaOutcome, TradeIdea, Instrument)
         .join(TradeIdea, TradeIdea.id == IdeaOutcome.idea_id)
+        .join(Instrument, Instrument.instrument_id == TradeIdea.instrument_id)
         .where(
             IdeaOutcome.label_usable.is_(True),
             IdeaOutcome.actual_r.is_not(None),
@@ -132,7 +143,7 @@ def _policy_rows(session: Session, limit: int = 400) -> list[dict[str, Any]]:
         .limit(limit)
     ).all()
     result: list[dict[str, Any]] = []
-    for outcome, idea in reversed(rows):
+    for outcome, idea, instrument in reversed(rows):
         policy = (idea.explanation_json or {}).get("risk_policy") or {}
         mode = str(policy.get("mode", ""))
         if mode not in {"defensive", "balanced", "conviction"}:
@@ -143,9 +154,50 @@ def _policy_rows(session: Session, limit: int = 400) -> list[dict[str, Any]]:
                 "mode": mode,
                 "actual": _d(outcome.actual_r),
                 "mfe": _d(outcome.mfe_r),
+                "instrument_id": idea.instrument_id,
+                "venue": instrument.venue.value,
+                "symbol": instrument.symbol,
             }
         )
     return result
+
+
+def _dataset_readiness_blockers(
+    session: Session,
+    rows: list[dict[str, Any]],
+) -> tuple[str, ...]:
+    """Return per-symbol blockers only for crypto evidence in this optimizer sample.
+
+    FORTS evidence is independent from Bybit history. Crypto rows, however,
+    cannot participate in optimization until the exact symbol has a latest
+    persisted 36-month multi-stream snapshot marked ``DATA_READY``.
+    """
+    crypto_symbols = sorted(
+        {
+            str(row.get("symbol", "")).strip()
+            for row in rows
+            if str(row.get("venue", "")) == "CRYPTO"
+            and str(row.get("symbol", "")).strip()
+        }
+    )
+    blockers: list[str] = []
+    for symbol in crypto_symbols:
+        snapshot = session.execute(
+            select(DatasetSnapshot)
+            .where(DatasetSnapshot.dataset_name == f"bybit:{symbol}:multistream")
+            .order_by(
+                DatasetSnapshot.tradable_at.desc(),
+                DatasetSnapshot.created_at.desc(),
+            )
+            .limit(1)
+        ).scalars().first()
+        if snapshot is None:
+            blockers.append(f"DATASET_MISSING:{symbol}")
+            continue
+        readiness = str((snapshot.source_watermark or {}).get("readiness", ""))
+        if readiness != DATA_READY:
+            blockers.append(f"DATA_BLOCKED:{symbol}")
+    return tuple(blockers)
 
 
 def _simulate(row: dict[str, Any], profile: dict[str, Any]) -> Decimal:
@@ -262,6 +314,15 @@ def _llm_review(*, candidate_id: str, baseline: dict[str, Decimal], challenger: 
         return False, {"verdict": "unavailable", "summary": str(exc), "fragility": []}
 
 
+def _universe(rows: list[dict[str, Any]]) -> list[str]:
+    values = {
+        "CRYPTO" if str(row.get("venue", "")) == "CRYPTO" else "FORTS"
+        for row in rows
+        if str(row.get("venue", ""))
+    }
+    return sorted(values) if values else ["FORTS", "CRYPTO"]
+
+
 def _record_run(session: Session, *, cfg: EngineConfig, rows: list[dict[str, Any]], candidate_id: str, metrics: dict[str, Decimal], gate: bool, detail: dict[str, Any]) -> BacktestRun:
     dates = [row["at"].date() for row in rows] or [date.today()]
     run = BacktestRun(
@@ -271,7 +332,7 @@ def _record_run(session: Session, *, cfg: EngineConfig, rows: list[dict[str, Any
         period_to=max(dates),
         config_hash=cfg.config_hash,
         engine_version=ENGINE_VERSION,
-        universe_json=["FORTS", "CRYPTO"],
+        universe_json=_universe(rows),
         trades=len(rows),
         net_return=sum((_d(row["actual"]) for row in rows), Decimal(0)),
         profit_factor=None,
@@ -355,6 +416,29 @@ def maybe_optimize(session: Session, *, now: datetime | None = None) -> str:
             detail={"reason": f"нужно {minimum}, доступно {len(rows)}", "enriched": enriched},
         )
         return f"risk optimizer: данных {len(rows)}/{minimum}, promotion выключен"
+
+    dataset_blockers = _dataset_readiness_blockers(session, rows)
+    if dataset_blockers:
+        metrics = _metrics([row["actual"] for row in rows])
+        detail = {
+            "reason": "DATASET_NOT_READY",
+            "dataset_blockers": list(dataset_blockers),
+            "enriched": enriched,
+        }
+        _record_run(
+            session,
+            cfg=cfg,
+            rows=rows,
+            candidate_id="dataset_blocked",
+            metrics=metrics,
+            gate=False,
+            detail=detail,
+        )
+        return (
+            "risk optimizer: dataset gate blocked ("
+            + ", ".join(dataset_blockers)
+            + "), promotion выключен"
+        )
 
     candidates = [dict(item) for item in cfg.get("risk.management.optimizer.candidates")]
     baseline = next(item for item in candidates if item.get("id") == "baseline")
