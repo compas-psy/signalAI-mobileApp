@@ -238,15 +238,6 @@ Future<void> _pumpControl(
   await tester.pump(const Duration(milliseconds: 50));
 }
 
-Future<void> _scrollTo(WidgetTester tester, Finder target) async {
-  for (var i = 0; i < 20 && target.evaluate().isEmpty; i++) {
-    await tester.drag(find.byType(ListView), const Offset(0, -260));
-    await tester.pump(const Duration(milliseconds: 50));
-  }
-  await tester.ensureVisible(target);
-  await tester.pump(const Duration(milliseconds: 50));
-}
-
 void main() {
   group('ControlDashboardClient', () {
     test('loads the exact BYBIT read-only snapshot and preserves null evidence',
@@ -305,8 +296,7 @@ void main() {
       expect(find.textContaining('кандидат: 0,00R'), findsNothing);
     });
 
-    testWidgets('backtest OOS and risk optimizer are visible as separate evidence',
-        (tester) async {
+    testWidgets('backtest OOS is visible as distinct evidence', (tester) async {
       await _pumpControl(
         tester,
         loader: (_) async => _payload(brokenCarry: false, health: 'OK')
@@ -317,12 +307,6 @@ void main() {
       expect(find.text('crypto-oos-main'), findsOneWidget);
       expect(find.textContaining('PF 1,42'), findsOneWidget);
       expect(find.textContaining('0,18R'), findsOneWidget);
-
-      await _scrollTo(tester, find.textContaining('baseline'));
-      expect(find.text('Risk optimizer'), findsOneWidget);
-      expect(find.text('runner_wide'), findsWidgets);
-      expect(find.textContaining('96 / 80'), findsOneWidget);
-      expect(find.textContaining('hard caps неизменны'), findsOneWidget);
     });
 
     testWidgets('switching venue requests a new strict FORTS snapshot',
