@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+from app.scheduler.heavy import build_heavy_scheduler
 from app.scheduler.lanes import HEAVY_JOB_NAMES, SchedulerLane, select_job_names
-from app.scheduler.runner import build_default_scheduler
 
 
 def test_entry_backtest_is_heavy_only() -> None:
@@ -14,13 +14,13 @@ def test_entry_backtest_is_heavy_only() -> None:
     assert "entry-backtest" not in select_job_names(names, SchedulerLane.MARKET)
 
 
-def test_default_scheduler_registers_entry_backtest_without_changing_market_order() -> None:
-    scheduler = build_default_scheduler(
+def test_heavy_scheduler_registers_entry_backtest_after_existing_analytics() -> None:
+    scheduler = build_heavy_scheduler(
         portfolio_every=timedelta(hours=1),
         research_every=timedelta(hours=12),
         entry_backtest_every=timedelta(hours=24),
     )
     names = tuple(job.name for job in scheduler.jobs)
 
-    assert names.index("scan") < names.index("entry-backtest")
-    assert names[-1] == "entry-backtest" or "resource-autopilot" == names[-1]
+    assert names == ("portfolio", "research", "entry-backtest")
+    assert scheduler.jobs[-1].every == timedelta(hours=24)
