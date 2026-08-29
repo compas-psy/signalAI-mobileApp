@@ -39,6 +39,8 @@ class ControlDashboardSnapshot {
     required this.competition,
     required this.backtest,
     required this.riskOptimizer,
+    required this.runtimeRoles,
+    required this.dataReadiness,
   });
 
   final String generatedAt;
@@ -49,6 +51,13 @@ class ControlDashboardSnapshot {
   final ControlCompetitionSnapshot competition;
   final ControlBacktestSnapshot backtest;
   final RiskOptimizerSnapshot riskOptimizer;
+
+  /// Newer server contract. Nullable keeps older saved fixtures and compatible
+  /// servers readable while the live API always emits this field.
+  final ControlRuntimeRoles? runtimeRoles;
+
+  /// BYBIT-only immutable historical evidence. FORTS/older payloads may omit it.
+  final BybitDataReadiness? dataReadiness;
 
   factory ControlDashboardSnapshot.fromJson(Map<String, dynamic> json) =>
       ControlDashboardSnapshot(
@@ -66,6 +75,86 @@ class ControlDashboardSnapshot {
         riskOptimizer: RiskOptimizerSnapshot.fromJson(
           _requiredMap(json['risk_optimizer'], 'risk_optimizer'),
         ),
+        runtimeRoles: json['runtime_roles'] == null
+            ? null
+            : ControlRuntimeRoles.fromJson(
+                _requiredMap(json['runtime_roles'], 'runtime_roles'),
+              ),
+        dataReadiness: json['data_readiness'] == null
+            ? null
+            : BybitDataReadiness.fromJson(
+                _requiredMap(json['data_readiness'], 'data_readiness'),
+              ),
+      );
+}
+
+class ControlRuntimeLiveGenerator {
+  const ControlRuntimeLiveGenerator({
+    required this.version,
+    required this.publishesTradeIdeas,
+    required this.strategyFamilies,
+  });
+
+  final String version;
+  final bool publishesTradeIdeas;
+  final List<String> strategyFamilies;
+
+  factory ControlRuntimeLiveGenerator.fromJson(Map<String, dynamic> json) =>
+      ControlRuntimeLiveGenerator(
+        version: _requiredString(
+          json['version'],
+          'runtime_roles.live_generator.version',
+        ),
+        publishesTradeIdeas: _requiredBool(
+          json['publishes_trade_ideas'],
+          'runtime_roles.live_generator.publishes_trade_ideas',
+        ),
+        strategyFamilies: _stringList(
+          json['strategy_families'],
+          'runtime_roles.live_generator.strategy_families',
+        ),
+      );
+}
+
+class ControlRuntimeRoles {
+  const ControlRuntimeRoles({
+    required this.liveGenerator,
+    required this.champion,
+    required this.challengers,
+    required this.shadowOnly,
+    required this.governanceControlsRuntime,
+    required this.explanation,
+  });
+
+  final ControlRuntimeLiveGenerator liveGenerator;
+  final String? champion;
+  final List<String> challengers;
+  final List<String> shadowOnly;
+  final bool governanceControlsRuntime;
+  final String explanation;
+
+  factory ControlRuntimeRoles.fromJson(Map<String, dynamic> json) =>
+      ControlRuntimeRoles(
+        liveGenerator: ControlRuntimeLiveGenerator.fromJson(
+          _requiredMap(json['live_generator'], 'runtime_roles.live_generator'),
+        ),
+        champion: _optionalString(json['champion'], 'runtime_roles.champion'),
+        challengers: _stringList(
+          json['challengers'],
+          'runtime_roles.challengers',
+        ),
+        shadowOnly: _stringList(
+          json['shadow_only'],
+          'runtime_roles.shadow_only',
+        ),
+        governanceControlsRuntime: _requiredBool(
+          json['governance_controls_runtime'],
+          'runtime_roles.governance_controls_runtime',
+        ),
+        explanation: _requiredString(
+          json['explanation'],
+          'runtime_roles.explanation',
+        ),
       );
 }
 
@@ -73,10 +162,12 @@ class ControlFunnelSnapshot {
   const ControlFunnelSnapshot({
     required this.control,
     required this.candidates,
+    required this.scan,
   });
 
   final LegacyControlFunnel control;
   final List<ShadowControlSummary> candidates;
+  final BybitScanFunnel? scan;
 
   factory ControlFunnelSnapshot.fromJson(Map<String, dynamic> json) =>
       ControlFunnelSnapshot(
@@ -85,6 +176,156 @@ class ControlFunnelSnapshot {
         ),
         candidates: _mapList(json['candidates'], 'funnel.candidates')
             .map(ShadowControlSummary.fromJson)
+            .toList(growable: false),
+        scan: json['scan'] == null
+            ? null
+            : BybitScanFunnel.fromJson(
+                _requiredMap(json['scan'], 'funnel.scan'),
+              ),
+      );
+}
+
+class FunnelReasonSummary {
+  const FunnelReasonSummary({required this.reason, required this.count});
+
+  final String reason;
+  final int count;
+
+  factory FunnelReasonSummary.fromJson(Map<String, dynamic> json) =>
+      FunnelReasonSummary(
+        reason: _requiredString(json['reason'], 'funnel.scan.reason'),
+        count: _requiredInt(json['count'], 'funnel.scan.count'),
+      );
+}
+
+class BybitScanFunnel {
+  const BybitScanFunnel({
+    required this.universe,
+    required this.dataHealthy,
+    required this.liquid,
+    required this.regimeEligible,
+    required this.strategyEvaluated,
+    required this.setupReject,
+    required this.costRrReject,
+    required this.published,
+    required this.terminal,
+    required this.topReasons,
+  });
+
+  final int universe;
+  final int dataHealthy;
+  final int liquid;
+  final int regimeEligible;
+  final int strategyEvaluated;
+  final int setupReject;
+  final int costRrReject;
+  final int published;
+  final Map<String, int> terminal;
+  final List<FunnelReasonSummary> topReasons;
+
+  factory BybitScanFunnel.fromJson(Map<String, dynamic> json) => BybitScanFunnel(
+        universe: _requiredInt(json['universe'], 'funnel.scan.universe'),
+        dataHealthy: _requiredInt(
+          json['data_healthy'],
+          'funnel.scan.data_healthy',
+        ),
+        liquid: _requiredInt(json['liquid'], 'funnel.scan.liquid'),
+        regimeEligible: _requiredInt(
+          json['regime_eligible'],
+          'funnel.scan.regime_eligible',
+        ),
+        strategyEvaluated: _requiredInt(
+          json['strategy_evaluated'],
+          'funnel.scan.strategy_evaluated',
+        ),
+        setupReject: _requiredInt(
+          json['setup_reject'],
+          'funnel.scan.setup_reject',
+        ),
+        costRrReject: _requiredInt(
+          json['cost_rr_reject'],
+          'funnel.scan.cost_rr_reject',
+        ),
+        published: _requiredInt(json['published'], 'funnel.scan.published'),
+        terminal: _intMap(json['terminal'], 'funnel.scan.terminal'),
+        topReasons: _mapList(json['top_reasons'], 'funnel.scan.top_reasons')
+            .map(FunnelReasonSummary.fromJson)
+            .toList(growable: false),
+      );
+}
+
+class BybitStreamCoverage {
+  const BybitStreamCoverage({
+    required this.stream,
+    required this.ready,
+    required this.reason,
+  });
+
+  final String stream;
+  final bool ready;
+  final String reason;
+
+  factory BybitStreamCoverage.fromJson(Map<String, dynamic> json) =>
+      BybitStreamCoverage(
+        stream: _requiredString(json['stream'], 'data_readiness.coverage.stream'),
+        ready: _requiredBool(json['ready'], 'data_readiness.coverage.ready'),
+        reason: _requiredString(json['reason'], 'data_readiness.coverage.reason'),
+      );
+}
+
+class BybitDatasetReadinessSymbol {
+  const BybitDatasetReadinessSymbol({
+    required this.symbol,
+    required this.status,
+    required this.snapshotId,
+    required this.contentSha256,
+    required this.tradableAt,
+    required this.rowCount,
+    required this.coverage,
+  });
+
+  final String symbol;
+  final String status;
+  final String snapshotId;
+  final String contentSha256;
+  final String tradableAt;
+  final int rowCount;
+  final List<BybitStreamCoverage> coverage;
+
+  factory BybitDatasetReadinessSymbol.fromJson(Map<String, dynamic> json) =>
+      BybitDatasetReadinessSymbol(
+        symbol: _requiredString(json['symbol'], 'data_readiness.symbol'),
+        status: _requiredString(json['status'], 'data_readiness.status'),
+        snapshotId: _requiredString(
+          json['snapshot_id'],
+          'data_readiness.snapshot_id',
+        ),
+        contentSha256: _requiredString(
+          json['content_sha256'],
+          'data_readiness.content_sha256',
+        ),
+        tradableAt: _requiredString(
+          json['tradable_at'],
+          'data_readiness.tradable_at',
+        ),
+        rowCount: _requiredInt(json['row_count'], 'data_readiness.row_count'),
+        coverage: _mapList(json['coverage'], 'data_readiness.coverage')
+            .map(BybitStreamCoverage.fromJson)
+            .toList(growable: false),
+      );
+}
+
+class BybitDataReadiness {
+  const BybitDataReadiness({required this.status, required this.symbols});
+
+  final String status;
+  final List<BybitDatasetReadinessSymbol> symbols;
+
+  factory BybitDataReadiness.fromJson(Map<String, dynamic> json) =>
+      BybitDataReadiness(
+        status: _requiredString(json['status'], 'data_readiness.status'),
+        symbols: _mapList(json['symbols'], 'data_readiness.symbols')
+            .map(BybitDatasetReadinessSymbol.fromJson)
             .toList(growable: false),
       );
 }
