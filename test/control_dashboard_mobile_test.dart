@@ -318,7 +318,7 @@ void main() {
       expect(find.textContaining('PF 1,42'), findsOneWidget);
       expect(find.textContaining('0,18R'), findsOneWidget);
 
-      await _scrollTo(tester, find.text('Risk optimizer'));
+      await _scrollTo(tester, find.textContaining('baseline'));
       expect(find.text('Risk optimizer'), findsOneWidget);
       expect(find.text('runner_wide'), findsWidgets);
       expect(find.textContaining('96 / 80'), findsOneWidget);
