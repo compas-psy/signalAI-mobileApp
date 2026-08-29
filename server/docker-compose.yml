@@ -48,10 +48,13 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      dataset-volume-init:
+        condition: service_completed_successfully
     environment:
       SIGNALAI_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-signalai}
       SIGNALAI_REDIS_URL: redis://redis:6379/0
       SIGNALAI_EVENT_CALENDAR_PATH: /var/lib/signalai-calendar/events.json
+      SIGNALAI_DATASET_SNAPSHOT_ROOT: /var/lib/signalai-datasets
       # Immutable release provenance used by read-only Canary preflight.
       SIGNALAI_SOURCE_SHA: ${SIGNALAI_SOURCE_SHA:-}
       # Bootstrap secret для initial pairing. Он никогда не authorizes
@@ -75,6 +78,7 @@ services:
       SIGNALAI_LLM_NUM_CTX: ${SIGNALAI_LLM_NUM_CTX:-4096}
     volumes:
       - calendar-data:/var/lib/signalai-calendar:ro
+      - dataset-snapshots:/var/lib/signalai-datasets:ro
     ports:
       - "127.0.0.1:8000:8000"
     command: >
@@ -108,6 +112,21 @@ services:
       - >-
         chown signalai:signalai /var/lib/signalai-calendar &&
         chmod 0750 /var/lib/signalai-calendar
+
+  # Dataset artifacts are immutable files while DatasetSnapshot rows are their
+  # database manifests. The named volume keeps bytes across rebuild/restart;
+  # ownership is repaired once for the non-root heavy scheduler writer.
+  dataset-volume-init:
+    image: alpine:3.21
+    user: "0:0"
+    volumes:
+      - dataset-snapshots:/var/lib/signalai-datasets
+    command:
+      - sh
+      - -c
+      - >-
+        chown 10001:10001 /var/lib/signalai-datasets &&
+        chmod 0750 /var/lib/signalai-datasets
 
   # Isolated network transport for the owned event-calendar snapshot.  It has
   # no database credentials and never decides whether a trade is admissible:
@@ -238,16 +257,23 @@ services:
         condition: service_healthy
       api:
         condition: service_healthy
+      dataset-volume-init:
+        condition: service_completed_successfully
     environment:
       SIGNALAI_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-signalai}
       SIGNALAI_REDIS_URL: redis://redis:6379/0
       SIGNALAI_SCHEDULER_LANE: heavy
+      SIGNALAI_DATASET_SNAPSHOT_ROOT: /var/lib/signalai-datasets
       SIGNALAI_PORTFOLIO_EVERY_MINUTES: ${SIGNALAI_PORTFOLIO_EVERY_MINUTES:-60}
       SIGNALAI_RESEARCH_EVERY_MINUTES: ${SIGNALAI_RESEARCH_EVERY_MINUTES:-720}
+      SIGNALAI_BYBIT_RESEARCH_EVERY_MINUTES: ${SIGNALAI_BYBIT_RESEARCH_EVERY_MINUTES:-60}
+      SIGNALAI_RISK_OPTIMIZER_WAKEUP_MINUTES: ${SIGNALAI_RISK_OPTIMIZER_WAKEUP_MINUTES:-1440}
       SIGNALAI_LLM_BASE_URL: ${SIGNALAI_LLM_BASE_URL:-}
       SIGNALAI_LLM_MODEL: ${SIGNALAI_LLM_MODEL:-qwen3.5:4b}
       SIGNALAI_LLM_TIMEOUT_SECONDS: ${SIGNALAI_LLM_TIMEOUT_SECONDS:-180}
       SIGNALAI_LLM_NUM_CTX: ${SIGNALAI_LLM_NUM_CTX:-4096}
+    volumes:
+      - dataset-snapshots:/var/lib/signalai-datasets
     command: ["python", "-m", "app.scheduler.heavy"]
     healthcheck:
       disable: true
@@ -274,6 +300,7 @@ volumes:
   pgdata:
   redisdata:
   calendar-data:
+  dataset-snapshots:
   # Веса модели переживают пересборку. Иначе каждая выкладка тянула бы
   # несколько гигабайт заново — и первый прогон разведки после деплоя
   # выглядел бы как «модель не отвечает».
