@@ -16,7 +16,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from hashlib import sha256
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..config import EngineConfig, get_config
@@ -571,24 +571,10 @@ def _default_control_provider(cfg: EngineConfig) -> ControlProvider:
         instrument: Instrument,
         evaluated_at: datetime,
     ) -> PaperAbControlDecision:
-        # ``scan_instrument`` historically reads the newest closed bars in the
-        # DB.  Replaying it after later bars arrived would leak future data.
-        # The scheduler evaluates new Shadow rows immediately, so current rows
-        # can use the deployed control; stale/backfill rows fail closed until a
-        # dedicated historical control replay exists.
-        newest_h1 = session.execute(
-            select(func.max(Bar.open_time)).where(
-                Bar.instrument_id == instrument.instrument_id,
-                Bar.timeframe == Timeframe.H1,
-                Bar.is_closed.is_(True),
-            )
-        ).scalar_one_or_none()
-        if newest_h1 is not None and newest_h1 > evaluated_at:
-            return PaperAbControlDecision(
-                signal_emitted=False,
-                unavailable_reason="CONTROL_REPLAY_NOT_POINT_IN_TIME",
-            )
-
+        # ``scan_instrument`` now bounds every closed-bar query by ``now``.
+        # Replaying the deployed CONTROL at ``evaluated_at`` therefore uses
+        # only information that was visible at the historical decision time;
+        # newer canonical bars may coexist in the DB without leaking into it.
         event_calendar = load_owned_calendar(now=evaluated_at)
         idea, skipped, _rejections = scan_instrument(
             session,

@@ -21,7 +21,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ...db import get_db
-from ...models import PaperTrade, TradeIdea
+from ...models import Instrument, PaperTrade, TradeIdea
 from ...models.enums import PaperStatus
 from ...paper.management_policy import signed_policy_for_shares
 from ...schemas.common import ApiModel, Money
@@ -57,6 +57,12 @@ class PaperTradeOut(ApiModel):
     runner_active: bool = False
     risk_policy_mode: str = ""
     realized_r: Money = Decimal(0)
+    #: Денежное представление paper-результата в родной валюте котировки.
+    #: Это не брокерский net P&L: paper ledger пока не хранит фактические
+    #: комиссии/фандинг на сделку. Значение восстанавливается только из
+    #: неизменяемого размера 1R, зафиксированного в TradeIdea при создании.
+    realized_pnl: Money | None = None
+    pnl_currency: str | None = None
 
     opened_at: datetime
     expires_at: datetime
@@ -69,7 +75,37 @@ class PaperTradeOut(ApiModel):
     close_reason: str = ""
 
 
-def _out(row: PaperTrade, *, now: datetime) -> PaperTradeOut:
+def _quote_pnl(
+    row: PaperTrade,
+    *,
+    idea: TradeIdea | None,
+    instrument: Instrument | None,
+) -> tuple[Decimal | None, str | None]:
+    """Return closed paper result in the immutable trade quote currency.
+
+    ``risk_amount`` is account-currency RUB after FX conversion and therefore
+    cannot be used for Bybit owner-facing USDT metrics. ``quantity`` times
+    ``risk_per_unit`` is the actual rounded 1R exposure in the instrument
+    quote currency at idea creation. Missing provenance fails closed to null.
+    """
+
+    if row.status != PaperStatus.CLOSED or idea is None or instrument is None:
+        return None, None
+    quantity = Decimal(idea.quantity)
+    risk_per_unit = Decimal(idea.risk_per_unit)
+    currency = str(instrument.currency or "").strip().upper()
+    if quantity <= 0 or risk_per_unit <= 0 or not currency:
+        return None, None
+    return Decimal(row.realized_r) * quantity * risk_per_unit, currency
+
+
+def _out(
+    row: PaperTrade,
+    *,
+    now: datetime,
+    idea: TradeIdea | None = None,
+    instrument: Instrument | None = None,
+) -> PaperTradeOut:
     seen = row.last_reconciled_at
     if seen is not None and seen.tzinfo is None:
         seen = seen.replace(tzinfo=UTC)
@@ -87,6 +123,9 @@ def _out(row: PaperTrade, *, now: datetime) -> PaperTradeOut:
         and row.status == PaperStatus.OPEN
         and len(row.tp_prices or []) >= 3
         and row.tps_taken >= len(row.tp_prices or [])
+    )
+    realized_pnl, pnl_currency = _quote_pnl(
+        row, idea=idea, instrument=instrument
     )
     return PaperTradeOut(
         id=str(row.id),
@@ -106,6 +145,8 @@ def _out(row: PaperTrade, *, now: datetime) -> PaperTradeOut:
         runner_active=runner_active,
         risk_policy_mode=str(policy.get("mode", "")) if policy else "",
         realized_r=row.realized_r,
+        realized_pnl=realized_pnl,
+        pnl_currency=pnl_currency,
         opened_at=row.opened_at,
         expires_at=row.expires_at,
         last_reconciled_at=row.last_reconciled_at,
@@ -128,8 +169,31 @@ def list_trades(
         stmt = stmt.where(
             PaperTrade.status.in_([PaperStatus.PENDING, PaperStatus.OPEN])
         )
+    rows = list(db.execute(stmt).scalars())
+    idea_ids = {row.idea_id for row in rows}
+    instrument_ids = {row.instrument_id for row in rows}
+    ideas = {
+        item.id: item
+        for item in db.execute(
+            select(TradeIdea).where(TradeIdea.id.in_(idea_ids))
+        ).scalars()
+    } if idea_ids else {}
+    instruments = {
+        item.instrument_id: item
+        for item in db.execute(
+            select(Instrument).where(Instrument.instrument_id.in_(instrument_ids))
+        ).scalars()
+    } if instrument_ids else {}
     now = datetime.now(UTC)
-    return [_out(row, now=now) for row in db.execute(stmt).scalars()]
+    return [
+        _out(
+            row,
+            now=now,
+            idea=ideas.get(row.idea_id),
+            instrument=instruments.get(row.instrument_id),
+        )
+        for row in rows
+    ]
 
 
 @router.post("/trades/{trade_id}/close", response_model=PaperTradeOut)
@@ -155,7 +219,15 @@ def close_trade(
     row.outcome = "ручн."
     row.close_reason = "закрыто владельцем"
     db.flush()
-    return _out(row, now=now)
+    instrument = db.execute(
+        select(Instrument).where(Instrument.instrument_id == row.instrument_id)
+    ).scalar_one_or_none()
+    return _out(
+        row,
+        now=now,
+        idea=db.get(TradeIdea, row.idea_id),
+        instrument=instrument,
+    )
 
 
 __all__ = ["router"]
