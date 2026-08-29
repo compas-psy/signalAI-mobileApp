@@ -23,9 +23,9 @@ def _ms(value: datetime) -> str:
 def test_historical_funding_pages_backward_and_deduplicates() -> None:
     start = datetime(2026, 8, 1, tzinfo=UTC)
     end = datetime(2026, 8, 3, tzinfo=UTC)
-    t1 = start + timedelta(hours=8)
-    t2 = start + timedelta(hours=16)
-    t3 = start + timedelta(hours=24)
+    t1 = start
+    t2 = start + timedelta(hours=8)
+    t3 = start + timedelta(hours=16)
     calls: list[str] = []
 
     def fetch(url: str):
