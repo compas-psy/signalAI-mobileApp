@@ -2,7 +2,8 @@
 
 The generic Scheduler remains sequential inside each process.  We only split
 jobs that have no ordering dependency on the latency-critical market path so a
-long portfolio/research calculation cannot delay the next ingest/scan cycle.
+long portfolio/research/backtest calculation cannot delay the next ingest/scan
+cycle.
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ class SchedulerLane(StrEnum):
     HEAVY = "heavy"
 
 
-HEAVY_JOB_NAMES = frozenset({"portfolio", "research"})
+HEAVY_JOB_NAMES = frozenset({"portfolio", "research", "entry-backtest"})
 
 
 def parse_scheduler_lane(raw: str | None) -> SchedulerLane:

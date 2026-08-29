@@ -138,6 +138,19 @@ def _add_capital_job(scheduler) -> None:
     scheduler.jobs.insert(insert_at, job)
 
 
+def _add_entry_backtest_job(scheduler) -> None:
+    def run(session) -> str:
+        from ..backtest.runtime import run_entry_backtest_cycle
+
+        return run_entry_backtest_cycle(session)
+
+    scheduler.add(
+        "entry-backtest",
+        _minutes_from_env("SIGNALAI_ENTRY_BACKTEST_EVERY_MINUTES", 60),
+        run,
+    )
+
+
 def build_default_scheduler(*args, **kwargs):
     # Candidate measurement belongs to this production hardening layer rather
     # than the generic Scheduler API.  Pop its arguments before delegating to
@@ -162,6 +175,7 @@ def build_default_scheduler(*args, **kwargs):
         paper_ab_runner=paper_ab_runner,
     )
     _add_capital_job(scheduler)
+    _add_entry_backtest_job(scheduler)
     apply_scheduler_lane(
         scheduler,
         parse_scheduler_lane(os.environ.get("SIGNALAI_SCHEDULER_LANE")),
