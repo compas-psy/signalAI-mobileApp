@@ -248,6 +248,9 @@ universe:
   crypto:
     mandatory: ["BTCUSDT", "ETHUSDT"]
     min_median_daily_notional_usdt: 25000000
+    # Spread is dimensionless; keep the existing 0.15% policy explicit for
+    # Bybit so scan cannot accidentally borrow a RUB-denominated venue bundle.
+    max_median_relative_spread: 0.0015
     # Для текущего 1D/4H/1H движка 180 дней дают большой запас к минимуму
     # 60 D1 + 120 H1, но не отрезают ликвидные новые crypto-beta на целый год.
     min_history_days: 180
