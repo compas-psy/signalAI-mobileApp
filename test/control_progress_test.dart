@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:signal_ai/data/api/control_progress.dart';
+import 'package:signalai/data/api/control_progress.dart';
 
 void main() {
   test('shows exact comparable sample progress and remaining count', () {
