@@ -56,6 +56,10 @@ REQUIRED_BYBIT_STREAMS: tuple[str, ...] = (
 )
 
 _DEFAULT_END_TOLERANCE = timedelta(days=2)
+# Funding is sparse (commonly 8h) while candles/OI can be hourly. A full-day
+# pre-roll makes the coverage boundary independent of the wall-clock hour
+# without putting pre-roll rows into the published research window.
+_COLLECTION_PREROLL = timedelta(days=1)
 _TIMEFRAME_DURATION = {
     Timeframe.M15: timedelta(minutes=15),
     Timeframe.H1: timedelta(hours=1),
@@ -306,8 +310,9 @@ def collect_multistream(
 ) -> CollectedBybitDataset:
     """Collect all required public streams and build one immutable manifest.
 
-    One interval of pre-roll is requested so a non-grid-aligned research start
-    does not falsely fail the history gate. Only rows inside the requested
+    A one-day pre-roll covers sparse streams such as funding even when the
+    36-month boundary is not aligned to their timestamp grid. Pre-roll facts
+    participate only in coverage validation; only rows inside the requested
     ``[start_at, end_at)`` window enter the content-addressed artifact.
     """
 
@@ -317,7 +322,7 @@ def collect_multistream(
         raise ValueError(f"unsupported research timeframe: {timeframe.value}")
     duration = _TIMEFRAME_DURATION[timeframe]
     interval = _TIMEFRAME_DERIVATIVE_INTERVAL[timeframe]
-    collection_start = start_at - duration
+    collection_start = start_at - max(duration, _COLLECTION_PREROLL)
     required = tuple(dict.fromkeys(required_streams))
     unknown = set(required) - set(REQUIRED_BYBIT_STREAMS)
     if unknown:
