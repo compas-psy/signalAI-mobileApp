@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
+from app.market.derivatives import CryptoCarryMarketFacts, FundingObservation
 from app.models import (
     Bar,
     ExecutionIntent,
@@ -105,6 +106,29 @@ def _facts(_instrument: Instrument, _evaluated_at: datetime) -> ShadowSupplement
     )
 
 
+def _carry_facts() -> CryptoCarryMarketFacts:
+    history = tuple(
+        FundingObservation(
+            rate=Decimal("0.0010"),
+            settled_at=AT - timedelta(hours=8 * offset),
+            tradable_at=AT - timedelta(hours=8 * offset),
+            source="fixture",
+        )
+        for offset in range(6, 0, -1)
+    )
+    return CryptoCarryMarketFacts(
+        instrument_id="CRYPTO:BTCUSDT",
+        mark_price=Decimal("100"),
+        index_price=Decimal("100"),
+        current_funding_rate=Decimal("0.0010"),
+        funding_interval_minutes=480,
+        funding_history=history,
+        observed_at=AT,
+        tradable_at=AT,
+        source="bybit-v5-public",
+    )
+
+
 def test_collector_persists_one_denominator_observation_per_r4_candidate(session) -> None:
     instrument = _instrument(session)
     _history(session, instrument.instrument_id)
@@ -129,6 +153,57 @@ def test_collector_persists_one_denominator_observation_per_r4_candidate(session
     carry = next(row for row in rows if row.strategy_version == "crypto_carry_v1")
     assert carry.evidence_status == ShadowEvidenceStatus.INPUT_UNAVAILABLE.value
     assert carry.reason_code == "FUNDING_FACTS_UNAVAILABLE"
+
+
+def test_default_provider_resolves_public_bybit_carry_facts(session, monkeypatch) -> None:
+    instrument = _instrument(session)
+    _history(session, instrument.instrument_id)
+    calls: list[tuple[str, datetime]] = []
+
+    def fake_carry_market_facts(symbol: str, *, evaluated_at: datetime, **_kwargs):
+        calls.append((symbol, evaluated_at))
+        return _carry_facts(), ()
+
+    monkeypatch.setattr(
+        "app.shadow.collector_v1.crypto.carry_market_facts",
+        fake_carry_market_facts,
+    )
+
+    collect_shadow(session, evaluated_at=AT)
+    session.flush()
+
+    carry = session.query(ShadowObservation).filter_by(
+        instrument_id=instrument.instrument_id,
+        strategy_version="crypto_carry_v1",
+    ).one()
+    assert calls == [("BTCUSDT", AT)]
+    assert carry.evidence_status == ShadowEvidenceStatus.EVALUATED.value
+    assert carry.reason_code is None
+    assert carry.signal_emitted is True
+
+
+def test_default_provider_keeps_bybit_failure_explicit(session, monkeypatch) -> None:
+    instrument = _instrument(session)
+    _history(session, instrument.instrument_id)
+
+    def fail_carry_market_facts(*_args, **_kwargs):
+        raise ValueError("Bybit funding history unavailable")
+
+    monkeypatch.setattr(
+        "app.shadow.collector_v1.crypto.carry_market_facts",
+        fail_carry_market_facts,
+    )
+
+    collect_shadow(session, evaluated_at=AT)
+    session.flush()
+
+    carry = session.query(ShadowObservation).filter_by(
+        instrument_id=instrument.instrument_id,
+        strategy_version="crypto_carry_v1",
+    ).one()
+    assert carry.evidence_status == ShadowEvidenceStatus.INPUT_UNAVAILABLE.value
+    assert carry.reason_code == "BYBIT_CARRY_FACTS_UNAVAILABLE"
+    assert carry.signal_emitted is False
 
 
 def test_collector_is_idempotent_for_same_point_in_time_snapshot(session) -> None:
