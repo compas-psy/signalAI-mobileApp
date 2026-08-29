@@ -1,7 +1,8 @@
 import 'package:flutter/widgets.dart';
 
 import '../../data/api/api_client.dart';
-import '../../data/api/engine_client.dart';
+import '../../data/api/journal_paper_client.dart';
+import '../../domain/idea/journal_money_metrics.dart';
 import '../../domain/idea/paper_position.dart';
 import '../../state/app_scope.dart';
 import '../../state/navigation.dart';
@@ -22,7 +23,7 @@ class ServerJournalScreen extends StatefulWidget {
 }
 
 class _ServerJournalScreenState extends State<ServerJournalScreen> {
-  final EngineClient _engine = EngineClient();
+  final JournalPaperClient _paper = JournalPaperClient();
   final ApiClient _api = ApiClient();
   List<PaperPosition>? _trades;
   List<_Skip>? _skips;
@@ -42,13 +43,7 @@ class _ServerJournalScreenState extends State<ServerJournalScreen> {
       _error = null;
     });
     try {
-      final trades = await _engine.paperTrades(liveOnly: false);
-      if (trades == null) {
-        throw StateError(
-          'Сервер не вернул paper-ledger. Журнал не считается пустым, пока '
-          'источник истины недоступен.',
-        );
-      }
+      final trades = await _paper.trades();
       final rawSkips = await _api.getList('/api/v1/journal/skips?limit=100');
       final rawMisses = await _api.getList('/api/v1/journal/misses?limit=100');
       final noTrades = <_Skip>[
@@ -340,8 +335,8 @@ class _Metrics extends StatelessWidget {
         .where((t) => t.status == PaperPositionStatus.closed && t.resultR != null)
         .toList();
     final results = [for (final t in closed) t.resultR!];
-    final sum = results.fold<double>(0, (a, b) => a + b);
     final wins = results.where((r) => r > 0).length;
+    final money = journalMoneyMetrics(trades);
     return ListView(
       padding: const EdgeInsets.fromLTRB(S.screen, 12, S.screen, 90),
       children: [
@@ -358,11 +353,20 @@ class _Metrics extends StatelessWidget {
               const SectionLabel('Фактическая выборка'),
               const SizedBox(height: 8),
               _Metric('Закрыто', '${closed.length}'),
-              _Metric('Сумма R', results.isEmpty ? '—' : _r(sum)),
-              _Metric(
-                'Среднее R',
-                results.isEmpty ? '—' : _r(sum / results.length),
-              ),
+              if (money.isEmpty) ...[
+                const _Metric('Сумма', '—'),
+                const _Metric('Среднее', '—'),
+              ] else
+                for (final metric in money) ...[
+                  _Metric(
+                    'Сумма, ${_currencyLabel(metric.currency)}',
+                    _money(metric.sum, metric.currency),
+                  ),
+                  _Metric(
+                    'Среднее, ${_currencyLabel(metric.currency)}',
+                    _money(metric.average, metric.currency),
+                  ),
+                ],
               _Metric(
                 'Винрейт',
                 results.isEmpty ? '—' : '${(wins / results.length * 100).round()}%',
@@ -371,7 +375,7 @@ class _Metrics extends StatelessWidget {
               Text(
                 closed.length < 30
                     ? 'Выборка пока мала: это контроль исполнения, а не доказательство качества стратегии.'
-                    : 'Метрики рассчитаны только по закрытым server paper-сделкам.',
+                    : 'Деньги считаются только по закрытым server paper-сделкам и не смешиваются между валютами.',
                 style: T.body(10.5, color: C.muted, height: 1.45),
               ),
             ],
@@ -548,6 +552,24 @@ String _price(double value) => value
 
 String _r(double value) =>
     '${value >= 0 ? '+' : '−'}${value.abs().toStringAsFixed(2).replaceAll('.', ',')}R';
+
+String _currencyLabel(String currency) => switch (currency.toUpperCase()) {
+      'RUB' => '₽',
+      'USDT' => 'USDT',
+      final other => other,
+    };
+
+String _money(double value, String currency) {
+  final decimals = currency.toUpperCase() == 'RUB' ? 2 : 4;
+  final absolute = value
+      .abs()
+      .toStringAsFixed(decimals)
+      .replaceAll(RegExp(r'0+$'), '')
+      .replaceAll(RegExp(r'\.$'), '')
+      .replaceAll('.', ',');
+  final sign = value > 0 ? '+' : (value < 0 ? '−' : '');
+  return '$sign$absolute ${_currencyLabel(currency)}';
+}
 
 String _moment(DateTime value) {
   final v = value.toLocal();
