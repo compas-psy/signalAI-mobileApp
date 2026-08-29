@@ -84,9 +84,9 @@ def _quote_pnl(
     """Return closed paper result in the immutable trade quote currency.
 
     ``risk_amount`` is account-currency RUB after FX conversion and therefore
-    cannot be used for Bybit owner-facing USDT metrics.  ``quantity`` times
+    cannot be used for Bybit owner-facing USDT metrics. ``quantity`` times
     ``risk_per_unit`` is the actual rounded 1R exposure in the instrument
-    quote currency at idea creation.  Missing provenance fails closed to null.
+    quote currency at idea creation. Missing provenance fails closed to null.
     """
 
     if row.status != PaperStatus.CLOSED or idea is None or instrument is None:
@@ -219,11 +219,14 @@ def close_trade(
     row.outcome = "ручн."
     row.close_reason = "закрыто владельцем"
     db.flush()
+    instrument = db.execute(
+        select(Instrument).where(Instrument.instrument_id == row.instrument_id)
+    ).scalar_one_or_none()
     return _out(
         row,
         now=now,
         idea=db.get(TradeIdea, row.idea_id),
-        instrument=db.get(Instrument, row.instrument_id),
+        instrument=instrument,
     )
 
 
