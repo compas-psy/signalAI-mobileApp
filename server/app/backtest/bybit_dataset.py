@@ -4,6 +4,9 @@ A backtest is allowed to start only from a content-addressed multi-stream
 snapshot whose required inputs independently cover the requested history. This
 prevents a long candle history from hiding a short funding/OI/reference-price
 history and producing a deceptively complete result.
+
+Network access is confined to ``collect_multistream``. Replay consumes the
+published snapshot artifact only and never reaches this collector.
 """
 
 from __future__ import annotations
@@ -22,8 +25,19 @@ from ..datasets.snapshots import (
     SnapshotManifest,
     publish_snapshot,
 )
+from ..market.http import FetchReport, http_json
 from ..models import DatasetSnapshot
-from .bybit_history import HistoricalObservation
+from ..models.enums import Timeframe
+from .bybit_history import (
+    HistoricalObservation,
+    historical_funding,
+    historical_index_price_klines,
+    historical_klines,
+    historical_long_short_ratio,
+    historical_mark_price_klines,
+    historical_open_interest,
+    historical_premium_index_klines,
+)
 
 DATA_READY = "DATA_READY"
 DATA_BLOCKED = "DATA_BLOCKED"
@@ -41,10 +55,19 @@ REQUIRED_BYBIT_STREAMS: tuple[str, ...] = (
     "long_short_ratio",
 )
 
-# A stream can finish slightly before the exclusive dataset end because data is
-# sampled on discrete intervals. Two days safely covers the coarsest 1D stream
-# while still rejecting genuinely stale histories.
 _DEFAULT_END_TOLERANCE = timedelta(days=2)
+_TIMEFRAME_DURATION = {
+    Timeframe.M15: timedelta(minutes=15),
+    Timeframe.H1: timedelta(hours=1),
+    Timeframe.H4: timedelta(hours=4),
+    Timeframe.D1: timedelta(days=1),
+}
+_TIMEFRAME_DERIVATIVE_INTERVAL = {
+    Timeframe.M15: "15min",
+    Timeframe.H1: "1h",
+    Timeframe.H4: "4h",
+    Timeframe.D1: "1d",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,6 +111,16 @@ class BuiltBybitDataset:
     @property
     def blockers(self) -> tuple[StreamCoverage, ...]:
         return tuple(item for item in self.coverage if not item.ready)
+
+
+@dataclass(frozen=True, slots=True)
+class CollectedBybitDataset:
+    built: BuiltBybitDataset
+    reports: dict[str, tuple[FetchReport, ...]]
+
+    @property
+    def status(self) -> str:
+        return self.built.status
 
 
 def _aware(value: datetime, name: str) -> None:
@@ -167,12 +200,7 @@ def build_multistream_manifest(
     required_streams: Sequence[str] = REQUIRED_BYBIT_STREAMS,
     end_tolerance: timedelta = _DEFAULT_END_TOLERANCE,
 ) -> BuiltBybitDataset:
-    """Build a deterministic content-addressed snapshot and readiness report.
-
-    ``start_at`` describes the intended research window. Readiness is based on
-    the stricter of that boundary and ``end_at - min_history_months``: callers
-    cannot request a short window and accidentally satisfy a 36-month gate.
-    """
+    """Build a deterministic content-addressed snapshot and readiness report."""
 
     _aware(start_at, "start_at")
     _aware(end_at, "end_at")
@@ -191,18 +219,13 @@ def build_multistream_manifest(
         raise ValueError("required_streams must contain non-blank names")
 
     required_start = _subtract_months(end_at, min_history_months)
-    # If the explicitly requested dataset begins earlier than the minimum gate,
-    # require that earlier boundary as well so readiness means full requested
-    # coverage, not merely the policy minimum.
     coverage_start = min(start_at, required_start)
 
-    canonical: dict[str, tuple[HistoricalObservation, ...]] = {}
     coverage: list[StreamCoverage] = []
     dataset_rows: list[DatasetRow] = []
 
     for stream in required:
         ordered = _ordered_unique(streams.get(stream, ()))
-        canonical[stream] = ordered
         item = _coverage(
             stream,
             ordered,
@@ -213,8 +236,6 @@ def build_multistream_manifest(
         coverage.append(item)
         for observation in ordered:
             if not (start_at <= observation.observed_at < end_at):
-                # Snapshot identity only includes the requested research window;
-                # out-of-window rows cannot silently influence replay.
                 continue
             dataset_rows.append(
                 DatasetRow(
@@ -228,8 +249,6 @@ def build_multistream_manifest(
                 )
             )
 
-    # Supplied but non-required streams are intentionally excluded. Strategy
-    # dependency declarations, not incidental downloader output, define replay.
     status = DATA_READY if all(item.ready for item in coverage) else DATA_BLOCKED
     watermark = {
         "provider": "bybit-v5-public",
@@ -252,6 +271,133 @@ def build_multistream_manifest(
     return BuiltBybitDataset(status=status, coverage=tuple(coverage), manifest=manifest)
 
 
+def _candle_observations(candles, *, duration: timedelta) -> tuple[HistoricalObservation, ...]:
+    rows: list[HistoricalObservation] = []
+    for candle in candles:
+        if not candle.is_closed:
+            continue
+        rows.append(
+            HistoricalObservation(
+                observed_at=candle.open_time,
+                tradable_at=candle.open_time + duration,
+                values={
+                    "open": candle.open,
+                    "high": candle.high,
+                    "low": candle.low,
+                    "close": candle.close,
+                    "volume_units": candle.volume_units,
+                    "volume_notional": candle.volume_notional,
+                    "open_interest": candle.open_interest,
+                },
+            )
+        )
+    return tuple(rows)
+
+
+def collect_multistream(
+    symbol: str,
+    *,
+    start_at: datetime,
+    end_at: datetime,
+    timeframe: Timeframe = Timeframe.H1,
+    min_history_months: int = 36,
+    required_streams: Sequence[str] = REQUIRED_BYBIT_STREAMS,
+    fetch=http_json,
+) -> CollectedBybitDataset:
+    """Collect all required public streams and build one immutable manifest.
+
+    One interval of pre-roll is requested so a non-grid-aligned research start
+    does not falsely fail the history gate. Only rows inside the requested
+    ``[start_at, end_at)`` window enter the content-addressed artifact.
+    """
+
+    _aware(start_at, "start_at")
+    _aware(end_at, "end_at")
+    if timeframe not in _TIMEFRAME_DURATION:
+        raise ValueError(f"unsupported research timeframe: {timeframe.value}")
+    duration = _TIMEFRAME_DURATION[timeframe]
+    interval = _TIMEFRAME_DERIVATIVE_INTERVAL[timeframe]
+    collection_start = start_at - duration
+    required = tuple(dict.fromkeys(required_streams))
+    unknown = set(required) - set(REQUIRED_BYBIT_STREAMS)
+    if unknown:
+        raise ValueError(f"unknown Bybit dataset streams: {sorted(unknown)}")
+
+    streams: dict[str, Iterable[HistoricalObservation]] = {}
+    reports: dict[str, tuple[FetchReport, ...]] = {}
+
+    if "klines" in required:
+        candles, fetched = historical_klines(
+            symbol,
+            timeframe,
+            start_at=collection_start,
+            end_at=end_at,
+            fetch=fetch,
+        )
+        streams["klines"] = _candle_observations(candles, duration=duration)
+        reports["klines"] = fetched
+
+    readers = {
+        "mark_price": historical_mark_price_klines,
+        "index_price": historical_index_price_klines,
+        "premium_index": historical_premium_index_klines,
+    }
+    for stream, reader in readers.items():
+        if stream not in required:
+            continue
+        rows, fetched = reader(
+            symbol,
+            timeframe,
+            start_at=collection_start,
+            end_at=end_at,
+            fetch=fetch,
+        )
+        streams[stream] = tuple(rows)
+        reports[stream] = fetched
+
+    if "funding" in required:
+        rows, fetched = historical_funding(
+            symbol,
+            start_at=collection_start,
+            end_at=end_at,
+            fetch=fetch,
+        )
+        streams["funding"] = tuple(rows)
+        reports["funding"] = fetched
+
+    if "open_interest" in required:
+        rows, fetched = historical_open_interest(
+            symbol,
+            interval=interval,
+            start_at=collection_start,
+            end_at=end_at,
+            fetch=fetch,
+        )
+        streams["open_interest"] = tuple(rows)
+        reports["open_interest"] = fetched
+
+    if "long_short_ratio" in required:
+        rows, fetched = historical_long_short_ratio(
+            symbol,
+            period=interval,
+            start_at=collection_start,
+            end_at=end_at,
+            fetch=fetch,
+        )
+        streams["long_short_ratio"] = tuple(rows)
+        reports["long_short_ratio"] = fetched
+
+    built = build_multistream_manifest(
+        symbol=symbol,
+        start_at=start_at,
+        end_at=end_at,
+        streams=streams,
+        min_history_months=min_history_months,
+        required_streams=required,
+    )
+    return CollectedBybitDataset(built=built, reports=reports)
+
+
 def publish_multistream_snapshot(
     session: Session,
     *,
@@ -271,10 +417,12 @@ def publish_multistream_snapshot(
 
 __all__ = [
     "BuiltBybitDataset",
+    "CollectedBybitDataset",
     "DATA_BLOCKED",
     "DATA_READY",
     "REQUIRED_BYBIT_STREAMS",
     "StreamCoverage",
     "build_multistream_manifest",
+    "collect_multistream",
     "publish_multistream_snapshot",
 ]
