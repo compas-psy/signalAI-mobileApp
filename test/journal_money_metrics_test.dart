@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:signal_ai/domain/idea/journal_money_metrics.dart';
-import 'package:signal_ai/domain/idea/paper_position.dart';
+import 'package:signalai/domain/idea/journal_money_metrics.dart';
+import 'package:signalai/domain/idea/paper_position.dart';
 
 PaperPosition _trade({
   required String id,
