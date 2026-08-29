@@ -1,8 +1,8 @@
 """Production scheduler lane partitioning.
 
-The generic Scheduler remains sequential inside each process.  We only split
-jobs that have no ordering dependency on the latency-critical market path so a
-long portfolio/research calculation cannot delay the next ingest/scan cycle.
+The generic Scheduler remains sequential inside each process. We split jobs
+that have no ordering dependency on the latency-critical market path so long
+portfolio/research/backfill/optimizer work cannot delay ingest or scan ticks.
 """
 
 from __future__ import annotations
@@ -16,7 +16,9 @@ class SchedulerLane(StrEnum):
     HEAVY = "heavy"
 
 
-HEAVY_JOB_NAMES = frozenset({"portfolio", "research"})
+HEAVY_JOB_NAMES = frozenset(
+    {"portfolio", "research", "bybit_research", "risk_optimizer"}
+)
 
 
 def parse_scheduler_lane(raw: str | None) -> SchedulerLane:
