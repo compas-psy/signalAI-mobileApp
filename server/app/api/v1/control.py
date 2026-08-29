@@ -14,6 +14,7 @@ from pydantic import Field
 from sqlalchemy.orm import Session
 
 from ...control.dashboard import build_control_dashboard
+from ...control.runtime_roles import compose_runtime_roles, registry_role_map
 from ...db import get_db
 from ...paper.tracker import track
 from ...pipeline.supervise import supervise
@@ -41,11 +42,16 @@ def control_dashboard(
 ) -> dict:
     """Return one transparent read-only strategy/risk measurement snapshot."""
 
-    return build_control_dashboard(
+    payload = build_control_dashboard(
         db,
         venue=venue,
         window_hours=window_hours,
     )
+    payload["runtime_roles"] = compose_runtime_roles(
+        payload.get("competition"),
+        registry_roles=registry_role_map(db),
+    )
+    return payload
 
 
 @router.post("/ideas/reconcile", response_model=ActionOut)
