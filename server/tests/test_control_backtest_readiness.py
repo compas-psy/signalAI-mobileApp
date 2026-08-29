@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from app.backtest.venue_datasets import BYBIT_DATASET_NAME, REQUIRED_BYBIT_STREAMS
-from app.control.dashboard import build_control_dashboard
+from app.control.runtime_dashboard import build_control_dashboard
 from app.models import DatasetSnapshot
 
 
