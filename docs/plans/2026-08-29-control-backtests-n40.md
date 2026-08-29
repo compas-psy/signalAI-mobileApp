@@ -80,6 +80,27 @@ Insufficient history is `BLOCKED_INSUFFICIENT_HISTORY`, never zero-PnL and never
 5. Production run for each venue and control-screen verification.
 6. Only after evidence exists: compare candidate performance. No strategy/risk threshold tuning in this change.
 
+## Implementation checkpoint — 2026-08-29
+
+Completed in the first two safe slices:
+
+- runtime exact-control audit is merged and can report venue/candidate N/40 without mutating production;
+- dashboard paired evidence now filters both CONTROL and CANDIDATE by the selected venue and counts distinct `pair_key` values;
+- dashboard exposes `required_pairs`, `remaining_pairs` and `sample_adequate`; winner verdict remains blocked below 40;
+- mobile Control renders `N x/40 · осталось y` under the selected FORTS/BYBIT tab;
+- research-only `backtest/bybit_history.py` pages public Bybit candles backward without modifying live `market.crypto.klines()` or canonical `bars`;
+- research-only `backtest/forts_continuous.py` preserves source contract and half-open roll boundaries and never synthesises missing bars.
+
+Still intentionally not implemented in this slice:
+
+- immutable multi-stream BYBIT dataset publication (price + mark/index/premium + OI + funding);
+- expired-contract FORTS discovery/backfill and continuous dataset publication;
+- 36-month data-readiness gate;
+- scheduled/manual venue backtest runner and persisted entry-strategy `BacktestRun` results;
+- Control-screen `DATA READY` / `BLOCKED — INSUFFICIENT HISTORY` evidence.
+
+Those items form the next isolated implementation PR after this checkpoint passes a fresh full quality gate against the current release base.
+
 ## Required tests
 
 - N counts distinct closed comparable pair keys only and is venue-isolated.
