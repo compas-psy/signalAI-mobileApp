@@ -180,6 +180,17 @@ void main() {
     expect(find.text('Т-Инвестиции API'), findsOneWidget);
   });
 
+  testWidgets('«Контроль» открывает отдельный owner control plane', (tester) async {
+    await pumpApp(tester);
+
+    await goTo(tester, 'Настройки', 'Контроль');
+
+    expect(find.text('Контроль стратегий'), findsOneWidget);
+    expect(find.text('FORTS'), findsOneWidget);
+    expect(find.text('BYBIT'), findsOneWidget);
+    expect(find.textContaining('read-only'), findsOneWidget);
+  });
+
   testWidgets('бэктест обновляет статистику', (tester) async {
     await pumpApp(tester);
 
