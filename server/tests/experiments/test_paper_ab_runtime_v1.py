@@ -361,9 +361,11 @@ def test_paper_ab_tables_have_no_owner_trade_or_execution_foreign_keys() -> None
     assert outcome_targets == {"paper_ab_decisions.id"}
 
 
-def test_default_control_replay_fails_closed_if_newer_closed_bar_already_exists(session) -> None:
+def test_default_control_replay_ignores_newer_bar_and_reports_historical_gap(session) -> None:
     _instrument(session)
     _shadow(session, emitted=False)
+    # A bar after the decision exists, but point-in-time CONTROL must ignore it
+    # instead of refusing historical replay merely because the DB moved on.
     _exit_bar(session, AT + timedelta(hours=1), "999")
 
     seed_paper_ab(session, evaluated_at=AT)
@@ -372,5 +374,5 @@ def test_default_control_replay_fails_closed_if_newer_closed_bar_already_exists(
     control = session.query(PaperAbDecision).filter_by(arm_role="CONTROL").one()
     outcome = session.query(PaperAbOutcome).filter_by(decision_id=control.id).one()
     assert outcome.evidence_status == PaperAbEvidenceStatus.INPUT_UNAVAILABLE.value
-    assert outcome.reason_code == "CONTROL_REPLAY_NOT_POINT_IN_TIME"
+    assert outcome.reason_code == "CONTROL_BAR_HISTORY_INSUFFICIENT"
     assert outcome.net_r is None
