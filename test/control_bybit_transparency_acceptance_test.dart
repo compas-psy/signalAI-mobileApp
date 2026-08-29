@@ -151,13 +151,13 @@ Future<void> _pump(WidgetTester tester) async {
 }
 
 Future<void> _scrollTo(WidgetTester tester, Finder target) async {
-  await tester.scrollUntilVisible(
-    target,
-    300,
-    scrollable: find.byType(Scrollable).first,
-    maxScrolls: 30,
-  );
-  await tester.pump(const Duration(milliseconds: 30));
+  final list = find.byType(ListView);
+  expect(list, findsOneWidget);
+  for (var i = 0; i < 30 && target.evaluate().isEmpty; i += 1) {
+    await tester.drag(list, const Offset(0, -300));
+    await tester.pump(const Duration(milliseconds: 30));
+  }
+  expect(target, findsWidgets);
 }
 
 void main() {
