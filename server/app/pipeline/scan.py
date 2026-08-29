@@ -30,11 +30,13 @@ from ..detectors.base import Reading
 from ..detectors.price_action import PriceZone
 from ..features.indicators import atr
 from ..market.candles import Candle, resample_hours
+from ..market.derivatives_features import derivatives_change_z
 from ..market.fx import rate_note, rate_to_rub
 from ..market.economic_events import EconomicEventCalendar, load_owned_calendar
 from ..models import Bar, IdeaEvent, Instrument, TradeIdea
 from ..models.enums import (
     AssetClass,
+    DerivativesFlow,
     Direction,
     IdeaStatus,
     LiquidityRegime,
@@ -144,9 +146,9 @@ def _decimal(value) -> Decimal | None:
 def _liquidity_config_paths(instrument: Instrument) -> tuple[str, str]:
     """Return unit-correct liquidity config paths for the instrument venue.
 
-    The notional threshold is venue/currency specific.  Reusing the FORTS RUB
+    The notional threshold is venue/currency specific. Reusing the FORTS RUB
     threshold for Bybit USDT turnover made the second scan gate disagree with
-    the Universe admission contract.  Relative spread is dimensionless, but a
+    the Universe admission contract. Relative spread is dimensionless, but a
     crypto-specific config key is still used so venue policy remains explicit.
     """
     if instrument.asset_class is AssetClass.CRYPTO_PERPETUAL:
@@ -166,7 +168,7 @@ def _liquidity_inputs(
 ) -> tuple[float | None, Decimal | None]:
     """Reuse the exact liquidity measurements accepted by Universe review.
 
-    FORTS admission is denominated in RUB; Bybit admission in USDT.  Scan must
+    FORTS admission is denominated in RUB; Bybit admission in USDT. Scan must
     not silently replace either 30-day measurement with the last D1 candle.
     Legacy snapshot keys remain readable for already-persisted instruments.
     """
@@ -200,6 +202,20 @@ def _liquidity_inputs(
     elif turnover is None:
         spread = None
     return spread, turnover
+
+
+def _derivatives_flow(bars: Sequence[Candle]) -> tuple[DerivativesFlow, bool]:
+    """Classify derivatives flow only when aligned H1 price/OI is measured."""
+    features = derivatives_change_z(bars)
+    if features.reason is not None:
+        return classify_derivatives_flow(price_change_z=None, oi_change_z=None), False
+    return (
+        classify_derivatives_flow(
+            price_change_z=features.price_change_z,
+            oi_change_z=features.oi_change_z,
+        ),
+        True,
+    )
 
 
 def _zones_from(readings: Sequence[Reading | None], direction: Direction) -> list[PriceZone]:
@@ -351,8 +367,7 @@ def scan_instrument(
         adx_trend_min=float(cfg.get("regime.adx_trend_min")),
     )
     volatility, _ = classify_volatility(context)
-    has_oi = any(c.open_interest is not None for c in context[-30:])
-    flow = classify_derivatives_flow(price_change_z=None, oi_change_z=None)
+    flow, has_oi = _derivatives_flow(trigger)
     regime = RegimeResult(
         trend=trend, trend_score=score, volatility=volatility,
         liquidity=liquidity, derivatives_flow=flow, signals=signals, detail=detail,
