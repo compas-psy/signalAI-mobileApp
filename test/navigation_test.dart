@@ -40,8 +40,22 @@ void main() {
       expect(AppSection.settings.pills.length, SettingsPill.thinValues.length);
       expect(AppSection.ideas.pills,
           ['Все', 'Нужно решить', 'Формируются', 'Ждут входа', 'Позиции открыты']);
-      expect(AppSection.settings.pills,
-          ['Риск', 'Подключения', 'Стратегии', 'Уведомления', 'Данные']);
+      expect(AppSection.settings.pills, [
+        'Риск',
+        'Контроль',
+        'Подключения',
+        'Стратегии',
+        'Уведомления',
+        'Данные',
+      ]);
+      expect(SettingsPill.thinValues, [
+        SettingsPill.risk,
+        SettingsPill.control,
+        SettingsPill.connections,
+        SettingsPill.strategies,
+        SettingsPill.notifications,
+        SettingsPill.data,
+      ]);
     });
   });
 
@@ -51,9 +65,11 @@ void main() {
       expect(AppRoute.fromLegacy('trades'), const AppRoute(AppSection.journal));
       expect(AppRoute.fromLegacy('invest'), const AppRoute(AppSection.portfolio));
       expect(AppRoute.fromLegacy('capital'), const AppRoute(AppSection.portfolio));
-      // В видимом пятиэлементном порядке «Стратегии» — индекс 2.
+      // После добавления owner Control «Стратегии» остаются отдельной пилюлей.
       expect(AppRoute.fromLegacy('strategies'),
-          const AppRoute(AppSection.settings, 2));
+          const AppRoute(AppSection.settings, 3));
+      expect(AppRoute.fromLegacy('lab'), const AppRoute(AppSection.settings, 1));
+      expect(AppRoute.fromLegacy('control'), const AppRoute(AppSection.settings, 1));
       expect(AppRoute.fromLegacy('settings'), const AppRoute(AppSection.settings));
     });
 
