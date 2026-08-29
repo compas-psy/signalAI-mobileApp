@@ -114,10 +114,10 @@ services:
         chmod 0750 /var/lib/signalai-calendar
 
   # Dataset artifacts are immutable files while DatasetSnapshot rows are their
-  # database manifests. The named volume keeps bytes across rebuild/restart;
-  # ownership is repaired once for the non-root heavy scheduler writer.
+  # database manifests. Use the exact application image here so ownership is
+  # assigned to the real signalai uid/gid instead of an assumed numeric id.
   dataset-volume-init:
-    image: alpine:3.21
+    image: signalai-scheduler
     user: "0:0"
     volumes:
       - dataset-snapshots:/var/lib/signalai-datasets
@@ -125,7 +125,7 @@ services:
       - sh
       - -c
       - >-
-        chown 10001:10001 /var/lib/signalai-datasets &&
+        chown signalai:signalai /var/lib/signalai-datasets &&
         chmod 0750 /var/lib/signalai-datasets
 
   # Isolated network transport for the owned event-calendar snapshot.  It has
