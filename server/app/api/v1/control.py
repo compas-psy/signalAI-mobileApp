@@ -1,17 +1,19 @@
-"""Явные действия владельца над серверным контуром.
+"""Owner control-plane reads plus explicit server actions.
 
-Планировщик остаётся основным механизмом. Эти endpoints нужны не для второго
-расписания, а для кнопки «проверить сейчас» после настройки источника или
-сомнительной идеи. Каждый вызов выполняет один последовательный проход и
-возвращает фактический результат; скрытого фонового запуска нет.
+The dashboard endpoint is read-only measurement aggregation. Existing POST
+actions remain explicit owner-triggered operations and do not create a second
+scheduler.
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from typing import Literal
+
+from fastapi import APIRouter, Depends, Query
 from pydantic import Field
 from sqlalchemy.orm import Session
 
+from ...control.dashboard import build_control_dashboard
 from ...db import get_db
 from ...paper.tracker import track
 from ...pipeline.supervise import supervise
@@ -29,6 +31,21 @@ class ActionOut(ApiModel):
     action: str
     detail: str
     data: dict = Field(default_factory=dict)
+
+
+@router.get("/dashboard")
+def control_dashboard(
+    venue: Literal["FORTS", "BYBIT"],
+    window_hours: int = Query(default=168, ge=1, le=8760),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Return one transparent read-only strategy/risk measurement snapshot."""
+
+    return build_control_dashboard(
+        db,
+        venue=venue,
+        window_hours=window_hours,
+    )
 
 
 @router.post("/ideas/reconcile", response_model=ActionOut)
