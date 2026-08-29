@@ -232,7 +232,7 @@ def _paper_stats(
     paired_rows = session.execute(
         select(
             candidate_d.candidate_version,
-            func.count(candidate_d.id),
+            func.count(func.distinct(control_d.pair_key)),
             func.avg(control_o.net_r),
             func.avg(candidate_o.net_r),
         )
@@ -249,7 +249,9 @@ def _paper_stats(
         .where(
             control_d.arm_role == "CONTROL",
             control_d.decision_at >= start,
+            candidate_d.decision_at >= start,
             control_d.venue.in_(sorted(venue_aliases)),
+            candidate_d.venue.in_(sorted(venue_aliases)),
             control_o.evidence_status == "EVALUATED",
             candidate_o.evidence_status == "EVALUATED",
             control_o.net_r.is_not(None),
@@ -348,6 +350,10 @@ def _competition(
             )
         )
         comparable = int(paired_row["comparable_pairs"])
+        sample_adequate = comparable >= min_sample
+        paired_row["required_pairs"] = min_sample
+        paired_row["remaining_pairs"] = max(0, min_sample - comparable)
+        paired_row["sample_adequate"] = sample_adequate
         paper_decisions = int(control_arm["decisions"]) + int(candidate_arm["decisions"])
         if broken_input:
             verdict = "BROKEN_INPUT"
@@ -355,7 +361,7 @@ def _competition(
             verdict = (
                 "INSUFFICIENT_OUTCOMES" if paper_decisions > 0 else "WAITING_FOR_SAMPLE"
             )
-        elif comparable < min_sample:
+        elif not sample_adequate:
             verdict = "WAITING_FOR_SAMPLE"
         else:
             control_mean = paired_row["control_mean_net_r"]

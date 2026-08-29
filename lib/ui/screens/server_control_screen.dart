@@ -240,7 +240,10 @@ class _ServerControlScreenState extends State<ServerControlScreen> {
             ],
             for (final candidate in snapshot.competition.candidates) ...[
               const SizedBox(height: 10),
-              _CompetitionCard(candidate: candidate),
+              _CompetitionCard(
+                candidate: candidate,
+                requiredPairs: snapshot.competition.minComparableSample,
+              ),
             ],
           ],
         ),
@@ -439,14 +442,19 @@ class _CandidateRuntimeCard extends StatelessWidget {
 }
 
 class _CompetitionCard extends StatelessWidget {
-  const _CompetitionCard({required this.candidate});
+  const _CompetitionCard({
+    required this.candidate,
+    required this.requiredPairs,
+  });
 
   final CompetitionCandidateSummary candidate;
+  final int requiredPairs;
 
   @override
   Widget build(BuildContext context) {
     final paper = candidate.paper;
     final comparable = paper.comparablePairs;
+    final remaining = requiredPairs > comparable ? requiredPairs - comparable : 0;
     return InsetBox(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -466,6 +474,11 @@ class _CompetitionCard extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 6),
+          Text(
+            'N $comparable/$requiredPairs · осталось $remaining',
+            style: T.mono(10.8, color: C.textSecondary),
+          ),
+          const SizedBox(height: 4),
           if (comparable == 0)
             Text(
               'Сравнимых исходов пока нет · control: ${_r(paper.controlMeanNetR)} · кандидат: ${_r(paper.candidateMeanNetR)}',
@@ -473,7 +486,7 @@ class _CompetitionCard extends StatelessWidget {
             )
           else
             Text(
-              'N $comparable · control ${_r(paper.controlMeanNetR)} · кандидат ${_r(paper.candidateMeanNetR)} · Δ ${_r(paper.deltaMeanNetR)}',
+              'control ${_r(paper.controlMeanNetR)} · кандидат ${_r(paper.candidateMeanNetR)} · Δ ${_r(paper.deltaMeanNetR)}',
               style: T.mono(10.8, color: C.textSecondary),
             ),
           const SizedBox(height: 4),
