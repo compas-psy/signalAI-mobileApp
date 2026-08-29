@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from app.market.crypto import historical_klines
+from app.backtest.bybit_history import historical_klines
 from app.models.enums import Timeframe
 
 
