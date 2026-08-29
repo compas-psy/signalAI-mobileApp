@@ -12,9 +12,16 @@ def test_bybit_research_snapshot_volume_is_durable_and_heavy_lane_only() -> None
     assert "dataset-snapshots" in compose["volumes"]
     assert "dataset-volume-init" in services
 
+    init = services["dataset-volume-init"]
     api = services["api"]
     heavy = services["scheduler-heavy"]
     market = services["scheduler"]
+
+    assert init["image"] == "signalai-scheduler"
+    assert init["user"] == "0:0"
+    init_command = " ".join(str(item) for item in init["command"])
+    assert "chown signalai:signalai /var/lib/signalai-datasets" in init_command
+    assert "10001" not in init_command
 
     assert api["environment"]["SIGNALAI_DATASET_SNAPSHOT_ROOT"] == "/var/lib/signalai-datasets"
     assert "dataset-snapshots:/var/lib/signalai-datasets:ro" in api["volumes"]
