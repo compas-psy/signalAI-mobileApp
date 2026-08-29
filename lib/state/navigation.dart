@@ -65,17 +65,17 @@ enum JournalPill { trades, skips, metrics }
 
 /// Полный набор исторических подразделов настроек.
 ///
-/// Enum не ломаем ради совместимости со старым локальным экраном. Thin UI
-/// использует [thinValues], где нет двух справочных вкладок mode/security.
+/// Первые семь значений сохраняют исторические enum-index для legacy UI.
+/// Owner Control добавлен в конец enum, а его видимое место задаёт [thinValues].
 enum SettingsPill {
   mode,
   risk,
-  control,
   connections,
   strategies,
   notifications,
   data,
-  security;
+  security,
+  control;
 
   static const List<SettingsPill> thinValues = [
     risk,
@@ -101,7 +101,7 @@ class AppRoute {
         'ideas' || 'trading' => const AppRoute(AppSection.ideas),
         'invest' || 'capital' => const AppRoute(AppSection.portfolio),
         'trades' => const AppRoute(AppSection.journal),
-        // Owner Control занимает индекс 1; прежняя «Стратегии» сдвинулась на 3.
+        // Owner Control занимает видимый индекс 1; «Стратегии» — индекс 3.
         'strategies' => const AppRoute(AppSection.settings, 3),
         'lab' || 'control' => const AppRoute(AppSection.settings, 1),
         'settings' => const AppRoute(AppSection.settings),
