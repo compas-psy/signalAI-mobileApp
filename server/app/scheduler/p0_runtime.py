@@ -6,8 +6,10 @@ Keeps the tested generic Scheduler intact while adding runtime jobs:
   the owner scan/lifecycle path;
 - Paper A/B consumes immutable Shadow facts and writes only its isolated
   counterfactual measurement journal;
-- bounded risk optimization runs after measurement and keeps its own cadence /
-  minimum-evidence promotion gates;
+- Bybit historical research refreshes immutable 36m multi-stream snapshots on
+  the heavy lane, never inside the latency-critical market loop;
+- bounded risk optimization runs after research evidence and keeps its own
+  cadence / minimum-evidence promotion gates;
 - owner capital refreshes server-side from read-only broker credentials.
 """
 
@@ -107,17 +109,47 @@ def _add_paper_ab_job(scheduler, *, every: timedelta, paper_ab_runner=None) -> N
     raise RuntimeError("default scheduler has no shadow job")
 
 
+def _add_bybit_research_job(
+    scheduler,
+    *,
+    every: timedelta,
+    bybit_research_runner=None,
+) -> None:
+    """Refresh one immutable Bybit research snapshot after Paper evidence."""
+
+    if not isinstance(every, timedelta) or every <= timedelta(0):
+        raise ValueError("bybit_research_every must be a positive timedelta")
+
+    if bybit_research_runner is not None:
+        run = bybit_research_runner
+    else:
+
+        def run(session) -> str:
+            from ..backtest.bybit_research_runtime import refresh_next_bybit_dataset
+
+            return refresh_next_bybit_dataset(session)
+
+    scheduler.add("bybit_research", every, run)
+    job = scheduler.jobs.pop()
+    for index, existing in enumerate(scheduler.jobs):
+        if existing.name == "paper_ab":
+            scheduler.jobs.insert(index + 1, job)
+            return
+    raise RuntimeError("default scheduler has no paper_ab job")
+
+
 def _add_risk_optimizer_job(
     scheduler,
     *,
     every: timedelta,
     risk_optimizer_runner=None,
 ) -> None:
-    """Schedule bounded risk-policy research after Paper A/B evidence.
+    """Schedule bounded risk-policy research after historical evidence.
 
     The scheduler cadence is only a wake-up. ``maybe_optimize`` independently
-    enforces its persisted cadence, minimum sample and promotion criteria, so a
-    restart or a frequent tick cannot promote a policy without evidence.
+    enforces its persisted cadence, minimum sample, dataset-readiness and
+    promotion criteria, so a restart or frequent tick cannot promote a policy
+    without evidence.
     """
 
     if not isinstance(every, timedelta) or every <= timedelta(0):
@@ -135,10 +167,10 @@ def _add_risk_optimizer_job(
     scheduler.add("risk_optimizer", every, run)
     job = scheduler.jobs.pop()
     for index, existing in enumerate(scheduler.jobs):
-        if existing.name == "paper_ab":
+        if existing.name == "bybit_research":
             scheduler.jobs.insert(index + 1, job)
             return
-    raise RuntimeError("default scheduler has no paper_ab job")
+    raise RuntimeError("default scheduler has no bybit_research job")
 
 
 def _add_capital_job(scheduler) -> None:
@@ -157,6 +189,8 @@ def build_default_scheduler(*args, **kwargs):
     shadow_runner = kwargs.pop("shadow_runner", None)
     paper_ab_every = kwargs.pop("paper_ab_every", timedelta(minutes=15))
     paper_ab_runner = kwargs.pop("paper_ab_runner", None)
+    bybit_research_every = kwargs.pop("bybit_research_every", timedelta(hours=1))
+    bybit_research_runner = kwargs.pop("bybit_research_runner", None)
     risk_optimizer_every = kwargs.pop("risk_optimizer_every", timedelta(hours=24))
     risk_optimizer_runner = kwargs.pop("risk_optimizer_runner", None)
 
@@ -170,6 +204,11 @@ def build_default_scheduler(*args, **kwargs):
         scheduler,
         every=paper_ab_every,
         paper_ab_runner=paper_ab_runner,
+    )
+    _add_bybit_research_job(
+        scheduler,
+        every=bybit_research_every,
+        bybit_research_runner=bybit_research_runner,
     )
     _add_risk_optimizer_job(
         scheduler,
