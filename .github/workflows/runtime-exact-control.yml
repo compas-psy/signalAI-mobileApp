@@ -1,0 +1,82 @@
+name: Runtime exact control audit
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  audit:
+    if: >-
+      github.event.issue.number == 1 &&
+      github.event.comment.body == '/runtime-exact-control' &&
+      github.event.comment.user.login == github.repository_owner
+    name: Exact venue N40 and live idea audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: Verify diagnostic provenance
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          actual_sha="$(git rev-parse --verify HEAD^{commit})"
+          [ "$actual_sha" = "$EXPECTED_SHA" ] || exit 1
+          python -m py_compile .github/scripts/runtime_exact_control.py
+
+      - name: Verify SSH inputs
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
+          HOST_KEY_SHA256: ${{ secrets.VPS_SSH_HOST_KEY_SHA256 || 'SHA256:cUfeWKyHoFIhKsV17Bpk076calxUaxd90XhuETb4vng' }}
+        run: |
+          set -eu
+          test -n "$HOST"
+          test -n "$KEY"
+          test -n "$HOST_KEY_SHA256"
+
+      - name: Prepare pinned SSH
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
+          HOST_KEY_SHA256: ${{ secrets.VPS_SSH_HOST_KEY_SHA256 || 'SHA256:cUfeWKyHoFIhKsV17Bpk076calxUaxd90XhuETb4vng' }}
+        run: |
+          set -eu
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          bash .github/scripts/prepare_known_host.sh "$HOST" "$HOST_KEY_SHA256"
+
+      - name: Run exact read-only control audit in production API container
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          USER_NAME: ${{ secrets.VPS_USER || 'root' }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$USER_NAME@$HOST" \
+            'set -euo pipefail; SUDO=""; [ "$(id -u)" -eq 0 ] || SUDO=sudo; $SUDO docker compose --env-file /etc/signalai/.env -f "$HOME/signalai/server/docker-compose.yml" exec -T api python -' \
+            < .github/scripts/runtime_exact_control.py
+
+      - name: Publish run pointer
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          body=$(printf '🎯 **Runtime exact control audit: %s**\n\nSource: `%s`\nRun: https://github.com/%s/actions/runs/%s' "${{ job.status }}" "$SHA" "$REPO" "$RUN_ID")
+          gh api "repos/$REPO/issues/1/comments" -f body="$body" >/dev/null
+
+      - name: Remove SSH key
+        if: always()
+        run: shred -u ~/.ssh/id_deploy 2>/dev/null || rm -f ~/.ssh/id_deploy
