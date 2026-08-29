@@ -135,7 +135,10 @@ ControlDashboardSnapshot _bybitSnapshot() => ControlDashboardSnapshot.fromJson({
     });
 
 Future<void> _pump(WidgetTester tester) async {
-  tester.view.physicalSize = const Size(412, 1000);
+  // This suite verifies the evidence contract, not scrolling mechanics. A tall
+  // viewport builds the complete lazy ListView so deep Control sections can be
+  // asserted without coupling the acceptance test to Scrollable internals.
+  tester.view.physicalSize = const Size(412, 8000);
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
@@ -148,16 +151,6 @@ Future<void> _pump(WidgetTester tester) async {
   );
   await tester.pump();
   await tester.pump(const Duration(milliseconds: 50));
-}
-
-Future<void> _scrollTo(WidgetTester tester, Finder target) async {
-  final list = find.byType(ListView);
-  expect(list, findsOneWidget);
-  for (var i = 0; i < 30 && target.evaluate().isEmpty; i += 1) {
-    await tester.drag(list, const Offset(0, -300));
-    await tester.pump(const Duration(milliseconds: 30));
-  }
-  expect(target, findsWidgets);
 }
 
 void main() {
@@ -175,7 +168,6 @@ void main() {
       (tester) async {
     await _pump(tester);
 
-    await _scrollTo(tester, find.textContaining('Bybit funnel'));
     expect(find.textContaining('30 → 28 → 23 → 11'), findsOneWidget);
     expect(find.textContaining('published 1'), findsOneWidget);
     expect(find.textContaining('NO_VALID_SETUP'), findsOneWidget);
@@ -186,7 +178,6 @@ void main() {
       (tester) async {
     await _pump(tester);
 
-    await _scrollTo(tester, find.textContaining('Historical data'));
     expect(find.textContaining('DATA BLOCKED'), findsWidgets);
     expect(find.textContaining('BTCUSDT'), findsOneWidget);
     expect(find.textContaining('ETHUSDT'), findsOneWidget);
