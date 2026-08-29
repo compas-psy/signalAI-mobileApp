@@ -1,9 +1,9 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from app.market.candles import Candle
 from app.models import Instrument
-from app.models.enums import AssetClass, Venue
+from app.models.enums import AssetClass, DerivativesFlow, Venue
 from app.pipeline import scan as scan_module
 from app.shadow.collector_v1 import _metadata_facts
 
@@ -34,6 +34,32 @@ def _candle(*, notional: str) -> Candle:
         volume_notional=Decimal(notional),
         source="bybit",
     )
+
+
+def _derivatives_bars() -> list[Candle]:
+    start = datetime(2026, 8, 20, tzinfo=UTC)
+    bars: list[Candle] = []
+    price = Decimal("100")
+    oi = Decimal("1000")
+    for index in range(30):
+        price_factor = Decimal("1.001") if index < 29 else Decimal("1.03")
+        oi_factor = Decimal("1.001") if index < 29 else Decimal("1.04")
+        next_price = price * price_factor
+        next_oi = oi * oi_factor
+        bars.append(
+            Candle(
+                open_time=start + timedelta(hours=index),
+                open=price,
+                high=next_price * Decimal("1.001"),
+                low=price * Decimal("0.999"),
+                close=next_price,
+                open_interest=next_oi,
+                source="bybit",
+            )
+        )
+        price = next_price
+        oi = next_oi
+    return bars
 
 
 def test_bybit_scan_reuses_crypto_universe_admission_measurements() -> None:
@@ -82,3 +108,12 @@ def test_shadow_reads_canonical_crypto_relative_spread() -> None:
 
     assert facts.spread_bps == Decimal("4.0000")
     assert facts.round_trip_cost_bps == Decimal("8.0")
+
+
+def test_bybit_scan_derivatives_flow_uses_measured_price_and_oi_changes() -> None:
+    assert hasattr(scan_module, "_derivatives_flow")
+
+    flow, measured = scan_module._derivatives_flow(_derivatives_bars())
+
+    assert measured is True
+    assert flow is DerivativesFlow.LONG_BUILDUP
