@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import Field
 from sqlalchemy.orm import Session
 
-from ...control.dashboard import build_control_dashboard
+from ...control.runtime_dashboard import build_control_dashboard
 from ...db import get_db
 from ...paper.tracker import track
 from ...pipeline.supervise import supervise
