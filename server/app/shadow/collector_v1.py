@@ -1,14 +1,10 @@
 """Point-in-time R4 Shadow collector.
 
 The collector evaluates challenger strategies on the same canonical closed-bar
-store used by the live scanner, but persists only :class:`ShadowObservation`
-measurement facts.  It never creates ``TradeIdea``/paper/notification/execution
-entities.
-
-Missing market inputs are explicit ``INPUT_UNAVAILABLE`` observations rather
-than fake no-signal outcomes.  This distinction is essential for later OOS
-sample denominators, especially for funding/carry where a missing funding feed
-must not count as a strategy decision.
+store used by the live scanner, but persists only ShadowObservation facts.
+Missing inputs are explicit INPUT_UNAVAILABLE observations, never fake no-signal
+outcomes. Historical replay must inject point-in-time supplemental facts and
+must not call the live Bybit REST provider.
 """
 
 from __future__ import annotations
@@ -33,12 +29,11 @@ from ..models import Bar, Instrument
 from ..models.enums import (
     AssetClass,
     DerivativesFlow,
-    LiquidityRegime,
     Timeframe,
     TrendRegime,
     VolatilityRegime,
 )
-from ..pipeline.scan import _liquidity_inputs
+from ..pipeline.scan import _liquidity_config_paths, _liquidity_inputs
 from ..regime.classifier import (
     RegimeResult,
     classify_liquidity,
@@ -58,13 +53,9 @@ from .runtime_v1 import (
 from .store_v1 import persist_shadow_observations
 
 FactsProvider = Callable[[Instrument, datetime], "ShadowSupplementalFacts"]
-
 _CONTEXT_LIMIT = 400
 _TRIGGER_LIMIT = 800
 _SETUP_HOURS = 4
-# Live scan itself needs 60 D1 bars before it can make a regime decision.  Use
-# the same floor rather than allowing a challenger to receive a richer/looser
-# context than the control path.
 _MIN_CONTEXT_BARS = 60
 _MIN_MOMENTUM_BARS = 21
 _MIN_MEAN_REVERSION_BARS = 20
@@ -73,13 +64,6 @@ _MIN_BREAKOUT_BARS = 22
 
 @dataclass(frozen=True, slots=True)
 class ShadowSupplementalFacts:
-    """External point-in-time facts not contained in canonical OHLCV bars.
-
-    Cost values are optional on purpose.  The collector does not invent them.
-    A strategy that requires an absent value is recorded as INPUT_UNAVAILABLE.
-    ``cost_model_hash`` still identifies the supplied measurement context.
-    """
-
     cost_model_hash: str
     spread_bps: Decimal | None = None
     round_trip_cost_bps: Decimal | None = None
@@ -132,8 +116,6 @@ def collect_shadow(
     facts_provider: FactsProvider | None = None,
     cfg: EngineConfig | None = None,
 ) -> ShadowCollectionReport:
-    """Evaluate and append R4 Shadow observations for the tradable universe."""
-
     if not isinstance(session, Session):
         raise ValueError("session must be a SQLAlchemy Session")
     moment = evaluated_at or datetime.now(UTC)
@@ -142,7 +124,6 @@ def collect_shadow(
     provider = facts_provider or (
         lambda instrument, at: _default_facts(instrument, at, cfg=config)
     )
-
     instruments = list(
         session.execute(
             select(Instrument)
@@ -154,24 +135,16 @@ def collect_shadow(
     all_observations: list[ShadowCandidateObservation] = []
     for instrument in instruments:
         context = _load_visible_bars(
-            session,
-            instrument.instrument_id,
-            Timeframe.D1,
-            evaluated_at=moment,
-            limit=_CONTEXT_LIMIT,
+            session, instrument.instrument_id, Timeframe.D1,
+            evaluated_at=moment, limit=_CONTEXT_LIMIT,
         )
         trigger = _load_visible_bars(
-            session,
-            instrument.instrument_id,
-            Timeframe.H1,
-            evaluated_at=moment,
-            limit=_TRIGGER_LIMIT,
+            session, instrument.instrument_id, Timeframe.H1,
+            evaluated_at=moment, limit=_TRIGGER_LIMIT,
         )
         setup = resample_hours(trigger, _SETUP_HOURS, session_start_hour_utc=6)
         market_snapshot_hash = _market_snapshot_hash(
-            instrument.instrument_id,
-            context=context,
-            trigger=trigger,
+            instrument.instrument_id, context=context, trigger=trigger,
         )
         facts = provider(instrument, moment)
         if not isinstance(facts, ShadowSupplementalFacts):
@@ -179,7 +152,6 @@ def collect_shadow(
 
         candidates = []
         unavailable: dict[str, str] = {}
-
         if (
             len(context) < _MIN_MOMENTUM_BARS
             or len(setup) < _MIN_MOMENTUM_BARS
@@ -341,13 +313,12 @@ def _regime_for(
     cfg: EngineConfig,
 ) -> RegimeResult:
     spread, turnover = _liquidity_inputs(instrument, context)
+    min_path, spread_path = _liquidity_config_paths(instrument)
     liquidity, _ = classify_liquidity(
         relative_spread=spread,
         median_notional=turnover,
-        min_notional=Decimal(
-            str(cfg.get("universe.futures.min_median_daily_notional_rub"))
-        ),
-        max_spread=float(cfg.get("universe.futures.max_median_relative_spread")),
+        min_notional=Decimal(str(cfg.get(min_path))),
+        max_spread=float(cfg.get(spread_path)),
     )
     trend, score, signals, detail = classify_trend(
         context,
@@ -393,9 +364,7 @@ def _market_snapshot_hash(
             "low": str(bar.low),
             "close": str(bar.close),
             "volume_units": None if bar.volume_units is None else str(bar.volume_units),
-            "volume_notional": (
-                None if bar.volume_notional is None else str(bar.volume_notional)
-            ),
+            "volume_notional": None if bar.volume_notional is None else str(bar.volume_notional),
             "open_interest": None if bar.open_interest is None else str(bar.open_interest),
             "source": bar.source,
             "quality_flags": sorted(bar.quality_flags),
@@ -417,25 +386,16 @@ def _metadata_facts(
     instrument: Instrument,
     evaluated_at: datetime,
 ) -> ShadowSupplementalFacts:
-    """Resolve only facts already present in instrument metadata.
-
-    No brokerage/cost number is guessed.  If the metadata lacks an all-in
-    round-trip cost, breakout/carry remain explicitly unavailable while
-    bar-only strategies can still accumulate honest Shadow observations.
-    """
-
     metadata = instrument.metadata_json or {}
     admission = metadata.get("admission") or {}
     cost_meta = metadata.get("shadow_cost_model") or {}
-
     relative_spread = _decimal(
-        admission.get("relative_spread_snapshot") or metadata.get("spread_snapshot")
+        admission.get("relative_spread")
+        or admission.get("relative_spread_snapshot")
+        or metadata.get("spread_snapshot")
     )
-    spread_bps = (
-        relative_spread * Decimal("10000") if relative_spread is not None else None
-    )
+    spread_bps = relative_spread * Decimal("10000") if relative_spread is not None else None
     round_trip = _decimal(cost_meta.get("round_trip_cost_bps"))
-
     explicit_hash = cost_meta.get("cost_model_hash")
     if isinstance(explicit_hash, str) and _is_sha256(explicit_hash):
         cost_hash = explicit_hash.lower()
@@ -451,7 +411,6 @@ def _metadata_facts(
             separators=(",", ":"),
         )
         cost_hash = sha256(identity.encode("utf-8")).hexdigest()
-
     return ShadowSupplementalFacts(
         cost_model_hash=cost_hash,
         spread_bps=spread_bps,
@@ -467,29 +426,27 @@ def _default_facts(
     *,
     cfg: EngineConfig,
 ) -> ShadowSupplementalFacts:
-    """Layer live public Bybit carry facts over metadata-only Shadow context.
-
-    This provider is used by the live Shadow scheduler. Historical replay must
-    inject a point-in-time facts provider rather than querying today's ticker.
-    Source failures remain explicit INPUT_UNAVAILABLE evidence.
-    """
-
     base = _metadata_facts(instrument, evaluated_at)
     if instrument.asset_class is not AssetClass.CRYPTO_PERPETUAL:
         return base
 
     execution_cost = _decimal(cfg.get("shadow.crypto_carry.execution_cost_bps", None))
-    hedge_cost = _decimal(
-        cfg.get("shadow.crypto_carry.hedge_carry_bps_per_interval", None)
-    )
+    hedge_cost = _decimal(cfg.get("shadow.crypto_carry.hedge_carry_bps_per_interval", None))
     uncertainty = _decimal(
         cfg.get("shadow.crypto_carry.funding_uncertainty_bps_per_interval", None)
     )
+    # The approved crypto-carry execution number is explicitly a conservative
+    # full entry+exit taker friction for the perpetual leg. Reuse it as the
+    # live-shadow breakout round-trip fallback instead of disabling breakout.
+    breakout_round_trip = base.round_trip_cost_bps or execution_cost
     cost_identity = json.dumps(
         {
             "schema": "shadow_crypto_carry_cost_context_v1",
             "base_cost_model_hash": base.cost_model_hash,
             "execution_cost_bps": None if execution_cost is None else str(execution_cost),
+            "breakout_round_trip_cost_bps": (
+                None if breakout_round_trip is None else str(breakout_round_trip)
+            ),
             "hedge_carry_bps_per_interval": None if hedge_cost is None else str(hedge_cost),
             "funding_uncertainty_bps_per_interval": (
                 None if uncertainty is None else str(uncertainty)
@@ -502,13 +459,13 @@ def _default_facts(
 
     try:
         carry_facts, _reports = crypto.carry_market_facts(
-            instrument.symbol,
-            evaluated_at=evaluated_at,
+            instrument.symbol, evaluated_at=evaluated_at,
         )
     except (FetchError, ValueError):
         return replace(
             base,
             cost_model_hash=cost_hash,
+            round_trip_cost_bps=breakout_round_trip,
             carry_execution_cost_bps=execution_cost,
             carry_hedge_cost_bps_per_interval=hedge_cost,
             carry_uncertainty_bps_per_interval=uncertainty,
@@ -518,6 +475,7 @@ def _default_facts(
     return replace(
         base,
         cost_model_hash=cost_hash,
+        round_trip_cost_bps=breakout_round_trip,
         crypto_carry_facts=carry_facts,
         carry_execution_cost_bps=execution_cost,
         carry_hedge_cost_bps_per_interval=hedge_cost,
