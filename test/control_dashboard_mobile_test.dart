@@ -324,14 +324,14 @@ void main() {
 
       await _pumpControl(tester, loader: loader);
       expect(calls, ['BYBIT']);
-      expect(find.textContaining('Показано 1'), findsOneWidget);
+      expect(find.textContaining('показано 1'), findsOneWidget);
 
       await tester.tap(find.text('FORTS'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 50));
 
       expect(calls, ['BYBIT', 'FORTS']);
-      expect(find.textContaining('Показано 7'), findsOneWidget);
+      expect(find.textContaining('показано 7'), findsOneWidget);
     });
   });
 }
