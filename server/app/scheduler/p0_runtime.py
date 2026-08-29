@@ -6,6 +6,8 @@ Keeps the tested generic Scheduler intact while adding runtime jobs:
   the owner scan/lifecycle path;
 - Paper A/B consumes immutable Shadow facts and writes only its isolated
   counterfactual measurement journal;
+- bounded risk optimization runs after measurement and keeps its own cadence /
+  minimum-evidence promotion gates;
 - owner capital refreshes server-side from read-only broker credentials.
 """
 
@@ -32,18 +34,7 @@ def _minutes_from_env(name: str, default: int) -> timedelta:
 
 
 def _add_shadow_job(scheduler, *, every: timedelta, shadow_runner=None) -> None:
-    """Insert isolated candidate measurement immediately after owner scan.
-
-    The production path is data-driven, not clock-driven: it advances only when
-    a FORTS/crypto closed-bar lane changes.  ``evaluated_at`` is pinned to the
-    newest visible closed H1 timestamp, so a scheduler/process restart over the
-    same market snapshot reproduces the same observation identity instead of
-    manufacturing another OOS denominator.
-
-    ``shadow_runner`` is an explicit test seam.  When supplied it is used
-    verbatim and is still placed as its own scheduler job; it cannot call the
-    owner scan unless the caller deliberately gives it such a function.
-    """
+    """Insert isolated candidate measurement immediately after owner scan."""
 
     if not isinstance(every, timedelta) or every <= timedelta(0):
         raise ValueError("shadow_every must be a positive timedelta")
@@ -84,13 +75,7 @@ def _add_shadow_job(scheduler, *, every: timedelta, shadow_runner=None) -> None:
 
 
 def _add_paper_ab_job(scheduler, *, every: timedelta, paper_ab_runner=None) -> None:
-    """Run counterfactual Paper measurement immediately after Shadow.
-
-    Unlike Shadow, this job must run on cadence even if a market watermark did
-    not change: a previously emitted decision can mature and become resolvable.
-    Seeding/outcome writes are idempotent and append-only, so cadence cannot
-    manufacture extra opportunities or rewrite old PnL.
-    """
+    """Run counterfactual Paper measurement immediately after Shadow."""
 
     if not isinstance(every, timedelta) or every <= timedelta(0):
         raise ValueError("paper_ab_every must be a positive timedelta")
@@ -115,14 +100,45 @@ def _add_paper_ab_job(scheduler, *, every: timedelta, paper_ab_runner=None) -> N
 
     scheduler.add("paper_ab", every, run)
     job = scheduler.jobs.pop()
-    # The canonical placement is immediately after Shadow.  If a custom
-    # scheduler somehow omits Shadow, fail closed rather than silently placing
-    # Paper elsewhere in the owner lifecycle.
     for index, existing in enumerate(scheduler.jobs):
         if existing.name == "shadow":
             scheduler.jobs.insert(index + 1, job)
             return
     raise RuntimeError("default scheduler has no shadow job")
+
+
+def _add_risk_optimizer_job(
+    scheduler,
+    *,
+    every: timedelta,
+    risk_optimizer_runner=None,
+) -> None:
+    """Schedule bounded risk-policy research after Paper A/B evidence.
+
+    The scheduler cadence is only a wake-up. ``maybe_optimize`` independently
+    enforces its persisted cadence, minimum sample and promotion criteria, so a
+    restart or a frequent tick cannot promote a policy without evidence.
+    """
+
+    if not isinstance(every, timedelta) or every <= timedelta(0):
+        raise ValueError("risk_optimizer_every must be a positive timedelta")
+
+    if risk_optimizer_runner is not None:
+        run = risk_optimizer_runner
+    else:
+
+        def run(session) -> str:
+            from ..risk.optimizer import maybe_optimize
+
+            return maybe_optimize(session) or "risk optimizer: cadence not due"
+
+    scheduler.add("risk_optimizer", every, run)
+    job = scheduler.jobs.pop()
+    for index, existing in enumerate(scheduler.jobs):
+        if existing.name == "paper_ab":
+            scheduler.jobs.insert(index + 1, job)
+            return
+    raise RuntimeError("default scheduler has no paper_ab job")
 
 
 def _add_capital_job(scheduler) -> None:
@@ -132,25 +148,19 @@ def _add_capital_job(scheduler) -> None:
         lambda session: refresh_capital(session),
     )
     job = scheduler.jobs.pop()
-    # Keep private broker reads before heavy market ingestion so Today gets a
-    # fresh owner snapshot quickly even when public history refresh takes long.
     insert_at = 1 if scheduler.jobs else 0
     scheduler.jobs.insert(insert_at, job)
 
 
 def build_default_scheduler(*args, **kwargs):
-    # Candidate measurement belongs to this production hardening layer rather
-    # than the generic Scheduler API.  Pop its arguments before delegating to
-    # the original builder so existing callers stay source-compatible.
     shadow_every = kwargs.pop("shadow_every", timedelta(minutes=15))
     shadow_runner = kwargs.pop("shadow_runner", None)
     paper_ab_every = kwargs.pop("paper_ab_every", timedelta(minutes=15))
     paper_ab_runner = kwargs.pop("paper_ab_runner", None)
+    risk_optimizer_every = kwargs.pop("risk_optimizer_every", timedelta(hours=24))
+    risk_optimizer_runner = kwargs.pop("risk_optimizer_runner", None)
 
     scheduler = _ORIGINAL_BUILD(*args, **kwargs)
-    # Scan wake-up stays in runner.py.  Do not replace that job here: a second
-    # implementation previously created two sources of truth and could bypass
-    # the canonical economic-event calendar and future scheduler safeguards.
     _add_shadow_job(
         scheduler,
         every=shadow_every,
@@ -160,6 +170,11 @@ def build_default_scheduler(*args, **kwargs):
         scheduler,
         every=paper_ab_every,
         paper_ab_runner=paper_ab_runner,
+    )
+    _add_risk_optimizer_job(
+        scheduler,
+        every=risk_optimizer_every,
+        risk_optimizer_runner=risk_optimizer_runner,
     )
     _add_capital_job(scheduler)
     apply_scheduler_lane(
