@@ -109,21 +109,31 @@ class ScanResult:
 
 
 def _load_bars(
-    session: Session, instrument_id: str, timeframe: Timeframe, limit: int
+    session: Session,
+    instrument_id: str,
+    timeframe: Timeframe,
+    limit: int,
+    *,
+    as_of: datetime | None = None,
 ) -> list[Candle]:
-    """Закрытые свечи в хронологическом порядке.
+    """Закрытые свечи в хронологическом порядке и без look-ahead.
 
-    Только закрытые (§4.4). Формирующийся бар сюда не попадает никогда — не
-    «по умолчанию», а вовсе: конвейер не тот слой, где такое решение
-    принимается.
+    Только закрытые (§4.4). Исторический вызов дополнительно ограничивается
+    ``as_of``: бар, появившийся после момента решения, физически не может
+    попасть в replay. Live-вызов использует текущий ``now`` через тот же путь.
     """
+    if as_of is not None and (as_of.tzinfo is None or as_of.utcoffset() is None):
+        raise ValueError("as_of must be timezone-aware")
+    conditions = [
+        Bar.instrument_id == instrument_id,
+        Bar.timeframe == timeframe,
+        Bar.is_closed.is_(True),
+    ]
+    if as_of is not None:
+        conditions.append(Bar.open_time <= as_of)
     rows = session.execute(
         select(Bar)
-        .where(
-            Bar.instrument_id == instrument_id,
-            Bar.timeframe == timeframe,
-            Bar.is_closed.is_(True),
-        )
+        .where(*conditions)
         .order_by(Bar.open_time.desc())
         .limit(limit)
     ).scalars()
@@ -340,8 +350,8 @@ def scan_instrument(
     iid = instrument.instrument_id
 
     # ── Данные ───────────────────────────────────────────────────────────
-    context = _load_bars(session, iid, CONTEXT_TF, 400)
-    trigger = _load_bars(session, iid, TRIGGER_TF, 800)
+    context = _load_bars(session, iid, CONTEXT_TF, 400, as_of=now)
+    trigger = _load_bars(session, iid, TRIGGER_TF, 800, as_of=now)
     if len(context) < MIN_CONTEXT_BARS:
         return None, [Skipped(iid, "данные", f"дневных баров {len(context)}, нужно {MIN_CONTEXT_BARS}")], []
     if len(trigger) < MIN_TRIGGER_BARS:
