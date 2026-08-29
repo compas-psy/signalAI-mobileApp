@@ -151,11 +151,12 @@ Future<void> _pump(WidgetTester tester) async {
 }
 
 Future<void> _scrollTo(WidgetTester tester, Finder target) async {
-  for (var i = 0; i < 30 && target.evaluate().isEmpty; i++) {
-    await tester.drag(find.byType(ListView), const Offset(0, -250));
-    await tester.pump(const Duration(milliseconds: 30));
-  }
-  await tester.ensureVisible(target);
+  await tester.scrollUntilVisible(
+    target,
+    300,
+    scrollable: find.byType(Scrollable).first,
+    maxScrolls: 30,
+  );
   await tester.pump(const Duration(milliseconds: 30));
 }
 
