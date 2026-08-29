@@ -31,11 +31,11 @@ enum AppSection {
           ],
         AppSection.journal => const ['Сделки', 'Пропуски', 'Метрики'],
         // Thin-клиент не показывает справочные вкладки под видом настроек.
-        // Execution mode и security gates видны в контексте риска/сделки;
-        // отдельная пилюля имеет право существовать только если ею можно
-        // что-то изменить или запустить.
+        // «Контроль» — read-only owner control plane: он объясняет качество
+        // стратегии, A/B, бэктест и risk optimizer, но ничего не промоутит.
         AppSection.settings => const [
             'Риск',
+            'Контроль',
             'Подключения',
             'Стратегии',
             'Уведомления',
@@ -70,6 +70,7 @@ enum JournalPill { trades, skips, metrics }
 enum SettingsPill {
   mode,
   risk,
+  control,
   connections,
   strategies,
   notifications,
@@ -78,6 +79,7 @@ enum SettingsPill {
 
   static const List<SettingsPill> thinValues = [
     risk,
+    control,
     connections,
     strategies,
     notifications,
@@ -99,9 +101,10 @@ class AppRoute {
         'ideas' || 'trading' => const AppRoute(AppSection.ideas),
         'invest' || 'capital' => const AppRoute(AppSection.portfolio),
         'trades' => const AppRoute(AppSection.journal),
-        // В thin-порядке «Стратегии» — третья пилюля.
-        'strategies' || 'lab' => const AppRoute(AppSection.settings, 2),
-        'settings' || 'control' => const AppRoute(AppSection.settings),
+        // Owner Control занимает индекс 1; прежняя «Стратегии» сдвинулась на 3.
+        'strategies' => const AppRoute(AppSection.settings, 3),
+        'lab' || 'control' => const AppRoute(AppSection.settings, 1),
+        'settings' => const AppRoute(AppSection.settings),
         _ => const AppRoute(AppSection.today),
       };
 
