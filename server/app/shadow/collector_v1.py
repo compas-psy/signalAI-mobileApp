@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from hashlib import sha256
@@ -25,8 +25,10 @@ from sqlalchemy.orm import Session
 
 from ..config import EngineConfig, get_config
 from ..experiments.candidate_oos_batch_v1 import R4_CANDIDATE_VERSIONS
+from ..market import crypto
 from ..market.candles import Candle, resample_hours
 from ..market.derivatives import CryptoCarryMarketFacts
+from ..market.http import FetchError
 from ..models import Bar, Instrument
 from ..models.enums import (
     AssetClass,
@@ -136,8 +138,10 @@ def collect_shadow(
         raise ValueError("session must be a SQLAlchemy Session")
     moment = evaluated_at or datetime.now(UTC)
     _require_aware_datetime("evaluated_at", moment)
-    provider = facts_provider or _metadata_facts
     config = cfg or get_config()
+    provider = facts_provider or (
+        lambda instrument, at: _default_facts(instrument, at, cfg=config)
+    )
 
     instruments = list(
         session.execute(
@@ -454,6 +458,71 @@ def _metadata_facts(
         round_trip_cost_bps=round_trip,
         crypto_carry_facts=None,
         carry_unavailable_reason="FUNDING_FACTS_UNAVAILABLE",
+    )
+
+
+def _default_facts(
+    instrument: Instrument,
+    evaluated_at: datetime,
+    *,
+    cfg: EngineConfig,
+) -> ShadowSupplementalFacts:
+    """Layer live public Bybit carry facts over metadata-only Shadow context.
+
+    This provider is used by the live Shadow scheduler. Historical replay must
+    inject a point-in-time facts provider rather than querying today's ticker.
+    Source failures remain explicit INPUT_UNAVAILABLE evidence.
+    """
+
+    base = _metadata_facts(instrument, evaluated_at)
+    if instrument.asset_class is not AssetClass.CRYPTO_PERPETUAL:
+        return base
+
+    execution_cost = _decimal(cfg.get("shadow.crypto_carry.execution_cost_bps", None))
+    hedge_cost = _decimal(
+        cfg.get("shadow.crypto_carry.hedge_carry_bps_per_interval", None)
+    )
+    uncertainty = _decimal(
+        cfg.get("shadow.crypto_carry.funding_uncertainty_bps_per_interval", None)
+    )
+    cost_identity = json.dumps(
+        {
+            "schema": "shadow_crypto_carry_cost_context_v1",
+            "base_cost_model_hash": base.cost_model_hash,
+            "execution_cost_bps": None if execution_cost is None else str(execution_cost),
+            "hedge_carry_bps_per_interval": None if hedge_cost is None else str(hedge_cost),
+            "funding_uncertainty_bps_per_interval": (
+                None if uncertainty is None else str(uncertainty)
+            ),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    cost_hash = sha256(cost_identity.encode("utf-8")).hexdigest()
+
+    try:
+        carry_facts, _reports = crypto.carry_market_facts(
+            instrument.symbol,
+            evaluated_at=evaluated_at,
+        )
+    except (FetchError, ValueError):
+        return replace(
+            base,
+            cost_model_hash=cost_hash,
+            carry_execution_cost_bps=execution_cost,
+            carry_hedge_cost_bps_per_interval=hedge_cost,
+            carry_uncertainty_bps_per_interval=uncertainty,
+            carry_unavailable_reason="BYBIT_CARRY_FACTS_UNAVAILABLE",
+        )
+
+    return replace(
+        base,
+        cost_model_hash=cost_hash,
+        crypto_carry_facts=carry_facts,
+        carry_execution_cost_bps=execution_cost,
+        carry_hedge_cost_bps_per_interval=hedge_cost,
+        carry_uncertainty_bps_per_interval=uncertainty,
+        carry_unavailable_reason=None,
     )
 
 
