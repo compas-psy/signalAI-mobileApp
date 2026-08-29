@@ -280,6 +280,18 @@ portfolio:
     balanced: [5, 8]
     max_potential: [7, 12]
 
+# Measurement-only supplemental assumptions for Shadow crypto carry. These do
+# not change order sizing, admission, risk caps or live execution. They are
+# explicit here so every Shadow observation is tied to an auditable cost hash.
+shadow:
+  crypto_carry:
+    # Conservative full entry+exit taker friction for the hedged perpetual leg.
+    execution_cost_bps: 11.0
+    # Additional hedge/capital carry haircut per funding interval.
+    hedge_carry_bps_per_interval: 2.0
+    # Guard against the next funding print differing from the observed median.
+    funding_uncertainty_bps_per_interval: 2.0
+
 backtest:
   walk_forward:
     min_history_months: 36
