@@ -12,6 +12,7 @@ import 'screens/ideas_screen.dart';
 import 'screens/journal_screen.dart';
 import 'screens/portfolio_screen.dart';
 import 'screens/diagnostics_screen.dart';
+import 'screens/server_control_screen.dart';
 import 'screens/server_data_screen.dart';
 import 'screens/server_ideas_screen.dart';
 import 'screens/server_integrations_screen.dart';
@@ -224,13 +225,14 @@ class AppShell extends StatelessWidget {
     }
 
     if (controller.section == AppSection.settings) {
-      // На экране настроек всегда один и тот же видимый порядок из пяти
+      // На экране настроек всегда один и тот же видимый порядок из шести
       // разделов. SettingsPill.values хранит legacy mode/security ради
       // совместимости, поэтому видимый индекс нельзя трактовать как enum.index.
       final selected = SettingsPill.thinAt(controller.pill);
       if (controller.thinMode) {
         return switch (selected) {
           SettingsPill.risk => const ServerRiskScreen(),
+          SettingsPill.control => const ServerControlScreen(),
           SettingsPill.connections => const ServerIntegrationsScreen(),
           SettingsPill.strategies => StrategyComparisonPanel(
               child: StrategiesScreen(
@@ -254,6 +256,7 @@ class AppShell extends StatelessWidget {
       }
 
       return switch (selected) {
+        SettingsPill.control => const ServerControlScreen(),
         SettingsPill.strategies => StrategiesScreen(
             snapshot: controller.strategies!,
             backtestRunning: controller.backtestRunning,
