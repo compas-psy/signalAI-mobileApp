@@ -26,8 +26,8 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..models import Bar, DataQualityEvent
-from ..models.enums import Timeframe
+from ..models import Bar, DataQualityEvent, Instrument
+from ..models.enums import AssetClass, Timeframe, Venue
 from ..market.blindness import annotate as annotate_blind
 from ..ops.retention import RetentionAutopilotConfig
 from .market_watermark import Watermarks, changed_lanes, snapshot as market_watermark_snapshot
@@ -78,17 +78,7 @@ class Scheduler:
         now: datetime | None = None,
         autocommit: bool = True,
     ) -> list[JobResult]:
-        """Выполнить все назревшие задачи по очереди.
-
-        Отказ одной задачи не отменяет остальные и не останавливает
-        планировщик: сломавшаяся загрузка одной площадки не должна лишать
-        владельца пересчёта по другой.
-
-        Каждая задача фиксируется отдельно. Это не оптимизация: откат после
-        упавшего скана унёс бы вместе с ним и загруженные баром ранее данные,
-        то есть отказ на последнем шаге стирал бы работу всех предыдущих.
-        ``autocommit=False`` нужен тестам, которые держат свою транзакцию.
-        """
+        """Выполнить все назревшие задачи по очереди."""
         moment = now or datetime.now(UTC)
         results: list[JobResult] = []
         for job in self.jobs:
@@ -119,16 +109,103 @@ class Scheduler:
 def latest_bar_time(
     session: Session, timeframe: Timeframe = Timeframe.H1
 ) -> datetime | None:
-    """Время самого свежего закрытого бара во всей базе.
-
-    Оставлено как общий диагностический helper. Production wake-up scan не
-    использует этот максимум: FORTS и crypto имеют независимые watermarks.
-    """
+    """Время самого свежего закрытого бара во всей базе."""
     return session.execute(
         select(func.max(Bar.open_time)).where(
             Bar.timeframe == timeframe, Bar.is_closed.is_(True)
         )
     ).scalar_one_or_none()
+
+
+def _admission_reason_code(reason: str) -> str:
+    codes: list[str] = []
+    probes = (
+        ("R/R", "RR"),
+        ("EV=", "EXPECTED_R"),
+        ("p=", "PROBABILITY"),
+        ("confidence=", "CONFIDENCE"),
+        ("триггер", "TRIGGER"),
+        ("календар", "ECONOMIC_EVENT"),
+        ("ликвид", "LIQUIDITY"),
+        ("лимит", "RISK_LIMIT"),
+    )
+    lowered = reason.lower()
+    for needle, code in probes:
+        if (needle.lower() if needle.isascii() else needle) in (
+            lowered if needle.isascii() else reason.lower()
+        ):
+            if code not in codes:
+                codes.append(code)
+    return "+".join(codes) if codes else "ADMISSION_GATE"
+
+
+def _terminal_from_skip(stage: str, reason: str) -> tuple[str, str]:
+    if stage == "данные":
+        lowered = reason.lower()
+        if "дневн" in lowered:
+            return "DATA_BLOCKED", "DATA_D1_INSUFFICIENT"
+        if "часов" in lowered:
+            return "DATA_BLOCKED", "DATA_H1_INSUFFICIENT"
+        if "4h" in lowered:
+            return "DATA_BLOCKED", "DATA_H4_INSUFFICIENT"
+        return "DATA_BLOCKED", "DATA_INSUFFICIENT"
+    if stage == "ликвидность":
+        return "LIQUIDITY_BLOCKED", "LIQUIDITY_UNTRADEABLE"
+    if stage == "допуск":
+        return "ADMISSION_REJECTED", _admission_reason_code(reason)
+    if stage == "дубль":
+        return "DUPLICATE", "LIVE_IDEA_EXISTS"
+    if stage == "ошибка":
+        return "ERROR", "SCAN_EXCEPTION"
+    return "ERROR", "UNKNOWN_SCAN_SKIP"
+
+
+def _record_bybit_scan_funnel(session: Session, result, *, occurred_at: datetime) -> None:
+    """Persist one terminal machine-readable fact for every active Bybit symbol."""
+
+    from ..control.bybit_funnel import FunnelFact, record_funnel_fact
+
+    instrument_ids = set(
+        session.execute(
+            select(Instrument.instrument_id).where(
+                Instrument.venue == Venue.CRYPTO,
+                Instrument.asset_class == AssetClass.CRYPTO_PERPETUAL,
+                Instrument.in_universe.is_(True),
+                Instrument.is_tradable.is_(True),
+            )
+        ).scalars()
+    )
+    if not instrument_ids:
+        return
+
+    published = {
+        idea.instrument_id for idea in result.ideas if idea.instrument_id in instrument_ids
+    }
+    skipped = {
+        item.instrument_id: item
+        for item in result.skipped
+        if item.instrument_id in instrument_ids
+    }
+    sequence = max(0, int(occurred_at.timestamp() * 1_000_000))
+    for instrument_id in sorted(instrument_ids):
+        if instrument_id in published:
+            terminal, code, detail = "PUBLISHED", "ACTIVE", "TradeIdea published"
+        elif instrument_id in skipped:
+            item = skipped[instrument_id]
+            terminal, code = _terminal_from_skip(item.stage, item.reason)
+            detail = item.reason
+        else:
+            # scan_instrument has only three terminal outcomes: idea, Skipped,
+            # or strategy Rejection(s). Rejections are flattened in ScanResult
+            # without instrument id, so an otherwise-unaccounted instrument is
+            # deterministically the no-valid-setup branch.
+            terminal, code, detail = "SETUP_REJECTED", "NO_VALID_SETUP", ""
+        record_funnel_fact(
+            session,
+            FunnelFact(instrument_id, terminal, code, sequence=sequence),
+            detail=detail,
+            occurred_at=occurred_at,
+        )
 
 
 def build_default_scheduler(
@@ -146,20 +223,7 @@ def build_default_scheduler(
     resource_snapshot_provider=None,
     fetch=None,
 ) -> Scheduler:
-    """Расписание по умолчанию: вселенная → загрузка → допуск → скан.
-
-    Порядок здесь не косметический, он и есть §5: справочник обновляется
-    первым (иначе загружать нечего), допуск идёт после загрузки (иначе
-    ликвидность нечем мерить), а скан — последним и только по новым барам.
-
-    Скан объявлен отдельной задачей, но фактически привязан к данным. FORTS
-    и crypto имеют отдельные closed-bar watermarks: закрытая/упавшая площадка
-    не может подавить новые бары другой площадки. Календарь торгов при этом
-    не нужен — его роль играет сам поток котировок каждой площадки.
-
-    Вселенная пересобирается редко: состав срочного рынка меняется не чаще
-    раза в квартал, а каждый проход — это полная выгрузка доски.
-    """
+    """Расписание по умолчанию: вселенная → загрузка → допуск → скан."""
     from ..market.ingest import ingest_universe
     from ..market.investments import classify_funds, sync_investments
     from ..market.universe import review_universe, sync_crypto, sync_futures
@@ -199,10 +263,6 @@ def build_default_scheduler(
             ("инвестиции", sync_investments),
         ):
             try:
-                # Each source gets its own SAVEPOINT.  A failed SQL statement
-                # inside FORTS must not leave the outer transaction unusable
-                # for Bybit (and vice versa).  Successful source mutations stay
-                # in the outer transaction and are committed by Scheduler.tick.
                 with session.begin_nested():
                     kept = sync(session, fetch=fetch)
                 parts.append(f"{name}: {len(kept)}")
@@ -289,11 +349,13 @@ def build_default_scheduler(
                 return f"новых баров нет с {newest.isoformat()} — скан пропущен"
 
         from ..market.economic_events import load_owned_calendar
-        result = run_scan(session, event_calendar=load_owned_calendar(now=datetime.now(UTC)))
-        # Advance the in-memory watermark only after a successful scan.  If
-        # scan raises, Scheduler.tick rolls the DB transaction back and the
-        # same venue update is retried on the next due tick instead of being
-        # silently consumed.
+
+        occurred_at = datetime.now(UTC)
+        result = run_scan(
+            session,
+            event_calendar=load_owned_calendar(now=occurred_at),
+        )
+        _record_bybit_scan_funnel(session, result, occurred_at=occurred_at)
         state["watermarks"] = current
         return (
             f"просмотрено {result.scanned}, идей {result.produced}, "
@@ -302,9 +364,6 @@ def build_default_scheduler(
         )
 
     def portfolio(session: Session) -> str:
-        # В отличие от скана, срок жизни модели сам по себе является
-        # причиной пересчёта. Поэтому отсутствие новых D1 не блокирует
-        # обновление модели, которая истекла или истечёт в ближайшие сутки.
         decision = rebuild_due(session)
         if not decision.due:
             return f"пересчёт пропущен — {decision.reason}"
@@ -332,15 +391,15 @@ def build_default_scheduler(
         session.flush()
         engines = run_demand(session)
         expired = expire_hypotheses(session)
-        state = readiness(session)
+        source_state = readiness(session)
         detail = (
-            f"источников {state['total']}, бесплатный маршрут у "
-            f"{state['free_route']}; сбор: {collected.summary()}"
+            f"источников {source_state['total']}, бесплатный маршрут у "
+            f"{source_state['free_route']}; сбор: {collected.summary()}"
             f"; движки: {engines.summary()}"
         )
-        if state["awaiting_terms_check"]:
+        if source_state["awaiting_terms_check"]:
             detail += (
-                f", ждут проверки условий {len(state['awaiting_terms_check'])}"
+                f", ждут проверки условий {len(source_state['awaiting_terms_check'])}"
                 " — до неё сбор не запускается"
             )
         if expired:
@@ -348,29 +407,29 @@ def build_default_scheduler(
         return detail
 
     def resource_autopilot(session: Session) -> str:
-        snapshot = resource_snapshot()
-        assessment = pressure_classifier.evaluate(snapshot)
+        resource = resource_snapshot()
+        assessment = pressure_classifier.evaluate(resource)
         plan = build_backpressure_plan(state=assessment.state)
         retention_attempt_id = None
         if retention.dry_run:
             retention_result = run_safe_retention(
                 assessment=assessment,
                 targets=retention.targets,
-                now=snapshot.collected_at,
+                now=resource.collected_at,
                 dry_run=True,
             )
             attempt_detail = "dry-run"
         else:
             stable_attempt_id = derive_retention_attempt_id(
                 targets=retention.targets,
-                now=snapshot.collected_at,
+                now=resource.collected_at,
                 budget_period=retention.budget_period,
             )
             attempt = execute_retention_attempt(
                 session,
                 assessment=assessment,
                 targets=retention.targets,
-                now=snapshot.collected_at,
+                now=resource.collected_at,
                 dry_run=False,
                 attempt_id=stable_attempt_id,
             )
@@ -384,7 +443,7 @@ def build_default_scheduler(
             plan=plan,
             ollama=ollama,
             retention=retention_result,
-            now=snapshot.collected_at,
+            now=resource.collected_at,
             force_audit=True,
             retention_attempt_id=retention_attempt_id,
         )
@@ -414,12 +473,7 @@ def run_forever(
     interval_seconds: int = 60,
     stop: Callable[[], bool] | None = None,
 ) -> None:
-    """Основной цикл. Каждая итерация — своя сессия.
-
-    Одна сессия на всё время работы копила бы объекты и держала соединение
-    открытым сутками. Транзакции внутри тика закрывает сам ``tick`` — по
-    одной на задачу.
-    """
+    """Основной цикл. Каждая итерация — своя сессия."""
     should_stop = stop or (lambda: False)
     while not should_stop():
         session = session_factory()
