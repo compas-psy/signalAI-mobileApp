@@ -15,6 +15,7 @@ from typing import Any, Literal
 from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session, aliased
 
+from ..backtest.readiness import load_venue_readiness
 from ..config import EngineConfig, get_config
 from ..models import (
     BacktestRun,
@@ -419,8 +420,10 @@ def _serialize_backtest(run: BacktestRun | None) -> dict[str, Any] | None:
 def _backtest_snapshot(
     session: Session,
     *,
+    venue: ExternalVenue,
     market_marker: str,
     cfg: EngineConfig,
+    now: datetime,
 ) -> dict[str, Any]:
     recent = session.execute(
         select(BacktestRun)
@@ -437,8 +440,10 @@ def _backtest_snapshot(
         ),
         None,
     )
+    readiness = load_venue_readiness(session, venue, now=now, cfg=cfg)
     return {
         "latest": _serialize_backtest(latest),
+        "data_readiness": readiness.as_json(),
         "walk_forward": dict(cfg.get("backtest.walk_forward")),
         "paper_gate": dict(cfg.get("backtest.paper_gate")),
         "live_gate": dict(cfg.get("backtest.live_gate")),
@@ -592,8 +597,10 @@ def build_control_dashboard(
         "competition": competition,
         "backtest": _backtest_snapshot(
             session,
+            venue=venue,
             market_marker=market_marker,
             cfg=config,
+            now=moment,
         ),
         "risk_optimizer": _risk_optimizer_snapshot(session, cfg=config),
     }

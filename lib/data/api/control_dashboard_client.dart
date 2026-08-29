@@ -385,12 +385,14 @@ class BacktestRunSummary {
 class ControlBacktestSnapshot {
   const ControlBacktestSnapshot({
     required this.latest,
+    required this.dataReadiness,
     required this.walkForward,
     required this.paperGate,
     required this.liveGate,
   });
 
   final BacktestRunSummary? latest;
+  final Map<String, dynamic> dataReadiness;
   final Map<String, dynamic> walkForward;
   final Map<String, dynamic> paperGate;
   final Map<String, dynamic> liveGate;
@@ -402,6 +404,10 @@ class ControlBacktestSnapshot {
             : BacktestRunSummary.fromJson(
                 _requiredMap(json['latest'], 'backtest.latest'),
               ),
+        dataReadiness: _requiredMap(
+          json['data_readiness'],
+          'backtest.data_readiness',
+        ),
         walkForward: _requiredMap(json['walk_forward'], 'backtest.walk_forward'),
         paperGate: _requiredMap(json['paper_gate'], 'backtest.paper_gate'),
         liveGate: _requiredMap(json['live_gate'], 'backtest.live_gate'),

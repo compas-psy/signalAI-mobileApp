@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/widgets.dart';
 
 import '../../data/api/control_dashboard_client.dart';
+import '../../data/api/control_progress.dart';
 import '../../theme/tokens.dart';
 import '../../theme/typography.dart';
 import '../widgets/common.dart';
@@ -240,7 +241,10 @@ class _ServerControlScreenState extends State<ServerControlScreen> {
             ],
             for (final candidate in snapshot.competition.candidates) ...[
               const SizedBox(height: 10),
-              _CompetitionCard(candidate: candidate),
+              _CompetitionCard(
+                candidate: candidate,
+                requiredSample: snapshot.competition.minComparableSample,
+              ),
             ],
           ],
         ),
@@ -248,6 +252,13 @@ class _ServerControlScreenState extends State<ServerControlScreen> {
 
   Widget _backtest(ControlBacktestSnapshot snapshot) {
     final run = snapshot.latest;
+    final readiness = snapshot.dataReadiness;
+    final readinessStatus = readiness['status']?.toString() ?? 'UNKNOWN';
+    final d1Months = readiness['available_d1_months'] ?? 0;
+    final h1Months = readiness['available_h1_months'] ?? 0;
+    final requiredMonths = readiness['required_months'] ??
+        snapshot.walkForward['min_history_months'] ??
+        '—';
     return SectionCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -256,8 +267,10 @@ class _ServerControlScreenState extends State<ServerControlScreen> {
           const SizedBox(height: 8),
           if (run == null)
             Text(
-              'Для $_venueName нет сохранённого серверного бэктеста.',
-              style: T.body(11.5, color: C.muted, height: 1.45),
+              readinessStatus == 'INSUFFICIENT_HISTORY'
+                  ? 'Бэктест заблокирован честно: истории недостаточно · D1 $d1Months/$requiredMonths мес · H1 $h1Months/$requiredMonths мес.'
+                  : 'Для $_venueName нет сохранённого серверного бэктеста · данные: $readinessStatus.',
+              style: T.body(11.5, color: C.warning, height: 1.45),
             )
           else ...[
             Row(
@@ -439,14 +452,22 @@ class _CandidateRuntimeCard extends StatelessWidget {
 }
 
 class _CompetitionCard extends StatelessWidget {
-  const _CompetitionCard({required this.candidate});
+  const _CompetitionCard({
+    required this.candidate,
+    required this.requiredSample,
+  });
 
   final CompetitionCandidateSummary candidate;
+  final int requiredSample;
 
   @override
   Widget build(BuildContext context) {
     final paper = candidate.paper;
     final comparable = paper.comparablePairs;
+    final progress = ComparableSampleProgress(
+      comparable: comparable,
+      required: requiredSample,
+    );
     return InsetBox(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -466,16 +487,17 @@ class _CompetitionCard extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 6),
-          if (comparable == 0)
-            Text(
-              'Сравнимых исходов пока нет · control: ${_r(paper.controlMeanNetR)} · кандидат: ${_r(paper.candidateMeanNetR)}',
-              style: T.body(10.8, color: C.muted, height: 1.45),
-            )
-          else
-            Text(
-              'N $comparable · control ${_r(paper.controlMeanNetR)} · кандидат ${_r(paper.candidateMeanNetR)} · Δ ${_r(paper.deltaMeanNetR)}',
-              style: T.mono(10.8, color: C.textSecondary),
-            ),
+          Text(
+            progress.label,
+            style: T.mono(10.8, color: progress.adequate ? C.green : C.warning),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            comparable == 0
+                ? 'Сравнимых исходов пока нет · control ${_r(paper.controlMeanNetR)} · кандидат ${_r(paper.candidateMeanNetR)}'
+                : 'control ${_r(paper.controlMeanNetR)} · кандидат ${_r(paper.candidateMeanNetR)} · Δ ${_r(paper.deltaMeanNetR)}',
+            style: T.body(10.8, color: C.textSecondary, height: 1.45),
+          ),
           const SizedBox(height: 4),
           Text(
             'Outcomes: control ${paper.control.evaluatedOutcomes}/${paper.control.decisions} · candidate ${paper.candidate.evaluatedOutcomes}/${paper.candidate.decisions}',
