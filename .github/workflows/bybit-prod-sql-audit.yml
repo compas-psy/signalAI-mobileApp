@@ -1,0 +1,64 @@
+name: One-shot Bybit production SQL audit
+
+on:
+  push:
+    branches:
+      - diag-bybit-prod-20260830
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare pinned SSH
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
+          HOST_KEY_SHA256: ${{ secrets.VPS_SSH_HOST_KEY_SHA256 || 'SHA256:cUfeWKyHoFIhKsV17Bpk076calxUaxd90XhuETb4vng' }}
+        run: |
+          set -euo pipefail
+          test -n "$HOST" && test -n "$KEY" && test -n "$HOST_KEY_SHA256"
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          bash .github/scripts/prepare_known_host.sh "$HOST" "$HOST_KEY_SHA256"
+      - name: Read production SQL and process state
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          USER_NAME: ${{ secrets.VPS_USER || 'root' }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$USER_NAME@$HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          SUDO=''; [ "$(id -u)" -eq 0 ] || SUDO=sudo
+          DIR="$HOME/signalai"
+          ENV_FILE='/etc/signalai/.env'
+          cd "$DIR/server"
+          PGUSER="$(sed -n 's/^POSTGRES_USER=//p' "$ENV_FILE" | tail -1)"
+          PGDB="$(sed -n 's/^POSTGRES_DB=//p' "$ENV_FILE" | tail -1)"
+          [ -n "$PGDB" ] || PGDB=signalai
+          echo '===== SOURCE / HEAVY PROCESS ====='
+          printf 'source='; cat "$DIR/.signalai-source-sha"
+          $SUDO docker inspect -f 'status={{.State.Status}} restarts={{.RestartCount}} started={{.State.StartedAt}} pid={{.State.Pid}}' server-scheduler-heavy-1
+          $SUDO docker stats --no-stream --format 'name={{.Name}} cpu={{.CPUPerc}} mem={{.MemUsage}}' server-scheduler-heavy-1
+          echo '===== HEAVY LOGS SINCE DEPLOY ====='
+          $SUDO docker compose --env-file "$ENV_FILE" logs --since 20m --no-color scheduler-heavy 2>&1 | tail -200
+          echo '===== DATASET FILES ====='
+          $SUDO docker compose --env-file "$ENV_FILE" exec -T scheduler-heavy sh -c 'printf "files="; find /var/lib/signalai-datasets -type f 2>/dev/null | wc -l; du -sh /var/lib/signalai-datasets 2>/dev/null || true; find /var/lib/signalai-datasets -type f -printf "%TY-%Tm-%TdT%TH:%TM:%TS %s %p\n" 2>/dev/null | sort | tail -30'
+          echo '===== DATASET SNAPSHOTS ====='
+          $SUDO docker compose --env-file "$ENV_FILE" exec -T postgres psql -X -v ON_ERROR_STOP=1 -U "$PGUSER" -d "$PGDB" -P pager=off -c "select created_at,dataset_name,left(snapshot_id,12) snapshot,row_count,source_watermark->>'readiness' readiness,source_watermark->>'symbol' symbol,source_watermark->'blockers' blockers from dataset_snapshots where dataset_name like 'bybit:%:multistream' order by created_at desc limit 30;"
+          echo '===== BYBIT ENTRY BACKTESTS ====='
+          $SUDO docker compose --env-file "$ENV_FILE" exec -T postgres psql -X -v ON_ERROR_STOP=1 -U "$PGUSER" -d "$PGDB" -P pager=off -c "select created_at,strategy,trades,gate_passed,expectancy_r,profit_factor,max_drawdown,gate_detail_json->>'reason' reason,left(label,70) label from backtest_runs where label like 'bybit-entry-backtest:%' order by created_at desc limit 40;"
+          echo '===== BYBIT FUNNEL 12H REASONS ====='
+          $SUDO docker compose --env-file "$ENV_FILE" exec -T postgres psql -X -v ON_ERROR_STOP=1 -U "$PGUSER" -d "$PGDB" -P pager=off -c "select payload_json->>'terminal_stage' stage,payload_json->>'reason_code' reason,count(*) n from data_quality_events where source='bybit-scan' and flag='SCAN_TERMINAL' and occurred_at >= now()-interval '12 hours' group by 1,2 order by n desc,stage,reason;"
+          echo '===== LATEST BYBIT FUNNEL FACT PER INSTRUMENT ====='
+          $SUDO docker compose --env-file "$ENV_FILE" exec -T postgres psql -X -v ON_ERROR_STOP=1 -U "$PGUSER" -d "$PGDB" -P pager=off -c "select distinct on (instrument_id) instrument_id,occurred_at,payload_json->>'terminal_stage' stage,payload_json->>'reason_code' reason from data_quality_events where source='bybit-scan' and flag='SCAN_TERMINAL' order by instrument_id,occurred_at desc,id desc;"
+          echo '===== CRYPTO IDEAS ====='
+          $SUDO docker compose --env-file "$ENV_FILE" exec -T postgres psql -X -v ON_ERROR_STOP=1 -U "$PGUSER" -d "$PGDB" -P pager=off -c "select count(*) total,min(created_at) first,max(created_at) last from trade_ideas where instrument_id like 'CRYPTO:PERP:%'; select created_at,instrument_id,strategy,strategy_version,status from trade_ideas where instrument_id like 'CRYPTO:PERP:%' order by created_at desc limit 20;"
+          REMOTE
+      - name: Remove SSH key
+        if: always()
+        run: shred -u ~/.ssh/id_deploy 2>/dev/null || rm -f ~/.ssh/id_deploy
