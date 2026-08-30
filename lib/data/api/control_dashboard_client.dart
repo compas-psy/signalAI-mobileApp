@@ -626,12 +626,14 @@ class BacktestRunSummary {
 class ControlBacktestSnapshot {
   const ControlBacktestSnapshot({
     required this.latest,
+    required this.byStrategy,
     required this.walkForward,
     required this.paperGate,
     required this.liveGate,
   });
 
   final BacktestRunSummary? latest;
+  final List<BacktestRunSummary> byStrategy;
   final Map<String, dynamic> walkForward;
   final Map<String, dynamic> paperGate;
   final Map<String, dynamic> liveGate;
@@ -643,6 +645,11 @@ class ControlBacktestSnapshot {
             : BacktestRunSummary.fromJson(
                 _requiredMap(json['latest'], 'backtest.latest'),
               ),
+        byStrategy: json['by_strategy'] == null
+            ? const <BacktestRunSummary>[]
+            : _mapList(json['by_strategy'], 'backtest.by_strategy')
+                .map(BacktestRunSummary.fromJson)
+                .toList(growable: false),
         walkForward: _requiredMap(json['walk_forward'], 'backtest.walk_forward'),
         paperGate: _requiredMap(json['paper_gate'], 'backtest.paper_gate'),
         liveGate: _requiredMap(json['live_gate'], 'backtest.live_gate'),
