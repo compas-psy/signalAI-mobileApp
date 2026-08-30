@@ -1,0 +1,118 @@
+name: One-shot Bybit cold bootstrap now
+
+on:
+  push:
+    branches: [diag-bybit-prod-20260830]
+
+permissions:
+  contents: read
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare pinned SSH
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
+          PIN: ${{ secrets.VPS_SSH_HOST_KEY_SHA256 || 'SHA256:cUfeWKyHoFIhKsV17Bpk076calxUaxd90XhuETb4vng' }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -T 10 "$HOST" > ~/.ssh/known_hosts.raw 2>/dev/null
+          ssh-keygen -lf ~/.ssh/known_hosts.raw -E sha256 | awk '{print $2}' | grep -Fxq "$PIN"
+          mv ~/.ssh/known_hosts.raw ~/.ssh/known_hosts
+      - name: Bootstrap missing immutable datasets and OOS evidence
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          USER_NAME: ${{ secrets.VPS_USER || 'root' }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$USER_NAME@$HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          ROOT="$HOME/signalai"
+          E=/etc/signalai/.env
+          cd "$ROOT/server"
+          expected='30997b3e059c4652a8c8d6fc178ddc43f9186993'
+          actual="$(cat "$ROOT/.signalai-source-sha")"
+          test "$actual" = "$expected"
+
+          echo "source=$actual"
+          docker compose --env-file "$E" stop scheduler-heavy
+          restart_heavy() {
+            docker compose --env-file "$E" up -d scheduler-heavy >/dev/null
+          }
+          trap restart_heavy EXIT
+
+          docker compose --env-file "$E" run --rm --no-deps -T scheduler-heavy python - <<'PY'
+          import time
+          from sqlalchemy import func, select
+          from app.backtest.bybit_research_runtime import (
+              refresh_next_bybit_dataset,
+              run_next_bybit_entry_backtests,
+          )
+          from app.db import get_session_factory
+          from app.models import DatasetSnapshot, Instrument
+          from app.models.enums import AssetClass, Venue
+
+          SessionFactory = get_session_factory()
+
+          def eligible_count(session):
+              return int(session.execute(
+                  select(func.count(Instrument.id)).where(
+                      Instrument.venue == Venue.CRYPTO,
+                      Instrument.asset_class == AssetClass.CRYPTO_PERPETUAL,
+                      Instrument.in_universe.is_(True),
+                      Instrument.is_tradable.is_(True),
+                  )
+              ).scalar_one())
+
+          def covered_count(session):
+              return int(session.execute(
+                  select(func.count(func.distinct(DatasetSnapshot.dataset_name))).where(
+                      DatasetSnapshot.dataset_name.like('bybit:%:multistream')
+                  )
+              ).scalar_one())
+
+          with SessionFactory() as session:
+              target = eligible_count(session)
+              print(f'BOOTSTRAP target_symbols={target} covered_before={covered_count(session)}', flush=True)
+              for i in range(target + 2):
+                  before = covered_count(session)
+                  if before >= target:
+                      break
+                  try:
+                      message = refresh_next_bybit_dataset(session)
+                      session.commit()
+                  except Exception:
+                      session.rollback()
+                      raise
+                  after = covered_count(session)
+                  print(f'DATASET {i+1}/{target} before={before} after={after} {message}', flush=True)
+                  time.sleep(3)
+              print(f'BOOTSTRAP covered_after={covered_count(session)} target={target}', flush=True)
+
+              for i in range(target + 2):
+                  try:
+                      message = run_next_bybit_entry_backtests(session)
+                      session.commit()
+                  except Exception:
+                      session.rollback()
+                      raise
+                  print(f'OOS {i+1}/{target}: {message}', flush=True)
+                  if message.endswith('no current DATA_READY snapshot pending evidence'):
+                      break
+          PY
+
+          restart_heavy
+          trap - EXIT
+          sleep 3
+          docker inspect -f 'heavy_status={{.State.Status}} restarts={{.RestartCount}} started={{.State.StartedAt}}' server-scheduler-heavy-1
+          REMOTE
+      - name: Cleanup
+        if: always()
+        run: rm -f ~/.ssh/id_deploy ~/.ssh/known_hosts ~/.ssh/known_hosts.raw
