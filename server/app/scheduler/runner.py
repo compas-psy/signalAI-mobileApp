@@ -181,7 +181,8 @@ def _terminal_from_rejections(rows) -> tuple[str, str, str]:
             primary_code = code
         parts.append(f"{code} — {rejection.reason}")
     stage = "REGIME_REJECTED" if all_regime else "SETUP_REJECTED"
-    return stage, primary_code, " | ".join(parts)
+    detail = rows[0].rejection.reason if len(rows) == 1 else " | ".join(parts)
+    return stage, primary_code, detail
 
 
 def _record_bybit_scan_funnel(session: Session, result, *, occurred_at: datetime) -> None:
