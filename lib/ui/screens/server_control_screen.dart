@@ -410,13 +410,23 @@ class _ServerControlScreenState extends State<ServerControlScreen> {
 
   Widget _backtest(ControlBacktestSnapshot snapshot) {
     final run = snapshot.latest;
+    final byStrategy = snapshot.byStrategy;
     return SectionCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const SectionLabel('Бэктест / OOS'),
           const SizedBox(height: 8),
-          if (run == null)
+          if (byStrategy.isNotEmpty) ...[
+            Text(
+              'Strategy OOS · последний immutable evidence-run по каждой стратегии',
+              style: T.body(10.8, color: C.muted, height: 1.45),
+            ),
+            for (final strategyRun in byStrategy) ...[
+              const SizedBox(height: 8),
+              _StrategyBacktestCard(run: strategyRun),
+            ],
+          ] else if (run == null)
             Text(
               'Для $_venueName нет сохранённого серверного бэктеста.',
               style: T.body(11.5, color: C.muted, height: 1.45),
@@ -546,6 +556,69 @@ class _ServerControlScreenState extends State<ServerControlScreen> {
               height: 1.45,
             ),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+class _StrategyBacktestCard extends StatelessWidget {
+  const _StrategyBacktestCard({required this.run});
+
+  final BacktestRunSummary run;
+
+  @override
+  Widget build(BuildContext context) {
+    final reason = run.gateDetail['reason']?.toString();
+    final metricSpace = run.report['metric_space']?.toString();
+    final isR = metricSpace == 'R_MULTIPLES';
+    final status = run.gatePassed
+        ? 'OOS PASS'
+        : reason != null && reason.isNotEmpty
+            ? 'BLOCKED'
+            : 'GATE FAIL';
+    final color = run.gatePassed ? C.green : C.warning;
+    final border = run.gatePassed ? C.greenBorder : C.warningBorder;
+    return InsetBox(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  run.strategy ?? run.label,
+                  style: T.mono(11.2, weight: 700, color: C.text),
+                ),
+              ),
+              OutlineBadge(label: status, color: color, borderColor: border),
+            ],
+          ),
+          const SizedBox(height: 5),
+          if (run.trades > 0)
+            Text(
+              'N ${run.trades} · E[R] ${_signedR(run.expectancyR)} · PF ${_dotN(run.profitFactor)} · MaxDD ${isR ? _rMagnitude(run.maxDrawdown) : _dotN(run.maxDrawdown)}',
+              style: T.mono(10.5, color: C.textSecondary),
+            )
+          else
+            Text(
+              'N 0 · historical outcome не вычислялся',
+              style: T.body(10.4, color: C.muted),
+            ),
+          if (reason != null && reason.isNotEmpty) ...[
+            const SizedBox(height: 5),
+            Text(
+              reason,
+              style: T.mono(9.7, color: C.warning, height: 1.4),
+            ),
+          ],
+          if (isR) ...[
+            const SizedBox(height: 4),
+            Text(
+              'R_MULTIPLES · account return не моделируется',
+              style: T.body(9.6, color: C.dim),
+            ),
+          ],
         ],
       ),
     );
@@ -721,6 +794,18 @@ String _n(double? value, {int digits = 2}) =>
     value == null ? '—' : value.toStringAsFixed(digits).replaceAll('.', ',');
 
 String _r(double? value) => value == null ? '—' : '${_n(value)}R';
+
+String _dotN(double? value, {int digits = 2}) =>
+    value == null ? '—' : value.toStringAsFixed(digits);
+
+String _signedR(double? value) {
+  if (value == null) return '—';
+  final sign = value > 0 ? '+' : '';
+  return '$sign${value.toStringAsFixed(2)}R';
+}
+
+String _rMagnitude(double? value) =>
+    value == null ? '—' : '${value.toStringAsFixed(2)}R';
 
 String _configN(Object? value) =>
     value is num ? _n(value.toDouble()) : '—';
