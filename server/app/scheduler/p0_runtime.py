@@ -8,6 +8,8 @@ Keeps the tested generic Scheduler intact while adding runtime jobs:
   counterfactual measurement journal;
 - Bybit historical research refreshes immutable 36m multi-stream snapshots on
   the heavy lane, never inside the latency-critical market loop;
+- READY snapshots receive scheduled entry-strategy OOS evidence before risk
+  optimization wakes up;
 - bounded risk optimization runs after research evidence and keeps its own
   cadence / minimum-evidence promotion gates;
 - owner capital refreshes server-side from read-only broker credentials.
@@ -138,6 +140,35 @@ def _add_bybit_research_job(
     raise RuntimeError("default scheduler has no paper_ab job")
 
 
+def _add_bybit_backtest_job(
+    scheduler,
+    *,
+    every: timedelta,
+    bybit_backtest_runner=None,
+) -> None:
+    """Persist entry-strategy OOS evidence after immutable snapshot refresh."""
+
+    if not isinstance(every, timedelta) or every <= timedelta(0):
+        raise ValueError("bybit_backtest_every must be a positive timedelta")
+
+    if bybit_backtest_runner is not None:
+        run = bybit_backtest_runner
+    else:
+
+        def run(session) -> str:
+            from ..backtest.bybit_research_runtime import run_next_bybit_entry_backtests
+
+            return run_next_bybit_entry_backtests(session)
+
+    scheduler.add("bybit_backtest", every, run)
+    job = scheduler.jobs.pop()
+    for index, existing in enumerate(scheduler.jobs):
+        if existing.name == "bybit_research":
+            scheduler.jobs.insert(index + 1, job)
+            return
+    raise RuntimeError("default scheduler has no bybit_research job")
+
+
 def _add_risk_optimizer_job(
     scheduler,
     *,
@@ -167,10 +198,10 @@ def _add_risk_optimizer_job(
     scheduler.add("risk_optimizer", every, run)
     job = scheduler.jobs.pop()
     for index, existing in enumerate(scheduler.jobs):
-        if existing.name == "bybit_research":
+        if existing.name == "bybit_backtest":
             scheduler.jobs.insert(index + 1, job)
             return
-    raise RuntimeError("default scheduler has no bybit_research job")
+    raise RuntimeError("default scheduler has no bybit_backtest job")
 
 
 def _add_capital_job(scheduler) -> None:
@@ -191,6 +222,8 @@ def build_default_scheduler(*args, **kwargs):
     paper_ab_runner = kwargs.pop("paper_ab_runner", None)
     bybit_research_every = kwargs.pop("bybit_research_every", timedelta(hours=1))
     bybit_research_runner = kwargs.pop("bybit_research_runner", None)
+    bybit_backtest_every = kwargs.pop("bybit_backtest_every", timedelta(hours=1))
+    bybit_backtest_runner = kwargs.pop("bybit_backtest_runner", None)
     risk_optimizer_every = kwargs.pop("risk_optimizer_every", timedelta(hours=24))
     risk_optimizer_runner = kwargs.pop("risk_optimizer_runner", None)
 
@@ -209,6 +242,11 @@ def build_default_scheduler(*args, **kwargs):
         scheduler,
         every=bybit_research_every,
         bybit_research_runner=bybit_research_runner,
+    )
+    _add_bybit_backtest_job(
+        scheduler,
+        every=bybit_backtest_every,
+        bybit_backtest_runner=bybit_backtest_runner,
     )
     _add_risk_optimizer_job(
         scheduler,
