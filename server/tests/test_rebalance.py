@@ -40,7 +40,7 @@ def _model(session: Session, weights: dict[str, str]) -> PortfolioModel:
         model_drawdown_limit=Decimal("0.08"),
         rationale="тест",
         generated_at=NOW,
-        valid_until=NOW + timedelta(days=30),
+        valid_until=datetime(2099, 1, 1, tzinfo=UTC),
         config_hash="0" * 64,
     )
     session.add(model)
