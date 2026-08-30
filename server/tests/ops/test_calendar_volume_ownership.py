@@ -7,6 +7,10 @@ COMPOSE_PATH = Path(__file__).resolve().parents[2] / "docker-compose.yml"
 DOCKERFILE_PATH = Path(__file__).resolve().parents[2] / "Dockerfile"
 CALENDAR_MOUNT = "calendar-data:/var/lib/signalai-calendar"
 ROOT_USERS = {"0", "0:0", "root"}
+APPROVED_ROOT_INIT_SERVICES = {
+    "event-calendar-volume-init",
+    "dataset-volume-init",
+}
 
 
 def _compose() -> dict:
@@ -36,7 +40,7 @@ def test_calendar_volume_has_one_shot_root_initializer() -> None:
         for name, service in services.items()
         if str(service.get("user", "")) in ROOT_USERS
     }
-    assert explicit_root_services == {"event-calendar-volume-init"}
+    assert explicit_root_services == APPROVED_ROOT_INIT_SERVICES
 
 
 def test_event_calendar_waits_for_initializer_and_stays_non_root() -> None:
