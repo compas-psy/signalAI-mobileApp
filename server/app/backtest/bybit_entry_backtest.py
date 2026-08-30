@@ -375,7 +375,12 @@ def _trade_sortino(rows: Sequence[_RTrade]) -> Decimal | None:
 def _profit_factor(rows: Sequence[_RTrade]) -> Decimal | None:
     gains = sum((row.net_r for row in rows if row.net_r > 0), Decimal(0))
     losses = abs(sum((row.net_r for row in rows if row.net_r < 0), Decimal(0)))
-    return gains / losses if losses > 0 else (None if gains <= 0 else Decimal("999999"))
+    if losses <= 0:
+        # Mathematically infinite PF cannot be persisted in the finite Numeric
+        # BacktestRun column. NULL means non-finite/not-applicable; the report
+        # records the exact "INF" semantic and the gate handles it explicitly.
+        return None
+    return gains / losses
 
 
 def _label(strategy_version: str, snapshot_id: str) -> str:
@@ -599,17 +604,19 @@ def run_bybit_entry_backtest(
     top5 = _top5_contribution(trades)
     sharpe = _trade_sharpe(trades)
     sortino = _trade_sortino(trades)
+    gains = [item.net_r for item in trades if item.net_r > 0]
+    losses = [item.net_r for item in trades if item.net_r < 0]
+    profit_factor_infinite = bool(gains) and not losses
     criteria = {
         "min_trades": len(trades) >= threshold.min_trades,
         "min_profit_factor": (
-            profit_factor is not None and profit_factor >= threshold.min_profit_factor
+            profit_factor_infinite
+            or (profit_factor is not None and profit_factor >= threshold.min_profit_factor)
         ),
         "min_expectancy_r": expectancy >= threshold.min_expectancy_r,
         "max_top5_contribution": top5 <= threshold.max_top5_contribution,
     }
     gate_passed = all(criteria.values())
-    gains = [item.net_r for item in trades if item.net_r > 0]
-    losses = [item.net_r for item in trades if item.net_r < 0]
     report = {
         "metric_space": "R_MULTIPLES",
         "outcome_metric": _OUTCOME_METRIC,
@@ -629,7 +636,12 @@ def run_bybit_entry_backtest(
             "net_total_r": str(sum((item.net_r for item in trades), Decimal(0))),
             "gross_total_r": str(sum((item.gross_r for item in trades), Decimal(0))),
             "expectancy_r": str(expectancy),
-            "profit_factor": None if profit_factor is None else str(profit_factor),
+            "profit_factor": (
+                "INF"
+                if profit_factor_infinite
+                else (None if profit_factor is None else str(profit_factor))
+            ),
+            "profit_factor_is_infinite": profit_factor_infinite,
             "max_drawdown_r": str(max_drawdown_r),
             "trade_sharpe_nonannualized": None if sharpe is None else str(sharpe),
             "trade_sortino_nonannualized": None if sortino is None else str(sortino),
@@ -657,6 +669,8 @@ def run_bybit_entry_backtest(
         trades=len(trades),
         # Entry-strategy evidence is in R, not account-return space.
         net_return=None,
+        # NULL is the only faithful finite-column representation of infinite PF;
+        # report_json.oos.profit_factor retains the exact "INF" semantic.
         profit_factor=profit_factor,
         expectancy_r=expectancy,
         max_drawdown=max_drawdown_r,
