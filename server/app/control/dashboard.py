@@ -423,18 +423,24 @@ def _backtest_snapshot(
         select(BacktestRun)
         .where(~BacktestRun.label.like(_RISK_RUN_PREFIX))
         .order_by(BacktestRun.created_at.desc(), BacktestRun.id.desc())
-        .limit(100)
+        .limit(300)
     ).scalars().all()
-    latest = next(
-        (
-            run
-            for run in recent
-            if market_marker in {str(item).upper() for item in (run.universe_json or [])}
-        ),
-        None,
-    )
+    venue_runs = [
+        run
+        for run in recent
+        if market_marker in {str(item).upper() for item in (run.universe_json or [])}
+    ]
+    latest = venue_runs[0] if venue_runs else None
+    latest_by_strategy: dict[str, BacktestRun] = {}
+    for run in venue_runs:
+        if run.strategy:
+            latest_by_strategy.setdefault(str(run.strategy), run)
     return {
         "latest": _serialize_backtest(latest),
+        "by_strategy": [
+            _serialize_backtest(latest_by_strategy[strategy])
+            for strategy in sorted(latest_by_strategy)
+        ],
         "walk_forward": dict(cfg.get("backtest.walk_forward")),
         "paper_gate": dict(cfg.get("backtest.paper_gate")),
         "live_gate": dict(cfg.get("backtest.live_gate")),
