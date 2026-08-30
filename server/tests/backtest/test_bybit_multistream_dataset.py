@@ -158,6 +158,44 @@ def test_multistream_manifest_is_data_ready_only_when_every_required_stream_cove
     assert built.manifest.row_count == len(REQUIRED_BYBIT_STREAMS) * 2
 
 
+def test_multistream_manifest_persists_preperiod_seed_fact_without_moving_period_start() -> None:
+    start = datetime(2023, 8, 29, tzinfo=UTC)
+    end = datetime(2026, 8, 29, tzinfo=UTC)
+    seed = start - timedelta(hours=8)
+    last = end - timedelta(hours=8)
+    streams = {
+        "funding": (
+            HistoricalObservation(
+                observed_at=seed,
+                tradable_at=seed,
+                values={"funding_rate": Decimal("0.0001")},
+            ),
+            HistoricalObservation(
+                observed_at=last,
+                tradable_at=last,
+                values={"funding_rate": Decimal("0.0002")},
+            ),
+        )
+    }
+
+    built = build_multistream_manifest(
+        symbol="BTCUSDT",
+        start_at=start,
+        end_at=end,
+        streams=streams,
+        min_history_months=36,
+        required_streams=("funding",),
+    )
+
+    assert built.status == DATA_READY
+    assert built.manifest.source_watermark["period_start"] == start.isoformat()
+    assert built.manifest.row_count == 2
+    assert any(
+        row.values["observed_at"] == seed and row.tradable_at == seed
+        for row in built.manifest.rows
+    )
+
+
 def test_multistream_manifest_blocks_when_one_required_stream_is_short() -> None:
     start = datetime(2023, 8, 29, tzinfo=UTC)
     end = datetime(2026, 8, 29, tzinfo=UTC)
