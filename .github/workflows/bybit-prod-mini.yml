@@ -1,0 +1,47 @@
+name: One-shot Bybit production mini state
+
+on:
+  push:
+    branches: [diag-bybit-prod-20260830]
+
+permissions:
+  contents: read
+
+jobs:
+  state:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Read concise production state
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          USER_NAME: ${{ secrets.VPS_USER || 'root' }}
+          KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
+          PIN: ${{ secrets.VPS_SSH_HOST_KEY_SHA256 || 'SHA256:cUfeWKyHoFIhKsV17Bpk076calxUaxd90XhuETb4vng' }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_deploy && chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -T 10 "$HOST" > ~/.ssh/known_hosts.raw 2>/dev/null
+          ACTUAL="$(ssh-keygen -lf ~/.ssh/known_hosts.raw -E sha256 | awk 'NR==1{print $2}')"
+          test "$ACTUAL" = "$PIN"
+          mv ~/.ssh/known_hosts.raw ~/.ssh/known_hosts
+          ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$USER_NAME@$HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          cd "$HOME/signalai/server"
+          ENV=/etc/signalai/.env
+          U="$(sed -n 's/^POSTGRES_USER=//p' "$ENV" | tail -1)"
+          D="$(sed -n 's/^POSTGRES_DB=//p' "$ENV" | tail -1)"; [ -n "$D" ] || D=signalai
+          echo SOURCE=$(cat "$HOME/signalai/.signalai-source-sha")
+          docker inspect -f 'HEAVY status={{.State.Status}} restarts={{.RestartCount}} started={{.State.StartedAt}}' server-scheduler-heavy-1
+          echo SNAPSHOTS
+          docker compose --env-file "$ENV" exec -T postgres psql -AtX -F '|' -U "$U" -d "$D" -c "select dataset_name,left(snapshot_id,12),row_count,coalesce(source_watermark->>'readiness',''),coalesce(source_watermark->>'symbol',''),coalesce(source_watermark->'blockers','[]'::jsonb)::text,created_at from dataset_snapshots where dataset_name like 'bybit:%:multistream' order by created_at desc limit 10;"
+          echo BACKTESTS
+          docker compose --env-file "$ENV" exec -T postgres psql -AtX -F '|' -U "$U" -d "$D" -c "select coalesce(strategy,''),trades,gate_passed,coalesce(expectancy_r::text,''),coalesce(profit_factor::text,''),coalesce(max_drawdown::text,''),coalesce(gate_detail_json->>'reason',''),created_at from backtest_runs where label like 'bybit-entry-backtest:%' order by created_at desc limit 20;"
+          echo FUNNEL_LATEST
+          docker compose --env-file "$ENV" exec -T postgres psql -AtX -F '|' -U "$U" -d "$D" -c "with x as (select distinct on (instrument_id) instrument_id,payload_json->>'terminal_stage' stage,payload_json->>'reason_code' reason,occurred_at from data_quality_events where source='bybit-scan' and flag='SCAN_TERMINAL' order by instrument_id,occurred_at desc,id desc) select stage,reason,count(*) from x group by stage,reason order by count(*) desc,stage,reason;"
+          echo IDEAS
+          docker compose --env-file "$ENV" exec -T postgres psql -AtX -F '|' -U "$U" -d "$D" -c "select count(*),coalesce(max(created_at)::text,'') from trade_ideas where instrument_id like 'CRYPTO:PERP:%';"
+          REMOTE
+      - name: Cleanup
+        if: always()
+        run: rm -f ~/.ssh/id_deploy ~/.ssh/known_hosts
