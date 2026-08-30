@@ -130,6 +130,12 @@ def test_entry_backtest_uses_exact_snapshot_and_existing_directional_alpha_r(
     assert run.trades >= 3
     assert run.net_return is None
     assert run.expectancy_r is not None and run.expectancy_r > 0
+    # A profitable sample with zero losses has mathematically infinite PF.
+    # Persist NULL rather than a made-up finite sentinel that can overflow the
+    # Numeric column; the immutable report keeps the exact semantic value.
+    assert run.profit_factor is None
+    assert run.report_json["oos"]["profit_factor"] == "INF"
+    assert run.gate_detail_json["criteria"]["min_profit_factor"] is True
     assert run.gate_passed is True
     assert run.report_json["metric_space"] == "R_MULTIPLES"
     assert run.report_json["outcome_metric"] == "paper_directional_alpha_r_v1"
