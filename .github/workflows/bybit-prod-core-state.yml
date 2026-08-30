@@ -30,13 +30,12 @@ jobs:
           USER_NAME: ${{ secrets.VPS_USER || 'root' }}
         run: |
           set -euo pipefail
-          ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$USER_NAME@$HOST" 'bash -s' <<'REMOTE'
+          ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$USER_NAME@$HOST" 'bash -s' <<'REMOTE' | tee bybit-core-state.txt
           set -euo pipefail
           cd "$HOME/signalai/server"
           E=/etc/signalai/.env
           U="$(sed -n 's/^POSTGRES_USER=//p' "$E" | tail -1)"
           D="$(sed -n 's/^POSTGRES_DB=//p' "$E" | tail -1)"; [ -n "$D" ] || D=signalai
-          P="docker compose --env-file $E exec -T postgres psql -AtX -F | -U $U -d $D"
           echo '=== BACKTESTS ==='
           docker compose --env-file "$E" exec -T postgres psql -AtX -F '|' -U "$U" -d "$D" -c "select coalesce(strategy,''),trades,gate_passed,coalesce(expectancy_r::text,''),coalesce(profit_factor::text,''),coalesce(max_drawdown::text,''),coalesce(gate_detail_json->>'reason',''),created_at from backtest_runs where label like 'bybit-entry-backtest:%' order by created_at desc limit 12;"
           echo '=== FUNNEL ==='
@@ -46,6 +45,14 @@ jobs:
           echo '=== HEAVY RECENT ==='
           docker compose --env-file "$E" logs --since 15m --no-color scheduler-heavy 2>&1 | tail -30
           REMOTE
+      - name: Upload final audit evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bybit-core-state-${{ github.sha }}
+          path: bybit-core-state.txt
+          if-no-files-found: error
+          retention-days: 1
       - name: Cleanup
         if: always()
         run: rm -f ~/.ssh/id_deploy ~/.ssh/known_hosts
