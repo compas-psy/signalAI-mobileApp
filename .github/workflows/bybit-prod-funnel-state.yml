@@ -1,0 +1,42 @@
+name: One-shot Bybit funnel state
+
+on:
+  push:
+    branches: [diag-bybit-prod-20260830]
+
+permissions:
+  contents: read
+
+jobs:
+  state:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Read funnel and ideas
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          USER_NAME: ${{ secrets.VPS_USER || 'root' }}
+          KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
+          PIN: ${{ secrets.VPS_SSH_HOST_KEY_SHA256 || 'SHA256:cUfeWKyHoFIhKsV17Bpk076calxUaxd90XhuETb4vng' }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_deploy && chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -T 10 "$HOST" > ~/.ssh/known_hosts.raw 2>/dev/null
+          ssh-keygen -lf ~/.ssh/known_hosts.raw -E sha256 | awk '{print $2}' | grep -Fxq "$PIN"
+          mv ~/.ssh/known_hosts.raw ~/.ssh/known_hosts
+          ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$USER_NAME@$HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          cd "$HOME/signalai/server"
+          E=/etc/signalai/.env
+          U="$(sed -n 's/^POSTGRES_USER=//p' "$E" | tail -1)"
+          D="$(sed -n 's/^POSTGRES_DB=//p' "$E" | tail -1)"; [ -n "$D" ] || D=signalai
+          echo 'FUNNEL'
+          docker compose --env-file "$E" exec -T postgres psql -AtX -F '|' -U "$U" -d "$D" -c "with x as (select distinct on (instrument_id) instrument_id,payload_json->>'terminal_stage' stage,payload_json->>'reason_code' reason from data_quality_events where source='bybit-scan' and flag='SCAN_TERMINAL' order by instrument_id,occurred_at desc,id desc) select stage,reason,count(*) from x group by stage,reason order by count(*) desc,stage,reason;"
+          echo 'IDEAS'
+          docker compose --env-file "$E" exec -T postgres psql -AtX -F '|' -U "$U" -d "$D" -c "select count(*),coalesce(max(created_at)::text,'') from trade_ideas where instrument_id like 'CRYPTO:PERP:%'; select instrument_id,strategy,status,created_at from trade_ideas where instrument_id like 'CRYPTO:PERP:%' order by created_at desc limit 5;"
+          echo 'SNAPSHOT_COUNT'
+          docker compose --env-file "$E" exec -T postgres psql -AtX -F '|' -U "$U" -d "$D" -c "select count(*),count(*) filter (where source_watermark->>'readiness'='DATA_READY') from dataset_snapshots where dataset_name like 'bybit:%:multistream';"
+          REMOTE
+      - name: Cleanup
+        if: always()
+        run: rm -f ~/.ssh/id_deploy ~/.ssh/known_hosts ~/.ssh/known_hosts.raw
