@@ -1,4 +1,4 @@
-name: Ops dispatch deploy 73aa8b8
+name: Ops dispatch deploy Bybit audit
 
 on:
   push:
@@ -19,7 +19,7 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const sourceRef = '73aa8b8b0c946c60a5d0cb06a2e4234885e76256';
+            const sourceRef = '19e9f8c3ac54758be9184f461b3f01f190d5e702';
             await github.rest.actions.createWorkflowDispatch({
               owner: context.repo.owner,
               repo: context.repo.repo,
