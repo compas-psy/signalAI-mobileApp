@@ -37,13 +37,13 @@ jobs:
           U="$(sed -n 's/^POSTGRES_USER=//p' "$E" | tail -1)"
           D="$(sed -n 's/^POSTGRES_DB=//p' "$E" | tail -1)"; [ -n "$D" ] || D=signalai
           echo '=== BACKTESTS ==='
-          docker compose --env-file "$E" exec -T postgres psql -AtX -F '|' -U "$U" -d "$D" -c "select coalesce(strategy,''),trades,gate_passed,coalesce(expectancy_r::text,''),coalesce(profit_factor::text,''),coalesce(max_drawdown::text,''),coalesce(gate_detail_json->>'reason',''),created_at from backtest_runs where label like 'bybit-entry-backtest:%' order by created_at desc limit 12;"
+          docker compose --env-file "$E" exec -T postgres psql -AtX -F '|' -U "$U" -d "$D" -c "select coalesce(strategy,''),trades,gate_passed,coalesce(expectancy_r::text,''),coalesce(profit_factor::text,''),coalesce(max_drawdown::text,''),coalesce(gate_detail_json->>'reason',''),created_at from backtest_runs where label like 'bybit-entry-backtest:%' order by created_at desc limit 12;" </dev/null
           echo '=== FUNNEL ==='
-          docker compose --env-file "$E" exec -T postgres psql -AtX -F '|' -U "$U" -d "$D" -c "with x as (select distinct on (instrument_id) instrument_id,payload_json->>'terminal_stage' stage,payload_json->>'reason_code' reason from data_quality_events where source='bybit-scan' and flag='SCAN_TERMINAL' order by instrument_id,occurred_at desc,id desc) select stage,reason,count(*) from x group by stage,reason order by count(*) desc,stage,reason;"
+          docker compose --env-file "$E" exec -T postgres psql -AtX -F '|' -U "$U" -d "$D" -c "with x as (select distinct on (instrument_id) instrument_id,payload_json->>'terminal_stage' stage,payload_json->>'reason_code' reason from data_quality_events where source='bybit-scan' and flag='SCAN_TERMINAL' order by instrument_id,occurred_at desc,id desc) select stage,reason,count(*) from x group by stage,reason order by count(*) desc,stage,reason;" </dev/null
           echo '=== IDEAS ==='
-          docker compose --env-file "$E" exec -T postgres psql -AtX -F '|' -U "$U" -d "$D" -c "select count(*),coalesce(max(created_at)::text,'') from trade_ideas where instrument_id like 'CRYPTO:PERP:%';"
+          docker compose --env-file "$E" exec -T postgres psql -AtX -F '|' -U "$U" -d "$D" -c "select count(*),coalesce(max(created_at)::text,'') from trade_ideas where instrument_id like 'CRYPTO:PERP:%';" </dev/null
           echo '=== HEAVY RECENT ==='
-          docker compose --env-file "$E" logs --since 15m --no-color scheduler-heavy 2>&1 | tail -30
+          docker compose --env-file "$E" logs --since 15m --no-color scheduler-heavy 2>&1 </dev/null | tail -30
           REMOTE
       - name: Upload final audit evidence
         if: always()
