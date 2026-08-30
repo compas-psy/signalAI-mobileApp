@@ -1,0 +1,29 @@
+name: One-shot heavy scheduler regression probe
+
+on:
+  push:
+    branches:
+      - diag-bybit-prod-20260830
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: be03b7f8d408bc357a65ff6862b3d546e08b16e9
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.11.33'
+      - name: Install locked server test dependencies
+        working-directory: server
+        run: uv sync --frozen --extra test
+      - name: Run heavy startup regression only
+        working-directory: server
+        run: .venv/bin/python -m pytest -q tests/test_scheduler_heavy_runtime.py
