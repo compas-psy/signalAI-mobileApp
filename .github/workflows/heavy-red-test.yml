@@ -14,7 +14,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: be03b7f8d408bc357a65ff6862b3d546e08b16e9
+          ref: 30997b3e059c4652a8c8d6fc178ddc43f9186993
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
