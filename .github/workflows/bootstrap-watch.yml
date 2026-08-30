@@ -1,0 +1,39 @@
+name: One-shot Bybit bootstrap watch
+
+on:
+  push:
+    branches: [diag-bybit-bootstrap-watch-20260830]
+
+permissions:
+  contents: read
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Read bootstrap progress
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          USER_NAME: ${{ secrets.VPS_USER || 'root' }}
+          KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
+          PIN: ${{ secrets.VPS_SSH_HOST_KEY_SHA256 || 'SHA256:cUfeWKyHoFIhKsV17Bpk076calxUaxd90XhuETb4vng' }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_deploy && chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -T 10 "$HOST" > ~/.ssh/known_hosts 2>/dev/null
+          ssh-keygen -lf ~/.ssh/known_hosts -E sha256 | awk '{print $2}' | grep -Fxq "$PIN"
+          ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$USER_NAME@$HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          cd "$HOME/signalai/server"; E=/etc/signalai/.env
+          U="$(sed -n 's/^POSTGRES_USER=//p' "$E" | tail -1)"; D="$(sed -n 's/^POSTGRES_DB=//p' "$E" | tail -1)"; [ -n "$D" ] || D=signalai
+          echo '=== CONTAINERS ==='
+          docker ps --format '{{.Names}}|{{.Status}}' | grep -E 'scheduler-heavy|run-' || true
+          echo '=== SNAPSHOTS ==='
+          docker compose --env-file "$E" exec -T postgres psql -AtX -F '|' -U "$U" -d "$D" -c "select count(distinct dataset_name),count(*) filter (where source_watermark->>'readiness'='DATA_READY'),max(created_at) from dataset_snapshots where dataset_name like 'bybit:%:multistream'; select dataset_name,source_watermark->>'readiness',row_count,created_at from dataset_snapshots where dataset_name like 'bybit:%:multistream' order by created_at desc limit 8;"
+          echo '=== OOS ==='
+          docker compose --env-file "$E" exec -T postgres psql -AtX -F '|' -U "$U" -d "$D" -c "select count(*),count(*) filter (where strategy='momentum_v2'),max(created_at) from backtest_runs where label like 'bybit-entry-backtest:%'; select strategy,trades,gate_passed,expectancy_r,profit_factor,created_at from backtest_runs where label like 'bybit-entry-backtest:%' order by created_at desc limit 8;"
+          REMOTE
+      - name: Cleanup
+        if: always()
+        run: rm -f ~/.ssh/id_deploy ~/.ssh/known_hosts
