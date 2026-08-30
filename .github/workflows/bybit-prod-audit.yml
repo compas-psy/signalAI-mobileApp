@@ -1,0 +1,208 @@
+name: One-shot Bybit production audit
+
+on:
+  push:
+    branches:
+      - diag-bybit-prod-20260830
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate connection material
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
+          HOST_KEY_SHA256: ${{ secrets.VPS_SSH_HOST_KEY_SHA256 || 'SHA256:cUfeWKyHoFIhKsV17Bpk076calxUaxd90XhuETb4vng' }}
+        run: |
+          set -euo pipefail
+          test -n "$HOST"
+          test -n "$KEY"
+          test -n "$HOST_KEY_SHA256"
+
+      - name: Prepare pinned SSH
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
+          HOST_KEY_SHA256: ${{ secrets.VPS_SSH_HOST_KEY_SHA256 || 'SHA256:cUfeWKyHoFIhKsV17Bpk076calxUaxd90XhuETb4vng' }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          bash .github/scripts/prepare_known_host.sh "$HOST" "$HOST_KEY_SHA256"
+
+      - name: Read production Bybit state
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          USER_NAME: ${{ secrets.VPS_USER || 'root' }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$USER_NAME@$HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          SUDO=''; [ "$(id -u)" -eq 0 ] || SUDO=sudo
+          DIR="$HOME/signalai"
+          ENV_FILE='/etc/signalai/.env'
+          cd "$DIR/server"
+
+          echo '===== PROVENANCE ====='
+          printf 'deployed_source='; cat "$DIR/.signalai-source-sha" 2>/dev/null || echo 'missing'
+          curl -fsS http://127.0.0.1:8000/health
+          echo
+
+          echo '===== CONTAINERS ====='
+          $SUDO docker compose --env-file "$ENV_FILE" ps -a
+
+          echo '===== HEAVY LOGS (8h) ====='
+          $SUDO docker compose --env-file "$ENV_FILE" logs --since 8h --no-color scheduler-heavy 2>&1 | tail -700
+
+          echo '===== MARKET BYBIT LOGS (8h) ====='
+          $SUDO docker compose --env-file "$ENV_FILE" logs --since 8h --no-color scheduler 2>&1 \
+            | grep -Ei 'bybit|crypto|scan:|shadow:|paper_ab:|error|traceback|exception' \
+            | tail -500 || true
+
+          echo '===== DATASET FILES ====='
+          $SUDO docker compose --env-file "$ENV_FILE" exec -T scheduler-heavy sh -c \
+            'du -sh /var/lib/signalai-datasets 2>/dev/null || true; find /var/lib/signalai-datasets -maxdepth 2 -type f -printf "%TY-%Tm-%TdT%TH:%TM:%TS %s %p\n" 2>/dev/null | sort | tail -30' || true
+
+          echo '===== DATABASE / CONTROL SNAPSHOT ====='
+          $SUDO docker compose --env-file "$ENV_FILE" exec -T scheduler-heavy python - <<'PY'
+          from __future__ import annotations
+          import json
+          from datetime import UTC, datetime, timedelta
+          from sqlalchemy import func, select
+          from app.db import get_session_factory
+          from app.models import (
+              BacktestRun,
+              DatasetSnapshot,
+              Instrument,
+              PaperAbDecision,
+              PaperAbOutcome,
+              ShadowObservation,
+              TradeIdea,
+          )
+          from app.models.enums import AssetClass, Venue
+          from app.control.bybit_funnel import dashboard_funnel
+
+          def clean(value):
+              if value is None or isinstance(value, (str, int, float, bool)):
+                  return value
+              return str(value)
+
+          session = get_session_factory()()
+          try:
+              now = datetime.now(UTC)
+              result = {}
+
+              instruments = session.execute(
+                  select(Instrument)
+                  .where(
+                      Instrument.venue == Venue.CRYPTO,
+                      Instrument.asset_class == AssetClass.CRYPTO_PERPETUAL,
+                  )
+                  .order_by(Instrument.symbol)
+              ).scalars().all()
+              result['crypto_instruments'] = {
+                  'total': len(instruments),
+                  'in_universe': sum(bool(x.in_universe) for x in instruments),
+                  'tradable': sum(bool(x.is_tradable) for x in instruments),
+                  'symbols': [
+                      {
+                          'symbol': x.symbol,
+                          'instrument_id': x.instrument_id,
+                          'in_universe': bool(x.in_universe),
+                          'tradable': bool(x.is_tradable),
+                      }
+                      for x in instruments[:80]
+                  ],
+              }
+
+              result['bybit_funnel_12h'] = dashboard_funnel(
+                  session, start=now - timedelta(hours=12)
+              )
+
+              snapshots = session.execute(
+                  select(DatasetSnapshot)
+                  .where(DatasetSnapshot.dataset_name.like('bybit:%:multistream'))
+                  .order_by(DatasetSnapshot.created_at.desc())
+                  .limit(100)
+              ).scalars().all()
+              result['dataset_snapshots'] = [
+                  {
+                      'dataset_name': row.dataset_name,
+                      'snapshot_id': row.snapshot_id,
+                      'tradable_at': clean(row.tradable_at),
+                      'created_at': clean(row.created_at),
+                      'row_count': row.row_count,
+                      'readiness': (row.source_watermark or {}).get('readiness'),
+                      'symbol': (row.source_watermark or {}).get('symbol'),
+                      'blockers': (row.source_watermark or {}).get('blockers'),
+                  }
+                  for row in snapshots
+              ]
+
+              runs = session.execute(
+                  select(BacktestRun)
+                  .where(BacktestRun.label.like('bybit-entry-backtest:%'))
+                  .order_by(BacktestRun.created_at.desc())
+                  .limit(100)
+              ).scalars().all()
+              result['bybit_entry_backtests'] = [
+                  {
+                      'created_at': clean(row.created_at),
+                      'strategy': row.strategy,
+                      'label': row.label,
+                      'trades': row.trades,
+                      'gate_passed': bool(row.gate_passed),
+                      'expectancy_r': clean(row.expectancy_r),
+                      'profit_factor': clean(row.profit_factor),
+                      'max_drawdown': clean(row.max_drawdown),
+                      'reason': (row.gate_detail_json or {}).get('reason'),
+                      'dataset_readiness': (row.gate_detail_json or {}).get('dataset_readiness'),
+                  }
+                  for row in runs
+              ]
+
+              result['measurement_counts'] = {
+                  'shadow_observations': session.scalar(select(func.count()).select_from(ShadowObservation)),
+                  'paper_ab_decisions': session.scalar(select(func.count()).select_from(PaperAbDecision)),
+                  'paper_ab_outcomes': session.scalar(select(func.count()).select_from(PaperAbOutcome)),
+                  'crypto_trade_ideas': session.scalar(
+                      select(func.count()).select_from(TradeIdea).where(
+                          TradeIdea.instrument_id.like('CRYPTO:PERP:%')
+                      )
+                  ),
+              }
+
+              recent_ideas = session.execute(
+                  select(TradeIdea)
+                  .where(TradeIdea.instrument_id.like('CRYPTO:PERP:%'))
+                  .order_by(TradeIdea.created_at.desc())
+                  .limit(20)
+              ).scalars().all()
+              result['recent_crypto_ideas'] = [
+                  {
+                      'created_at': clean(row.created_at),
+                      'instrument_id': row.instrument_id,
+                      'strategy': clean(row.strategy),
+                      'strategy_version': clean(row.strategy_version),
+                      'status': clean(row.status),
+                  }
+                  for row in recent_ideas
+              ]
+
+              print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+          finally:
+              session.rollback()
+              session.close()
+          PY
+          REMOTE
+
+      - name: Remove SSH key
+        if: always()
+        run: shred -u ~/.ssh/id_deploy 2>/dev/null || rm -f ~/.ssh/id_deploy
