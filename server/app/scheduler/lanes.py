@@ -2,7 +2,8 @@
 
 The generic Scheduler remains sequential inside each process. We split jobs
 that have no ordering dependency on the latency-critical market path so long
-portfolio/research/backfill/optimizer work cannot delay ingest or scan ticks.
+portfolio/research/backfill/backtest/optimizer work cannot delay ingest or scan
+ticks.
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ class SchedulerLane(StrEnum):
 
 
 HEAVY_JOB_NAMES = frozenset(
-    {"portfolio", "research", "bybit_research", "risk_optimizer"}
+    {"portfolio", "research", "bybit_research", "bybit_backtest", "risk_optimizer"}
 )
 
 
