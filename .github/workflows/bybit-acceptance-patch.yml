@@ -1,0 +1,69 @@
+name: Apply bounded Bybit attribution patch
+
+on:
+  push:
+    branches:
+      - fix/bybit-acceptance-hardening-20260830
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: ${{ !contains(github.event.head_commit.message, 'fix(bybit): attribute setup rejections') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/bybit-acceptance-hardening-20260830
+          fetch-depth: 1
+      - name: Apply minimal attribution change
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          scan_path = Path('server/app/pipeline/scan.py')
+          scan = scan_path.read_text()
+          old = '''@dataclass\nclass ScanResult:\n    started_at: datetime\n    finished_at: datetime | None = None\n    scanned: int = 0\n    ideas: list[TradeIdea] = field(default_factory=list)\n    skipped: list[Skipped] = field(default_factory=list)\n    rejections: list[Rejection] = field(default_factory=list)\n    daily: object | None = None\n'''
+          new = '''@dataclass(frozen=True, slots=True)\nclass AttributedRejection:\n    instrument_id: str\n    rejection: Rejection\n\n\n@dataclass\nclass ScanResult:\n    started_at: datetime\n    finished_at: datetime | None = None\n    scanned: int = 0\n    ideas: list[TradeIdea] = field(default_factory=list)\n    skipped: list[Skipped] = field(default_factory=list)\n    rejections: list[Rejection] = field(default_factory=list)\n    attributed_rejections: list[AttributedRejection] = field(default_factory=list)\n    daily: object | None = None\n'''
+          if old not in scan:
+              raise SystemExit('ScanResult anchor not found')
+          scan = scan.replace(old, new, 1)
+          old = '''        result.skipped.extend(skipped)\n        result.rejections.extend(rejections)\n        if idea is not None:\n'''
+          new = '''        result.skipped.extend(skipped)\n        result.rejections.extend(rejections)\n        result.attributed_rejections.extend(\n            AttributedRejection(instrument.instrument_id, rejection)\n            for rejection in rejections\n        )\n        if idea is not None:\n'''
+          if old not in scan:
+              raise SystemExit('scan aggregation anchor not found')
+          scan = scan.replace(old, new, 1)
+          scan_path.write_text(scan)
+
+          runner_path = Path('server/app/scheduler/runner.py')
+          runner = runner_path.read_text()
+          anchor = '''def _record_bybit_scan_funnel(session: Session, result, *, occurred_at: datetime) -> None:\n'''
+          helper = '''def _terminal_from_rejections(rows) -> tuple[str, str, str]:\n    \"\"\"Convert attributed strategy rejections to one deterministic terminal fact.\"\"\"\n    rows = tuple(rows)\n    if not rows:\n        return \"SETUP_REJECTED\", \"NO_VALID_SETUP\", \"\"\n\n    parts: list[str] = []\n    all_regime = True\n    primary_code = \"NO_VALID_SETUP\"\n    for index, row in enumerate(rows):\n        rejection = row.rejection\n        failed = rejection.failed\n        first = failed[0] if failed else None\n        check_name = \"REJECTED\" if first is None else first.name.upper()\n        if first is None or first.name.lower() != \"regime\":\n            all_regime = False\n        code = f\"{rejection.strategy.value}:{check_name}\"\n        if index == 0:\n            primary_code = code\n        parts.append(f\"{code} — {rejection.reason}\")\n    stage = \"REGIME_REJECTED\" if all_regime else \"SETUP_REJECTED\"\n    return stage, primary_code, \" | \".join(parts)\n\n\n'''
+          if anchor not in runner:
+              raise SystemExit('funnel helper anchor not found')
+          runner = runner.replace(anchor, helper + anchor, 1)
+          old = '''    skipped = {\n        item.instrument_id: item\n        for item in result.skipped\n        if item.instrument_id in instrument_ids\n    }\n    sequence = max(0, int(occurred_at.timestamp() * 1_000_000))\n'''
+          new = '''    skipped = {\n        item.instrument_id: item\n        for item in result.skipped\n        if item.instrument_id in instrument_ids\n    }\n    rejected: dict[str, list] = {}\n    for item in getattr(result, \"attributed_rejections\", ()):\n        if item.instrument_id in instrument_ids:\n            rejected.setdefault(item.instrument_id, []).append(item)\n    sequence = max(0, int(occurred_at.timestamp() * 1_000_000))\n'''
+          if old not in runner:
+              raise SystemExit('funnel rejected-map anchor not found')
+          runner = runner.replace(old, new, 1)
+          old = '''        elif instrument_id in skipped:\n            item = skipped[instrument_id]\n            terminal, code = _terminal_from_skip(item.stage, item.reason)\n            detail = item.reason\n        else:\n            # scan_instrument has only three terminal outcomes: idea, Skipped,\n            # or strategy Rejection(s). Rejections are flattened in ScanResult\n            # without instrument id, so an otherwise-unaccounted instrument is\n            # deterministically the no-valid-setup branch.\n            terminal, code, detail = \"SETUP_REJECTED\", \"NO_VALID_SETUP\", \"\"\n'''
+          new = '''        elif instrument_id in skipped:\n            item = skipped[instrument_id]\n            terminal, code = _terminal_from_skip(item.stage, item.reason)\n            detail = item.reason\n        elif instrument_id in rejected:\n            terminal, code, detail = _terminal_from_rejections(rejected[instrument_id])\n        else:\n            terminal, code, detail = \"SETUP_REJECTED\", \"NO_VALID_SETUP\", \"\"\n'''
+          if old not in runner:
+              raise SystemExit('funnel terminal anchor not found')
+          runner = runner.replace(old, new, 1)
+          runner_path.write_text(runner)
+          PY
+          rm -f .github/workflows/bybit-acceptance-patch.yml
+          python3 -m compileall -q server/app
+          git diff --check
+      - name: Commit bounded fix
+        run: |
+          set -euo pipefail
+          git config user.name 'signalai-ci'
+          git config user.email 'signalai-ci@users.noreply.github.com'
+          git add server/app/pipeline/scan.py server/app/scheduler/runner.py .github/workflows/bybit-acceptance-patch.yml
+          git commit -m 'fix(bybit): attribute setup rejections'
+          git push origin HEAD:fix/bybit-acceptance-hardening-20260830
