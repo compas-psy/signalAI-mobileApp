@@ -3,7 +3,7 @@
 This process deliberately has no market startup reconciliation, notification
 bootstrap or paper/execution jobs. It shares the same code image and database
 with the market scheduler, but slow portfolio research, historical Bybit
-backfill and risk optimization cannot hold up the next market-data/scan tick.
+backfill/backtests and risk optimization cannot hold up market-data/scan ticks.
 """
 
 from __future__ import annotations
@@ -45,6 +45,7 @@ def main() -> int:
         portfolio_every=_minutes("SIGNALAI_PORTFOLIO_EVERY_MINUTES", 60),
         research_every=_minutes("SIGNALAI_RESEARCH_EVERY_MINUTES", 720),
         bybit_research_every=_minutes("SIGNALAI_BYBIT_RESEARCH_EVERY_MINUTES", 60),
+        bybit_backtest_every=_minutes("SIGNALAI_BYBIT_BACKTEST_EVERY_MINUTES", 60),
         risk_optimizer_every=_minutes("SIGNALAI_RISK_OPTIMIZER_WAKEUP_MINUTES", 1440),
     )
     # Explicit even if compose already sets SIGNALAI_SCHEDULER_LANE=heavy:
@@ -52,7 +53,13 @@ def main() -> int:
     apply_scheduler_lane(scheduler, SchedulerLane.HEAVY)
 
     job_names = tuple(job.name for job in scheduler.jobs)
-    expected = ("portfolio", "research", "bybit_research", "risk_optimizer")
+    expected = (
+        "portfolio",
+        "research",
+        "bybit_research",
+        "bybit_backtest",
+        "risk_optimizer",
+    )
     if job_names != expected:
         raise RuntimeError(f"unexpected heavy scheduler jobs: {job_names!r}")
 
