@@ -57,8 +57,9 @@ REQUIRED_BYBIT_STREAMS: tuple[str, ...] = (
 
 _DEFAULT_END_TOLERANCE = timedelta(days=2)
 # Funding is sparse (commonly 8h) while candles/OI can be hourly. A full-day
-# pre-roll makes the coverage boundary independent of the wall-clock hour
-# without putting pre-roll rows into the published research window.
+# pre-roll makes the coverage boundary independent of the wall-clock hour. The
+# latest fact already tradable before the requested period is retained in the
+# immutable artifact as a PIT seed so readiness never depends on discarded data.
 _COLLECTION_PREROLL = timedelta(days=1)
 _TIMEFRAME_DURATION = {
     Timeframe.M15: timedelta(minutes=15),
@@ -194,6 +195,34 @@ def _coverage(
     )
 
 
+def _artifact_observations(
+    rows: Sequence[HistoricalObservation],
+    *,
+    start_at: datetime,
+    end_at: datetime,
+) -> tuple[HistoricalObservation, ...]:
+    """Return period rows plus one fact known immediately before the period.
+
+    Sparse streams can have no observation exactly on ``start_at``. Readiness
+    may therefore rely on a pre-roll observation. Persist the latest such fact
+    only when it was already tradable at the boundary, preventing both hidden
+    evidence and future-fact leakage while keeping the artifact bounded.
+    """
+
+    in_period = tuple(
+        row for row in rows if start_at <= row.observed_at < end_at
+    )
+    seed = next(
+        (
+            row
+            for row in reversed(rows)
+            if row.observed_at < start_at and row.tradable_at <= start_at
+        ),
+        None,
+    )
+    return in_period if seed is None else (seed, *in_period)
+
+
 def build_multistream_manifest(
     *,
     symbol: str,
@@ -238,9 +267,11 @@ def build_multistream_manifest(
             end_tolerance=end_tolerance,
         )
         coverage.append(item)
-        for observation in ordered:
-            if not (start_at <= observation.observed_at < end_at):
-                continue
+        for observation in _artifact_observations(
+            ordered,
+            start_at=start_at,
+            end_at=end_at,
+        ):
             dataset_rows.append(
                 DatasetRow(
                     key=f"{stream}|{observation.observed_at.isoformat()}",
@@ -261,6 +292,7 @@ def build_multistream_manifest(
         "period_end": end_at,
         "min_history_months": min_history_months,
         "required_streams": required,
+        "seed_policy": "latest_tradable_before_period_per_stream",
         "readiness": status,
         "coverage": [item.as_json() for item in coverage],
     }
@@ -311,9 +343,9 @@ def collect_multistream(
     """Collect all required public streams and build one immutable manifest.
 
     A one-day pre-roll covers sparse streams such as funding even when the
-    36-month boundary is not aligned to their timestamp grid. Pre-roll facts
-    participate only in coverage validation; only rows inside the requested
-    ``[start_at, end_at)`` window enter the content-addressed artifact.
+    36-month boundary is not aligned to their timestamp grid. The latest fact
+    already tradable before ``start_at`` is retained as a PIT seed; the
+    reporting period itself remains exactly ``[start_at, end_at)``.
     """
 
     _aware(start_at, "start_at")
