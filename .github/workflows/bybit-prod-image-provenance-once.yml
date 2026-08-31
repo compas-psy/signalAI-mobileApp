@@ -39,10 +39,12 @@ jobs:
           echo '=== IMAGE ==='
           IMAGE_ID="$(docker inspect -f '{{.Image}}' server-scheduler-heavy-1)"
           docker image inspect "$IMAGE_ID" -f 'id={{.Id}} created={{.Created}} labels={{json .Config.Labels}}'
-          echo '=== SOURCE IN CONTAINER ==='
-          docker compose --env-file /etc/signalai/.env exec -T scheduler-heavy python -c 'import inspect,app.version; from app.scheduler.runner import build_default_scheduler; print("ENGINE_VERSION=" + app.version.ENGINE_VERSION); print("RUNNER_SHA=" + __import__("hashlib").sha256(inspect.getsource(build_default_scheduler).encode()).hexdigest()); print("RUNNER_SIGNATURE=" + str(inspect.signature(build_default_scheduler)))'
-          echo '=== HEAVY ==='
-          docker compose --env-file /etc/signalai/.env logs --tail=20 --no-color scheduler-heavy 2>&1
+          echo '=== SOURCE IN IMAGE ==='
+          docker run --rm --entrypoint python "$IMAGE_ID" -c 'import inspect,hashlib,app.version; from app.scheduler.runner import build_default_scheduler; print("ENGINE_VERSION=" + app.version.ENGINE_VERSION); print("RUNNER_SHA=" + hashlib.sha256(inspect.getsource(build_default_scheduler).encode()).hexdigest()); print("RUNNER_SIGNATURE=" + str(inspect.signature(build_default_scheduler)))'
+          echo '=== HEAVY SOURCE IN IMAGE ==='
+          docker run --rm --entrypoint python "$IMAGE_ID" -c 'from pathlib import Path; print(Path("/srv/app/scheduler/heavy.py").read_text())'
+          echo '=== HEAVY LOG ==='
+          docker compose --env-file /etc/signalai/.env logs --tail=12 --no-color scheduler-heavy 2>&1
           REMOTE
       - name: Cleanup
         if: always()
