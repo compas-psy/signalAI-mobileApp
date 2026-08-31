@@ -103,10 +103,10 @@ def test_replay_uses_pit_history_and_reports_carry_metric_space() -> None:
     start = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
     funding = tuple(
         _funding(start + timedelta(hours=8 * index), "0.002")
-        for index in range(12)
+        for index in range(13)
     )
     facts: list[CryptoCarryMarketFacts] = []
-    for index in range(9, 12):
+    for index in (9, 12):
         at = start + timedelta(hours=8 * index)
         facts.append(
             CryptoCarryMarketFacts(
