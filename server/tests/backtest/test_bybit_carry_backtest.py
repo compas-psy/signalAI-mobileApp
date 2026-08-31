@@ -104,7 +104,9 @@ def _gate() -> EntryReplayGate:
     return EntryReplayGate(
         min_trades=3,
         min_profit_factor=Decimal("1"),
-        min_expectancy_r=Decimal("0.1"),
+        # This threshold belongs to the directional R metric space only.  A
+        # successful carry replay proves it cannot leak into the CARRY_BPS gate.
+        min_expectancy_r=Decimal("999"),
         max_top5_contribution=Decimal("1"),
     )
 
@@ -127,11 +129,13 @@ def test_crypto_carry_replays_realized_hedged_outcome_in_bps(session, tmp_path) 
     assert run.label.startswith("bybit-carry-backtest-v1:crypto_carry_v1:")
     assert run.strategy == "crypto_carry_v1"
     assert run.trades >= 3
+    assert run.gate_passed is True
     assert run.expectancy_r is None
     assert run.net_return is None
     assert run.report_json["metric_space"] == "CARRY_BPS"
     assert run.report_json["outcome_metric"] == "hedged_realized_carry_bps_v1"
     assert Decimal(run.report_json["oos"]["expectancy_bps"]) > 0
+    assert run.gate_detail_json["r_threshold_not_applicable"] is True
     assert run.report_json["dataset"]["snapshot_id"] == manifest.snapshot_id
     assert run.report_json["dataset"]["content_sha256"] == manifest.content_sha256
     assert run.report_json["cost_model"]["funding_uncertainty_applied_to_realized_outcome"] is False
