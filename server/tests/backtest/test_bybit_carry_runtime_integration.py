@@ -8,7 +8,7 @@ from app.datasets.snapshots import FilesystemSnapshotStore
 from app.models import DatasetSnapshot
 
 
-def test_ready_snapshot_runs_directional_and_specialized_carry_evidence(
+def test_ready_snapshot_runs_specialized_carry_before_directional_suite(
     session, tmp_path, monkeypatch
 ) -> None:
     snapshot = DatasetSnapshot(
@@ -51,7 +51,7 @@ def test_ready_snapshot_runs_directional_and_specialized_carry_evidence(
         )
 
     monkeypatch.setattr(runtime, "run_pending_bybit_entry_backtests", fake_directional)
-    monkeypatch.setattr(runtime, "run_pending_bybit_carry_backtest", fake_carry, raising=False)
+    monkeypatch.setattr(runtime, "run_pending_bybit_carry_backtest", fake_carry)
 
     detail = run_next_bybit_entry_backtests(
         session,
@@ -59,8 +59,8 @@ def test_ready_snapshot_runs_directional_and_specialized_carry_evidence(
     )
 
     assert calls == [
-        ("directional", snapshot.snapshot_id),
         ("carry", snapshot.snapshot_id),
+        ("directional", snapshot.snapshot_id),
     ]
     assert "momentum_v2=PASS/212" in detail
     assert "crypto_carry_v1=PASS/205" in detail
