@@ -72,6 +72,48 @@ def test_forts_dataset_fails_closed_when_continuous_history_is_shorter_than_36m(
     assert "HISTORY_LT_36M:daily_open_interest" in built.blockers
 
 
+def test_forts_dataset_does_not_trust_segment_metadata_without_36m_bars() -> None:
+    roll = END - timedelta(days=90)
+    actual_start = END - timedelta(days=365)
+    deceptive = (
+        FuturesSegment(
+            contract_id="SiM6",
+            valid_from=START_36M,
+            valid_until=roll,
+            bars=(
+                _bar(actual_start, "90000"),
+                _bar(roll - timedelta(hours=1), "91000"),
+            ),
+        ),
+        FuturesSegment(
+            contract_id="SiU6",
+            valid_from=roll,
+            valid_until=END,
+            bars=(
+                _bar(roll, "92000"),
+                _bar(END - timedelta(hours=1), "93000"),
+            ),
+        ),
+    )
+
+    built = build_forts_manifest(
+        root="SI",
+        start_at=START_36M,
+        end_at=END,
+        h1_segments=deceptive,
+        d1_segments=deceptive,
+        daily_open_interest={
+            START_36M.date(): Decimal("80000"),
+            (END - timedelta(days=1)).date(): Decimal("100000"),
+        },
+        min_history_months=36,
+    )
+
+    assert built.status == DATA_BLOCKED
+    assert "HISTORY_LT_36M:continuous_h1" in built.blockers
+    assert "HISTORY_LT_36M:continuous_d1" in built.blockers
+
+
 def test_forts_dataset_is_content_addressed_and_preserves_roll_provenance() -> None:
     h1 = _segments(START_36M)
     d1 = _segments(START_36M)
