@@ -39,8 +39,8 @@ jobs:
           echo '=== IMAGE ==='
           IMAGE_ID="$(docker inspect -f '{{.Image}}' server-scheduler-heavy-1)"
           docker image inspect "$IMAGE_ID" -f 'id={{.Id}} created={{.Created}} labels={{json .Config.Labels}}'
-          echo '=== SOURCE IN IMAGE ==='
-          docker run --rm --entrypoint python "$IMAGE_ID" -c 'import inspect,hashlib,app.version; from app.scheduler.runner import build_default_scheduler; print("ENGINE_VERSION=" + app.version.ENGINE_VERSION); print("RUNNER_SHA=" + hashlib.sha256(inspect.getsource(build_default_scheduler).encode()).hexdigest()); print("RUNNER_SIGNATURE=" + str(inspect.signature(build_default_scheduler)))'
+          echo '=== BUILD DEFAULT SCHEDULER IN IMAGE ==='
+          docker run --rm --entrypoint python "$IMAGE_ID" -c 'import inspect,hashlib,app.version; from app.scheduler.runner import build_default_scheduler; print("ENGINE_VERSION=" + app.version.ENGINE_VERSION); print("RUNNER_SHA=" + hashlib.sha256(inspect.getsource(build_default_scheduler).encode()).hexdigest()); print("RUNNER_SIGNATURE=" + str(inspect.signature(build_default_scheduler))); print(inspect.getsource(build_default_scheduler))'
           echo '=== HEAVY SOURCE IN IMAGE ==='
           docker run --rm --entrypoint python "$IMAGE_ID" -c 'from pathlib import Path; print(Path("/srv/app/scheduler/heavy.py").read_text())'
           echo '=== HEAVY LOG ==='
