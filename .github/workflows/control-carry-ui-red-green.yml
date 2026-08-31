@@ -1,0 +1,23 @@
+name: Control carry UI RED-GREEN
+
+on:
+  push:
+    branches:
+      - fix/bybit-carry-acceptance-20260831
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  control-carry-ui:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - name: Run Control carry acceptance contract
+        run: flutter test test/control_bybit_transparency_acceptance_test.dart
