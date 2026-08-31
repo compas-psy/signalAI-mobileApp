@@ -1,0 +1,47 @@
+name: Bybit carry replay RED-GREEN
+
+on:
+  push:
+    branches:
+      - fix/bybit-carry-acceptance-20260831
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  carry-test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: signalai
+          POSTGRES_PASSWORD: signalai_local_dev
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U signalai -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.11.33'
+          enable-cache: true
+          cache-dependency-glob: server/uv.lock
+      - name: Install locked dependencies
+        run: uv sync --frozen --all-extras --dev
+      - name: Run carry replay contract
+        env:
+          DATABASE_URL: postgresql+psycopg://signalai:signalai_local_dev@localhost:5432/postgres
+        run: uv run pytest -q tests/backtest/test_bybit_carry_backtest.py
