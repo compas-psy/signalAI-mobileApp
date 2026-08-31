@@ -199,10 +199,11 @@ def test_pending_suite_is_idempotent_per_strategy_and_snapshot(session, tmp_path
         round_trip_cost_bps=Decimal("0"),
     )
 
+    # Carry has its own realized CARRY_BPS outcome contract and is intentionally
+    # not forced through the directional-R suite.
     assert {run.strategy for run in first} == {
         "momentum_v2",
         "mean_reversion_v1",
         "breakout_v2",
-        "crypto_carry_v1",
     }
     assert second == ()
