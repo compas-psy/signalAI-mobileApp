@@ -8,7 +8,11 @@ Map<String, dynamic> _backtestRun({
   required int trades,
   required bool gatePassed,
   double? expectancyR,
+  double? expectancyBps,
   double? maxDrawdown,
+  double? maxDrawdownBps,
+  double? profitFactor,
+  String metricSpace = 'R_MULTIPLES',
   String? reason,
 }) =>
     {
@@ -18,7 +22,7 @@ Map<String, dynamic> _backtestRun({
       'period_to': '2026-08-29',
       'trades': trades,
       'net_return': null,
-      'profit_factor': trades == 0 ? null : 1.35,
+      'profit_factor': trades == 0 ? null : (profitFactor ?? 1.35),
       'expectancy_r': expectancyR,
       'max_drawdown': maxDrawdown,
       'sharpe': trades == 0 ? null : 0.72,
@@ -32,8 +36,16 @@ Map<String, dynamic> _backtestRun({
       'engine_version': '0.1.0',
       'universe': ['CRYPTO', 'BYBIT', 'BTCUSDT'],
       'report': {
-        'metric_space': 'R_MULTIPLES',
-        'outcome_metric': 'paper_directional_alpha_r_v1',
+        'metric_space': metricSpace,
+        'outcome_metric': metricSpace == 'CARRY_BPS'
+            ? 'hedged_realized_carry_bps_v1'
+            : 'paper_directional_alpha_r_v1',
+        if (metricSpace == 'CARRY_BPS')
+          'oos': {
+            'expectancy_bps': expectancyBps?.toString(),
+            'max_drawdown_bps': maxDrawdownBps?.toString(),
+            'profit_factor': profitFactor?.toString(),
+          },
       },
       'gate_detail': reason == null ? <String, dynamic>{} : {'reason': reason},
     };
@@ -60,9 +72,12 @@ ControlDashboardSnapshot _bybitSnapshot() {
   );
   final carry = _backtestRun(
     strategy: 'crypto_carry_v1',
-    trades: 0,
-    gatePassed: false,
-    reason: 'CARRY_SETTLED_FUNDING_OUTCOME_UNAVAILABLE',
+    trades: 87,
+    gatePassed: true,
+    metricSpace: 'CARRY_BPS',
+    expectancyBps: 18.2,
+    maxDrawdownBps: 31.4,
+    profitFactor: 1.62,
   );
   return ControlDashboardSnapshot.fromJson({
     'generated_at': '2026-08-29T21:00:00+00:00',
@@ -243,7 +258,7 @@ void main() {
     expect(find.textContaining('HISTORY_LT_36M'), findsOneWidget);
   });
 
-  testWidgets('BYBIT Control shows real or blocked OOS evidence per R4 strategy',
+  testWidgets('BYBIT Control shows metric-aware OOS evidence per R4 strategy',
       (tester) async {
     await _pump(tester);
 
@@ -253,9 +268,16 @@ void main() {
     expect(find.textContaining('E[R] +0.18R'), findsOneWidget);
     expect(find.textContaining('MaxDD 4.20R'), findsOneWidget);
     expect(find.textContaining('HISTORICAL_SPREAD_UNAVAILABLE'), findsWidgets);
+
+    expect(find.textContaining('crypto_carry_v1'), findsOneWidget);
+    expect(find.textContaining('N 87'), findsOneWidget);
+    expect(find.textContaining('E[carry] +18.20 bps'), findsOneWidget);
+    expect(find.textContaining('PF 1.62'), findsOneWidget);
+    expect(find.textContaining('MaxDD 31.40 bps'), findsOneWidget);
+    expect(find.textContaining('CARRY_BPS'), findsOneWidget);
     expect(
       find.textContaining('CARRY_SETTLED_FUNDING_OUTCOME_UNAVAILABLE'),
-      findsOneWidget,
+      findsNothing,
     );
   });
 }
