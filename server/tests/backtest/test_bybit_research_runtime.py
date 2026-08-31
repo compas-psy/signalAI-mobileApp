@@ -166,6 +166,10 @@ def test_current_ready_snapshot_is_sent_to_idempotent_entry_suite(
             ),
         )
 
+    # This test isolates the generic entry-suite orchestration and intentionally
+    # uses a manifest row without an artifact file. Specialized carry has its
+    # own integration test with a real/controlled seam, so keep it out here.
+    monkeypatch.setattr(runtime, "run_pending_bybit_carry_backtest", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(runtime, "run_pending_bybit_entry_backtests", fake_suite)
 
     detail = run_next_bybit_entry_backtests(
