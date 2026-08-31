@@ -34,6 +34,7 @@ REQUIRED_FORTS_STREAMS: tuple[str, ...] = (
     "continuous_d1",
     "daily_open_interest",
 )
+_DEFAULT_END_TOLERANCE = timedelta(days=2)
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,6 +76,7 @@ def _chain_blockers(
     *,
     required_start: datetime,
     end_at: datetime,
+    end_tolerance: timedelta = _DEFAULT_END_TOLERANCE,
 ) -> list[str]:
     ordered = tuple(sorted(segments, key=lambda item: item.valid_from))
     if not ordered:
@@ -85,6 +87,23 @@ def _chain_blockers(
         blockers.append(f"HISTORY_LT_36M:{stream}")
     if any(current.valid_from != previous.valid_until for previous, current in zip(ordered, ordered[1:])):
         blockers.append(f"ROLL_GAP:{stream}")
+
+    # Contract metadata describes the intended chain, not the evidence actually
+    # downloaded.  A nominal 36-month segment must never make a one-year candle
+    # artifact look complete.  The continuous builder also removes bars outside
+    # the half-open roll windows, so coverage is measured on the exact rows that
+    # can participate in replay.
+    observed = tuple(
+        item.bar.open_time
+        for item in build_continuous_futures(ordered)
+    )
+    if not observed:
+        blockers.append(f"NO_ROWS:{stream}")
+        return blockers
+    if observed[0] > required_start:
+        blockers.append(f"HISTORY_LT_36M:{stream}")
+    if observed[-1] < end_at - end_tolerance:
+        blockers.append(f"STALE_END:{stream}")
     return blockers
 
 
