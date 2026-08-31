@@ -33,18 +33,9 @@ jobs:
           ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$USER_NAME@$HOST" 'bash -s' <<'REMOTE'
           set -euo pipefail
           cd "$HOME/signalai/server"
-          echo "SOURCE_FILE=$(cat "$HOME/signalai/.signalai-source-sha")"
-          echo '=== CONTAINER ==='
-          docker inspect -f 'image={{.Image}} status={{.State.Status}} restarts={{.RestartCount}} started={{.State.StartedAt}}' server-scheduler-heavy-1
-          echo '=== IMAGE ==='
           IMAGE_ID="$(docker inspect -f '{{.Image}}' server-scheduler-heavy-1)"
-          docker image inspect "$IMAGE_ID" -f 'id={{.Id}} created={{.Created}} labels={{json .Config.Labels}}'
-          echo '=== BUILD DEFAULT SCHEDULER IN IMAGE ==='
-          docker run --rm --entrypoint python "$IMAGE_ID" -c 'import inspect,hashlib,app.version; from app.scheduler.runner import build_default_scheduler; print("ENGINE_VERSION=" + app.version.ENGINE_VERSION); print("RUNNER_SHA=" + hashlib.sha256(inspect.getsource(build_default_scheduler).encode()).hexdigest()); print("RUNNER_SIGNATURE=" + str(inspect.signature(build_default_scheduler))); print(inspect.getsource(build_default_scheduler))'
-          echo '=== HEAVY SOURCE IN IMAGE ==='
-          docker run --rm --entrypoint python "$IMAGE_ID" -c 'from pathlib import Path; print(Path("/srv/app/scheduler/heavy.py").read_text())'
-          echo '=== HEAVY LOG ==='
-          docker compose --env-file /etc/signalai/.env logs --tail=12 --no-color scheduler-heavy 2>&1
+          echo '=== RUNNER SOURCE IN IMAGE ==='
+          docker run --rm --entrypoint python "$IMAGE_ID" -c 'from pathlib import Path; print(Path("/srv/app/scheduler/runner.py").read_text())'
           REMOTE
       - name: Cleanup
         if: always()
