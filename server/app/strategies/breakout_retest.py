@@ -14,10 +14,14 @@ R/R до TP2 ≥ 2.0. Ложный пробой отменяет идею, ав�
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 
 from ..detectors.price_action import PriceZone
+from ..detectors.wyckoff import TradingRange, WyckoffParams, find_range
+from ..features.indicators import atr, swings
+from ..market.candles import Candle
 from ..models.enums import Direction, OrderIntent, Strategy
 from .base import (
     Candidate,
@@ -46,19 +50,41 @@ class BreakoutParams:
     tp2_rr_min: Decimal = Decimal("2.0")
 
 
+def detect_range(candles: Sequence[Candle]) -> TradingRange | None:
+    """Return the canonical raw Wyckoff trading range without phase confidence.
+
+    A trading range is a lower-level price fact shared by Wyckoff reversal and
+    breakout-retest.  Wyckoff's phase reading is intentionally confidence-
+    gated by Spring/climax/LPS evidence; breakout must not disappear merely
+    because those reversal-specific confirmations are absent.
+    """
+
+    params = WyckoffParams()
+    atr_period = 14
+    if len(candles) < max(params.min_range_bars, atr_period) + 5:
+        return None
+    atr_values = atr(candles, atr_period)
+    return find_range(
+        candles,
+        atr_values,
+        swings(candles, confirm_bars=2),
+        params,
+    )
+
+
 def build(ctx: SetupContext, params: BreakoutParams | None = None) -> Outcome:
     p = params or BreakoutParams()
     checks: list[Check] = []
 
-    has_range = ctx.wyckoff is not None and ctx.wyckoff.payload.get("range") is not None
+    trading_range = detect_range(ctx.setup_bars)
+    has_range = trading_range is not None
     checks.append(
         Check("range", "Диапазон", has_range,
               "диапазон найден" if has_range else "диапазона нет — пробивать нечего")
     )
-    if not has_range:
+    if trading_range is None:
         return reject(STRATEGY, checks)
 
-    trading_range = ctx.wyckoff.payload["range"]
     atr_setup = ctx.atr_setup or Decimal(0)
     checks.append(
         Check("atr", "ATR", atr_setup > 0, f"ATR сетапа {atr_setup}")
