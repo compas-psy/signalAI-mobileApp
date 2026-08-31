@@ -24,6 +24,7 @@ from ..config import EngineConfig, get_config
 from ..datasets.snapshots import FilesystemSnapshotStore
 from ..models import DatasetSnapshot, Instrument
 from ..models.enums import AssetClass, Venue
+from .bybit_carry_runner import run_pending_bybit_carry_backtest
 from .bybit_dataset import DATA_READY, collect_multistream, publish_multistream_snapshot
 from .bybit_entry_backtest import run_pending_bybit_entry_backtests
 
@@ -172,7 +173,12 @@ def run_next_bybit_entry_backtests(
 ) -> str:
     """Backtest one current READY symbol that still lacks R4 evidence.
 
-    Completed snapshot/strategy pairs are identified by their deterministic
+    Carry runs first because it has a different realized outcome metric
+    (CARRY_BPS). It intentionally writes the canonical strategy/snapshot label;
+    the generic directional-R suite then sees that identity and skips its old
+    fail-closed carry placeholder instead of creating contradictory evidence.
+
+    Completed snapshot/strategy pairs are identified by deterministic
     BacktestRun labels, so a process restart needs no in-memory cursor. A newer
     DATA_BLOCKED snapshot intentionally shadows an older READY one for the same
     symbol; we never backtest stale evidence while current coverage is broken.
@@ -187,14 +193,30 @@ def run_next_bybit_entry_backtests(
         watermark = snapshot.source_watermark or {}
         if str(watermark.get("readiness") or "") != DATA_READY:
             continue
-        runs = run_pending_bybit_entry_backtests(
+
+        created = []
+        carry = run_pending_bybit_carry_backtest(
             session,
             store=snapshot_store,
             snapshot_id=snapshot.snapshot_id,
             cfg=config,
         )
+        if carry is not None:
+            session.flush()
+            created.append(carry)
+
+        created.extend(
+            run_pending_bybit_entry_backtests(
+                session,
+                store=snapshot_store,
+                snapshot_id=snapshot.snapshot_id,
+                cfg=config,
+            )
+        )
+        runs = tuple(created)
         if not runs:
             continue
+
         symbol = str(watermark.get("symbol") or snapshot.dataset_name.split(":")[1])
         details = []
         for run in runs:
