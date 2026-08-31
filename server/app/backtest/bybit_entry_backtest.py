@@ -7,8 +7,9 @@ round-trip costs. Treating those R values as account returns would manufacture
 portfolio economics that do not exist at the entry-strategy layer.
 
 Only strategies whose historical inputs are actually present in the immutable
-snapshot are evaluated. Missing historical spread or a missing settled-funding
-outcome produces an explicit blocked BacktestRun rather than a surrogate fact.
+snapshot are evaluated. Missing historical spread produces an explicit blocked
+BacktestRun; crypto carry delegates to its own hedged realised-CARRY_BPS outcome
+contract so basis points can never be mistaken for directional R.
 """
 
 from __future__ import annotations
@@ -36,6 +37,7 @@ from ..models import BacktestRun
 from ..models.enums import Direction
 from ..strategies.momentum_v2 import evaluate_momentum_v2
 from ..version import ENGINE_VERSION
+from .bybit_carry_backtest import carry_evidence_label, run_bybit_carry_backtest
 from .bybit_dataset import DATA_READY
 from .walk_forward import TimedSample, WalkForwardConfig, purged_walk_forward
 
@@ -52,9 +54,6 @@ _BLOCKERS = {
     # OHLCV/mark/index/premium cannot reconstruct the bid/ask spread honestly.
     "mean_reversion_v1": "HISTORICAL_SPREAD_UNAVAILABLE",
     "breakout_v2": "HISTORICAL_SPREAD_UNAVAILABLE",
-    # Carry needs the realised settled-funding + hedge outcome, not a price-only
-    # label. The live Paper A/B path intentionally fails closed on the same gap.
-    "crypto_carry_v1": "CARRY_SETTLED_FUNDING_OUTCOME_UNAVAILABLE",
 }
 
 
@@ -384,6 +383,8 @@ def _profit_factor(rows: Sequence[_RTrade]) -> Decimal | None:
 
 
 def _label(strategy_version: str, snapshot_id: str) -> str:
+    if strategy_version == "crypto_carry_v1":
+        return carry_evidence_label(snapshot_id)
     return f"bybit-entry-backtest:{strategy_version}:{snapshot_id}"
 
 
@@ -454,6 +455,18 @@ def run_bybit_entry_backtest(
     dataset = DatasetSnapshotResolver(session, store=store).resolve_snapshot_id(snapshot_id)
     if not dataset.dataset_name.startswith("bybit:"):
         raise ValueError("Bybit entry backtest requires a bybit:* dataset")
+    if strategy_version == "crypto_carry_v1":
+        threshold = gate or _default_gate(config)
+        wf = walk_forward or _default_walk_forward(config)
+        return run_bybit_carry_backtest(
+            session,
+            dataset=dataset,
+            walk_forward=wf,
+            min_trades=threshold.min_trades,
+            min_profit_factor=threshold.min_profit_factor,
+            max_top5_contribution=threshold.max_top5_contribution,
+            cfg=config,
+        )
     if str(dataset.source_watermark.get("readiness") or "") != DATA_READY:
         return _blocked_run(
             session,
