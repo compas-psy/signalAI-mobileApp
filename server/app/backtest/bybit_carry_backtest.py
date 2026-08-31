@@ -151,15 +151,19 @@ def replay_carry_oos(
     ordered by ``evaluated_at``. The strategy sees only each fact's funding
     history up to that decision time. Future facts are used only to settle an
     already-created candidate at its deterministic three-funding-interval
-    horizon.
+    horizon. Positions are non-overlapping per instrument in this replay.
     """
 
     if not facts:
         return _report((), gate)
     ordered = tuple(sorted(facts, key=lambda item: item.tradable_at))
     outcomes: list[CarryOutcome] = []
+    next_available_at: dict[str, datetime] = {}
 
     for index, current in enumerate(ordered):
+        if current.tradable_at < next_available_at.get(current.instrument_id, current.tradable_at):
+            continue
+
         candidate = evaluate_crypto_carry_v1(
             facts=current,
             execution_cost_bps=execution_cost_bps,
@@ -175,12 +179,13 @@ def replay_carry_oos(
             raise ValueError("crypto_carry_v1 horizon must be MINUTES")
         target_exit = current.tradable_at + timedelta(minutes=horizon_minutes)
         exit_fact = next(
-            (item for item in ordered[index + 1 :] if item.tradable_at >= target_exit),
+            (item for item in ordered[index + 1 :] if item.instrument_id == current.instrument_id and item.tradable_at >= target_exit),
             None,
         )
         if exit_fact is None:
             continue
 
+        next_available_at[current.instrument_id] = exit_fact.tradable_at
         outcomes.append(
             calculate_carry_outcome(
                 direction=candidate.direction,
