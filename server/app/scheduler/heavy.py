@@ -54,11 +54,11 @@ def main() -> int:
 
     job_names = tuple(job.name for job in scheduler.jobs)
     expected = (
-        "portfolio",
-        "research",
         "bybit_research",
         "bybit_backtest",
         "risk_optimizer",
+        "portfolio",
+        "research",
     )
     if job_names != expected:
         raise RuntimeError(f"unexpected heavy scheduler jobs: {job_names!r}")
