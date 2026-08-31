@@ -87,6 +87,12 @@ class Skipped:
     reason: str
 
 
+@dataclass(frozen=True, slots=True)
+class AttributedRejection:
+    instrument_id: str
+    rejection: Rejection
+
+
 @dataclass
 class ScanResult:
     started_at: datetime
@@ -95,6 +101,7 @@ class ScanResult:
     ideas: list[TradeIdea] = field(default_factory=list)
     skipped: list[Skipped] = field(default_factory=list)
     rejections: list[Rejection] = field(default_factory=list)
+    attributed_rejections: list[AttributedRejection] = field(default_factory=list)
     daily: object | None = None
 
     @property
@@ -637,6 +644,10 @@ def scan(
             continue
         result.skipped.extend(skipped)
         result.rejections.extend(rejections)
+        result.attributed_rejections.extend(
+            AttributedRejection(instrument.instrument_id, rejection)
+            for rejection in rejections
+        )
         if idea is not None:
             прежняя = живые.get(instrument.instrument_id)
             if прежняя is not None:

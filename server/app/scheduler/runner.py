@@ -160,6 +160,31 @@ def _terminal_from_skip(stage: str, reason: str) -> tuple[str, str]:
     return "ERROR", "UNKNOWN_SCAN_SKIP"
 
 
+def _terminal_from_rejections(rows) -> tuple[str, str, str]:
+    """Convert attributed strategy rejections to one deterministic terminal fact."""
+    rows = tuple(rows)
+    if not rows:
+        return "SETUP_REJECTED", "NO_VALID_SETUP", ""
+
+    parts: list[str] = []
+    all_regime = True
+    primary_code = "NO_VALID_SETUP"
+    for index, row in enumerate(rows):
+        rejection = row.rejection
+        failed = rejection.failed
+        first = failed[0] if failed else None
+        check_name = "REJECTED" if first is None else first.name.upper()
+        if first is None or first.name.lower() != "regime":
+            all_regime = False
+        code = f"{rejection.strategy.value}:{check_name}"
+        if index == 0:
+            primary_code = code
+        parts.append(f"{code} — {rejection.reason}")
+    stage = "REGIME_REJECTED" if all_regime else "SETUP_REJECTED"
+    detail = rows[0].rejection.reason if len(rows) == 1 else " | ".join(parts)
+    return stage, primary_code, detail
+
+
 def _record_bybit_scan_funnel(session: Session, result, *, occurred_at: datetime) -> None:
     """Persist one terminal machine-readable fact for every active Bybit symbol.
 
@@ -196,6 +221,10 @@ def _record_bybit_scan_funnel(session: Session, result, *, occurred_at: datetime
         for item in result.skipped
         if item.instrument_id in instrument_ids
     }
+    rejected: dict[str, list] = {}
+    for item in getattr(result, "attributed_rejections", ()):
+        if item.instrument_id in instrument_ids:
+            rejected.setdefault(item.instrument_id, []).append(item)
     sequence = max(0, int(occurred_at.timestamp() * 1_000_000))
     for instrument_id in sorted(instrument_ids):
         if instrument_id in published:
@@ -204,11 +233,9 @@ def _record_bybit_scan_funnel(session: Session, result, *, occurred_at: datetime
             item = skipped[instrument_id]
             terminal, code = _terminal_from_skip(item.stage, item.reason)
             detail = item.reason
+        elif instrument_id in rejected:
+            terminal, code, detail = _terminal_from_rejections(rejected[instrument_id])
         else:
-            # scan_instrument has only three terminal outcomes: idea, Skipped,
-            # or strategy Rejection(s). Rejections are flattened in ScanResult
-            # without instrument id, so an otherwise-unaccounted instrument is
-            # deterministically the no-valid-setup branch.
             terminal, code, detail = "SETUP_REJECTED", "NO_VALID_SETUP", ""
         record_funnel_fact(
             session,
