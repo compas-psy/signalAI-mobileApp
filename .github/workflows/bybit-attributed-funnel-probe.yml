@@ -17,7 +17,7 @@ jobs:
         env:
           HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
           KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
-          PIN: ${{ secrets.VPS_SSH_HOST_KEY_SHA256 }}
+          PIN: ${{ secrets.VPS_SSH_HOST_KEY_SHA256 || 'SHA256:cUfeWKyHoFIhKsV17Bpk076calxUaxd90XhuETb4vng' }}
         run: |
           set -euo pipefail
           install -d -m 700 ~/.ssh
