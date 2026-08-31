@@ -1,0 +1,96 @@
+name: Apply Bybit carry integration
+
+on:
+  push:
+    branches:
+      - fix/bybit-carry-acceptance-20260831
+    paths:
+      - server/tests/backtest/.carry-apply-trigger
+
+permissions:
+  contents: write
+
+jobs:
+  integrate:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: signalai
+          POSTGRES_PASSWORD: signalai_local_dev
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U signalai -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.11.33'
+          enable-cache: true
+          cache-dependency-glob: server/uv.lock
+      - name: Integrate carry metric-space dispatch
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('server/app/backtest/bybit_entry_backtest.py')
+          text = path.read_text()
+
+          old_import = 'from .bybit_dataset import DATA_READY\nfrom .walk_forward import TimedSample, WalkForwardConfig, purged_walk_forward\n'
+          new_import = 'from .bybit_carry_backtest import carry_evidence_label, run_bybit_carry_backtest\nfrom .bybit_dataset import DATA_READY\nfrom .walk_forward import TimedSample, WalkForwardConfig, purged_walk_forward\n'
+          if old_import not in text:
+              raise SystemExit('expected import anchor missing')
+          text = text.replace(old_import, new_import, 1)
+
+          old_blocker = '''    # Carry needs the realised settled-funding + hedge outcome, not a price-only\n    # label. The live Paper A/B path intentionally fails closed on the same gap.\n    "crypto_carry_v1": "CARRY_SETTLED_FUNDING_OUTCOME_UNAVAILABLE",\n'''
+          if old_blocker not in text:
+              raise SystemExit('expected carry blocker anchor missing')
+          text = text.replace(old_blocker, '', 1)
+
+          old_label = '''def _label(strategy_version: str, snapshot_id: str) -> str:\n    return f"bybit-entry-backtest:{strategy_version}:{snapshot_id}"\n'''
+          new_label = '''def _label(strategy_version: str, snapshot_id: str) -> str:\n    if strategy_version == "crypto_carry_v1":\n        return carry_evidence_label(snapshot_id)\n    return f"bybit-entry-backtest:{strategy_version}:{snapshot_id}"\n'''
+          if old_label not in text:
+              raise SystemExit('expected label anchor missing')
+          text = text.replace(old_label, new_label, 1)
+
+          old_dispatch = '''    if not dataset.dataset_name.startswith("bybit:"):\n        raise ValueError("Bybit entry backtest requires a bybit:* dataset")\n    if str(dataset.source_watermark.get("readiness") or "") != DATA_READY:\n'''
+          new_dispatch = '''    if not dataset.dataset_name.startswith("bybit:"):\n        raise ValueError("Bybit entry backtest requires a bybit:* dataset")\n    if strategy_version == "crypto_carry_v1":\n        threshold = gate or _default_gate(config)\n        wf = walk_forward or _default_walk_forward(config)\n        return run_bybit_carry_backtest(\n            session,\n            dataset=dataset,\n            walk_forward=wf,\n            min_trades=threshold.min_trades,\n            min_profit_factor=threshold.min_profit_factor,\n            max_top5_contribution=threshold.max_top5_contribution,\n            cfg=config,\n        )\n    if str(dataset.source_watermark.get("readiness") or "") != DATA_READY:\n'''
+          if old_dispatch not in text:
+              raise SystemExit('expected dispatch anchor missing')
+          text = text.replace(old_dispatch, new_dispatch, 1)
+
+          old_doc = '''Only strategies whose historical inputs are actually present in the immutable\nsnapshot are evaluated. Missing historical spread or a missing settled-funding\noutcome produces an explicit blocked BacktestRun rather than a surrogate fact.\n'''
+          new_doc = '''Only strategies whose historical inputs are actually present in the immutable\nsnapshot are evaluated. Missing historical spread produces an explicit blocked\nBacktestRun; crypto carry delegates to its own hedged realised-CARRY_BPS outcome\ncontract so basis points can never be mistaken for directional R.\n'''
+          if old_doc not in text:
+              raise SystemExit('expected doc anchor missing')
+          text = text.replace(old_doc, new_doc, 1)
+
+          path.write_text(text)
+          PY
+      - name: Install locked dependencies
+        working-directory: server
+        run: uv sync --frozen --all-extras --dev
+      - name: Run carry replay contract before commit
+        working-directory: server
+        env:
+          DATABASE_URL: postgresql+psycopg://signalai:signalai_local_dev@localhost:5432/postgres
+        run: uv run pytest -q tests/backtest/test_bybit_carry_backtest.py tests/backtest/test_bybit_entry_backtest.py
+      - name: Commit integration only after green targeted tests
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add server/app/backtest/bybit_entry_backtest.py
+          git commit -m 'feat(bybit): route carry to bps evidence contract'
+          git push origin HEAD:fix/bybit-carry-acceptance-20260831
