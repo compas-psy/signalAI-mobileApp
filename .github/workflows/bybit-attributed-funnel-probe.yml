@@ -1,0 +1,64 @@
+name: Probe attributed Bybit production funnel
+
+on:
+  push:
+    branches:
+      - 'probe/bybit-funnel-20260831'
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare pinned SSH
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          KEY: ${{ secrets.VPS_SSH_KEY || secrets.SSH_SECRET }}
+          PIN: ${{ secrets.VPS_SSH_HOST_KEY_SHA256 }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          bash .github/scripts/prepare_known_host.sh "$HOST" "$PIN"
+      - name: Read attributed production funnel
+        env:
+          HOST: ${{ secrets.VPS_HOST || secrets.SERVER_HOST }}
+          USER_NAME: ${{ secrets.VPS_USER || 'root' }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$USER_NAME@$HOST" 'bash -s' <<'REMOTE' | tee bybit-attributed-funnel.txt
+          set -euo pipefail
+          echo '=== DEPLOYED SOURCE ==='
+          cat "$HOME/signalai/.signalai-source-sha"
+          cd "$HOME/signalai/server"
+          E=/etc/signalai/.env
+          U="$(sed -n 's/^POSTGRES_USER=//p' "$E" | tail -1)"
+          D="$(sed -n 's/^POSTGRES_DB=//p' "$E" | tail -1)"; [ -n "$D" ] || D=signalai
+          echo '=== LATEST ATTRIBUTED FUNNEL ==='
+          docker compose --env-file "$E" exec -T postgres psql -AtX -F '|' -U "$U" -d "$D" -c "with x as (select distinct on (instrument_id) instrument_id,occurred_at,payload_json->>'terminal_stage' stage,payload_json->>'reason_code' reason,coalesce(detail,'') detail from data_quality_events where source='bybit-scan' and flag='SCAN_TERMINAL' and occurred_at >= timestamptz '2026-08-30 21:10:00+00' order by instrument_id,occurred_at desc,id desc) select instrument_id,stage,reason,replace(detail,E'\\n',' '),occurred_at from x order by instrument_id;" </dev/null
+          echo '=== LATEST DISTRIBUTION ==='
+          docker compose --env-file "$E" exec -T postgres psql -AtX -F '|' -U "$U" -d "$D" -c "with x as (select distinct on (instrument_id) instrument_id,payload_json->>'terminal_stage' stage,payload_json->>'reason_code' reason from data_quality_events where source='bybit-scan' and flag='SCAN_TERMINAL' and occurred_at >= timestamptz '2026-08-30 21:10:00+00' order by instrument_id,occurred_at desc,id desc) select stage,reason,count(*) from x group by stage,reason order by count(*) desc,stage,reason;" </dev/null
+          echo '=== ATTRIBUTION COVERAGE ==='
+          docker compose --env-file "$E" exec -T postgres psql -AtX -F '|' -U "$U" -d "$D" -c "with x as (select distinct on (instrument_id) instrument_id,payload_json->>'reason_code' reason from data_quality_events where source='bybit-scan' and flag='SCAN_TERMINAL' and occurred_at >= timestamptz '2026-08-30 21:10:00+00' order by instrument_id,occurred_at desc,id desc) select count(*) total,count(*) filter (where reason='NO_VALID_SETUP') unattributed,count(*) filter (where reason<>'NO_VALID_SETUP') attributed from x;" </dev/null
+          echo '=== LAST 8 SCAN CYCLES ==='
+          docker compose --env-file "$E" exec -T postgres psql -AtX -F '|' -U "$U" -d "$D" -c "with t as (select distinct occurred_at from data_quality_events where source='bybit-scan' and flag='SCAN_TERMINAL' and occurred_at >= timestamptz '2026-08-30 21:10:00+00' order by occurred_at desc limit 8) select d.occurred_at,d.payload_json->>'terminal_stage' stage,d.payload_json->>'reason_code' reason,count(*) from data_quality_events d join t using (occurred_at) where d.source='bybit-scan' and d.flag='SCAN_TERMINAL' group by d.occurred_at,stage,reason order by d.occurred_at desc,count(*) desc,stage,reason;" </dev/null
+          echo '=== IDEAS SINCE DEPLOY ==='
+          docker compose --env-file "$E" exec -T postgres psql -AtX -F '|' -U "$U" -d "$D" -c "select count(*),coalesce(max(created_at)::text,'') from trade_ideas where instrument_id like 'CRYPTO:PERP:%' and created_at >= timestamptz '2026-08-30 21:10:00+00'; select instrument_id,strategy,status,created_at from trade_ideas where instrument_id like 'CRYPTO:PERP:%' and created_at >= timestamptz '2026-08-30 21:10:00+00' order by created_at desc limit 10;" </dev/null
+          echo '=== SCHEDULER SCAN LOGS ==='
+          docker compose --env-file "$E" logs --since 8h --no-color scheduler 2>&1 </dev/null | grep -E 'scan:|скан|идей|rejection|SETUP' | tail -80 || true
+          REMOTE
+      - name: Upload probe evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bybit-attributed-funnel-${{ github.sha }}
+          path: bybit-attributed-funnel.txt
+          if-no-files-found: error
+          retention-days: 2
+      - name: Cleanup
+        if: always()
+        run: rm -f ~/.ssh/id_deploy ~/.ssh/known_hosts ~/.ssh/config
