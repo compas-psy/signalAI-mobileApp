@@ -1,15 +1,18 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:signalai/domain/enums.dart';
+import 'package:signalai/domain/models/digest.dart';
 import 'package:signalai/domain/models/signal.dart';
+import 'package:signalai/domain/models/trade_plan_geometry.dart';
 
 TradingSignal _signal({
+  String id = 'geometry-fixture',
   required Direction direction,
   required double entry,
   required double stop,
   required List<double> targets,
 }) {
   return TradingSignal(
-    id: 'geometry-fixture',
+    id: id,
     symbol: 'LINKUSDT',
     name: 'Chainlink',
     market: Market.crypto,
@@ -51,6 +54,7 @@ void main() {
         targets: const [90.457, 90.813],
       );
 
+      expect(signal.tradePlanBlockers(), isNotEmpty);
       expect(
         signal.tradePlanBlockers(minRiskRewardToTp2: 1.5),
         isNotEmpty,
@@ -83,6 +87,30 @@ void main() {
         signal.tradePlanBlockers(minRiskRewardToTp2: 1.5),
         isEmpty,
       );
+    });
+
+    test('drops structurally invalid signals while loading a persisted digest', () {
+      final invalid = _signal(
+        id: 'bad-link',
+        direction: Direction.long,
+        entry: 90.525,
+        stop: 89.431,
+        targets: const [90.457, 90.813],
+      );
+      final valid = _signal(
+        id: 'good-link',
+        direction: Direction.long,
+        entry: 100,
+        stop: 99,
+        targets: const [101.2, 102.0],
+      );
+
+      final digest = DailyDigest.fromJson({
+        'title': 'cache',
+        'signals': [invalid.toJson(), valid.toJson()],
+      });
+
+      expect(digest.signals.map((s) => s.id), ['good-link']);
     });
   });
 }
