@@ -1,6 +1,7 @@
 import 'package:flutter/widgets.dart';
 
 import '../../core/format.dart';
+import '../../data/api/live_idea_source.dart';
 import '../../domain/idea/evidence.dart';
 import '../../domain/idea/final_check.dart';
 import '../../domain/idea/idea.dart';
@@ -64,6 +65,14 @@ class _IdeaDetailScreenState extends State<IdeaDetailScreen> {
   /// Доказательство, выбранное в тезисе. null — подсветки нет.
   String? _selectedEvidence;
 
+  /// Последний доказанный сервером путь рынка после сигнала.
+  ///
+  /// Это не часть immutable-идеи: оценка и план остаются снимком момента
+  /// рождения, а это отдельный execution/admission verdict «можно ли входить
+  /// сейчас». Ненулевой поздний verdict не снимается из-за временного сбоя
+  /// сети — только при выборе другой идеи.
+  IdeaMarketProgress? _marketProgress;
+
   /// Открыт ли лист пропуска с причиной (ТЗ §12).
   bool _skipping = false;
 
@@ -75,6 +84,7 @@ class _IdeaDetailScreenState extends State<IdeaDetailScreen> {
     if (old.signal.id != widget.signal.id) {
       _hidden.clear();
       _selectedEvidence = null;
+      _marketProgress = null;
     }
   }
 
@@ -91,12 +101,17 @@ class _IdeaDetailScreenState extends State<IdeaDetailScreen> {
     final checks = idea == null || !controller.demoData
         ? const <CheckResult>[]
         : _checks(controller, idea);
+    final lateEntry = _marketProgress?.blocksNewEntry == true;
     // Проверка способна заблокировать только готовый вход. У идеи, которая
     // ещё ждёт триггера, входа нет по определению: красный вердикт здесь
     // подменял честное «наблюдать» сообщением о несуществующей сделке.
+    //
+    // Live market progress — исключение: если рынок уже прошёл исходный план,
+    // это отдельный execution-verdict и он имеет приоритет над старой оценкой.
     final blocked = idea != null &&
         idea.readiness.canAct &&
-        ((checks.isNotEmpty && !FinalCheck.passes(checks)) ||
+        (lateEntry ||
+            (checks.isNotEmpty && !FinalCheck.passes(checks)) ||
             (!controller.demoData && !idea.canApprovePaper));
     // Показываем пересечение: слой должен и стоять за доказательством
     // (§9.1), и уметь быть нарисованным.
@@ -156,8 +171,20 @@ class _IdeaDetailScreenState extends State<IdeaDetailScreen> {
               visible: visible,
               highlight: _highlightKeys(idea, _selectedEvidence),
               onToggle: (layer) => setState(() {
-                _hidden.contains(layer) ? _hidden.remove(layer) : _hidden.add(layer);
+                _hidden.contains(layer)
+                    ? _hidden.remove(layer)
+                    : _hidden.add(layer);
               }),
+              onProgress: (progress) {
+                if (!mounted) return;
+                final previous = _marketProgress;
+                if (previous?.status == progress.status &&
+                    previous?.asOf == progress.asOf &&
+                    previous?.summary == progress.summary) {
+                  return;
+                }
+                setState(() => _marketProgress = progress);
+              },
             ),
             const SizedBox(height: 12),
             _Pair(
@@ -221,6 +248,8 @@ class _IdeaDetailScreenState extends State<IdeaDetailScreen> {
             readiness: idea?.readiness,
             paperOnly: idea != null && !controller.demoData,
             blocked: blocked,
+            lateEntry: lateEntry,
+            lateReason: lateEntry ? (_marketProgress?.summary ?? '') : '',
             onConfirm: controller.openSheet,
             onSkip: idea != null && controller.canRejectIdea(idea)
                 ? () => setState(() => _skipping = true)
@@ -314,10 +343,12 @@ class _BackButton extends StatelessWidget {
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const VectorIcon(Icons.chevronLeft, size: 15, color: C.textSecondary),
+                const VectorIcon(Icons.chevronLeft,
+                    size: 15, color: C.textSecondary),
                 const SizedBox(width: 6),
                 Text('К списку идей',
-                    style: T.body(12, weight: 700, color: C.textSecondary)),
+                    style: T.body(12,
+                        weight: 700, color: C.textSecondary)),
               ],
             ),
           ),
@@ -338,6 +369,8 @@ class _ConfirmBar extends StatelessWidget {
     required this.readiness,
     required this.paperOnly,
     required this.blocked,
+    required this.lateEntry,
+    required this.lateReason,
     required this.onConfirm,
     required this.onSkip,
   });
@@ -354,6 +387,11 @@ class _ConfirmBar extends StatelessWidget {
 
   /// Финальная проверка не пускает к деньгам (ТЗ §11.1).
   final bool blocked;
+
+  /// Рынок уже прошёл исходный вход/цели: старый score больше не является
+  /// разрешением на новую сделку.
+  final bool lateEntry;
+  final String lateReason;
 
   final VoidCallback onConfirm;
   final VoidCallback onSkip;
@@ -379,7 +417,9 @@ class _ConfirmBar extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Text(_headline(), style: T.body(12.5, weight: 800, color: _headlineColor())),
+            Text(_headline(),
+                style: T.body(12.5,
+                    weight: 800, color: _headlineColor())),
             const SizedBox(height: 3),
             Text(_sub(), style: T.body(10.5, color: C.faint, height: 1.4)),
             if (!_working && (_canConfirm || _canSkip)) ...[
@@ -389,13 +429,15 @@ class _ConfirmBar extends StatelessWidget {
                   children: [
                     Expanded(
                       child: ActionButton(
-                        label: blocked
-                            ? (paperOnly
-                                ? 'Вход заблокирован сервером'
-                                : 'Вход заблокирован проверкой')
-                            : (paperOnly
-                                ? 'Подтвердить paper-сделку'
-                                : 'Подтвердить план'),
+                        label: lateEntry
+                            ? 'Вход запрещён'
+                            : blocked
+                                ? (paperOnly
+                                    ? 'Вход заблокирован сервером'
+                                    : 'Вход заблокирован проверкой')
+                                : (paperOnly
+                                    ? 'Подтвердить paper-сделку'
+                                    : 'Подтвердить план'),
                         primary: true,
                         onTap: !blocked ? onConfirm : null,
                       ),
@@ -403,7 +445,8 @@ class _ConfirmBar extends StatelessWidget {
                     const SizedBox(width: 9),
                     SizedBox(
                       width: 118,
-                      child: ActionButton(label: 'Пропустить', onTap: onSkip),
+                      child:
+                          ActionButton(label: 'Пропустить', onTap: onSkip),
                     ),
                   ],
                 )
@@ -422,6 +465,7 @@ class _ConfirmBar extends StatelessWidget {
 
   String _headline() {
     if (_working) return 'Позиция сопровождается автоматически';
+    if (lateEntry) return 'Сделка упущена · вход запрещён';
     if (blocked) return 'Проверка перед входом не пройдена';
     if (readiness == IdeaReadiness.waiting) {
       return 'Наблюдать · ждём триггер';
@@ -440,7 +484,7 @@ class _ConfirmBar extends StatelessWidget {
 
   Color _headlineColor() {
     if (_working) return C.green;
-    if (blocked) return C.red;
+    if (lateEntry || blocked) return C.red;
     return _canConfirm ? C.text : C.textSecondary;
   }
 
@@ -452,6 +496,11 @@ class _ConfirmBar extends StatelessWidget {
       }
       return 'Paper-сделку ведёт сервер: вход, стоп и '
           '${signal.takeProfits.length} цели проверяются без телефона.';
+    }
+    if (lateEntry) {
+      return lateReason.isEmpty
+          ? 'Рынок уже прошёл исходный план. Новый вход запрещён.'
+          : lateReason;
     }
     if (!_canConfirm) {
       return 'Это контекст, а не подтверждённый вход. Кнопка сделки появится '
@@ -468,7 +517,8 @@ class _ConfirmBar extends StatelessWidget {
 
 /// Событийный риск идеи и календарь по инструменту (прототип: `event-scenario`).
 class _EventRiskCard extends StatelessWidget {
-  const _EventRiskCard({required this.signal, required this.idea, required this.now});
+  const _EventRiskCard(
+      {required this.signal, required this.idea, required this.now});
 
   final TradingSignal signal;
   final Idea? idea;
@@ -495,7 +545,8 @@ class _EventRiskCard extends StatelessWidget {
                       .withValues(alpha: 0.12),
                   fontWeight: 700,
                   radius: R.pill,
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                 ),
             ],
           ),
@@ -540,11 +591,13 @@ class _EventRiskCard extends StatelessWidget {
                 const SizedBox(width: 10),
                 SizedBox(
                   width: 44,
-                  child: Text(event.time, style: T.mono(11, color: C.muted)),
+                  child:
+                      Text(event.time, style: T.mono(11, color: C.muted)),
                 ),
                 const SizedBox(width: 10),
                 Expanded(
-                  child: Text(event.text, style: T.body(12, color: C.textSoft)),
+                  child:
+                      Text(event.text, style: T.body(12, color: C.textSoft)),
                 ),
               ],
             ),
@@ -633,7 +686,8 @@ class _FactorsCard extends StatelessWidget {
             TileGrid(
               minTileWidth: 132,
               tiles: [
-                for (final factor in signal.factors) _FactorTile(factor: factor),
+                for (final factor in signal.factors)
+                  _FactorTile(factor: factor),
               ],
             ),
           ],
@@ -666,7 +720,8 @@ class _FactorTile extends StatelessWidget {
             const SizedBox(height: 6),
             StrengthBar(strength: factor.weight),
             const SizedBox(height: 6),
-            Text(factor.text, style: T.body(10, color: C.muted, height: 1.35)),
+            Text(factor.text,
+                style: T.body(10, color: C.muted, height: 1.35)),
           ],
         ),
       );
@@ -703,7 +758,8 @@ class _PaperCard extends StatelessWidget {
                     'брокер её принимает.'
                 : 'Ведётся в журнале: $note. Результат считается по реальным '
                     'свечам, уровни задним числом не правятся.',
-            style: T.body(11.5, color: note == null ? C.muted : C.green, height: 1.5),
+            style: T.body(11.5,
+                color: note == null ? C.muted : C.green, height: 1.5),
           ),
           if (note == null) ...[
             const SizedBox(height: 10),
@@ -754,7 +810,8 @@ List<CheckResult> _checks(AppController controller, Idea idea) {
       freeMargin: null,
       // Кластер считается после сделки: занятое сейчас плюс то, что займёт
       // эта идея. Проверять «до» бессмысленно — превышение создаём мы.
-      clusterRiskAfterPercent: center.clusterRisk.usedPercent + plan.riskPercent,
+      clusterRiskAfterPercent:
+          center.clusterRisk.usedPercent + plan.riskPercent,
       shownPlanHash: plan.hash,
       paperMode: !controller.liveTradingOn,
     ),
@@ -797,7 +854,8 @@ class _ClosedNote extends StatelessWidget {
             style: T.body(12, weight: 700, color: color, height: 1.35),
           ),
           const SizedBox(height: 4),
-          Text(reason, style: T.body(11.5, color: C.textSecondary, height: 1.45)),
+          Text(reason,
+              style: T.body(11.5, color: C.textSecondary, height: 1.45)),
         ],
       ),
     );
