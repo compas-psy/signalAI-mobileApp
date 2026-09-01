@@ -33,37 +33,31 @@ jobs:
               "import '../domain/models/signal.dart';\nimport '../domain/models/strategy.dart';",
               "import '../domain/models/signal.dart';\nimport '../domain/models/trade_plan_geometry.dart';\nimport '../domain/models/strategy.dart';",
           )
-
           replace_once(
               'lib/data/local_analysis_repository.dart',
               "    final signal = _signalById(signalId);\n    final brokerId = BrokerId.forMarket(signal.market);",
               "    final signal = _signalById(signalId);\n    _requireValidTradePlan(signal);\n    final brokerId = BrokerId.forMarket(signal.market);",
           )
-
           replace_once(
               'lib/data/local_analysis_repository.dart',
               "  Future<String> trackSignalOnPaper(TradingSignal signal) async {\n    await _ensureLoaded();\n    final existing = paperNoteFor(signal.symbol);",
               "  Future<String> trackSignalOnPaper(TradingSignal signal) async {\n    await _ensureLoaded();\n    _requireValidTradePlan(signal);\n    final existing = paperNoteFor(signal.symbol);",
           )
-
           replace_once(
               'lib/data/local_analysis_repository.dart',
               "  /// Идея из последней выдачи. Отсутствие — отказ, а не пустой результат.\n  TradingSignal _signalById(String signalId) {",
               "  /// Fail-closed защита legacy/on-device контура.\n  ///\n  /// Старый кэш мог пережить версию скринера, в которой структурный\n  /// инвариант Entry/SL/TP ещё не проверялся. Исправлять цены задним числом\n  /// нельзя: это уже другой торговый план. Поэтому paper и live получают\n  /// одинаковый явный отказ и требуют пересчёта идеи.\n  void _requireValidTradePlan(TradingSignal signal) {\n    if (signal.tradePlanBlockers().isEmpty) return;\n    throw const FeatureUnavailableException(\n      'Торговый план повреждён: уровни Entry / SL / TP расположены '\n      'некорректно. Пересчитайте идеи.',\n    );\n  }\n\n  /// Идея из последней выдачи. Отсутствие — отказ, а не пустой результат.\n  TradingSignal _signalById(String signalId) {",
           )
-
           replace_once(
               'lib/ui/screens/idea_detail_screen.dart',
               "import '../../domain/models/signal.dart';\nimport '../../state/app_scope.dart';",
               "import '../../domain/models/signal.dart';\nimport '../../domain/models/trade_plan_geometry.dart';\nimport '../../state/app_scope.dart';",
           )
-
           replace_once(
               'lib/ui/screens/idea_detail_screen.dart',
               "    final blocked = idea != null &&\n        idea.readiness.canAct &&\n        ((checks.isNotEmpty && !FinalCheck.passes(checks)) ||\n            (!controller.demoData && !idea.canApprovePaper));",
               "    // Даже если карточка уже была открыта до перечитывания кэша,\n    // структурно невозможный Entry/SL/TP не должен оставаться actionable.\n    // Цели не сортируем и не пересчитываем: это скрыло бы испорченный план.\n    final planBlocked = signal.tradePlanBlockers().isNotEmpty;\n    final blocked = planBlocked ||\n        (idea != null &&\n            idea.readiness.canAct &&\n            ((checks.isNotEmpty && !FinalCheck.passes(checks)) ||\n                (!controller.demoData && !idea.canApprovePaper)));",
           )
-
           replace_once(
               'lib/ui/screens/idea_detail_screen.dart',
               "  String _sub() {\n    if (_working) {",
@@ -71,18 +65,10 @@ jobs:
           )
           PY
 
-          dart format lib/domain/models/trade_plan_geometry.dart \
-            lib/domain/models/digest.dart \
-            lib/data/local_analysis_repository.dart \
-            lib/ui/screens/idea_detail_screen.dart \
-            test/trading_signal_geometry_test.dart
-
           git diff --check
           git diff --exit-code >/dev/null && exit 0
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add lib/data/local_analysis_repository.dart lib/ui/screens/idea_detail_screen.dart \
-            lib/domain/models/trade_plan_geometry.dart lib/domain/models/digest.dart \
-            test/trading_signal_geometry_test.dart
+          git add lib/data/local_analysis_repository.dart lib/ui/screens/idea_detail_screen.dart
           git commit -m 'fix: block malformed legacy trade plans'
           git push origin HEAD:fix/trade-level-geometry-20260831
