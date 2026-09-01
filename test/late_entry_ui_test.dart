@@ -32,10 +32,10 @@ void main() {
     // has no way to lift live progress to the detail screen, so this test
     // fails at runtime instead of failing to compile before the API exists.
     final dynamic chart = tester.widget<IdeaChartCard>(find.byType(IdeaChartCard));
-    chart.onProgress(const IdeaMarketProgress(
+    chart.onProgress(IdeaMarketProgress(
       status: 'MISSED_BEFORE_ENTRY',
       summary: 'Рынок дошёл до TP2 раньше подтверждённого касания входа.',
-      asOf: null,
+      asOf: DateTime.utc(2026, 9, 1, 17, 40),
       tpHitCount: 2,
       late: true,
       ambiguous: false,
