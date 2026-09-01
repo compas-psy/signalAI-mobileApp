@@ -116,6 +116,37 @@ def test_transport_sanitizes_http_and_network_failures_without_token_or_raw_body
     assert "proxy contains secret detail" not in str(network_error.value)
 
 
+def test_transport_preserves_rpc_not_found_even_when_rest_uses_http_400():
+    token = "do-not-leak-this-token"
+    http_error = urllib.error.HTTPError(
+        url="https://sandbox-invest-public-api.tbank.ru/rest/redacted",
+        code=400,
+        msg="Bad Request",
+        hdrs=None,
+        fp=io.BytesIO(
+            json.dumps(
+                {
+                    "code": 5,
+                    "message": "50005 order not found; private provider context",
+                    "details": [],
+                }
+            ).encode("utf-8")
+        ),
+    )
+    transport = TInvestSandboxHttpTransport(
+        token=token,
+        opener=_CapturingOpener(http_error),
+    )
+
+    with pytest.raises(TInvestProviderError) as captured:
+        transport.call("SandboxService", "GetSandboxOrderState", {})
+
+    assert captured.value.code == "NOT_FOUND"
+    assert captured.value.is_not_found is True
+    assert token not in str(captured.value)
+    assert "private provider context" not in str(captured.value)
+
+
 def test_factory_loads_only_server_sandbox_slot_and_fails_before_network(session):
     with pytest.raises(TInvestProviderError) as missing:
         build_tinvest_sandbox_transport(session)
