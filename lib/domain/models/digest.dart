@@ -1,5 +1,6 @@
 import '../enums.dart';
 import 'signal.dart';
+import 'trade_plan_geometry.dart';
 
 /// Котировка в строке режима рынка (ТЗ §9: RI/Si/BR + BTC одной строкой).
 class RegimeQuote {
@@ -118,8 +119,13 @@ class DailyDigest {
         events: (j['events'] as List<dynamic>? ?? const [])
             .map((e) => MarketEvent.fromJson(e as Map<String, dynamic>))
             .toList(growable: false),
+        // Старые версии приложения могли сохранить идею до появления
+        // структурного инварианта Entry/SL/TP. После обновления такой кэш
+        // нельзя продолжать показывать как исполнимый торговый план: цены не
+        // переставляем и не «лечим», а честно отбрасываем весь сигнал.
         signals: (j['signals'] as List<dynamic>? ?? const [])
             .map((e) => TradingSignal.fromJson(e as Map<String, dynamic>))
+            .where((signal) => signal.tradePlanBlockers().isEmpty)
             .toList(growable: false),
         signalsQuota: j['signals_quota'] as String? ?? '',
         sourceNote: j['source_note'] as String?,
