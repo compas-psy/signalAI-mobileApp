@@ -36,13 +36,15 @@ jobs:
           cd "$DIR/server"
           PGUSER="$(sed -n 's/^POSTGRES_USER=//p' "$ENV_FILE" | tail -1)"
           PGDB="$(sed -n 's/^POSTGRES_DB=//p' "$ENV_FILE" | tail -1)"; [ -n "$PGDB" ] || PGDB=signalai
-          DC="docker compose --env-file $ENV_FILE exec -T postgres psql -X -v ON_ERROR_STOP=1 -U $PGUSER -d $PGDB -P pager=off"
+          psqlq() { docker compose --env-file "$ENV_FILE" exec -T postgres psql -X -v ON_ERROR_STOP=1 -U "$PGUSER" -d "$PGDB" -P pager=off -c "$1"; }
           echo '===== SOURCE ====='; printf 'source='; cat "$DIR/.signalai-source-sha" || true
-          echo '===== ALEMBIC ====='; $DC -c "select * from alembic_version;"
-          echo '===== GEOMETRY CONSTRAINTS ====='; $DC -c "select conname,convalidated,pg_get_constraintdef(oid) from pg_constraint where conrelid='trade_ideas'::regclass and conname in ('stop_on_correct_side','targets_ordered_by_direction') order by conname;"
-          echo '===== LINKUSDT IDEAS ====='; $DC -c "select id,created_at,instrument_id,strategy,direction,status,entry_low,entry_high,entry_reference,stop,tp1,tp2,tp3,rr_tp1,rr_tp2 from trade_ideas where instrument_id='CRYPTO:PERP:LINKUSDT' order by created_at desc limit 30;"
-          echo '===== INVALID CRYPTO GEOMETRY ====='; $DC -c "select id,created_at,instrument_id,strategy,direction,status,entry_low,entry_high,entry_reference,stop,tp1,tp2,tp3,rr_tp1,rr_tp2 from trade_ideas where instrument_id like 'CRYPTO:PERP:%' and (not ((direction='LONG' and stop < entry_low and tp1 > entry_high and tp2 > tp1) or (direction='SHORT' and stop > entry_high and tp1 < entry_low and tp2 < tp1))) order by created_at desc limit 100;"
-          echo '===== INVALID COUNTS ====='; $DC -c "select direction,count(*) from trade_ideas where instrument_id like 'CRYPTO:PERP:%' and (not ((direction='LONG' and stop < entry_low and tp1 > entry_high and tp2 > tp1) or (direction='SHORT' and stop > entry_high and tp1 < entry_low and tp2 < tp1))) group by direction order by direction;"
+          echo '===== ALEMBIC ====='; psqlq "select * from alembic_version;"
+          echo '===== SEARCH PATH / TABLE ====='; psqlq "show search_path; select to_regclass('public.trade_ideas') public_trade_ideas, to_regclass('trade_ideas') visible_trade_ideas;"
+          echo '===== GEOMETRY CONSTRAINTS =====';
+          psqlq "select n.nspname,c.relname,con.conname,con.convalidated,pg_get_constraintdef(con.oid) definition from pg_constraint con join pg_class c on c.oid=con.conrelid join pg_namespace n on n.oid=c.relnamespace where c.relname='trade_ideas' and con.conname in ('stop_on_correct_side','targets_ordered_by_direction') order by con.conname;" || true
+          echo '===== LINKUSDT IDEAS ====='; psqlq "select id,created_at,instrument_id,strategy,direction,status,entry_low,entry_high,entry_reference,stop,tp1,tp2,tp3,rr_tp1,rr_tp2 from trade_ideas where instrument_id='CRYPTO:PERP:LINKUSDT' order by created_at desc limit 30;"
+          echo '===== INVALID CRYPTO GEOMETRY ====='; psqlq "select id,created_at,instrument_id,strategy,direction,status,entry_low,entry_high,entry_reference,stop,tp1,tp2,tp3,rr_tp1,rr_tp2 from trade_ideas where instrument_id like 'CRYPTO:PERP:%' and not ((direction='LONG' and stop < entry_low and tp1 > entry_high and tp2 > tp1) or (direction='SHORT' and stop > entry_high and tp1 < entry_low and tp2 < tp1)) order by created_at desc limit 100;"
+          echo '===== INVALID COUNTS ====='; psqlq "select direction,count(*) from trade_ideas where instrument_id like 'CRYPTO:PERP:%' and not ((direction='LONG' and stop < entry_low and tp1 > entry_high and tp2 > tp1) or (direction='SHORT' and stop > entry_high and tp1 < entry_low and tp2 < tp1)) group by direction order by direction;"
           REMOTE
       - name: Remove SSH key
         if: always()
