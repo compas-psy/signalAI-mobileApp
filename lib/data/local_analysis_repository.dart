@@ -19,6 +19,7 @@ import '../domain/models/digest.dart';
 import '../domain/models/portfolio.dart';
 import '../domain/models/settings.dart';
 import '../domain/models/signal.dart';
+import '../domain/models/trade_plan_geometry.dart';
 import '../domain/models/strategy.dart';
 import '../domain/risk/risk_engine.dart';
 import '../monitor/background_cycle.dart';
@@ -2347,6 +2348,7 @@ class LocalAnalysisRepository
     await _ensureLoaded();
 
     final signal = _signalById(signalId);
+    _requireValidTradePlan(signal);
     final brokerId = BrokerId.forMarket(signal.market);
     if (brokerId == null) {
       throw FeatureUnavailableException(
@@ -2507,6 +2509,7 @@ class LocalAnalysisRepository
   @override
   Future<String> trackSignalOnPaper(TradingSignal signal) async {
     await _ensureLoaded();
+    _requireValidTradePlan(signal);
     final existing = paperNoteFor(signal.symbol);
     if (existing != null) {
       return 'Идея уже ведётся на бумаге: $existing. Смотрите её на «Сделках».';
@@ -2593,6 +2596,20 @@ class LocalAnalysisRepository
     } on BrokerException catch (e) {
       return ' Песочница ${brokerId.title} недоступна (${e.message}).';
     }
+  }
+
+  /// Fail-closed защита legacy/on-device контура.
+  ///
+  /// Старый кэш мог пережить версию скринера, в которой структурный
+  /// инвариант Entry/SL/TP ещё не проверялся. Исправлять цены задним числом
+  /// нельзя: это уже другой торговый план. Поэтому paper и live получают
+  /// одинаковый явный отказ и требуют пересчёта идеи.
+  void _requireValidTradePlan(TradingSignal signal) {
+    if (signal.tradePlanBlockers().isEmpty) return;
+    throw const FeatureUnavailableException(
+      'Торговый план повреждён: уровни Entry / SL / TP расположены '
+      'некорректно. Пересчитайте идеи.',
+    );
   }
 
   /// Идея из последней выдачи. Отсутствие — отказ, а не пустой результат.

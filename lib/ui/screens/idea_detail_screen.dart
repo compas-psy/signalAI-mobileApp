@@ -8,6 +8,7 @@ import '../../domain/idea/idea_state.dart';
 import '../../domain/models/settings.dart';
 import '../../state/app_controller.dart';
 import '../../domain/models/signal.dart';
+import '../../domain/models/trade_plan_geometry.dart';
 import '../../state/app_scope.dart';
 import '../../theme/tokens.dart';
 import '../../theme/typography.dart';
@@ -94,10 +95,15 @@ class _IdeaDetailScreenState extends State<IdeaDetailScreen> {
     // Проверка способна заблокировать только готовый вход. У идеи, которая
     // ещё ждёт триггера, входа нет по определению: красный вердикт здесь
     // подменял честное «наблюдать» сообщением о несуществующей сделке.
-    final blocked = idea != null &&
-        idea.readiness.canAct &&
-        ((checks.isNotEmpty && !FinalCheck.passes(checks)) ||
-            (!controller.demoData && !idea.canApprovePaper));
+    // Даже если карточка уже была открыта до перечитывания кэша,
+    // структурно невозможный Entry/SL/TP не должен оставаться actionable.
+    // Цели не сортируем и не пересчитываем: это скрыло бы испорченный план.
+    final planBlocked = signal.tradePlanBlockers().isNotEmpty;
+    final blocked = planBlocked ||
+        (idea != null &&
+            idea.readiness.canAct &&
+            ((checks.isNotEmpty && !FinalCheck.passes(checks)) ||
+                (!controller.demoData && !idea.canApprovePaper)));
     // Показываем пересечение: слой должен и стоять за доказательством
     // (§9.1), и уметь быть нарисованным.
     final available = {
@@ -445,6 +451,10 @@ class _ConfirmBar extends StatelessWidget {
   }
 
   String _sub() {
+    if (blocked) {
+      return 'Уровни Entry / SL / TP расположены некорректно. Эта сохранённая '
+          'идея заблокирована — пересчитайте идеи.';
+    }
     if (_working) {
       if (!paperOnly) {
         return 'Лимитный ордер и OCO (стоп + '
