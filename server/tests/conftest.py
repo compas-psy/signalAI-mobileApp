@@ -21,6 +21,7 @@ from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.device_enrollment import token_verifier
+from app.market.candles import Candle
 from app.market.economic_events import EventAssessment
 from app.models import (
     Base,
@@ -84,6 +85,34 @@ def configured_actionable_calendar(request, monkeypatch, tmp_path):
         request.module.GOOD["event_assessment"] = EventAssessment(
             "CLEAR", "NO_BLOCKING_EVENT", "проверка календаря завершена"
         )
+
+
+@pytest.fixture(autouse=True)
+def configured_actionable_forts_path(request, monkeypatch):
+    """Legacy approval tests get an explicit known-safe fresh market path.
+
+    Approval now fails closed when FORTS cannot be revalidated. These tests are
+    about auth/idempotency/paper lifecycle rather than MOEX availability, so
+    give them a complete post-signal candle that has touched neither entry,
+    target nor stop. Tests dedicated to live progress use their own stubs and
+    are intentionally not covered by this fixture.
+    """
+    module_name = getattr(request.module, "__name__", "").rsplit(".", 1)[-1]
+    if module_name not in _ACTIONABLE_CALENDAR_MODULES:
+        return
+    safe = Candle(
+        open_time=datetime.now(UTC) - timedelta(minutes=10),
+        open=Decimal("90400"),
+        high=Decimal("90500"),
+        low=Decimal("90300"),
+        close=Decimal("90400"),
+        is_closed=True,
+        source="test-safe-forts-admission",
+    )
+    monkeypatch.setattr(
+        "app.api.v1.idea_progress.guarded_candles",
+        lambda *args, **kwargs: ([safe], None),
+    )
 
 
 def _recreate_database() -> None:
