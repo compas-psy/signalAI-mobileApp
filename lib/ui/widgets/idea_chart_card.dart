@@ -434,7 +434,7 @@ class _Toolbar extends StatelessWidget {
                       : () => switcher(tf),
                 ),
               ],
-            ),
+            ],
           );
     final layerGroup = layers.length < 2
         ? null
