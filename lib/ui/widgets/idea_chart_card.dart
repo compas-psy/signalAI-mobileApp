@@ -33,6 +33,7 @@ class IdeaChartCard extends StatefulWidget {
     this.failed = false,
     this.failureReason = '',
     this.liveSource,
+    this.onProgress,
   });
 
   final TradingSignal signal;
@@ -48,6 +49,12 @@ class IdeaChartCard extends StatefulWidget {
   final Set<ChartLayer> visible;
   final Set<String> highlight;
   final ValueChanged<ChartLayer> onToggle;
+
+  /// Свежий путь рынка нужен не только графику: родитель использует тот же
+  /// серверный verdict, чтобы не показывать действие после `ВХОД ПОЗДНИЙ`.
+  /// null намеренно не публикуется при сетевой ошибке — временный отказ
+  /// источника не должен снимать уже установленный запрет на новый вход.
+  final ValueChanged<IdeaMarketProgress>? onProgress;
 
   @override
   State<IdeaChartCard> createState() => _IdeaChartCardState();
@@ -105,6 +112,8 @@ class _IdeaChartCardState extends State<IdeaChartCard> {
         return;
       }
       setState(() => _live = result);
+      final progress = result.progress;
+      if (progress != null) widget.onProgress?.call(progress);
     } finally {
       _liveLoading = false;
       // A timeframe/idea switch can happen while the previous HTTP request is
@@ -193,7 +202,10 @@ class _IdeaChartCardState extends State<IdeaChartCard> {
                     spacing: 5,
                     runSpacing: 5,
                     children: [
-                      _LegendPill('Оценка ${idea?.score.value ?? widget.signal.score}'),
+                      _LegendPill(
+                        '${progress?.blocksNewEntry == true ? 'Исходная оценка' : 'Оценка'} '
+                        '${idea?.score.value ?? widget.signal.score}',
+                      ),
                       ?_rrPill(),
                     ],
                   ),
@@ -201,7 +213,8 @@ class _IdeaChartCardState extends State<IdeaChartCard> {
               ),
             ],
           ),
-          if (progress != null) _ProgressStrip(progress: progress, signal: widget.signal),
+          if (progress != null)
+            _ProgressStrip(progress: progress, signal: widget.signal),
           if (hasChart)
             Container(
               padding: const EdgeInsets.fromLTRB(12, 9, 12, 11),

@@ -41,6 +41,7 @@ from ...schemas.ideas import (
     SizingBlock,
     SkipRequest,
 )
+from .late_entry_admission import validate_fresh_forts_entry
 from .paper import PaperTradeOut
 from .paper import _out as _paper_out
 
@@ -501,6 +502,11 @@ def approve_paper(
     db.flush()
     db.refresh(idea)
     _validate_approval(idea, now=now)
+    # Immutable TRIGGERED describes the setup at signal time.  Right before
+    # creating a new paper order we additionally ask whether FORTS has already
+    # traded through a target/stop; a historical high score must never turn
+    # into permission to chase a move that has played out.
+    validate_fresh_forts_entry(db, idea, now=now)
 
     try:
         trade, created = approve_for(db, idea, now=now)
