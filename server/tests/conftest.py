@@ -100,18 +100,26 @@ def configured_actionable_forts_path(request, monkeypatch):
     module_name = getattr(request.module, "__name__", "").rsplit(".", 1)[-1]
     if module_name not in _ACTIONABLE_CALENDAR_MODULES:
         return
-    safe = Candle(
-        open_time=datetime.now(UTC) - timedelta(minutes=10),
-        open=Decimal("90400"),
-        high=Decimal("90500"),
-        low=Decimal("90300"),
-        close=Decimal("90400"),
-        is_closed=True,
-        source="test-safe-forts-admission",
-    )
+
+    def safe_forts_path(*args, **kwargs):
+        # Construct at request time, after the test has created its idea. A
+        # candle created when this fixture is installed can precede an idea
+        # whose signal_time is datetime.now(), and would correctly look like
+        # NO_DATA to the production evaluator.
+        safe = Candle(
+            open_time=datetime.now(UTC),
+            open=Decimal("90400"),
+            high=Decimal("90500"),
+            low=Decimal("90300"),
+            close=Decimal("90400"),
+            is_closed=True,
+            source="test-safe-forts-admission",
+        )
+        return [safe], None
+
     monkeypatch.setattr(
         "app.api.v1.idea_progress.guarded_candles",
-        lambda *args, **kwargs: ([safe], None),
+        safe_forts_path,
     )
 
 
